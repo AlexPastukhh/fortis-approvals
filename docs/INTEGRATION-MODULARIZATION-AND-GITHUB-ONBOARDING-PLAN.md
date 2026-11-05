@@ -25,6 +25,17 @@ Production baseline was unchanged. The current isolated pilot includes
 GitHub create_branch alongside Sonar; original review remains retained.
 Detailed operator receipt stays outside Git; no credentials are included here.
 
+M2 file-and-draft-PR live E2E is also accepted (2026-11-06), source
+cf0553d0690a693fcc3e11ac8d3685f61aefe86d. The one evidence-file commit is
+a2cb4a59bf2251cc05301a9da17e3a9fd02a19ee; draft PR #8 remains open.
+The owner-run result is FORTIS_GITHUB_FILE_PR_LIVE_E2E_PASS, exit 0.
+Both owner decisions, receipts, replay and Sonar GET passed. Independent
+Repo -> Gateway reads confirmed file content digest, branch SHA, both
+EXECUTED statuses and exact draft PR refs/head/base. Production and main
+were unchanged by the scenario; M1 remains retained. PR #8 Source CI run
+42101319273 passed. CI status was read through the GitHub connector, not
+through the Gateway; Gateway CI visibility remains the next scoped slice.
+
 Reuse this evidence unless a relevant input changes. The current production
 Gateway and all its state remain outside the pilot. Preserve the accepted
 review container/state as a return path; do not repeat the earlier Production
@@ -165,30 +176,26 @@ have already been closed.
 - Existing review evidence: fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md.
 - Deferred Production contract: MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md.
 
-## Accepted M1 and next bounded slice
+## Accepted M1/M2 and next bounded slice
 
-M1 is complete; do not rerun its credential provision, state restore or owner
-Reject/Approve cycle. Keep the accepted pilot, state and receipts as the return
-point for the next image. Production and legacy-credential retirement remain
-deferred.
+M1 branch and M2 file/draft-PR acceptance are complete. Do not repeat their
+credential provision, owner ceremonies, broad host audit or state restoration.
+Keep the current M2 pilot/state/receipts and retained M1 return point.
+Detailed operator receipts stay outside Git; source evidence is in
+fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md and
+fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M2-20261106.md.
 
-M2 preparation is limited to the already accepted fortis-e2e/ working branch:
-one small UTF-8 evidence file under docs/fortis-e2e/, followed by a draft PR to
-main. Both writes require ASK and strong owner WebAuthn. Pin the exact branch,
-path and expected head; read back the resulting content/commit and PR refs/SHA,
-verify durable receipts and replay using persisted request IDs. Reconcile an
-ambiguous outcome before any retry. Preserve the M1 owner/history/receipt state
-when updating the isolated image and retain the M1 image/container for return.
+The next minimal slice is read-only Source CI visibility through the actual
+Repo Gateway client for the accepted test PR/head SHA. Add only the required
+Actions read and typed list_workflow_runs scope. Add Checks/status reads only
+if the actual workflow needs them. Exact repository scope and projected
+responses remain mandatory. No workflow dispatch/rerun/cancel, merge or
+workflow-file writes are implied by this read-only slice.
 
-Only the needed file/PR reads and push_files/create_pull_request grants may be
-added. No PR merge, workflow changes or workflow control is part of M2. The
-provider credential needs repository Pull requests read/write in addition to
-its existing Contents read/write and Metadata read; provisioning stays on the
-owner-controlled Windows side. Opening the draft PR will invoke the repository's
-existing pull_request CI; include that known effect in the owner preview.
-
-This task branch includes the M1 checkpoint and bounded M2 runtime,
-resumable scenario, owner-run update/return path and focused regressions.
-Run full CI on the complete source and merge the substantive source PR before
-the owner-run package. Do not open a plan-only PR or count M2 as
-accepted until its live file and PR readbacks pass.
+Use one substantive source PR containing the minimal runtime, resumable
+owner-run update/return path and focused regressions. Preserve M2 state and
+all provider receipts. Verify the CI result's exact workflow, event and head
+SHA over the Gateway, plus ordinary Sonar readback. Do not count connector
+CI reads as Gateway acceptance. Production cutover and retirement of legacy
+direct Git credentials stay deferred until their own required workflows are
+covered and the owner authorizes the concrete rollout.
