@@ -1,142 +1,162 @@
-# Integration modularization and GitHub onboarding plan
+# GitHub onboarding plan — minimal live E2E first
 
-> **Status (2026-11-05):** Sonar source moved into its provider package with legacy import shims; shared Repo→Gateway transport extracted; migrated live Sonar GET verified. GitHub typed contract, fixed-origin transport, Gateway adapter, Repo client, registration helper and offline tests are implemented in source. GitHub is NOT registered in live R7, has no actor grants/policy, no token volume and no deployment. Live Sonar runtime and credentials remain unchanged.
+> **Priority revised by owner — 2026-11-06.** Prove the smallest real
+> Repo -> Gateway -> GitHub -> owner decision -> execution -> readback path,
+> then expand only where an actual workflow needs it. Production rollout is
+> after pilot acceptance. The existing release/rollback contract is retained
+> as later work; finishing its executor is not a prerequisite for this pilot.
 
-The isolated modularized review has since been built and started on
-19203/19204 with separately restored Production backup state. The owner's
-existing WebAuthn login and six History entries are confirmed, and review
-Sonar GET returns OK. The reject-only ASK/owner Reject check passed with the Sonar Issue remaining OPEN. Production
-is unchanged, and this does not activate GitHub. The current image, snapshot,
-backup hashes and 282-test validation are recorded in
-[review evidence](../fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md).
+## Goal and current baseline
 
-## Architecture decisions
+The goal is practical AI access to GitHub through the shared Fortis Gateway,
+with provider credentials confined to Gateway and ALLOW/ASK/DENY enforced by
+Core. Use one machine ingress, Core, Owner Portal and approval queue. An
+external ChatGPT GitHub connector or the legacy Git CLI credential helper
+cannot substitute for the pilot's Repo -> Gateway path.
 
-1. Keep one Fortis Approvals Gateway, one machine ingress, one Core, one Owner Portal and one owner-approval queue.
-2. Give every provider its own integration package, typed contract, Gateway adapter, Repo-side client, tests, policy registration and deployment notes.
-3. Keep TLS, machine authentication, request envelope, policy evaluation and owner approval in shared infrastructure.
-4. Use one shared Gateway transport implementation, with a separate typed client for each provider.
-5. Keep upstream credentials provider-specific and Gateway-only. Never put provider tokens in Repo, source control, request payloads, command arguments or logs.
-6. Unknown operations and unregistered integrations fail closed. A directory or credential alone must not make an operation available.
+Source PR #1 is merged; the approved source baseline is bc8d92d. Review already
+proved the existing owner credential, restored history, Sonar GET and an ASK
+rejection. Baseline CI passed 287 Python tests and 12 Windows checks. GitHub
+contracts, fixed-origin transport, adapter, receipts, Repo client and explicit
+registration helper exist. Live composition remains Sonar-only: registration,
+actor grants, policies and a separate provider credential are still needed.
 
-## Current source locations
+Reuse this evidence unless a relevant input changes. The current production
+Gateway and all its state remain outside the pilot. Preserve the accepted
+review container/state as a return path; do not repeat the earlier Production
+backup, restore or broad host inventory to start GitHub E2E.
 
-- Shared Repo→Gateway TLS/machine-grant transport: `fortis_approvals/clients/gateway_transport.py`.
-- Sonar operation schemas: `fortis_approvals/integrations/sonarcloud/contract.py`.
-- Sonar Gateway modules: `fortis_approvals/integrations/sonarcloud/gateway/`.
-- Sonar Repo client/workflow: `fortis_approvals/integrations/sonarcloud/repo_client/`.
-- Sonar legacy import/CLI shims: `fortis_approvals/sonar.py`, `sonar_read.py`, `sonar_inventory.py`, `sonar_probe.py`, `sonar_preflight.py`, `repo_sonar_tools.py`, `sonar_review_scenario.py`.
-- GitHub operation schemas: `fortis_approvals/integrations/github/contract.py`.
-- GitHub Gateway transport/adapter: `fortis_approvals/integrations/github/gateway/`.
-- GitHub Repo client and opt-in registration: `integrations/github/repo_client/` and `integrations/github/registration.py`.
-- Shared broker/ingress/runtime composition: `repo_action_contract.py`, `repo_ingress.py`, `r7_unified_candidate.py` and `r7_unified_server.py`.
+## First acceptance target: READ + ASK/Reject + ASK/Approve/create_branch
 
-The compatibility shims remain until the next reviewed image release includes the provider packages. New source imports use canonical integration paths.
-## Target package layout
+Use one owner-selected test repository, one frozen base commit SHA and a
+Gateway-enforced pilot branch prefix such as fortis-e2e/. The test repository
+must not deploy on pilot branch creation. Reuse the existing typed
+create_branch operation: proving approval and a real ref creation does not
+require implementing file writes, PRs or workflow controls first.
 
-```text
-fortis_approvals/
-  clients/
-    gateway_transport.py
-  integrations/
-    README.md
-    sonarcloud/
-      README.md
-      contract.py
-      gateway/
-      repo_client/
-      tests/
-      deployment/
-    github/
-      README.md
-      contract.py
-      gateway/
-      repo_client/
-      tests/
-      deployment/
-    _integration_template/
-      README.md
-```
+| Pilot capability | Policy | Scope |
+| --- | --- | --- |
+| get_repository, list_branches | ALLOW | Exactly the selected repository |
+| create_branch | ASK + strong owner WebAuthn | Selected repository, protected base branches excluded, enforced pilot prefix |
+| Every other GitHub operation | DENY / no actor grant | Includes push_files, PR merge and workflow controls |
 
-Shared Core, Owner Portal, machine ingress and transport remain outside provider folders. Provider code must not own or duplicate machine authentication or owner WebAuthn.
+The proposed first credential uses the existing secure token-file loader:
+a separate fine-grained pilot credential, selected-repository Metadata read
+and Contents read/write. Pull requests, Actions, Checks, commit statuses and
+Workflows permissions are not requested for this first scenario. Use an
+existing compatible owner-controlled credential only if it already meets
+these boundaries; build GitHub App minting infrastructure later if needed.
+Token permissions are broader than a branch operation, so Gateway repository,
+branch and operation scope remains mandatory. Never copy the Repo helper PAT.
 
-## GitHub credential recommendation
+Owner inputs before live execution: exact test repository, credential provision
+through hidden owner-only input, and approval of the isolated pilot startup
+and two test proposals. Source implementation can proceed with explicit
+configuration without waiting for the secret or inventing a repository.
 
-**Preferred long-term:** GitHub App installed only on the approved repositories. Store the App private key and non-secret App/installation identifiers in Gateway-only provisioning; mint short-lived installation tokens at runtime.
+## Delivery sequence
 
-**Practical pilot:** a Fine-grained Personal Access Token (PAT), not a classic PAT. Restrict it to the exact approved repository list and set an expiry (prefer 30–90 days, subject to organization policy). Do not create it with access to all repositories.
+1. **Finish the thin runtime connection in one task branch.** Opt in to
+   GitHub only through trusted pilot configuration; default remains disabled.
+   Reuse the existing adapter, transport, Repo client and receipt store. Add
+   the explicit repository/branch scope, actor operation grants and Core
+   policies. Include create_branch in OwnerPortal strong operations; the
+   machine ingress must have no owner approval route. Preserve Sonar behavior.
+   No new Core, portal, generic proxy or credential mechanism.
+2. **Prepare one pilot image and one owner-run package.** Source goes through
+   one PR and CI. The package combines configuration/image/source validation,
+   credential provisioning, isolated startup, rollback of the pilot only,
+   scenario execution and a redacted result. Reuse existing owner Origin,
+   TLS/machine grant and portal. Before changing review, stop only the admitted
+   review ID and clone its persistent state into a fresh pilot volume through
+   a RO source mount. Preserve owner rows, counters, Origin, history and file
+   ownership; verify the copy. Retain the original container/volume unchanged.
+   Reuse 19203/19204 after their known holder is stopped. A pilot failure stops
+   only the pilot and returns to the retained review. Production is not touched.
+3. **Run the complete first scenario.** Perform a typed Repo read; freeze the
+   base SHA. Persist stable run/request IDs and distinct reject/approve branch
+   names before submitting anything. First submit create_branch for owner
+   rejection; wait for REJECTED and verify that branch remains absent through
+   typed Repo readback. Then submit the approval case; owner WebAuthn approves
+   its exact repository, branch and SHA. Await EXECUTED, verify its receipt and
+   independently read the resulting GitHub branch/SHA through the Repo client.
+   Owner input is the credential setup and browser decisions, not serial
+   debugging commands or a new package for each checkpoint.
+4. **Reconcile and report.** Resume interrupted runs using the saved IDs and
+   status/readback. Never generate a new proposal merely because a response
+   was lost. Verify a replay of the completed request returns the recorded
+   outcome without another mutation. An ambiguous provider outcome stops for
+   reconciliation; do not promise exactly-once behavior across an unrecorded
+   upstream result. Retain the test branch and evidence; branch deletion is
+   not implemented and cleanup is not automatic.
 
-The Gateway credential is separate from the existing Repo Git credential helper. Do not copy the existing shared Repo PAT into Gateway. Keep the old Git helper until direct Git CLI operations have a separately reviewed replacement.
-## Initial Fine-grained PAT permissions — functional pilot
+Package construction and offline validation are agent work. The target is one
+owner-run package, with built-in checkpoints/resume for unavoidable owner
+credential and WebAuthn actions. A failed gate is fixed narrowly; it does not
+restart all accepted preparation or justify another general audit.
 
-The first pilot should support the intended typed Git workflow while remaining limited to an exact owner-approved repository allowlist. Repository names, token type and expiry are not configured in this source-only phase. The token itself does not encode owner-approval policy; Fortis Gateway does.
+## First E2E acceptance — all are required
 
-| Repository permission | Pilot level | Why it is included |
-|---|---|---|
-| Metadata | Read (automatic) | Repository metadata |
-| Contents | Read and write | Read code/branches/commits, create/update working branches and push commits |
-| Pull requests | Read and write | Read/create/review/merge PRs; Gateway will gate selected mutations |
-| Actions | Read and write | Read workflow-run metadata and allow explicitly registered run dispatch, rerun, cancel or approval operations; log retrieval is not implemented in this adapter |
-| Checks | Read-only | Read check suites and check runs |
-| Commit statuses | Read-only | Read commit status contexts as well as Checks API results |
-| Workflows | Read and write | Create/update files under `.github/workflows`; Gateway will gate these changes |
+- Reads and proposals originate in the actual Repo client over the authenticated
+  TLS ingress to the pilot Gateway. The pilot's provider token is mounted only
+  in Gateway, RO at /run/github-token/token, UID 10001, mode 0600, with no
+  symlink. It is absent from Repo, source, arguments, environment and logs.
+- Default-disabled startup and missing operation grants/policies stay DENY;
+  the only enabled mutation is create_branch in the selected repository/prefix.
+  Out-of-scope requests fail before upstream mutation.
+- Owner Reject produces REJECTED; independent readback shows no reject branch.
+- Owner strong WebAuthn approval executes the exact approved proposal, produces
+  EXECUTED with a durable receipt, and the approved branch has the frozen SHA.
+- Saved IDs support resume; replay of the completed request does not duplicate
+  the action. Ambiguous outcomes are visible and reconciled, not hidden.
+- An ordinary Sonar GET still works through the changed pilot composition.
+  Existing credential/history preservation is checked during state copy;
+  a fresh enrollment or another full manual history audit is unnecessary.
+- Evidence identifies source/image/config/run/request IDs and observed results,
+  with no credential material. Failure retains the old review and its state.
 
-This is the deliberately capable pilot profile, not the final least-privilege profile. Do not add Administration, Secrets, Variables, Environments, Webhooks, organization administration, repository deletion or unrelated permissions. Do not grant Issues unless a separately approved Issues workflow requires it.
+This accepts the approval-to-branch E2E only. It does not claim file/PR/Actions
+coverage, Production deployment or removal of the legacy direct Git access.
 
-**Important permission coupling:** GitHub does not provide a token permission that allows PR creation but forbids PR merge: both require Pull requests write. Contents write permits more than a push, including Git reference deletion. Actions write enables several run-control endpoints, not only the specific action the agent may request. Workflows write allows workflow-file changes. Fortis Gateway must therefore expose only typed operations and enforce the operation policy below; never expose arbitrary API routes or give the token to the Repo/AI process directly.
+## Expand after the first E2E, according to need
 
-Contents write is repository-wide, not branch-specific. Enforce repository and branch allowlists in Gateway, disable force updates, and rely on GitHub branch protection as an additional provider-side control. The broader pilot permissions are acceptable only while the credential remains Gateway-only and every mutation passes the appropriate ALLOW/ASK/DENY policy.
-## GitHub operation policy target
+| Next slice | Add only when needed | Acceptance |
+| --- | --- | --- |
+| Working branch edits | push_files | Bounded UTF-8 commit, expected-head checks, approved change and readback |
+| Pull request workflow | create_pull_request, then separately merge policy | Exact refs/head, owner policy and observed PR result |
+| CI visibility/control | Required Actions/Checks/status reads; selected controls later | Explicit operation, token permission and branch/ref scope |
+| Workflow-file edits | Dedicated update_workflow_file | Separate permission and ASK policy; never implicit in ordinary push |
+| Permanent deployment | Existing release/backup/rollback work | Reviewed executable packet, fresh backup and separate Production GO |
+| Close legacy bypass | Replace and retire shared Repo credential | All actually required workflows proven before credential removal |
 
-| Implemented operation | Policy state now | Boundary |
-|---|---|---|
-| READ: repositories, branches, commits, PRs, Actions, Checks, statuses | NOT REGISTERED | Typed read schemas and projections exist |
-| `create_branch`, `push_files` | NOT REGISTERED | Repository allowlist; main/master protected; no force update; bounded UTF-8 file batch |
-| `create_pull_request` | NOT REGISTERED | Re-reads base/head refs before create |
-| `merge_pull_request` | NOT REGISTERED | Expected PR head SHA required; merge readback |
-| `update_workflow_file` | NOT REGISTERED | Existing workflow file SHA and branch SHA preconditions |
-| `dispatch_workflow`, `rerun_workflow`, `cancel_workflow`, `approve_workflow_run` | NOT REGISTERED | Typed Actions endpoints only |
-| Branch deletion, repository creation/deletion, webhooks, rulesets, secrets, variables | NOT IMPLEMENTED | No operation or route exposed |
+The current typed push_files API is not general Git smart-HTTP: binary files,
+large artifacts and arbitrary packfile pushes are outside its scope. Do not
+retire the existing Git helper until the replacement covers the owner's real
+required workflows. That known legacy access is separate from the pilot's
+Gateway-only provider credential; pilot success does not mean all bypasses
+have already been closed.
 
-No GitHub actor grant or policy entry is present in live R7. The registration helper attaches only the adapter/read dispatcher and deliberately does not configure grants or policies. Core defaults missing policies to DENY. The owner will separately decide which implemented operations become ALLOW, ASK or remain DENY. An upstream token permission never grants the AI an operation by itself.
+## Work discipline
 
-## Credential volume target
+- Keep plan and implementation in the same task branch; open one substantive
+  PR when the minimal runtime, package and tests are ready. No plan-only PR.
+- Run targeted local tests for changed runtime/policy/provisioning paths, then
+  the existing full source CI and Windows parsing/projection checks for the
+  complete candidate. A documentation edit does not need another runtime test.
+- Fix relevant failures and rerun affected checks. Reuse unchanged accepted
+  image/state/owner evidence; validate new or changed inputs in package preflight.
+- Use one short scenario/result/resume interface. Ask only for decisions or
+  confidential owner input that is actually missing. Do not split independent
+  agent work into owner-run scripts.
+- Keep correctness gates: fail-closed policy, owner-bound approval, credential
+  isolation, idempotency/reconciliation, state preservation and live readback.
+  Reduce scope and handoffs rather than removing these gates.
 
-- External Docker volume: `fortis-github-token`.
-- Read-only Gateway mount: `/run/github-token`.
-- Fine-grained PAT file: `/run/github-token/token`.
-- File owner: Gateway runtime UID 10001; mode 0600; regular file, no symlink.
-- No environment variable containing the token, no Repo mount, no Git-tracked secret, no token output in logs.
-- The volume is **planned only**. It has not been created, populated or attached to the running Gateway.
+## Source locations
 
-For a GitHub App, the same separate-volume principle applies, but the mounted secret is the App private key and the Gateway mints short-lived installation tokens.
-## Implementation and release phases
-
-1. **Completed — inventory and baseline:** preserved the live Sonar code path, current credentials and active image; created a source backup before moving modules.
-2. **Completed — provider package scaffold:** provider catalog, SonarCloud/GitHub READMEs, reusable template and navigation.
-3. **Completed — SonarCloud extraction:** moved provider implementation and Repo client/workflow into `integrations/sonarcloud`; retained compatibility import/CLI shims; updated active source imports.
-4. **Completed — shared transport/contracts:** extracted the fixed typed Repo→Gateway machine transport; Sonar and GitHub contracts are provider-owned. Extended the candidate ingress/Core payload cap only for bounded GitHub requests.
-5. **Completed in source — GitHub implementation:** fixed-origin REST transport, strict typed contracts, public projections, repository allowlist, compare-and-swap branch/PR/workflow mutations, durable receipts, Repo client and opt-in adapter registration. Registration does not grant or set policy.
-6. **Completed — supported offline suite:** `bash scripts/test-source.sh` passes 245 tests across GitHub (contracts, fixed-origin transport, token-file security, projections, Repo client, default-DENY registration), Sonar package compatibility, Core, Gateway, Owner Portal, Repo ingress/client, Sonar READ/ASK, TLS 1.3 R6/R7 end-to-end and isolated candidate-image imports. `compileall` and shell syntax checks pass. A live Sonar GET on 2026-11-05 returned Quality Gate `OK` after the migration; evidence is recorded under `fortis_approvals/evidence/`. Historical image audit tests remain separate provenance checks.
-7. **Next — owner release review:** the new `Dockerfile-Gateway-Modularized-Candidate` COPY/import context and source manifests are validated; the owner-approved isolated image has been built and validated beside Production, with preserved credential and History. The reject-only functional check passed without changing Sonar. Production deployment still requires a distinct release GO with final backup and rollback; do not use the old R7 Dockerfile/build script after the source layout change.
-8. **Later owner-controlled provisioning/deployment:** after policy decisions, create/populate the separate GitHub volume, attach it read-only, identify the maintained Compose source, deploy only after explicit release GO, and verify Sonar regression plus GitHub read/write/approval E2E.
-9. **Separate future task — legacy Git CLI credential retirement:** only after a Gateway-backed Git workflow is proven, migrate/revoke the shared Repo PAT. Do not remove the current helper as part of this integration source work.
-
-## Acceptance gates
-
-- Sonar live behavior and owner approval remain unchanged.
-- GitHub token is not readable from Fortis Repo or exposed in any response/log.
-- Each provider can be independently enabled/disabled by registration, actor grant and policy.
-- Every mutation has an exact typed operation, scope checks, durable request state and owner approval where required.
-- No arbitrary HTTP proxy, arbitrary GitHub URL, token-return route, AI owner route or arbitrary workflow dispatch is introduced. Workflow dispatch is available only as an explicitly typed ASK operation with owner approval.
-- Deployment evidence identifies the exact image, source manifest, mounted volumes and rollback target.
-
-## Official GitHub permission references
-
-- [Fine-grained PAT permission-to-endpoint mapping](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)
-- [Create a pull request — Pull requests: write](https://docs.github.com/en/rest/pulls/pulls)
-- [Merge a pull request — Pull requests: write](https://docs.github.com/en/rest/pulls/pulls)
-- [Git references — Contents: write, including delete reference](https://docs.github.com/en/rest/git/refs)
-- [Workflow runs — Actions: read/write endpoints](https://docs.github.com/en/rest/actions/workflow-runs)
-- [Check runs — Checks: read](https://docs.github.com/en/rest/checks/runs)
-- [Commit statuses — Commit statuses: read](https://docs.github.com/en/rest/commits/statuses)
+- Shared TLS/machine transport: fortis_approvals/clients/gateway_transport.py.
+- GitHub schemas, adapter, transport, registration and Repo client:
+  fortis_approvals/integrations/github/.
+- Shared composition: r7_unified_candidate.py and r7_unified_server.py.
+- Existing review evidence: fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md.
+- Deferred Production contract: MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md.

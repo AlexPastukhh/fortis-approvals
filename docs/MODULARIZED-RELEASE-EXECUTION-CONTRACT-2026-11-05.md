@@ -1,5 +1,10 @@
 # Modularized release execution contract — 2026-11-05
 
+> **Priority update — 2026-11-06:** retain this contract for later Production
+> rollout. First complete the minimal isolated GitHub E2E described in the
+> [current onboarding plan](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
+> Implementing this Production executor is not a prerequisite for the pilot.
+
 Status: source-review proposal. This document and the JSON profile describe
 an exact intended release, but contain no lifecycle executor and grant no
 Production GO. Source PR review/merge precedes Windows source import; a

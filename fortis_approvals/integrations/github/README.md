@@ -1,6 +1,8 @@
 # GitHub integration
 
-**Status:** implementation prepared in source; NOT registered in the live R7 composition, NOT granted to the current actor, NOT policy-enabled and NOT deployed. No GitHub token volume exists yet.
+**Status:** adapter/client/contracts are source-present; GitHub is not registered, granted or policy-enabled in the live composition. No provider token volume has been provisioned.
+
+**Next acceptance target (2026-11-06):** minimal isolated READ -> ASK/Reject -> ASK/strong-WebAuthn Approve -> create_branch -> typed readback E2E. Production rollout and additional GitHub operations follow that acceptance. See the [current plan](../../../docs/INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
 
 ## Source map
 
@@ -36,7 +38,7 @@ The current machine ingress candidate is capped at 512 KiB. `push_files` accepts
 This is a typed REST commit-batch interface, **not a general Git smart-HTTP/packfile push protocol**. Binary files, large artifacts and unrestricted whole-repository pushes are not supported by this initial adapter. A later secure Git transport design is required if those are needed.
 ## Permission and policy boundary
 
-The intended pilot token permissions are Contents read/write; Pull requests read/write; Actions read/write; Checks read; Commit statuses read; Workflows read/write; Metadata read (automatic), restricted to the selected repositories.
+The first E2E needs selected-repository Metadata read and Contents read/write only. Enable get_repository/list_branches READ and create_branch ASK with strong owner WebAuthn, exact repository scope and an enforced pilot branch prefix. Other operations remain DENY/no grant. Add Pull requests, Actions, Checks, statuses or Workflows permissions only for a later accepted workflow that needs them.
 
 The provider token's permissions do not define AI permissions. `register_github_integration(core, broker, adapter)` only connects the typed adapter to Core/READ dispatch. It deliberately does **not** add actor grants or policy entries. Core defaults missing policy to `DENY`; the live R7 composition does not call this registration helper.
 
@@ -47,4 +49,4 @@ The planned credential is a separate Gateway-only Fine-grained PAT or GitHub App
 
 **Not provisioned:** no volume has been created, no token has been written, no Compose mount has been added, and no running Gateway has access to GitHub. Never copy the existing Fortis Repo Git credential into this volume. Never put this token in Repo, source control, environment variables, request bodies, command arguments or logs.
 
-The adapter and token loader are source-ready for later provisioning, but the live Gateway remains Sonar-only until a separate policy + credential + deployment release.
+The adapter and token loader are source-ready. The next work is the thin opt-in runtime/policy connection and one isolated pilot package; the live Gateway remains Sonar-only until that owner-run pilot is provisioned. Preserve the prior review state/container as the pilot return path. This pilot does not depend on first switching Production.
