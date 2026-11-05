@@ -110,3 +110,35 @@ or automatic cleanup is part of rollback.
 There is intentionally no executable Production lifecycle command here:
 actual launch provenance, final backup procedure and exact rollback mapping
 remain required inputs to the final owner-reviewed release artifact.
+
+## Source publication and next metadata inventory
+
+Draft PR: https://github.com/AlexPastukhh/fortis-approvals/pull/1, targeting main.
+Source CI run 42056460790 succeeded for
+`2198f9abcbac7d0d62e2830a38158f4158c021ac`: 282 tests in 27 suites,
+compilation, source manifests and commit whitespace. Main was observed without
+branch protection or required checks; no protection settings were changed.
+CI success does not constitute source-review approval, merge or release GO.
+
+`fortis_approvals/deploy/Audit-Modularized-Cutover-ReadOnly-20261105.ps1`
+is the next owner-run Windows metadata inventory. It reads Docker inspect
+metadata only, inventories all containers using the Production state mount
+(including overlapping bind paths), and reports Compose source labels.
+An optional exact `-ProductionLaunchFile` path can be hashed without printing
+file contents. A path reported by Compose alone does not establish that it is
+the maintained deployment source.
+
+Only allowlisted public environment values and recognized Gateway/health
+commands are printed. Unknown command values, all other environment values,
+volume-driver option values and log option values are omitted. A nonempty
+unknown driver configuration needs separate review before release preparation.
+The script reports mounts/security/resources/network/restart/health parameters
+and re-inspects the selected containers to detect profile changes. It fails
+if their public profiles changed or another active state writer is detected.
+This is an observation script; its completion marker does not admit cutover.
+
+No Docker exec, state probe, SQLite access, credential access, backup, lock,
+container lifecycle operation, Compose operation or upstream call is included.
+The read-only inventory does not require a production maintenance window.
+Windows PowerShell parsing and actual host observations remain pending the
+owner-run step; Fortis Repo has neither Docker CLI nor Engine socket access.
