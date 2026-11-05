@@ -50,7 +50,7 @@ def runtime_endpoints():
 
 def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
-                   bind_host='0.0.0.0'):
+                   bind_host='0.0.0.0', github_pilot=None):
     # P1 requires exactly one owner-pinned project; no organization-wide fallback.
     if (type(project_key) is not str or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', project_key)):
@@ -68,7 +68,7 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         state=state,owner_origin=owner_origin,ingress_host=machine_host,
         ingress_grant=grant,sonar_transport=transport,
         organizations=organizations,region=region,
-        project_keys=(project_key,))
+        project_keys=(project_key,), github_pilot=github_pilot)
     cert = Path(cert_path)
     if cert.is_symlink() or not cert.is_file():
         raise RuntimeError('R7_PUBLIC_CERT_REQUIRED')
@@ -135,6 +135,8 @@ def main():
         raise SystemExit('Usage: r7_unified_server [preflight-imports|health]')
     if os.geteuid()!=10001:
         raise RuntimeError('R7_RUNTIME_MUST_BE_UNPRIVILEGED')
+    from .integrations.github.pilot import config_from_environment
+    github_pilot = config_from_environment(os.environ)
     region=os.environ.get('FORTIS_SONAR_REGION','eu')
     organizations=_organizations(os.environ.get('FORTIS_SONAR_ORGANIZATIONS',''))
     project_key=os.environ.get('FORTIS_SONAR_PROJECT_KEY','')
@@ -146,7 +148,7 @@ def main():
         cert_path='/run/r7-identity/server.crt',
         key_path='/run/r7-identity/server.key',
         region=region,organizations=organizations,
-        project_key=project_key)
+        project_key=project_key, github_pilot=github_pilot)
     try:
         Thread(target=owner.serve_forever,daemon=True,
                name='r7-owner-portal').start()

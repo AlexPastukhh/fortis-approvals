@@ -6,6 +6,7 @@ import uuid
 
 from fortis_approvals.r7_unified_candidate import build_r7_unified_candidate
 from fortis_approvals.integrations.github.registration import register_github_integration
+from fortis_approvals.integrations.github.pilot import GitHubPilotConfig, config_from_environment
 from fortis_approvals.integrations.github.gateway.adapter import GitHubAdapter
 from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
 
@@ -47,6 +48,8 @@ def smoke():
         assert '/api/qualitygates/project_status' in remote.calls
         assert 'github' not in core.adapters
         assert 'github' not in ingress.broker.read_adapters
+        assert config_from_environment({}) is None
+        assert GitHubPilotConfig
         assert callable(register_github_integration)
         assert GitHubAdapter and GitHubHTTPTransport
     print('IMAGE_SONAR_OFFLINE_SMOKE_PASS')

@@ -66,7 +66,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $files = @(
             'fortis_approvals/deploy/Audit-Modularized-Cutover-ReadOnly-20261105.ps1',
-            'fortis_approvals/deploy/Confirm-Modularized-Cutover-Metadata-20261105.ps1'
+            'fortis_approvals/deploy/Confirm-Modularized-Cutover-Metadata-20261105.ps1',
+            'fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1'
           )
           foreach ($file in $files) {
             $tokens = $null
@@ -76,3 +77,4 @@ jobs:
             if ($errors) { throw ($errors | Out-String) }
           }
           & $files[0] -SelfTest
+          & $files[2] -Mode SelfTest
