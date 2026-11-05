@@ -3,6 +3,7 @@
 param(
     [ValidateSet('Start','Resume','Rollback','SelfTest')][string]$Mode = 'Start',
     [string]$Repository = '', [string]$Record = '', [string]$ExpectedSourceCommit = '',
+    [string]$ResumePreparedSourceCommit = '',
     [switch]$ConfirmTestRepository
 )
 $ErrorActionPreference = 'Stop'
@@ -188,9 +189,32 @@ function Assert-RecordAcl {
 function Save-Record {
     $Temporary=$script:RecordPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
     [IO.File]::WriteAllText($Temporary,(ConvertTo-Json -InputObject $script:R -Depth 25),[Text.UTF8Encoding]::new($false))
-    if (Test-Path -LiteralPath $script:RecordPath) { [IO.File]::Replace($Temporary,$script:RecordPath,$null) }
+    # Elevated Windows processes may otherwise assign Administrators as the file owner.
+    $Acl=Get-Acl -LiteralPath $Temporary
+    $Acl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    Set-Acl -LiteralPath $Temporary -AclObject $Acl
+    if (Test-Path -LiteralPath $script:RecordPath) { [IO.File]::Replace($Temporary,$script:RecordPath,[System.Management.Automation.Language.NullString]::Value) }
     else { [IO.File]::Move($Temporary,$script:RecordPath) }
     Assert-RecordAcl
+}
+function Assert-PreparedResume {
+    # Only a failed build before credential/state/container creation can resume setup.
+    if ($script:R.phase -cne 'Prepared' -or $script:R.reviewStopped -or $script:R.image -or
+        $script:R.pilotId -or $script:R.sourceReceipt -or $script:R.receipt -or
+        $script:R.scenario.phase -cne 'READ' -or $script:R.scenario.sourceSha) {
+        throw 'PILOT_PREPARED_RESUME_HAS_SETUP_EFFECTS'
+    }
+    if ($script:R.sourceCommit -cne $ExpectedSourceCommit -and
+        ($ResumePreparedSourceCommit -cnotmatch '^[0-9a-f]{40}$' -or
+         $script:R.sourceCommit -cne $ResumePreparedSourceCommit)) {
+        throw 'PILOT_PREPARED_SOURCE_CHANGE_REQUIRES_EXACT_ACK'
+    }
+}
+function Assert-PreparedResourcesAbsent {
+    $Volumes=@((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n')
+    $Names=@((Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n')
+    if ($Volumes -ccontains $script:R.stateVolume -or $Volumes -ccontains $script:R.tokenVolume -or
+        $Names -ccontains $script:R.pilotName) { throw 'PILOT_PREPARED_RESOURCES_EXIST_INSPECT_BEFORE_CONTINUING' }
 }
 function Check-Package {
     $Metadata=Get-Content -LiteralPath (Join-Path $SourceRoot 'review-source.json') -Raw | ConvertFrom-Json
@@ -310,6 +334,44 @@ function Return-Review {
 }
 
 if ($Mode -ceq 'SelfTest') {
+    # Exercise real NTFS writes/atomic replacements and ACLs in Windows PowerShell 5.1.
+    $TestDirectory=Join-Path $env:TEMP ('fortis-pilot-record-selftest-' + [Guid]::NewGuid().ToString('N'))
+    Protect-Directory $TestDirectory
+    $script:RecordPath=Join-Path $TestDirectory 'record.json'
+    $script:R=[ordered]@{ schema=1; runId='11111111111141118111111111111111'; sourceCommit=('a' * 40)
+        phase='Prepared'; reviewStopped=$false; image=''; pilotId=''; sourceReceipt=$null; receipt=$null
+        scenario=@{ phase='READ'; sourceSha=$null; reject=@{requestId='11111111-1111-4111-8111-111111111111'}
+            approve=@{requestId='22222222-2222-4222-8222-222222222222'} } }
+    try {
+        Save-Record
+        $OriginalIds=ConvertTo-Json $script:R.scenario -Depth 5 -Compress
+        $script:R.image='sha256:test'; Save-Record
+        $script:R.image=''; Save-Record
+        $Saved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
+        if ($Saved.image -cne '' -or (ConvertTo-Json $Saved.scenario -Depth 5 -Compress) -cne $OriginalIds -or
+            @(Get-ChildItem -LiteralPath $TestDirectory -Force).Count -ne 1) { throw 'PILOT_RECORD_REPLACEMENT_SELFTEST_FAILED' }
+        Assert-RecordAcl
+        $script:R=$Saved
+        $ExpectedSourceCommit='a' * 40; Assert-PreparedResume
+        $ExpectedSourceCommit='b' * 40; $Blocked=$false
+        try { Assert-PreparedResume } catch {
+            if ($_.Exception.Message -ceq 'PILOT_PREPARED_SOURCE_CHANGE_REQUIRES_EXACT_ACK') { $Blocked=$true } else { throw }
+        }
+        if (-not $Blocked) { throw 'PILOT_PREPARED_SOURCE_ACK_SELFTEST_FAILED' }
+        $ResumePreparedSourceCommit='a' * 40; Assert-PreparedResume
+        $script:R.image='sha256:already-saved'; $Blocked=$false
+        try { Assert-PreparedResume } catch {
+            if ($_.Exception.Message -ceq 'PILOT_PREPARED_RESUME_HAS_SETUP_EFFECTS') { $Blocked=$true } else { throw }
+        }
+        if (-not $Blocked) { throw 'PILOT_PREPARED_EFFECTS_SELFTEST_FAILED' }
+        $script:R.image=''; $script:R.scenario.phase='SUBMIT_REJECT'; $Blocked=$false
+        try { Assert-PreparedResume } catch {
+            if ($_.Exception.Message -ceq 'PILOT_PREPARED_RESUME_HAS_SETUP_EFFECTS') { $Blocked=$true } else { throw }
+        }
+        if (-not $Blocked) { throw 'PILOT_PREPARED_SCENARIO_SELFTEST_FAILED' }
+    } finally {
+        Remove-Item -LiteralPath $TestDirectory -Recurse -Force
+    }
     $Fixture='synthetic private stdin {"value":"safe"}'
     $Result=Private-Process @('-NoProfile','-Command','[Console]::Write([Console]::In.ReadToEnd())') $Fixture (Join-Path $PSHOME 'powershell.exe')
     if ($Result -cne $Fixture) { throw 'PILOT_PRIVATE_PIPE_SELFTEST_FAILED' }
@@ -380,7 +442,7 @@ if ($Mode -ceq 'SelfTest') {
         if ($_.Exception.Message -ceq 'PILOT_ORIGINAL_REVIEW_DATA_CHANGED_NO_RESTART') { $Blocked=$true } else { throw }
     }
     if (-not $Blocked -or ($script:TestActions -join ',') -cne 'stop-pilot') { throw 'PILOT_CHANGED_SOURCE_ROLLBACK_SELFTEST_FAILED' }
-    Write-Host 'FORTIS_GITHUB_PILOT_WINDOWS_SELFTEST_PASS cases=8'
+    Write-Host 'FORTIS_GITHUB_PILOT_WINDOWS_SELFTEST_PASS cases=16'
     return
 }
 
@@ -395,38 +457,57 @@ if ($Mode -cne 'Start') {
         [IO.Path]::GetFileName($script:RecordPath) -cne 'record.json') { throw 'PILOT_RECORD_PATH_INVALID' }
     Assert-RecordAcl
     $script:R=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
-    if ($script:R.runId -cnotmatch '^[0-9a-f]{32}$' -or $script:R.sourceCommit -cne $ExpectedSourceCommit -or
+    if ($script:R.runId -cnotmatch '^[0-9a-f]{32}$' -or
         $script:R.stateVolume -cne ('fortis-github-pilot-state-' + $script:R.runId) -or
         $script:R.tokenVolume -cne ('fortis-github-pilot-token-' + $script:R.runId) -or
         $script:R.pilotName -cne ('fortis-github-pilot-' + $script:R.runId)) { throw 'PILOT_RECORD_IDENTITY_INVALID' }
     Write-Host ('PILOT_RECORD=' + $script:RecordPath)
-    if ($Mode -ceq 'Rollback') { Return-Review; return }
-    if ($script:R.phase -cnotin @('Running','Complete')) { throw 'PILOT_RUN_NOT_RESUMABLE_USE_RETAINED_RECORD' }
-    try { Run-Scenario }
-    catch { Write-Host 'PILOT_PAUSED_RESUME_OR_ROLLBACK_SAME_RECORD'; throw }
-    return
+    if ($script:R.phase -ceq 'Prepared' -and $Mode -ceq 'Resume') {
+        Assert-PreparedResume
+        Assert-PreparedResourcesAbsent
+        Check-RepoSource
+        # Confirm identities before updating this local record; full admission follows the build.
+        $Original=Container $script:R.reviewId
+        if ($Original.Name -cne ('/' + $ReviewName) -or $Original.Image -cne $ReviewImage -or
+            $Original.State.Status -cne 'running' -or $Original.State.Health.Status -cne 'healthy') {
+            throw 'PILOT_PRE_SETUP_REVIEW_IDENTITY_CHANGED'
+        }
+        Assert-Production
+        $script:R.sourceCommit=$ExpectedSourceCommit; Save-Record
+        Write-Host 'PILOT_RESUMING_PREPARED_RECORD_SAME_IDS'
+    } else {
+        if ($script:R.sourceCommit -cne $ExpectedSourceCommit) { throw 'PILOT_RECORD_IDENTITY_INVALID' }
+        if ($Mode -ceq 'Rollback') { Return-Review; return }
+        if ($script:R.phase -cnotin @('Running','Complete')) { throw 'PILOT_RUN_NOT_RESUMABLE_USE_RETAINED_RECORD' }
+        try { Run-Scenario }
+        catch { Write-Host 'PILOT_PAUSED_RESUME_OR_ROLLBACK_SAME_RECORD'; throw }
+        return
+    }
 }
 
-if (-not $ConfirmTestRepository) { throw 'PILOT_EXACT_OWNER_TEST_REPOSITORY_ACK_REQUIRED' }
-$RepoMatch=[regex]::Match($Repository,'^(?<owner>[A-Za-z0-9][A-Za-z0-9_.-]{0,99})/(?<repo>[A-Za-z0-9][A-Za-z0-9_.-]{0,99})$')
-if (-not $RepoMatch.Success) { throw 'PILOT_EXACT_OWNER_TEST_REPOSITORY_ACK_REQUIRED' }
-$SelectedOwner=$RepoMatch.Groups['owner'].Value; $SelectedRepo=$RepoMatch.Groups['repo'].Value
-$RunId=[Guid]::NewGuid().ToString('N')
-$ScenarioId=([Guid]::ParseExact($RunId,'N')).ToString('D')
-$script:RecordPath=Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot') $RunId) 'record.json'
-Protect-Directory (Split-Path $script:RecordPath -Parent)
-$Review=Container $ReviewName
-$script:R=[ordered]@{ schema=1; runId=$RunId; sourceCommit=$ExpectedSourceCommit
-    owner=$SelectedOwner; repository=$SelectedRepo; phase='Prepared'; reviewId=$Review.Id
-    reviewStopped=$false; productionBaseline=(Production-Baseline); sourceReceipt=$null; receipt=$null
-    image=''; pilotId=''; pilotName=('fortis-github-pilot-' + $RunId)
-    stateVolume=('fortis-github-pilot-state-' + $RunId); tokenVolume=('fortis-github-pilot-token-' + $RunId)
-    scenario=[ordered]@{ format='fortis-github-pilot-run-v1'; runId=$ScenarioId
-        owner=$SelectedOwner; repository=$SelectedRepo; branchPrefix='fortis-e2e/'; sourceSha=$null; phase='READ'
-        reject=@{ requestId=[Guid]::NewGuid().ToString('D'); branch=('fortis-e2e/' + $ScenarioId + '-reject') }
-        approve=@{ requestId=[Guid]::NewGuid().ToString('D'); branch=('fortis-e2e/' + $ScenarioId + '-approve') } } }
-Save-Record
-Write-Host ('PILOT_RECORD=' + $script:RecordPath)
+if ($Mode -ceq 'Start') {
+    if ($Record) { throw 'PILOT_START_DOES_NOT_ACCEPT_EXISTING_RECORD_USE_RESUME' }
+    if (-not $ConfirmTestRepository) { throw 'PILOT_EXACT_OWNER_TEST_REPOSITORY_ACK_REQUIRED' }
+    $RepoMatch=[regex]::Match($Repository,'^(?<owner>[A-Za-z0-9][A-Za-z0-9_.-]{0,99})/(?<repo>[A-Za-z0-9][A-Za-z0-9_.-]{0,99})$')
+    if (-not $RepoMatch.Success) { throw 'PILOT_EXACT_OWNER_TEST_REPOSITORY_ACK_REQUIRED' }
+    $SelectedOwner=$RepoMatch.Groups['owner'].Value; $SelectedRepo=$RepoMatch.Groups['repo'].Value
+    $RunId=[Guid]::NewGuid().ToString('N')
+    $ScenarioId=([Guid]::ParseExact($RunId,'N')).ToString('D')
+    $script:RecordPath=Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot') $RunId) 'record.json'
+    Protect-Directory (Split-Path $script:RecordPath -Parent)
+    $Review=Container $ReviewName
+    $script:R=[ordered]@{ schema=1; runId=$RunId; sourceCommit=$ExpectedSourceCommit
+        owner=$SelectedOwner; repository=$SelectedRepo; phase='Prepared'; reviewId=$Review.Id
+        reviewStopped=$false; productionBaseline=(Production-Baseline); sourceReceipt=$null; receipt=$null
+        image=''; pilotId=''; pilotName=('fortis-github-pilot-' + $RunId)
+        stateVolume=('fortis-github-pilot-state-' + $RunId); tokenVolume=('fortis-github-pilot-token-' + $RunId)
+        scenario=[ordered]@{ format='fortis-github-pilot-run-v1'; runId=$ScenarioId
+            owner=$SelectedOwner; repository=$SelectedRepo; branchPrefix='fortis-e2e/'; sourceSha=$null; phase='READ'
+            reject=@{ requestId=[Guid]::NewGuid().ToString('D'); branch=('fortis-e2e/' + $ScenarioId + '-reject') }
+            approve=@{ requestId=[Guid]::NewGuid().ToString('D'); branch=('fortis-e2e/' + $ScenarioId + '-approve') } } }
+    Save-Record
+    Write-Host ('PILOT_RECORD=' + $script:RecordPath)
+}
 Check-RepoSource
 $Tag='fortis-approvals-gateway:github-pilot-' + $script:Snapshot.Substring(0,12)
 Write-Host 'PILOT_STAGE=BUILD_AND_OFFLINE_IMAGE_SMOKE'
