@@ -189,6 +189,10 @@ function Assert-RecordAcl {
 function Save-Record {
     $Temporary=$script:RecordPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
     [IO.File]::WriteAllText($Temporary,(ConvertTo-Json -InputObject $script:R -Depth 25),[Text.UTF8Encoding]::new($false))
+    # Elevated Windows processes may otherwise assign Administrators as the file owner.
+    $Acl=Get-Acl -LiteralPath $Temporary
+    $Acl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    Set-Acl -LiteralPath $Temporary -AclObject $Acl
     if (Test-Path -LiteralPath $script:RecordPath) { [IO.File]::Replace($Temporary,$script:RecordPath,[System.Management.Automation.Language.NullString]::Value) }
     else { [IO.File]::Move($Temporary,$script:RecordPath) }
     Assert-RecordAcl
