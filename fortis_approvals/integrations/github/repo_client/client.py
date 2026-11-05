@@ -91,6 +91,9 @@ class GitHubClient:
     def list_branches(self, repo, *, page=1, per_page=100):
         return self.read("list_branches", repo, {"page": page, "perPage": per_page})
 
+    def get_file(self, repo, path, ref):
+        return self.read("get_file", repo, {"path": path, "ref": ref})
+
     def list_commits(self, repo, *, page=1, per_page=30):
         return self.read("list_commits", repo, {"page": page, "perPage": per_page})
 

@@ -16,6 +16,23 @@ DOCKERFILE = ROOT / "fortis_approvals/deploy/Dockerfile-Gateway-Modularized-Cand
 
 
 class ModularizedCandidateManifestTests(unittest.TestCase):
+    def test_live_e2e_text_is_non_release_data_but_source_and_neighbor_paths_stay_manifested(self):
+        import importlib.util
+        from unittest.mock import patch
+        spec=importlib.util.spec_from_file_location('source_manifests',ROOT/'scripts/update-source-manifests.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            excluded='docs/fortis-e2e/11111111-1111-4111-8111-111111111111.txt'
+            included=['docs/fortis-e2e/code.py','docs/fortis-e2e/test.txt',
+                'docs/fortis-e2e-other/11111111-1111-4111-8111-111111111111.txt','fortis_approvals/runtime.py']
+            for name in [excluded,*included]:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
+            with patch.object(module,'ROOT',root),patch.object(module,'FULL',root/'docs/MODULARIZED-SOURCE-MANIFEST.sha256'):
+                names={name for name,_ in module.full_rows()}
+            self.assertNotIn(excluded,names)
+            self.assertEqual(names,set(included))
+
     def test_provider_package_allowlist_and_no_github_activation(self):
         src = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("fortis_approvals/integrations/sonarcloud/gateway/", src)

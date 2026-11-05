@@ -49,6 +49,18 @@ class StateTests(unittest.TestCase):
         self.assertEqual(receipt['summary']['credentialsActive'], 1)
         self.assertEqual(receipt['summary']['requests'], 1)
 
+    def test_clone_of_accepted_github_pilot_preserves_provider_receipt_bytes(self):
+        github=self.source/'private'/'github-receipts.sqlite'
+        with sqlite3.connect(github) as db:
+            db.execute('CREATE TABLE receipts(request_id TEXT,result TEXT)')
+            db.execute('INSERT INTO receipts VALUES (?,?)',('offline-request','offline-receipt'))
+        github.chmod(0o600)
+        with self.assertRaisesRegex(RuntimeError,'UNKNOWN_FILES'):
+            HELPERS.inspect_state(self.source,**self.identity)
+        receipt=HELPERS.clone_state(self.source,self.target,github=True,**self.identity)
+        self.assertEqual(receipt['summary']['githubReceipts'],1)
+        self.assertEqual(github.read_bytes(),(self.target/'private'/'github-receipts.sqlite').read_bytes())
+
     def test_existing_target_is_not_overwritten(self):
         sentinel = self.target/'keep'
         sentinel.write_text('preserve')
