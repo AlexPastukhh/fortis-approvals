@@ -95,3 +95,18 @@ The record is owner/SYSTEM/Administrators-only under LocalAppData Fortis
 GitHubPilot. Success requires typed branch readback, replay, local durable
 receipt plus owner-approved Core state, and a Sonar GET regression; marker:
 FORTIS_GITHUB_PILOT_LIVE_E2E_PASS. Offline tests are not that live marker.
+
+### Resume a build interrupted before setup
+
+Windows PowerShell 5.1 requires an explicit `NullString.Value` for the optional
+`File.Replace` backup path. The Windows self-test exercises initial record
+creation, two real atomic replacements and retained ACLs/IDs.
+
+`-Mode Resume -Record <existing-record> -ExpectedSourceCommit <approved-new-source>
+-ResumePreparedSourceCommit <exact-old-source>` also resumes a `Prepared` record
+from a failed build. It retains the run and request IDs. Before resuming, the
+runner requires no saved image, credential/state volumes, pilot container or
+scenario progress, and verifies the retained review and Production baseline.
+Changing the source requires that explicit old-commit acknowledgement. Later
+setup phases remain blocked for inspection; running scenarios use ordinary
+Resume without source migration.
