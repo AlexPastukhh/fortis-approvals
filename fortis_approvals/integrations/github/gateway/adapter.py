@@ -201,6 +201,29 @@ class GitHubAdapter:
             result = {"operation": operation,
                       "items": [self._project_branch(x) for x in raw],
                       "page": params["page"], "perPage": params["perPage"]}
+        elif operation == "get_file":
+            raw = self._api("GET", base + "/contents/" + quote(params["path"], safe="/-._~"),
+                            params={"ref": params["ref"]}, allow_not_found=True)
+            if type(raw) is not dict: raise Denied("GITHUB_FILE_READ_RESPONSE_INVALID")
+            item = dict(path=params["path"], ref=params["ref"], exists=False,
+                        sha=None, size=0, contentSha256=None)
+            if raw.get("_httpStatus") != 404:
+                if (raw.get("type") != "file" or raw.get("path") != params["path"] or
+                        raw.get("encoding") != "base64" or type(raw.get("size")) is not int or
+                        not 0 <= raw["size"] <= 4096 or type(raw.get("content")) is not str or
+                        len(raw["content"]) > 6000):
+                    raise Denied("GITHUB_FILE_READ_RESPONSE_INVALID")
+                try:
+                    content = base64.b64decode(raw["content"].replace("\n", ""), validate=True)
+                    content.decode("utf-8", errors="strict")
+                except (ValueError, UnicodeError):
+                    raise Denied("GITHUB_FILE_READ_RESPONSE_INVALID") from None
+                blob_sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+                if len(content) != raw["size"] or blob_sha != self._sha(raw.get("sha")):
+                    raise Denied("GITHUB_FILE_READBACK_HASH_MISMATCH")
+                item.update(exists=True, sha=blob_sha, size=len(content),
+                            contentSha256=hashlib.sha256(content).hexdigest())
+            result = {"operation": operation, "file": item}
         elif operation == "list_commits":
             raw = self._api("GET", base + "/commits",
                             params={"page": params["page"], "per_page": params["perPage"]})

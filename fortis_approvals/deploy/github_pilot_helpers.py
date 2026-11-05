@@ -28,21 +28,23 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def inspect_state(volume, *, uid=10001, gid=10001):
+def inspect_state(volume, *, uid=10001, gid=10001, github=False):
+    files = FILES | ({'github-receipts.sqlite'} if github else set())
+    databases = DBS + (('github-receipts.sqlite',) if github else ())
     volume = Path(volume)
     root = volume / 'private'
     info = root.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
             stat.S_IMODE(info.st_mode) == 0o700, 'PILOT_STATE_DIRECTORY_INVALID')
-    require({p.name for p in root.iterdir()} == FILES, 'PILOT_SOURCE_UNKNOWN_FILES_OR_JOURNAL')
-    for name in FILES:
+    require({p.name for p in root.iterdir()} == files, 'PILOT_SOURCE_UNKNOWN_FILES_OR_JOURNAL')
+    for name in files:
         info = (root / name).lstat()
         require(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
                 stat.S_IMODE(info.st_mode) == 0o600, 'PILOT_SOURCE_FILE_INVALID')
     require((root / MARKER).read_bytes() == b'fortis-r7-unified-v1\n', 'PILOT_SOURCE_MARKER_INVALID')
     connections = {}
     try:
-        for name in DBS:
+        for name in databases:
             db = sqlite3.connect((root / name).absolute().as_uri() + '?mode=ro', uri=True)
             connections[name] = db
             require(db.execute('PRAGMA journal_mode').fetchone()[0] == 'delete', 'PILOT_SOURCE_JOURNAL_MODE_UNKNOWN')
@@ -60,19 +62,21 @@ def inspect_state(volume, *, uid=10001, gid=10001):
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
+        if github: summary['githubReceipts'] = connections['github-receipts.sqlite'].execute('SELECT COUNT(*) FROM receipts').fetchone()[0]
     finally:
         for db in connections.values(): db.close()
-    return {'sha256': {name: file_hash(root / name) for name in sorted(FILES)}, 'summary': summary}
+    return {'sha256': {name: file_hash(root / name) for name in sorted(files)}, 'summary': summary}
 
 
-def clone_state(source, target, *, uid=10001, gid=10001):
+def clone_state(source, target, *, uid=10001, gid=10001, github=False):
+    files = FILES | ({'github-receipts.sqlite'} if github else set())
     source, target = Path(source), Path(target)
     require(not source.is_symlink() and not target.is_symlink() and source.is_dir() and target.is_dir(), 'PILOT_VOLUME_ROOT_INVALID')
     require(source.resolve() != target.resolve() and not any(target.iterdir()), 'PILOT_CLONE_TARGET_NOT_EMPTY')
-    before = inspect_state(source, uid=uid, gid=gid)
+    before = inspect_state(source, uid=uid, gid=gid, github=github)
     private = target / 'private'
     private.mkdir(mode=0o700)
-    for name in sorted(FILES):
+    for name in sorted(files):
         descriptor = os.open(private / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
             output.write((source / 'private' / name).read_bytes())
@@ -80,8 +84,8 @@ def clone_state(source, target, *, uid=10001, gid=10001):
         os.chmod(private / name, 0o600)
         os.chown(private / name, uid, gid)
     os.chmod(private, 0o700); os.chown(private, uid, gid)
-    require(inspect_state(target, uid=uid, gid=gid) == before, 'PILOT_CLONE_VERIFICATION_FAILED')
-    require(inspect_state(source, uid=uid, gid=gid) == before, 'PILOT_SOURCE_CHANGED_DURING_CLONE')
+    require(inspect_state(target, uid=uid, gid=gid, github=github) == before, 'PILOT_CLONE_VERIFICATION_FAILED')
+    require(inspect_state(source, uid=uid, gid=gid, github=github) == before, 'PILOT_SOURCE_CHANGED_DURING_CLONE')
     return before
 
 
@@ -143,6 +147,9 @@ def admit(container, expected, *, pilot):
     if pilot:
         required.update(FORTIS_GITHUB_PILOT='1', FORTIS_GITHUB_OWNER=expected['owner'],
                         FORTIS_GITHUB_REPOSITORY=expected['repository'], FORTIS_GITHUB_BRANCH_PREFIX='fortis-e2e/')
+    if pilot and expected.get('filePrBranch'):
+        require(bool(re.fullmatch('fortis-e2e/[0-9a-f-]{36}-approve', expected['filePrBranch'])), 'PILOT_FILE_PR_BRANCH_INVALID')
+        required['FORTIS_GITHUB_FILE_PR_BRANCH'] = expected['filePrBranch']
     require(env == required, 'PILOT_PUBLIC_CONFIGURATION_MISMATCH')
     require(container['State']['Status'] == expected['status'], 'PILOT_CONTAINER_STATUS_MISMATCH')
     if expected['status'] == 'running' and expected.get('requireHealthy', True):
@@ -168,14 +175,53 @@ def verify_receipt(request_id, repository, branch, sha, root='/state/private'):
     return {'receiptVerified': True, 'ownerDecisionVerified': True, **expected}
 
 
+def verify_file_pr_receipts(scenario, root='/state/private'):
+    require(scenario['phase'] == 'DONE', 'FILE_PR_RECEIPTS_REQUIRE_DONE')
+    root = Path(root)
+    with sqlite3.connect((root / 'github-receipts.sqlite').absolute().as_uri() + '?mode=ro', uri=True) as receipts, \
+         sqlite3.connect((root / 'approvals.sqlite').absolute().as_uri() + '?mode=ro', uri=True) as core:
+        for kind, operation in (('push', 'push_files'), ('pr', 'create_pull_request')):
+            ident = scenario[kind + 'RequestId']
+            require(bool(re.fullmatch('[0-9a-f-]{36}', ident)), 'FILE_PR_RECEIPT_ID_INVALID')
+            row = receipts.execute('SELECT result FROM receipts WHERE request_id=?', (ident,)).fetchone()
+            require(row is not None, 'FILE_PR_RECEIPT_MISSING')
+            result = json.loads(row[0])
+            require(result['requestId'] == ident and result['operation'] == operation and
+                    result['repository'] == scenario['repository'], 'FILE_PR_RECEIPT_MISMATCH')
+            if kind == 'push':
+                require(set(result) == {'requestId','operation','repository','branch','sha','paths'} and
+                        result['branch'] == scenario['branch'] and result['sha'] == scenario['commitSha'] and
+                        result['paths'] == [scenario['path']], 'FILE_PR_PUSH_RECEIPT_MISMATCH')
+                text = 'Fortis Gateway file/PR E2E\nRun: ' + scenario['runId'] + '\nBranch: ' + scenario['branch'] + '\n'
+                params = dict(branch=scenario['branch'], expectedHeadSha=scenario['expectedHeadSha'],
+                    message='test: add Gateway file/PR E2E evidence', files=[dict(path=scenario['path'], content=text)])
+            else:
+                pr = result['pullRequest']
+                require(set(result) == {'requestId','operation','repository','pullRequest'} and
+                        pr['number'] == scenario['pullRequestNumber'] and pr['draft'] is True and
+                        pr['state'] == 'open' and pr['merged'] is False and
+                        pr['head'] == dict(ref=scenario['branch'], sha=scenario['commitSha']) and
+                        pr['base'] == dict(ref='main', sha=scenario['baseSha']), 'FILE_PR_PULL_RECEIPT_MISMATCH')
+                params = dict(head=scenario['branch'], base='main', title='[Gateway E2E] ' + scenario['runId'],
+                    body='Gateway E2E evidence only. Do not merge. Opening this draft triggers the existing pull_request CI.', draft=True)
+            row = core.execute('SELECT state,payload,decision,owner FROM requests WHERE id=?', (ident,)).fetchone()
+            require(row is not None and row[0] == 'EXECUTED' and row[2:] == ('approve','owner'), 'FILE_PR_OWNER_EXECUTION_MISSING')
+            payload = json.loads(row[1])
+            require(payload['service'] == 'github' and payload['operation'] == operation and
+                    payload['target'] == scenario['repository'] and payload['params'] == params, 'FILE_PR_CORE_PAYLOAD_MISMATCH')
+    return dict(receiptsVerified=True, ownerDecisionsVerified=True, pushRequestId=scenario['pushRequestId'],
+                prRequestId=scenario['prRequestId'], commitSha=scenario['commitSha'], pullRequestNumber=scenario['pullRequestNumber'])
+
+
 def main():
     value = json.load(sys.stdin)
     action = value['action']
     if action == 'provision': result = provision_token(value['token'])
-    elif action == 'clone': result = clone_state('/source', '/target')
-    elif action == 'inspect': result = inspect_state('/source')
+    elif action == 'clone': result = clone_state('/source', '/target', github=value.get('github', False))
+    elif action == 'inspect': result = inspect_state('/source', github=value.get('github', False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])
+    elif action == 'file_pr_receipts': result = verify_file_pr_receipts(value['scenario'])
     else: raise RuntimeError('PILOT_HELPER_ACTION_DENIED')
     print(json.dumps(result, sort_keys=True))
 

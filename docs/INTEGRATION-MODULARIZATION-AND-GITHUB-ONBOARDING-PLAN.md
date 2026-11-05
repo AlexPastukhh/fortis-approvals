@@ -187,7 +187,8 @@ its existing Contents read/write and Metadata read; provisioning stays on the
 owner-controlled Windows side. Opening the draft PR will invoke the repository's
 existing pull_request CI; include that known effect in the owner preview.
 
-This task branch starts with the accepted M1 checkpoint. Add the M2 runtime,
-resumable scenario, owner-run update/return path and focused regressions here,
-then open one substantive source PR. Do not open a plan-only PR or count M2 as
+This task branch includes the M1 checkpoint and bounded M2 runtime,
+resumable scenario, owner-run update/return path and focused regressions.
+Run full CI on the complete source and merge the substantive source PR before
+the owner-run package. Do not open a plan-only PR or count M2 as
 accepted until its live file and PR readbacks pass.

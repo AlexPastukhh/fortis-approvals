@@ -110,3 +110,39 @@ scenario progress, and verifies the retained review and Production baseline.
 Changing the source requires that explicit old-commit acknowledgement. Later
 setup phases remain blocked for inspection; running scenarios use ordinary
 Resume without source migration.
+
+### M2: one test file and draft PR
+
+M1 live acceptance is recorded in `fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md`.
+The optional trusted `FORTIS_GITHUB_FILE_PR_BRANCH` pins M2 to the accepted
+`fortis-e2e/<M1-run-UUID>-approve` branch. The only writable path is
+`docs/fortis-e2e/<M1-run-UUID>.txt`, with one UTF-8 file up to 4096 bytes per push.
+`push_files` and `create_pull_request` use ASK + strong WebAuthn. PR creation
+requires that exact head, base main, and draft=true. Merge and workflow controls
+remain denied. File reads expose verified blob/content digests, not raw content.
+
+The owner-run `Run-GitHub-FilePR-E2E.ps1` takes Start/Resume/Rollback/SelfTest.
+Start requires the protected completed M1 record and explicit acknowledgement
+that its separate Gateway credential now has Pull requests read/write alongside
+Contents read/write and Metadata read for the same selected repository. The
+credential volume is reused RO; no secret is transferred to Repo or re-entered.
+The script builds the verified source, stops only the admitted M1 pilot and
+clones all M1 owner/history/provider-receipt state through a RO source mount into
+a fresh isolated volume. The retained M1 container/image/state is the return
+point. No container, state volume, branch, PR or source is automatically deleted.
+
+After startup it submits the bounded file change, waits for owner Approve,
+checks the new commit/content hashes and completed-request replay, then submits
+the draft PR. The PR preview states that existing pull_request CI will run.
+It checks exact PR refs/SHAs, both durable owner-approved receipts, replay and
+Sonar GET before printing `FORTIS_GITHUB_FILE_PR_LIVE_E2E_PASS`.
+Save the printed FILE_PR_RECORD path: Resume uses that record and original IDs;
+UNCERTAIN stops for reconciliation. Rollback stops only the admitted new pilot,
+checks the retained M1 data hashes and restarts M1. It does not undo GitHub
+mutations or merge/close the test PR. Production has no lifecycle operations.
+
+The exact `docs/fortis-e2e/<canonical-UUID>.txt` files are live non-release test
+data, excluded from the release source manifest/package. This lets the draft
+PR's existing Source CI verify the unchanged release source. Code, other paths
+and non-UUID files in the same directory remain manifested; a packaging
+regression verifies this narrow boundary.

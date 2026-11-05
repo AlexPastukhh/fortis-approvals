@@ -1,7 +1,7 @@
 # Windows PowerShell 5.1. Owner-run isolated GitHub pilot; no Production lifecycle commands.
 [CmdletBinding()]
 param(
-    [ValidateSet('Start','Resume','Rollback','SelfTest')][string]$Mode = 'Start',
+    [ValidateSet('Start','Resume','Rollback','SelfTest','Functions')][string]$Mode = 'Start',
     [string]$Repository = '', [string]$Record = '', [string]$ExpectedSourceCommit = '',
     [string]$ResumePreparedSourceCommit = '',
     [switch]$ConfirmTestRepository
@@ -63,7 +63,7 @@ function Code64 {
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Text))
 }
 function Helper {
-    param($Payload, [string[]]$Mounts=@(), [switch]$Root, [switch]$InsidePilot)
+    param($Payload, [string[]]$Mounts=@(), [switch]$Root, [switch]$InsidePilot, [string]$Image='')
     $Code="import base64;ns={'__name__':'operator_helper'};exec(compile(base64.b64decode('$script:Helper64'),'<pilot-helper>','exec'),ns);ns['main']()"
     if ($InsidePilot) {
         $Arguments=@('exec','-i','--user','10001:10001',$script:R.pilotId,'python','-B','-c',$Code)
@@ -74,7 +74,8 @@ function Helper {
             '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64',
             '--memory','256m','--tmpfs','/tmp:rw,nosuid,nodev,size=64m')
         if ($Root) { $Arguments += @('--cap-add','CHOWN','--cap-add','DAC_OVERRIDE') }
-        $Arguments += $Mounts + @('--entrypoint','python',$script:R.image,'-B','-c',$Code)
+        if (-not $Image) { $Image=$script:R.image }
+        $Arguments += $Mounts + @('--entrypoint','python',$Image,'-B','-c',$Code)
     }
     return ((Private-Process $Arguments (ConvertTo-Json -InputObject $Payload -Depth 25 -Compress)) | ConvertFrom-Json)
 }
@@ -98,7 +99,7 @@ function Expected-Pilot {
     param([string]$Status)
     return [ordered]@{ id=$script:R.pilotId; name=$script:R.pilotName; image=$script:R.image
         stateVolume=$script:R.stateVolume; tokenVolume=$script:R.tokenVolume; status=$Status
-        owner=$script:R.owner; repository=$script:R.repository }
+        owner=$script:R.owner; repository=$script:R.repository; filePrBranch=$script:R.filePrBranch }
 }
 function Admit-Review {
     param([string]$Status)
@@ -333,6 +334,73 @@ function Return-Review {
     Write-Host 'FORTIS_GITHUB_PILOT_RETURNED_TO_RETAINED_REVIEW_PASS'
 }
 
+function Build-PilotImage {
+    $Tag='fortis-approvals-gateway:github-pilot-' + $script:Snapshot.Substring(0,12)
+    Write-Host 'PILOT_STAGE=BUILD_AND_OFFLINE_IMAGE_SMOKE'
+    $null=Docker-Text @('build','--pull=false','--file',(Join-Path $PSScriptRoot 'Dockerfile-Gateway-Modularized-Candidate'),
+        '--label',('org.opencontainers.image.revision=' + $ExpectedSourceCommit),
+        '--label',('org.opencontainers.image.source-snapshot-sha256=' + $script:Snapshot),
+        '--tag',$Tag,$SourceRoot)
+    $Image=@(Docker-Json @('image','inspect',$Tag))[0]
+    if ($Image.Id -cnotmatch '^sha256:[0-9a-f]{64}$' -or $Image.Config.User -cne '10001:10001' -or
+        $Image.Config.Labels.'org.opencontainers.image.source-snapshot-sha256' -cne $script:Snapshot) { throw 'PILOT_IMAGE_METADATA_INVALID' }
+    $script:R.image=$Image.Id; Save-Record
+    $Smoke64=Code64 (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'image_offline_smoke.py') -Raw)
+    $SmokeCode="import base64;ns={'__name__':'offline_smoke'};exec(compile(base64.b64decode('$Smoke64'),'<image-smoke>','exec'),ns);ns['smoke']()"
+    $Smoke=Private-Process @('run','--rm','-i','--pull=never','--network','none','--read-only','--user','10001:10001',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
+        '--tmpfs','/tmp:rw,nosuid,nodev,size=64m','--entrypoint','python',$script:R.image,'-B','-c',$SmokeCode) ''
+    if ($Smoke -notmatch 'IMAGE_SONAR_OFFLINE_SMOKE_PASS' -or $Smoke -notmatch 'IMAGE_GITHUB_NOT_REGISTERED_PASS') {
+        throw 'PILOT_OFFLINE_IMAGE_SMOKE_FAILED'
+    }
+}
+function Create-PilotVolume {
+    param([string]$Name, [string]$Role)
+    $Names=@((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n')
+    if ($Names -ccontains $Name) { throw 'PILOT_NEW_VOLUME_NAME_ALREADY_EXISTS' }
+    $null=Docker-Text @('volume','create','--label',('io.fortis.pilot.run=' + $script:R.runId),
+        '--label',('io.fortis.pilot.role=' + $Role),$Name)
+    Assert-Volume $Name
+    $V=@(Docker-Json @('volume','inspect',$Name))[0]
+    if ($V.Labels.'io.fortis.pilot.run' -cne $script:R.runId -or $V.Labels.'io.fortis.pilot.role' -cne $Role) {
+        throw 'PILOT_NEW_VOLUME_PROVENANCE_INVALID'
+    }
+}
+
+function Create-PilotContainer {
+    $Arguments=@('create','--pull=never','--name',$script:R.pilotName,'--restart','no','--init',
+        '--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network','bridge',
+        '--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
+        '--env','FORTIS_OWNER_ORIGIN=http://localhost:19203','--env','FORTIS_MACHINE_HOST=host.docker.internal:19204',
+        '--env','FORTIS_SONAR_REGION=eu','--env','FORTIS_SONAR_ORGANIZATIONS=alexpastukhh',
+        '--env','FORTIS_SONAR_PROJECT_KEY=AlexPastukhh_obs-planning-docs',
+        '--env','FORTIS_GITHUB_PILOT=1','--env',('FORTIS_GITHUB_OWNER=' + $script:R.owner),
+        '--env',('FORTIS_GITHUB_REPOSITORY=' + $script:R.repository),'--env','FORTIS_GITHUB_BRANCH_PREFIX=fortis-e2e/',
+        '--publish','127.0.0.1:19203:19103','--publish','127.0.0.1:19204:19104',
+        '--mount',('type=volume,source=' + $script:R.stateVolume + ',target=/state'),
+        '--mount',('type=volume,source=' + $script:R.tokenVolume + ',target=/run/github-token,readonly'),
+        '--mount','type=volume,source=fortis-r7-identity,target=/run/r7-identity,readonly',
+        '--mount','type=volume,source=fortis-r7-grant,target=/run/r7-grant,readonly',
+        '--mount','type=volume,source=fortis-r7-sonar-token,target=/run/r7-sonar-token,readonly',
+        '--health-cmd','python -m fortis_approvals.r7_unified_server health',
+        '--health-interval','20s','--health-timeout','5s','--health-retries','3','--health-start-period','20s',
+        $script:R.image)
+    if ($script:R.filePrBranch) {
+        $Arguments=$Arguments[0..($Arguments.Count-2)] + @('--env',('FORTIS_GITHUB_FILE_PR_BRANCH=' + $script:R.filePrBranch),$script:R.image)
+    }
+    $script:R.pilotId=Docker-Text $Arguments
+    if ($script:R.pilotId -cnotmatch '^[0-9a-f]{64}$') { throw 'PILOT_CREATED_ID_INVALID_INSPECT_BEFORE_RETRY' }
+    $script:R.phase='Created'; Save-Record
+    Admit-Pilot 'created'; Assert-Production
+    Assert-OnlyWriter $script:R.stateVolume
+    $null=Docker-Text @('start',$script:R.pilotId)
+    Wait-Healthy $script:R.pilotId; Admit-Pilot 'running'
+    Assert-Production
+}
+
+if ($Mode -ceq 'Functions') { return }
+
 if ($Mode -ceq 'SelfTest') {
     # Exercise real NTFS writes/atomic replacements and ACLs in Windows PowerShell 5.1.
     $TestDirectory=Join-Path $env:TEMP ('fortis-pilot-record-selftest-' + [Guid]::NewGuid().ToString('N'))
@@ -530,40 +598,10 @@ if ($Mode -ceq 'Start') {
     Write-Host ('PILOT_RECORD=' + $script:RecordPath)
 }
 Check-RepoSource
-$Tag='fortis-approvals-gateway:github-pilot-' + $script:Snapshot.Substring(0,12)
-Write-Host 'PILOT_STAGE=BUILD_AND_OFFLINE_IMAGE_SMOKE'
-$null=Docker-Text @('build','--pull=false','--file',(Join-Path $PSScriptRoot 'Dockerfile-Gateway-Modularized-Candidate'),
-    '--label',('org.opencontainers.image.revision=' + $ExpectedSourceCommit),
-    '--label',('org.opencontainers.image.source-snapshot-sha256=' + $script:Snapshot),
-    '--tag',$Tag,$SourceRoot)
-$Image=@(Docker-Json @('image','inspect',$Tag))[0]
-if ($Image.Id -cnotmatch '^sha256:[0-9a-f]{64}$' -or $Image.Config.User -cne '10001:10001' -or
-    $Image.Config.Labels.'org.opencontainers.image.source-snapshot-sha256' -cne $script:Snapshot) { throw 'PILOT_IMAGE_METADATA_INVALID' }
-$script:R.image=$Image.Id; Save-Record
-$Smoke64=Code64 (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'image_offline_smoke.py') -Raw)
-$SmokeCode="import base64;ns={'__name__':'offline_smoke'};exec(compile(base64.b64decode('$Smoke64'),'<image-smoke>','exec'),ns);ns['smoke']()"
-$Smoke=Private-Process @('run','--rm','-i','--pull=never','--network','none','--read-only','--user','10001:10001',
-    '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
-    '--tmpfs','/tmp:rw,nosuid,nodev,size=64m','--entrypoint','python',$script:R.image,'-B','-c',$SmokeCode) ''
-if ($Smoke -notmatch 'IMAGE_SONAR_OFFLINE_SMOKE_PASS' -or $Smoke -notmatch 'IMAGE_GITHUB_NOT_REGISTERED_PASS') {
-    throw 'PILOT_OFFLINE_IMAGE_SMOKE_FAILED'
-}
+Build-PilotImage
 Admit-Review 'running'; Assert-Production
 foreach ($Name in @('fortis-r7-state-review-20261105','fortis-r7-identity','fortis-r7-grant','fortis-r7-sonar-token')) { Assert-Volume $Name }
 Assert-OnlyWriter 'fortis-r7-state-review-20261105' $script:R.reviewId
-
-function Create-PilotVolume {
-    param([string]$Name, [string]$Role)
-    $Names=@((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n')
-    if ($Names -ccontains $Name) { throw 'PILOT_NEW_VOLUME_NAME_ALREADY_EXISTS' }
-    $null=Docker-Text @('volume','create','--label',('io.fortis.pilot.run=' + $script:R.runId),
-        '--label',('io.fortis.pilot.role=' + $Role),$Name)
-    Assert-Volume $Name
-    $V=@(Docker-Json @('volume','inspect',$Name))[0]
-    if ($V.Labels.'io.fortis.pilot.run' -cne $script:R.runId -or $V.Labels.'io.fortis.pilot.role' -cne $Role) {
-        throw 'PILOT_NEW_VOLUME_PROVENANCE_INVALID'
-    }
-}
 
 Write-Host 'PILOT_STAGE=OWNER_CREDENTIAL_PROVISIONING'
 Write-Host ('TEST_REPOSITORY=' + $script:R.owner + '/' + $script:R.repository)
@@ -596,32 +634,7 @@ try {
         'type=volume,source=fortis-r7-state-review-20261105,target=/source,readonly',
         '--mount',('type=volume,source=' + $script:R.stateVolume + ',target=/target'))
     $script:R.phase='StateCopied'; Save-Record
-    $Arguments=@('create','--pull=never','--name',$script:R.pilotName,'--restart','no','--init',
-        '--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
-        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network','bridge',
-        '--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
-        '--env','FORTIS_OWNER_ORIGIN=http://localhost:19203','--env','FORTIS_MACHINE_HOST=host.docker.internal:19204',
-        '--env','FORTIS_SONAR_REGION=eu','--env','FORTIS_SONAR_ORGANIZATIONS=alexpastukhh',
-        '--env','FORTIS_SONAR_PROJECT_KEY=AlexPastukhh_obs-planning-docs',
-        '--env','FORTIS_GITHUB_PILOT=1','--env',('FORTIS_GITHUB_OWNER=' + $script:R.owner),
-        '--env',('FORTIS_GITHUB_REPOSITORY=' + $script:R.repository),'--env','FORTIS_GITHUB_BRANCH_PREFIX=fortis-e2e/',
-        '--publish','127.0.0.1:19203:19103','--publish','127.0.0.1:19204:19104',
-        '--mount',('type=volume,source=' + $script:R.stateVolume + ',target=/state'),
-        '--mount',('type=volume,source=' + $script:R.tokenVolume + ',target=/run/github-token,readonly'),
-        '--mount','type=volume,source=fortis-r7-identity,target=/run/r7-identity,readonly',
-        '--mount','type=volume,source=fortis-r7-grant,target=/run/r7-grant,readonly',
-        '--mount','type=volume,source=fortis-r7-sonar-token,target=/run/r7-sonar-token,readonly',
-        '--health-cmd','python -m fortis_approvals.r7_unified_server health',
-        '--health-interval','20s','--health-timeout','5s','--health-retries','3','--health-start-period','20s',
-        $script:R.image)
-    $script:R.pilotId=Docker-Text $Arguments
-    if ($script:R.pilotId -cnotmatch '^[0-9a-f]{64}$') { throw 'PILOT_CREATED_ID_INVALID_INSPECT_BEFORE_RETRY' }
-    $script:R.phase='Created'; Save-Record
-    Admit-Pilot 'created'; Assert-Production
-    Assert-OnlyWriter $script:R.stateVolume
-    $null=Docker-Text @('start',$script:R.pilotId)
-    Wait-Healthy $script:R.pilotId; Admit-Pilot 'running'
-    Assert-Production
+    Create-PilotContainer
     $script:R.phase='Running'; Save-Record
 } catch {
     Write-Host ('PILOT_SETUP_FAILED_RECORD=' + $script:RecordPath)

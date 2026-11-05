@@ -2,6 +2,7 @@
 """Refresh deterministic source manifests; --check verifies without writing."""
 import argparse
 import hashlib
+import re
 from pathlib import Path
 import sys
 
@@ -49,6 +50,9 @@ def full_rows():
         if not path.is_file() or path.is_symlink():
             continue
         rel = path.relative_to(ROOT)
+        # Non-release data produced by the live file/PR pilot; no executable/source paths.
+        if re.fullmatch(r'docs/fortis-e2e/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.txt', rel.as_posix()):
+            continue
         if any(part in EXCLUDED_DIRS for part in Path(rel).parts):
             continue
         if path.suffix.lower() in EXCLUDED_SUFFIXES:

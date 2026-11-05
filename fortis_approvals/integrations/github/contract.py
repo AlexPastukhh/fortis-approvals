@@ -11,7 +11,7 @@ from ...core import Denied
 
 GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_repositories"), ("github", "get_repository"),
-    ("github", "list_branches"), ("github", "list_commits"),
+    ("github", "list_branches"), ("github", "list_commits"), ("github", "get_file"),
     ("github", "list_pull_requests"), ("github", "get_pull_request"),
     ("github", "list_workflow_runs"), ("github", "list_check_runs"),
     ("github", "get_commit_status"),
@@ -79,6 +79,12 @@ def validate_github_read(operation, target, params):
         if set(params) != {"page", "perPage", "state"} or params.get("state") not in ("open", "closed", "all"):
             raise Denied("GITHUB_READ_PARAMS_DENIED")
         _page({"page": params["page"], "perPage": params["perPage"]})
+    elif operation == "get_file":
+        if set(params) != {"path", "ref"}:
+            raise Denied("GITHUB_READ_PARAMS_DENIED")
+        _safe_file_path(params["path"])
+        if not (type(params["ref"]) is str and _SHA.fullmatch(params["ref"])):
+            _branch(params["ref"])
     elif operation == "get_pull_request":
         if set(params) != {"number"} or type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000:
             raise Denied("GITHUB_READ_PARAMS_DENIED")
@@ -263,6 +269,17 @@ def validate_github_read_projection(operation, result):
                  all(sha(x["sha"]) and text(x["message"], 1000) and
                      text(x["author"], 200) and text(x["date"], 80) and
                      github_url(x["url"]) for x in result["items"]))
+    elif operation == "get_file":
+        valid = (exact(result, ("operation", "file")) and
+                 exact(result.get("file"), ("path", "ref", "exists", "sha", "size", "contentSha256")))
+        if valid:
+            row = result["file"]
+            valid = (text(row["path"], 240) and text(row["ref"], 200) and type(row["exists"]) is bool and
+                     ((row["exists"] and sha(row["sha"]) and type(row["size"]) is int and
+                       0 <= row["size"] <= 4096 and type(row["contentSha256"]) is str and
+                       re.fullmatch('[0-9a-f]{64}', row["contentSha256"]) is not None) or
+                      (row["exists"] is False and row["sha"] is None and row["size"] == 0 and
+                       type(row["size"]) is int and row["contentSha256"] is None)))
     elif operation in ("list_pull_requests", "get_pull_request"):
         if operation == "list_pull_requests":
             valid_shape = (exact(result, ("operation", "items", "page", "perPage")) and
