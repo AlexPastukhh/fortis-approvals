@@ -240,7 +240,7 @@ function Check-RepoSource {
     $Code="import json,pathlib,subprocess;root=pathlib.Path('/workspace/repo/Repos/fortis-approvals');head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip();dirty=subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True);print(json.dumps({'head':head,'clean':not bool(dirty.strip())}))"
     $Raw=Private-Process @('exec','--user','1000:1000','fortis-repo-test','python3','-B','-c',$Code) ''
     $Info=$Raw | ConvertFrom-Json
-    if ($Info.head -cne $script:R.sourceCommit -or -not $Info.clean) { throw 'PILOT_REPO_SOURCE_NOT_APPROVED_CLEAN_MAIN' }
+    if ($Info.head -cne $ExpectedSourceCommit -or -not $Info.clean) { throw 'PILOT_REPO_SOURCE_NOT_APPROVED_CLEAN_MAIN' }
 }
 function Run-Scenario {
     Admit-Pilot 'running'; Admit-Review 'exited'; Assert-Production; Check-RepoSource
@@ -353,7 +353,28 @@ if ($Mode -ceq 'SelfTest') {
         Assert-RecordAcl
         $script:R=$Saved
         $ExpectedSourceCommit='a' * 40; Assert-PreparedResume
-        $ExpectedSourceCommit='b' * 40; $Blocked=$false
+        $ExpectedSourceCommit='b' * 40
+        function Test-PreparedCheckoutSource {
+            # Execute the real check while the saved record still has the old source SHA.
+            function Private-Process {
+                param([string[]]$Arguments, [string]$InputText, [string]$Executable = '')
+                if ($Arguments[0] -cne 'exec' -or $Arguments[3] -cne 'fortis-repo-test') {
+                    throw 'SELFTEST_SOURCE_PROBE_TARGET_INVALID'
+                }
+                return (ConvertTo-Json $script:CheckoutFixture -Compress)
+            }
+            $script:CheckoutFixture=@{head=('b' * 40);clean=$true}
+            Check-RepoSource
+            foreach ($Fixture in @(@{head=('a' * 40);clean=$true},@{head=('b' * 40);clean=$false})) {
+                $script:CheckoutFixture=$Fixture; $Blocked=$false
+                try { Check-RepoSource } catch {
+                    if ($_.Exception.Message -ceq 'PILOT_REPO_SOURCE_NOT_APPROVED_CLEAN_MAIN') { $Blocked=$true } else { throw }
+                }
+                if (-not $Blocked) { throw 'PILOT_PREPARED_CHECKOUT_SOURCE_SELFTEST_FAILED' }
+            }
+        }
+        Test-PreparedCheckoutSource
+        $Blocked=$false
         try { Assert-PreparedResume } catch {
             if ($_.Exception.Message -ceq 'PILOT_PREPARED_SOURCE_CHANGE_REQUIRES_EXACT_ACK') { $Blocked=$true } else { throw }
         }
@@ -442,7 +463,7 @@ if ($Mode -ceq 'SelfTest') {
         if ($_.Exception.Message -ceq 'PILOT_ORIGINAL_REVIEW_DATA_CHANGED_NO_RESTART') { $Blocked=$true } else { throw }
     }
     if (-not $Blocked -or ($script:TestActions -join ',') -cne 'stop-pilot') { throw 'PILOT_CHANGED_SOURCE_ROLLBACK_SELFTEST_FAILED' }
-    Write-Host 'FORTIS_GITHUB_PILOT_WINDOWS_SELFTEST_PASS cases=16'
+    Write-Host 'FORTIS_GITHUB_PILOT_WINDOWS_SELFTEST_PASS cases=19'
     return
 }
 
