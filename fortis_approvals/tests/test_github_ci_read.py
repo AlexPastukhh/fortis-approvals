@@ -28,6 +28,7 @@ class FakeCI(m2.FileGitHub):
             html_url='https://github.com/PilotOwner/sandbox/actions/runs/777')]
         self.ci_calls=[]
     def request(self,method,path,**kwargs):
+        if method=='GET' and path=='/repos/PilotOwner/sandbox/pulls/8': return self.pulls[0]
         if method=='GET' and path=='/repos/PilotOwner/sandbox/actions/runs':
             self.ci_calls.append(kwargs['params'])
             p=kwargs['params'];start=(p['page']-1)*p['per_page']
