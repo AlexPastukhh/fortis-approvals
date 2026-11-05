@@ -66,7 +66,8 @@ def _fresh_r7_state(path):
 def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               ingress_grant, sonar_transport,
                               organizations, region='eu', actor_grants=None,
-                              project_keys=None):
+                              project_keys=None, github_pilot=None,
+                              github_transport=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -81,6 +82,11 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         raise Denied('R7_DISTINCT_OWNER_INGRESS_REQUIRED')
     if type(ingress_grant) is not str or not _GRANT.fullmatch(ingress_grant):
         raise Denied('R7_MACHINE_GRANT_INVALID')
+    if github_pilot is not None:
+        from .integrations.github.pilot import GitHubPilotConfig
+        if not isinstance(github_pilot, GitHubPilotConfig):
+            raise ValueError('GITHUB_PILOT_CONFIG_REQUIRED')
+        github_pilot.check_endpoints(owner_origin, ingress_host)
     grants = ({ingress_grant: ACTOR} if actor_grants is None else actor_grants)
     if (type(grants) is not dict or not grants or
             any(type(grant) is not str or not _GRANT.fullmatch(grant) or
@@ -120,5 +126,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         core,actor_operations={actor:{G4_OPERATION} for actor in actors},
         actor_read_operations={actor: SONAR_READ_OPERATIONS for actor in actors},
         read_adapter=reader)
+    if github_pilot is not None:
+        from .integrations.github.pilot import install_pilot
+        install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,
+                      root=root, actor=grants[ingress_grant], transport=github_transport)
     ingress = RepoIngress(broker,host=ingress_host,max_bytes=524288)
     return core,owner,portal,ingress

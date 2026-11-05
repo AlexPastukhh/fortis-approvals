@@ -160,3 +160,15 @@ have already been closed.
 - Shared composition: r7_unified_candidate.py and r7_unified_server.py.
 - Existing review evidence: fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md.
 - Deferred Production contract: MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md.
+
+## Source implementation checkpoint — live acceptance pending
+
+The task branch now contains the opt-in runtime/prefix scope, shared actor
+policy wiring, strong owner approval, typed resumable scenario, private
+provision/clone/admission helpers and one Start/Resume/Rollback entrypoint.
+Targeted tests include real TLS and cryptographic WebAuthn with fake upstreams,
+state preservation, unsafe deployment denial and lost-response resume. These
+are implementation checks; no live GitHub call, token provisioning, pilot
+startup or owner decision has been performed by this source work. Run the
+existing source CI and Windows parser/private-pipe self-test on the complete
+candidate, then review/merge the single pilot PR before the owner-run package.

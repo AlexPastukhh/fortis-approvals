@@ -29,6 +29,8 @@ tests=(
   test_sonar_review_scenario.py
   test_r6_repo_sonar_read_to_approvals_tls_offline.py
   test_r7_unified_candidate.py
+  test_github_pilot.py
+  test_github_pilot_package.py
   test_r7_runtime_endpoints.py
   test_review_state_restore.py
   test_review_runtime_contract.py

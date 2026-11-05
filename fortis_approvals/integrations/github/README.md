@@ -50,3 +50,48 @@ The planned credential is a separate Gateway-only Fine-grained PAT or GitHub App
 **Not provisioned:** no volume has been created, no token has been written, no Compose mount has been added, and no running Gateway has access to GitHub. Never copy the existing Fortis Repo Git credential into this volume. Never put this token in Repo, source control, environment variables, request bodies, command arguments or logs.
 
 The adapter and token loader are source-ready. The next work is the thin opt-in runtime/policy connection and one isolated pilot package; the live Gateway remains Sonar-only until that owner-run pilot is provisioned. Preserve the prior review state/container as the pilot return path. This pilot does not depend on first switching Production.
+
+## Isolated pilot entrypoint (source candidate)
+
+The minimal runtime is opt-in via FORTIS_GITHUB_PILOT=1, exact public owner and
+repository configuration and a branch prefix (default fortis-e2e/). It is
+restricted to owner/machine endpoints 19203/19204. Default startup stays
+GitHub-disabled and reads no GitHub credential. The existing shared machine
+actor gets only get_repository/list_branches ALLOW and create_branch ASK.
+Owner approval requires strong WebAuthn; the same Core, portal and queue are
+used. Other actor grants and Sonar policy versions are preserved.
+
+- Runtime scope and wiring: pilot.py.
+- Resumable typed Repo scenario: repo_client/pilot_scenario.py.
+- Owner-run package entrypoint: ../../deploy/Run-GitHub-Pilot-E2E.ps1.
+- Private clone/provision/admission/receipt helpers: ../../deploy/github_pilot_helpers.py.
+
+The entrypoint is part of the full manifested source package produced by
+scripts/package-review-source.py after source approval/merge. Pass the exact
+approved source commit. Start requires an owner-selected test repository and
+an explicit acknowledgement that creating pilot branches is safe there. The
+separate credential is entered through a hidden console prompt and private
+stdin, written only into a unique Gateway-only volume; no token is returned.
+
+Start retains the existing review container, clones its stopped persistent
+state into a fresh pilot volume, verifies byte-for-byte preservation, starts
+one isolated pilot image on 19203/19204, and runs the scenario. The production
+Gateway is only baseline-inspected; it is never stopped or mounted. The Repo
+primary checkout must be clean at the approved source commit before calls.
+
+The console prints the request ID and expected REJECT or APPROVE decision;
+perform it in the existing owner portal/device. A 15-minute wait timeout or
+scenario transport error preserves the same run record. Resume uses saved
+request IDs. UNCERTAIN requires reconciliation and is never retried as a new
+proposal. Setup failures attempt return to the retained review; later scenario
+pauses leave the pilot available for inspection/resume. Rollback explicitly
+stops only the admitted pilot and starts the original review after checking
+its preserved data. Pilot volumes, results and created GitHub branches are
+retained; rollback does not undo an external branch creation.
+
+Use the same entrypoint with Mode Start, Resume or Rollback, an exact
+ExpectedSourceCommit, and the printed record.json path for Resume/Rollback.
+The record is owner/SYSTEM/Administrators-only under LocalAppData Fortis
+GitHubPilot. Success requires typed branch readback, replay, local durable
+receipt plus owner-approved Core state, and a Sonar GET regression; marker:
+FORTIS_GITHUB_PILOT_LIVE_E2E_PASS. Offline tests are not that live marker.
