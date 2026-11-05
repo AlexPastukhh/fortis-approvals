@@ -43,3 +43,18 @@ For the source-level flow and state machine, use [`fortis_approvals/README.md`](
 The GitHub integration is not yet registered, and the active Gateway has no GitHub upstream credential. The target is a separate external Docker volume named `fortis-github-token`, mounted read-only at `/run/github-token`; a Fine-grained PAT would be read from `/run/github-token/token`. The volume has not been created, populated or attached.
 
 Do not edit or deploy the preserved `compose-r7-p2-20261103.yaml` merely to add this mount. It is a dated artifact reference, not confirmed as the maintained live Compose source. First identify the actual active Compose source and build a reviewed release candidate. Keep the existing Sonar, state, identity and machine-grant volumes unchanged. See [GitHub onboarding plan](../../docs/INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
+
+## Isolated modularized review candidate (2026-11-05)
+
+The modularized image is being validated beside Production, not cut over. Use only these dated review artifacts:
+
+- `Build-Modularized-Review-Origin-20261105.ps1` — image-only build from the clean review worktree; starts no containers and changes no volumes.
+- `Restore-R7-State-Backup-To-ModularizedReview-20261105.ps1` — verifies the protected R7 backup and restores it into the new external volume `fortis-r7-state-review-20261105`. It changes only the cloned `owner.sqlite` origin from `http://localhost:19103` to `http://localhost:19203`; RP ID remains `localhost`, and the production backup is mounted read-only.
+- `compose-modularized-review-20261105.yaml` and `Start-Modularized-Review-20261105.ps1` — run the candidate on loopback ports 19203/19204, with the restored review-state volume RW and the existing identity, grant and Sonar-token volumes RO.
+- `Test-Modularized-Review-Sonar-GET-20261105.ps1` — sends one typed, read-only Quality Gate request from the existing Repo container to the review machine ingress on 19204; it does not perform a Sonar mutation.
+
+The candidate image listens internally on 19103/19104. Its configured public Owner Origin and machine Host must match the host-published review ports; otherwise the Owner Portal rejects browser Host/Origin checks. Production remains on 19103/19104 with its original state volume. Do not remove, rename, stop or replace Production as part of this review sequence. The review Compose file is not a production deployment file.
+
+The restored owner credential is expected to remain usable because the RP ID stays `localhost`; test login in a separate InPrivate browser window to avoid the localhost cookie being shared between ports. Do not enroll another credential unless login with the restored credential has been tested and a separate device is intentionally being added.
+
+This review sequence does not activate GitHub: the GitHub adapter remains unregistered and no GitHub token volume is mounted. It also does not authorize a live Sonar mutation. Validate portal login/history and safe READ/ASK/Reject paths first; any Sonar Approve test must be separately authorized against an explicitly selected issue.

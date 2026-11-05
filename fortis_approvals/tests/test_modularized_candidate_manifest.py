@@ -73,3 +73,27 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0,
                              completed.stdout + "\n" + completed.stderr)
             self.assertIn("MODULARIZED_GATEWAY_IMPORTS_PASS", completed.stdout)
+
+    def test_review_compose_uses_dedicated_state_and_alternate_origins(self):
+        deploy = ROOT / "fortis_approvals/deploy"
+        compose = (deploy / "compose-modularized-review-20261105.yaml").read_text()
+        self.assertIn("127.0.0.1:19203:19103", compose)
+        self.assertIn("127.0.0.1:19204:19104", compose)
+        self.assertIn('FORTIS_OWNER_ORIGIN: "http://localhost:19203"', compose)
+        self.assertIn('FORTIS_MACHINE_HOST: "host.docker.internal:19204"', compose)
+        self.assertIn("name: fortis-r7-state-review-20261105", compose)
+        self.assertNotRegex(compose, r"name:\s+fortis-r7-state(?:\r?\n|$)")
+        self.assertIn("read_only: true", compose)
+
+    def test_review_restore_and_start_scripts_keep_production_separate(self):
+        deploy = ROOT / "fortis_approvals/deploy"
+        restore = (deploy / "Restore-R7-State-Backup-To-ModularizedReview-20261105.ps1").read_text()
+        start = (deploy / "Start-Modularized-Review-20261105.ps1").read_text()
+        self.assertIn("fortis-r7-state-review-20261105", restore)
+        self.assertIn("target_origin = \"http://localhost:19203\"", restore)
+        self.assertIn("target=/backup,readonly", restore)
+        self.assertIn("fortis-r7-state-review-20261105", start)
+        self.assertIn("PRODUCTION_IDENTITY_OR_HEALTH_MISMATCH", start)
+        self.assertIn("PRODUCTION_CUTOVER=NOT_PERFORMED", start)
+        self.assertNotIn("docker.exe stop", start)
+        self.assertNotIn("docker.exe rm", start)

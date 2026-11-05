@@ -29,6 +29,25 @@ OWNER_ORIGIN = 'http://localhost:19103'
 MACHINE_HOST = 'host.docker.internal:19104'
 
 
+def runtime_endpoints():
+    """Return validated public Host/Origin values for the fixed internal ports.
+
+    Side-by-side review containers publish 19103/19104 on alternate host
+    ports. The browser Origin and machine Host must match those host ports,
+    while the processes continue listening on the image's fixed ports.
+    """
+    owner_origin = os.environ.get('FORTIS_OWNER_ORIGIN', OWNER_ORIGIN)
+    machine_host = os.environ.get('FORTIS_MACHINE_HOST', MACHINE_HOST)
+    owner_match = re.fullmatch(r'http://localhost:([0-9]{4,5})', owner_origin)
+    machine_match = re.fullmatch(
+        r'host\.docker\.internal:([0-9]{4,5})', machine_host)
+    if (not owner_match or not 1024 <= int(owner_match.group(1)) <= 65535):
+        raise RuntimeError('R7_OWNER_ORIGIN_INVALID')
+    if (not machine_match or not 1024 <= int(machine_match.group(1)) <= 65535):
+        raise RuntimeError('R7_MACHINE_HOST_INVALID')
+    return owner_origin, machine_host
+
+
 def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
                    bind_host='0.0.0.0'):
@@ -44,8 +63,9 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
     if len(sonar_token) < 12 or sonar_token == grant:
         raise RuntimeError('R7_SONAR_TOKEN_INVALID')
     transport = SonarHTTPTransport(region=region,bearer_token=sonar_token)
+    owner_origin, machine_host = runtime_endpoints()
     _,_,portal,ingress = build_r7_unified_candidate(
-        state=state,owner_origin=OWNER_ORIGIN,ingress_host=MACHINE_HOST,
+        state=state,owner_origin=owner_origin,ingress_host=machine_host,
         ingress_grant=grant,sonar_transport=transport,
         organizations=organizations,region=region,
         project_keys=(project_key,))
@@ -75,10 +95,13 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
     return owner,machine
 
 
-def health(*,cert_path):
+def health(*,cert_path,owner_origin=None,machine_host=None):
+    if owner_origin is None or machine_host is None:
+        owner_origin, machine_host = runtime_endpoints()
+    from urllib.parse import urlsplit
     request = Request(
         'http://127.0.0.1:%d/' % OWNER_PORT,
-        headers={'Host':'localhost:%d' % OWNER_PORT})
+        headers={'Host':urlsplit(owner_origin).netloc})
     with urlopen(request,timeout=2) as response:
         if response.status != 200:
             raise RuntimeError('R7_OWNER_NOT_READY')
@@ -90,7 +113,7 @@ def health(*,cert_path):
             tls.sendall((
                 'GET /no-such-machine-route HTTP/1.1\r\n'
                 'Host: %s\r\nConnection: close\r\n\r\n'
-                % MACHINE_HOST).encode('ascii'))
+                % machine_host).encode('ascii'))
             if not tls.recv(128).startswith(b'HTTP/1.0 404 '):
                 raise RuntimeError('R7_MACHINE_NOT_READY')
 
@@ -104,7 +127,9 @@ def main():
         print('FORTIS_R7_SONAR_POST=OWNER_WEBAUTHN_APPROVAL_REQUIRED')
         return
     if command==['health']:
-        health(cert_path='/run/r7-identity/server.crt')
+        owner_origin, machine_host = runtime_endpoints()
+        health(cert_path='/run/r7-identity/server.crt',
+               owner_origin=owner_origin,machine_host=machine_host)
         return
     if command:
         raise SystemExit('Usage: r7_unified_server [preflight-imports|health]')
@@ -113,6 +138,7 @@ def main():
     region=os.environ.get('FORTIS_SONAR_REGION','eu')
     organizations=_organizations(os.environ.get('FORTIS_SONAR_ORGANIZATIONS',''))
     project_key=os.environ.get('FORTIS_SONAR_PROJECT_KEY','')
+    owner_origin, machine_host = runtime_endpoints()
     owner,machine=create_servers(
         state='/state/private',
         grant_path='/run/r7-grant/grant',
@@ -125,8 +151,8 @@ def main():
         Thread(target=owner.serve_forever,daemon=True,
                name='r7-owner-portal').start()
         print('FORTIS_R7_READ_ASK_EXECUTE_CANDIDATE_READY '
-              'owner=http://localhost:19103 '
-              'machine=https://host.docker.internal:19104 '
+              'owner='+owner_origin+' '
+              'machine=https://'+machine_host+' '
               'sonar_write=OWNER_WEBAUTHN_APPROVAL_REQUIRED',flush=True)
         machine.serve_forever()
     finally:

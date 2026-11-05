@@ -216,6 +216,25 @@ class RepoSonarToolsTransportTests(unittest.TestCase):
         self.assertEqual(forwarded, [])
 
 
+    def test_review_https_endpoint_uses_matching_host_header(self):
+        def response(request):
+            request_id = json.loads(request.data)["requestId"]
+            return json.dumps({
+                "requestId": request_id,
+                "service": "sonarcloud",
+                "operation": "get_quality_gate",
+                "data": {"status": "OK"},
+            }).encode()
+
+        opener = _Opener(response)
+        with (patch.object(
+                bridge, "ENDPOINT", "https://host.docker.internal:19204"),
+              patch.object(bridge, "ALLOW_TEST_ENDPOINTS", True)):
+            result = self.invoke(opener)
+        self.assertEqual(result["data"]["status"], "OK")
+        self.assertEqual(opener.request.get_header("Host"),
+                         "host.docker.internal:19204")
+
     def test_all_four_read_tools_send_only_typed_read_envelopes(self):
         cases = (
             ("sonar.list_projects", "list_projects", "trusted_org", None),

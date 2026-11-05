@@ -129,7 +129,7 @@ class GatewayTransport:
                 request.ProxyHandler({}), _NoRedirectHandler())
         raw = (json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
                if payload is not None else None)
-        host_header = ("host.docker.internal:19104" if parsed.hostname == "host.docker.internal" else parsed.netloc)
+        host_header = parsed.netloc
         headers = {"Host": host_header, "Accept": "application/json",
                    "Authorization": "Bearer " + grant}
         if raw is not None:
