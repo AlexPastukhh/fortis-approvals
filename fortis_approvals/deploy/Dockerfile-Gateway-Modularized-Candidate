@@ -1,0 +1,21 @@
+# SOURCE CANDIDATE ONLY. Not built, approved, or deployed.
+# Preserves the current Sonar R7 runtime while packaging provider integrations.
+# GitHub adapter is source-present but NOT registered, granted, or credentialed.
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /opt/fortis
+COPY fortis_approvals/requirements-owner.txt /opt/requirements-owner.txt
+RUN python -m pip install --disable-pip-version-check --no-cache-dir -r /opt/requirements-owner.txt && \
+    groupadd -g 10001 fortis && \
+    useradd --no-log-init -u 10001 -g 10001 -M -s /usr/sbin/nologin fortis
+RUN mkdir -p /opt/fortis/fortis_approvals/static /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway /opt/fortis/fortis_approvals/integrations/github/gateway /state /run/r7-identity /run/r7-grant /run/r7-sonar-token
+COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/owner_auth.py fortis_approvals/owner_portal.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py fortis_approvals/r5_read_candidate.py fortis_approvals/r5_read_server.py fortis_approvals/r7_unified_candidate.py fortis_approvals/r7_unified_server.py fortis_approvals/a3_server.py fortis_approvals/server.py /opt/fortis/fortis_approvals/
+COPY fortis_approvals/integrations/__init__.py /opt/fortis/fortis_approvals/integrations/__init__.py
+COPY fortis_approvals/integrations/sonarcloud/__init__.py fortis_approvals/integrations/sonarcloud/contract.py /opt/fortis/fortis_approvals/integrations/sonarcloud/
+COPY fortis_approvals/integrations/sonarcloud/gateway/ /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway/
+COPY fortis_approvals/integrations/github/__init__.py fortis_approvals/integrations/github/contract.py fortis_approvals/integrations/github/registration.py /opt/fortis/fortis_approvals/integrations/github/
+COPY fortis_approvals/integrations/github/gateway/ /opt/fortis/fortis_approvals/integrations/github/gateway/
+COPY fortis_approvals/static /opt/fortis/fortis_approvals/static
+USER 10001:10001
+EXPOSE 19103 19104
+CMD ["python","-m","fortis_approvals.r7_unified_server"]
