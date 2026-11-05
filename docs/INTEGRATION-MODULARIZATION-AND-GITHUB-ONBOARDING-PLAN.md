@@ -199,3 +199,14 @@ SHA over the Gateway, plus ordinary Sonar readback. Do not count connector
 CI reads as Gateway acceptance. Production cutover and retirement of legacy
 direct Git credentials stay deferred until their own required workflows are
 covered and the owner authorizes the concrete rollout.
+
+
+## M3 source checkpoint — live Gateway CI read pending
+
+The CI opt-in, typed Repo read scenario and existing owner-run update/return
+entrypoint now support the accepted PR/head/run selection. New tests cover
+real TLS reads, explicit opt-in/default denial, preserved mutation restrictions,
+wrong run/head/event, pending/failure reporting and pagination. Windows tests
+cover accepted M2 admission and return to its retained state. Review full CI,
+merge source and execute one owner-run CIRead package after Actions read is
+enabled. Do not repeat M1/M2 mutations or count this source work as live M3 PASS.
