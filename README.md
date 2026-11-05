@@ -16,6 +16,7 @@
 - [Integration modularization and GitHub onboarding plan](docs/INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md)
 - [Latest migrated Sonar GET evidence](fortis_approvals/evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md)
 - [Current isolated review evidence — image, restore, WebAuthn, live GET and offline tests](fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md)
+- [Proposed Production profile and release/rollback execution contract](docs/MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md)
 - [Original extraction SHA-256 manifest](docs/SOURCE-MANIFEST.sha256)
 - [Current working-copy SHA-256 manifest](docs/CURRENT-SOURCE-MANIFEST.sha256)
 - [Full modularized source manifest](docs/MODULARIZED-SOURCE-MANIFEST.sha256)

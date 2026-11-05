@@ -36,6 +36,7 @@ tests=(
   test_smoke_locked_backup.py
   test_review_repo_get.py
   test_modularized_candidate_manifest.py
+  test_release_storage_source.py
 )
 for test in "${tests[@]}"; do
   echo "=== $test ==="

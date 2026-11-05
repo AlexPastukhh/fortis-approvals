@@ -170,3 +170,22 @@ historical Compose file. Matching bytes still do not select a maintained
 future deployment source or authorize any lifecycle operation. Actual host
 follow-up results remain pending. Final backup, exact replacement and
 rollback mapping, and separate release approval remain required.
+
+## Narrow host follow-up completed
+
+The owner-supplied follow-up completed with exit code 0,
+FORTIS_CUTOVER_METADATA_FOLLOWUP_PASS and all 12 PowerShell self-checks.
+The five inspected local volumes have empty driver options. Both containers
+remain healthy with zero actual host bind mounts, and their public profiles
+were stable. Both exact health command forms were recognized. The identified
+historical Compose file bytes match Git by SHA-256. Detailed host observations
+remain outside Git.
+
+The [release execution contract](MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md)
+and versioned Production profile now spell out replacement settings, final
+backup requirements, retention names and conditional rollback mapping. A
+source-equivalence gate verifies the limited persistence-related differences
+against the immutable extraction. It does not prove actual image hashes or
+live database schemas. Executable lifecycle tooling and final host gates
+remain separate subsequent work; this is a source-review checkpoint, not
+Production GO.
