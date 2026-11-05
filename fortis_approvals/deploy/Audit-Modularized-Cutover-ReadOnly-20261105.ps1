@@ -1,5 +1,5 @@
 # Windows PowerShell 5.1. Docker metadata reads only; no database or credential access.
-param([string]$ProductionLaunchFile = '')
+param([string]$ProductionLaunchFile = '', [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 
 function Read-DockerJson {
@@ -8,13 +8,25 @@ function Read-DockerJson {
     if ($LASTEXITCODE -ne 0) { throw 'DOCKER_METADATA_READ_FAILED' }
     return (($Raw -join "`n") | ConvertFrom-Json)
 }
+function Public-PropertyNames {
+    param($Value)
+    if ($null -eq $Value) { return }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($Key in $Value.Keys) { if ($null -ne $Key) { [string]$Key } }
+        return
+    }
+    foreach ($Property in $Value.PSObject.Properties) {
+        if ($null -ne $Property -and $null -ne $Property.Name) { $Property.Name }
+    }
+}
 function Public-Command {
     param($Value)
     if ($null -eq $Value) { return [ordered]@{ recognized=$true; argv=$null } }
     $Encoded = ConvertTo-Json -InputObject @($Value) -Compress
     $Known = @('[]',
         '["python","-m","fortis_approvals.r7_unified_server"]',
-        '["CMD","python","-m","fortis_approvals.r7_unified_server","health"]')
+        '["CMD","python","-m","fortis_approvals.r7_unified_server","health"]',
+        '["CMD-SHELL","python -m fortis_approvals.r7_unified_server health"]')
     if ($Known -ccontains $Encoded) {
         return [ordered]@{ recognized=$true; argv=@($Value) }
     }
@@ -75,15 +87,61 @@ function Public-Profile {
             PidsLimit,Memory,MemorySwap,MemoryReservation,NanoCpus,CpuShares,
             CpuPeriod,CpuQuota,CpusetCpus,CpusetMems,Ulimits,ShmSize,ExtraHosts,
             Dns,DnsOptions,DnsSearch,Devices,DeviceRequests,VolumesFrom)
-        hasHostBinds=(@($C.HostConfig.Binds | Where-Object { $null -ne $_ }).Count -gt 0)
+        hasLegacyBindSpecifications=(@($C.HostConfig.Binds | Where-Object { $null -ne $_ }).Count -gt 0)
+        actualHostBindCount=@($C.Mounts | Where-Object { $_.Type -ceq 'bind' }).Count
         logDriver=$C.HostConfig.LogConfig.Type
-        logOptionNames=@($C.HostConfig.LogConfig.Config.PSObject.Properties | ForEach-Object { $_.Name })
+        logOptionNames=@(Public-PropertyNames $C.HostConfig.LogConfig.Config)
         networks=@($C.NetworkSettings.Networks.PSObject.Properties | ForEach-Object {
             [ordered]@{ name=$_.Name; networkId=$_.Value.NetworkID
                 ipAddress=$_.Value.IPAddress; gateway=$_.Value.Gateway
                 aliases=$_.Value.Aliases }
         })
     }
+}
+
+if ($SelfTest) {
+    $Cases = 0
+    foreach ($Value in @($null, [pscustomobject]@{}, (ConvertFrom-Json '{}'), @{})) {
+        if (@(Public-PropertyNames $Value).Count -ne 0) { throw 'EMPTY_OPTIONS_REGRESSION' }
+        $Cases++
+    }
+    foreach ($Value in @([pscustomobject]@{ device='DO_NOT_OUTPUT_VALUE' },
+        @{ device='DO_NOT_OUTPUT_VALUE' }, (ConvertFrom-Json '{"device":"DO_NOT_OUTPUT_VALUE"}'))) {
+        $Names = @(Public-PropertyNames $Value)
+        if ($Names.Count -ne 1 -or $Names[0] -cne 'device') { throw 'OPTION_NAMES_REGRESSION' }
+        if ((ConvertTo-Json -InputObject $Names) -match 'DO_NOT_OUTPUT_VALUE') {
+            throw 'OPTION_VALUE_DISCLOSED'
+        }
+        $Cases++
+    }
+    foreach ($Command in @(
+        @('CMD','python','-m','fortis_approvals.r7_unified_server','health'),
+        @('CMD-SHELL','python -m fortis_approvals.r7_unified_server health'))) {
+        if (-not (Public-Command $Command).recognized) { throw 'KNOWN_HEALTH_COMMAND_REJECTED' }
+        $Cases++
+    }
+    $Unknown = Public-Command @('CMD-SHELL','DO_NOT_OUTPUT_UNKNOWN_COMMAND')
+    if ($Unknown.recognized -or (ConvertTo-Json $Unknown) -match 'DO_NOT_OUTPUT') {
+        throw 'UNKNOWN_COMMAND_DISCLOSED'
+    }
+    $Cases++
+    $Fake = [pscustomobject]@{
+        Config=[pscustomobject]@{ Env=@(); Labels=[pscustomobject]@{} }
+        State=[pscustomobject]@{}
+        HostConfig=[pscustomobject]@{ Binds=@('fortis-r7-state:/state:rw') }
+        NetworkSettings=[pscustomobject]@{ Networks=[pscustomobject]@{} }
+        Mounts=@([pscustomobject]@{ Type='volume' })
+    }
+    $Projected = Public-Profile $Fake
+    if (-not $Projected.hasLegacyBindSpecifications -or $Projected.actualHostBindCount -ne 0) {
+        throw 'NAMED_VOLUME_BIND_SPECIFICATION_MISCLASSIFIED'
+    }
+    $Cases++
+    $Fake.Mounts=@([pscustomobject]@{ Type='bind' })
+    if ((Public-Profile $Fake).actualHostBindCount -ne 1) { throw 'HOST_BIND_MISCLASSIFIED' }
+    $Cases++
+    Write-Output ('FORTIS_AUDIT_PROJECTION_SELFTEST_PASS cases=' + $Cases)
+    return
 }
 
 $Engine = (& docker.exe info --format '{{.OSType}}' | Out-String).Trim()
@@ -127,7 +185,7 @@ $VolumeNames = @(@($Production.Mounts) + @($Review.Mounts) |
 $Volumes = @()
 foreach ($Name in $VolumeNames) {
     $V = @(Read-DockerJson -Arguments @('volume','inspect',$Name))[0]
-    $OptionNames = @($V.Options.PSObject.Properties | ForEach-Object { $_.Name })
+    $OptionNames = @(Public-PropertyNames $V.Options)
     $Volumes += [ordered]@{ name=$V.Name; driver=$V.Driver; scope=$V.Scope
         mountpoint=$V.Mountpoint; optionNames=$OptionNames
         optionsVerifiedEmpty=($OptionNames.Count -eq 0) }

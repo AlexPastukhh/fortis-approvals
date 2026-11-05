@@ -142,3 +142,31 @@ container lifecycle operation, Compose operation or upstream call is included.
 The read-only inventory does not require a production maintenance window.
 Windows PowerShell parsing and actual host observations remain pending the
 owner-run step; Fortis Repo has neither Docker CLI nor Engine socket access.
+
+## Metadata inventory follow-up
+
+The owner supplied a complete metadata inventory with the completion marker
+and exit code 0. The selected containers were healthy, their public profiles
+were stable, and the mount-based scan found no additional Production state
+user. Detailed host observations remain in the owner-provided local report.
+
+A PowerShell projection bug affected the volume option fields: null properties
+were emitted as a one-element array containing null. The empty-options result
+therefore did not establish actual volume driver configuration. The old
+hasHostBinds field also described legacy bind specification entries, which
+can reference named volumes; actual mount types require a separate count.
+The command allowlist omitted Docker's known CMD-SHELL health form.
+
+The corrected audit has an offline -SelfTest path covering null/empty/nonempty
+options, withheld unknown command values, safe health commands and the
+named-volume versus host-bind distinction. Source CI parses both audit
+scripts and runs these regression fixtures in Windows PowerShell without
+Docker or upstream access.
+
+The narrow Confirm-Modularized-Cutover-Metadata-20261105.ps1 follow-up reads
+volume metadata and the recognized health command, and accepts an explicit
+owner-selected ProductionLaunchFile path for SHA-256 comparison with the Git
+historical Compose file. Matching bytes still do not select a maintained
+future deployment source or authorize any lifecycle operation. Actual host
+follow-up results remain pending. Final backup, exact replacement and
+rollback mapping, and separate release approval remain required.

@@ -51,3 +51,28 @@ jobs:
           else
             git diff-tree --check --root --no-commit-id -r HEAD
           fi
+
+  audit-projections:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse audit scripts and check projections in Windows PowerShell
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'fortis_approvals/deploy/Audit-Modularized-Cutover-ReadOnly-20261105.ps1',
+            'fortis_approvals/deploy/Confirm-Modularized-Cutover-Metadata-20261105.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file), [ref]$tokens, [ref]$errors)
+            if ($errors) { throw ($errors | Out-String) }
+          }
+          & $files[0] -SelfTest
