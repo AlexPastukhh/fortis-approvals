@@ -1,71 +1,35 @@
 $ErrorActionPreference = 'Stop'
-
 $GatewayName = 'fortis-gateway-modularized-review-20261105'
 $RepoContainer = 'fortis-repo-test'
-$CandidateImage = 'fortis-approvals-gateway:modularized-review-origin-20261105'
-
-$GatewayRaw = (& docker.exe inspect $GatewayName | Out-String)
+$CandidateImage = 'sha256:a6d3cbc645903fc3a36698868790ea1e191d73d1e9d5c01f7cecc97697c56e84'
+$Raw = (& docker.exe inspect --type container $GatewayName | Out-String)
 if ($LASTEXITCODE -ne 0) { throw 'REVIEW_GATEWAY_INSPECT_FAILED' }
-$Gateway = (ConvertFrom-Json $GatewayRaw)[0]
-if ($Gateway.State.Status -ne 'running' -or
-    $Gateway.State.Health.Status -ne 'healthy' -or
-    $Gateway.Config.Image -cne $CandidateImage) {
-    throw 'REVIEW_GATEWAY_NOT_HEALTHY_OR_WRONG_IMAGE'
+$Gateway = (ConvertFrom-Json $Raw)[0]
+if ($Gateway.Image -cne $CandidateImage -or $Gateway.State.Status -cne 'running' -or
+    $Gateway.State.Health.Status -cne 'healthy') { throw 'REVIEW_GATEWAY_IDENTITY_OR_HEALTH_MISMATCH' }
+if (@($Gateway.Config.Env | Where-Object { $_ -ceq 'FORTIS_MACHINE_HOST=host.docker.internal:19204' }).Count -ne 1 -or
+    @($Gateway.HostConfig.PortBindings.'19104/tcp').Count -ne 1 -or
+    $Gateway.HostConfig.PortBindings.'19104/tcp'[0].HostIp -cne '127.0.0.1' -or
+    $Gateway.HostConfig.PortBindings.'19104/tcp'[0].HostPort -cne '19204') {
+    throw 'REVIEW_MACHINE_ENDPOINT_MISMATCH'
 }
-
-$RepoRaw = (& docker.exe inspect $RepoContainer | Out-String)
-if ($LASTEXITCODE -ne 0) { throw 'REPO_CONTAINER_INSPECT_FAILED' }
-$Repo = (ConvertFrom-Json $RepoRaw)[0]
-if ($Repo.State.Status -ne 'running') { throw 'REPO_CONTAINER_NOT_RUNNING' }
-
-$ClientMount = @($Repo.Mounts | Where-Object {
-    $_.Type -eq 'volume' -and $_.Name -eq 'fortis-r7-client' -and
-    $_.Destination -eq '/run/fortis-client' -and -not $_.RW
-})
-if ($ClientMount.Count -ne 1) {
-    throw 'REPO_MACHINE_CREDENTIAL_MOUNT_INVALID'
-}
-
-$PythonSource = @'
-import sys
-sys.path.insert(0, "/workspace/repo/Worktrees/fortis-approvals/candidate-origin-overrides-20261105")
-
-from fortis_approvals.integrations.sonarcloud.repo_client import client
-
-client.ENDPOINT = "https://host.docker.internal:19204"
-client.ALLOW_TEST_ENDPOINTS = True
-
-result = client.call(
-    "sonar.get_quality_gate",
-    target="AlexPastukhh_obs-planning-docs",
-)
-if (result.get("service") != "sonarcloud" or
-        result.get("operation") != "get_quality_gate" or
-        type(result.get("data")) is not dict):
-    raise SystemExit("REVIEW_SONAR_GET_RESPONSE_INVALID")
-
-print("FORTIS_REVIEW_MACHINE_TLS_GET_PASS")
-print("SERVICE=sonarcloud")
-print("OPERATION=get_quality_gate")
-print("UPSTREAM_MUTATION=NO")
-'@
-
-$EncodedPython = [Convert]::ToBase64String(
-    [Text.Encoding]::UTF8.GetBytes($PythonSource)
-)
-$PythonCommand = "import base64;exec(compile(base64.b64decode('$EncodedPython'),'<review-sonar-get>','exec'))"
-
-$PreviousPreference = $ErrorActionPreference
+$Raw = (& docker.exe inspect --type container $RepoContainer | Out-String)
+if ($LASTEXITCODE -ne 0) { throw 'REPO_INSPECT_FAILED' }
+$Repo = (ConvertFrom-Json $Raw)[0]
+if ($Repo.State.Status -cne 'running' -or $Repo.Config.User -cne '1000:1000') { throw 'REPO_IDENTITY_MISMATCH' }
+$Mount = @($Repo.Mounts | Where-Object { $_.Type -ceq 'volume' -and $_.Name -ceq 'fortis-r7-client' -and
+    $_.Destination -ceq '/run/fortis-client' -and -not $_.RW })
+if ($Mount.Count -ne 1) { throw 'REPO_CLIENT_VOLUME_MISMATCH' }
+$Source = Get-Content (Join-Path $PSScriptRoot 'review_repo_get.py') -Raw
+$Hashes = Get-Content (Join-Path $PSScriptRoot 'review-repo-source-hashes-20261105.json') -Raw
+$Source64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Source))
+$Hashes64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Hashes))
+$Code = "import base64,json;ns={};exec(compile(base64.b64decode('$Source64'),'<review-repo-get>','exec'),ns);ns['run'](json.loads(base64.b64decode('$Hashes64')))"
+$Previous = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $Output = @(& docker.exe exec $RepoContainer python -c $PythonCommand 2>&1)
+    & docker.exe exec --user 1000:1000 $RepoContainer python3 -I -B -c $Code
     $ExitCode = $LASTEXITCODE
-}
-finally {
-    $ErrorActionPreference = $PreviousPreference
-}
-$Output | ForEach-Object { Write-Host ([string]$_) }
+} finally { $ErrorActionPreference = $Previous }
 if ($ExitCode -ne 0) { throw 'REVIEW_SONAR_GET_FAILED' }
-
-Write-Host 'PRODUCTION_GATEWAY_NOT_TOUCHED'
 Write-Host 'SONAR_WRITE=NOT_PERFORMED'

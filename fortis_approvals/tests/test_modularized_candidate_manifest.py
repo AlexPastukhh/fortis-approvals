@@ -65,7 +65,8 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                 "import GitHubAdapter; "
                 "from fortis_approvals.integrations.github.gateway.transport "
                 "import GitHubHTTPTransport; "
-                "print('MODULARIZED_GATEWAY_IMPORTS_PASS')"
+                "print('MODULARIZED_GATEWAY_IMPORTS_PASS'); "
+                + "exec(" + repr((ROOT / "fortis_approvals/deploy/image_offline_smoke.py").read_text()) + ")"
             )
             completed = subprocess.run(
                 [sys.executable, "-I", "-B", "-c", code],
@@ -90,7 +91,8 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
         restore = (deploy / "Restore-R7-State-Backup-To-ModularizedReview-20261105.ps1").read_text()
         start = (deploy / "Start-Modularized-Review-20261105.ps1").read_text()
         self.assertIn("fortis-r7-state-review-20261105", restore)
-        self.assertIn("target_origin = \"http://localhost:19203\"", restore)
+        helper = (deploy / "restore_review_state.py").read_text()
+        self.assertIn("TARGET_ORIGIN = 'http://localhost:19203'", helper)
         self.assertIn("target=/backup,readonly", restore)
         self.assertIn("fortis-r7-state-review-20261105", start)
         self.assertIn("PRODUCTION_IDENTITY_OR_HEALTH_MISMATCH", start)

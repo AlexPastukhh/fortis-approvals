@@ -27,6 +27,36 @@ from test_r5_lifecycle_offline import create_test_identity
 class R7RealTLSCandidateE2ETests(R6CompleteOfflineChainTests):
     """Every inherited R6 test now routes through R7 source composition."""
 
+    def test_review_machine_host_accepts_19204_and_rejects_production_host(self):
+        import socket
+        from fortis_approvals import repo_sonar_tools as bridge
+        state = self.folder / 'alternate-port-state'
+        state.mkdir(mode=0o700)
+        _, _, _, ingress = build_r7_unified_candidate(
+            state=state, owner_origin='http://localhost:19203',
+            ingress_host='host.docker.internal:19204', ingress_grant=CLIENT_GRANT,
+            sonar_transport=self.fake, organizations=(ORG,))
+        self.machine.set_app(ingress)
+        grant_file = self.folder / 'review-grant'
+        grant_file.write_text(CLIENT_GRANT + '\n')
+        grant_file.chmod(0o600)
+        original_socket = socket.create_connection
+        def connect(address, timeout=None, source_address=None):
+            if address[0] == 'host.docker.internal':
+                address = ('127.0.0.1', self.machine.server_port)
+            return original_socket(address, timeout=timeout, source_address=source_address)
+        with (patch.object(bridge, 'ALLOW_TEST_ENDPOINTS', True),
+              patch.object(bridge, 'ENDPOINT', 'https://host.docker.internal:19204'),
+              patch('socket.create_connection', side_effect=connect)):
+            result = bridge.call('sonar.get_quality_gate', target=PROJECT,
+                                 grant_path=grant_file, certificate_path=self.cert)
+            self.assertEqual(result['operation'], 'get_quality_gate')
+            with patch.object(bridge, 'ENDPOINT', 'https://host.docker.internal:19104'):
+                with self.assertRaisesRegex(Denied, 'FORTIS_HTTP_403'):
+                    bridge.call('sonar.get_quality_gate', target=PROJECT,
+                                grant_path=grant_file, certificate_path=self.cert)
+        self.assertEqual(self.fake.posts, 0)
+
     def test_repo_typed_bridge_real_tls_read_ask_status_without_service_token(self):
         # A real HTTPS call from the proposed Repo client to the R7 listener.
         # The socket destination is redirected to the ephemeral TEST listener,
@@ -43,8 +73,7 @@ class R7RealTLSCandidateE2ETests(R6CompleteOfflineChainTests):
             return original_socket(address,timeout=timeout,
                                    source_address=source_address)
         with (patch.object(bridge,'ALLOW_TEST_ENDPOINTS',True),
-              patch.object(bridge,'ENDPOINT','https://host.docker.internal:'+
-                           str(self.machine.server_port)),
+              patch.object(bridge,'ENDPOINT','https://'+HOST),
               patch('socket.create_connection',side_effect=local_test_connect)):
             gate=bridge.call('sonar.get_quality_gate',target=PROJECT,
                              grant_path=grant_file,
@@ -115,8 +144,7 @@ class R7RealTLSCandidateE2ETests(R6CompleteOfflineChainTests):
         )
         request_id=str(uuid.uuid4())
         with (patch.object(bridge,'ALLOW_TEST_ENDPOINTS',True),
-              patch.object(bridge,'ENDPOINT','https://host.docker.internal:'+
-                           str(self.machine.server_port)),
+              patch.object(bridge,'ENDPOINT','https://'+HOST),
               patch('socket.create_connection',side_effect=local_test_connect)):
             for grant_file in (first_file, second_file):
                 for tool, kwargs in read_calls:
@@ -166,8 +194,7 @@ class R7RealTLSCandidateE2ETests(R6CompleteOfflineChainTests):
                                    source_address=source_address)
         request_id=str(uuid.uuid4())
         with (patch.object(bridge,'ALLOW_TEST_ENDPOINTS',True),
-              patch.object(bridge,'ENDPOINT','https://host.docker.internal:'+
-                           str(self.machine.server_port)),
+              patch.object(bridge,'ENDPOINT','https://'+HOST),
               patch('socket.create_connection',side_effect=local_test_connect)):
             pending=bridge.call(
                 'sonar.propose_accept_issue',target=ISSUE,

@@ -2,6 +2,14 @@
 
 > **Status (2026-11-05):** Sonar source moved into its provider package with legacy import shims; shared Repo→Gateway transport extracted; migrated live Sonar GET verified. GitHub typed contract, fixed-origin transport, Gateway adapter, Repo client, registration helper and offline tests are implemented in source. GitHub is NOT registered in live R7, has no actor grants/policy, no token volume and no deployment. Live Sonar runtime and credentials remain unchanged.
 
+The isolated modularized review has since been built and started on
+19203/19204 with separately restored Production backup state. The owner's
+existing WebAuthn login and six History entries are confirmed, and review
+Sonar GET returns OK. The reject-only ASK/owner Reject check passed with the Sonar Issue remaining OPEN. Production
+is unchanged, and this does not activate GitHub. The current image, snapshot,
+backup hashes and 282-test validation are recorded in
+[review evidence](../fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md).
+
 ## Architecture decisions
 
 1. Keep one Fortis Approvals Gateway, one machine ingress, one Core, one Owner Portal and one owner-approval queue.
@@ -110,7 +118,7 @@ For a GitHub App, the same separate-volume principle applies, but the mounted se
 4. **Completed — shared transport/contracts:** extracted the fixed typed Repo→Gateway machine transport; Sonar and GitHub contracts are provider-owned. Extended the candidate ingress/Core payload cap only for bounded GitHub requests.
 5. **Completed in source — GitHub implementation:** fixed-origin REST transport, strict typed contracts, public projections, repository allowlist, compare-and-swap branch/PR/workflow mutations, durable receipts, Repo client and opt-in adapter registration. Registration does not grant or set policy.
 6. **Completed — supported offline suite:** `bash scripts/test-source.sh` passes 245 tests across GitHub (contracts, fixed-origin transport, token-file security, projections, Repo client, default-DENY registration), Sonar package compatibility, Core, Gateway, Owner Portal, Repo ingress/client, Sonar READ/ASK, TLS 1.3 R6/R7 end-to-end and isolated candidate-image imports. `compileall` and shell syntax checks pass. A live Sonar GET on 2026-11-05 returned Quality Gate `OK` after the migration; evidence is recorded under `fortis_approvals/evidence/`. Historical image audit tests remain separate provenance checks.
-7. **Next — owner release review:** the new `Dockerfile-Gateway-Modularized-Candidate` COPY/import context and source manifests are validated; the candidate image has deliberately NOT been built. Obtain a separate owner GO before building an image, then audit its exact image digest and contents. Deployment still requires a distinct release GO; do not use the old R7 Dockerfile/build script after the source layout change.
+7. **Next — owner release review:** the new `Dockerfile-Gateway-Modularized-Candidate` COPY/import context and source manifests are validated; the owner-approved isolated image has been built and validated beside Production, with preserved credential and History. The reject-only functional check passed without changing Sonar. Production deployment still requires a distinct release GO with final backup and rollback; do not use the old R7 Dockerfile/build script after the source layout change.
 8. **Later owner-controlled provisioning/deployment:** after policy decisions, create/populate the separate GitHub volume, attach it read-only, identify the maintained Compose source, deploy only after explicit release GO, and verify Sonar regression plus GitHub read/write/approval E2E.
 9. **Separate future task — legacy Git CLI credential retirement:** only after a Gateway-backed Git workflow is proven, migrate/revoke the shared Repo PAT. Do not remove the current helper as part of this integration source work.
 

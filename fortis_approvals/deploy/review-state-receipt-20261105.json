@@ -1,0 +1,22 @@
+{
+  "credentialsActive": 1,
+  "credentialsUnchanged": true,
+  "events": 18,
+  "historyBytesUnchanged": true,
+  "manifestSha256": "0b783913f0465ab9fb8fc098953ae0b74070cc6f8e854845258390486f7078dd",
+  "ownerCopySha256": "497a6985fb3af7338f4260beac97739ead8cbfe94a724914372421efbf7027cd",
+  "ownerOrigin": "http://localhost:19203",
+  "receipts": 3,
+  "requestStates": {
+    "EXECUTED": 3,
+    "REJECTED": 3
+  },
+  "requests": 6,
+  "rpId": "localhost",
+  "sha256": {
+    ".fortis-r7-unified-v1": "1745c761e1232a6caaf952e136ddb5f2ca4d28849b316475e37c110920a763cc",
+    "approvals.sqlite": "32b6512a7b51c27c6efc052774bc8d7bca51e4cc4fe7120f9f5d3f0860ede11b",
+    "owner.sqlite": "497a6985fb3af7338f4260beac97739ead8cbfe94a724914372421efbf7027cd",
+    "sonar-receipts.sqlite": "097c6d36a1568defe42188fc7c4b20cc170d1f3d43b0d58d6813d45ffacfed68"
+  }
+}

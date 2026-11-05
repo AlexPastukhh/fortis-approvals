@@ -1,6 +1,6 @@
 # Fortis Approvals
 
-> **Owner-approved standalone source repository — 2026-11-03.** This repository is the canonical development source for Fortis Approvals Gateway. It is a verified extraction from `rd-graphs/fortis_approvals`. Local Git was initialized on branch `main`; no commit or remote exists yet. It is not the deployed runtime; R7 is retained only as a historical implementation identifier.
+> **Owner-approved standalone source repository — 2026-11-03.** This repository is the canonical development source for Fortis Approvals Gateway. It is a verified extraction from `rd-graphs/fortis_approvals`. Git source is published to `AlexPastukhh/fortis-approvals`; the bootstrap source is on its own branch and modularized review work uses a separate task worktree. It is not the deployed runtime; R7 is retained only as a historical implementation identifier.
 
 ## Start here
 
@@ -10,11 +10,12 @@
 - [Deployment artifact index](fortis_approvals/deploy/README.md)
 - [Live Sonar E2E evidence](fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261103.md)
 - [Documentation map](docs/README.md)
-- [Latest offline test results — 245 tests](docs/TEST-RESULTS-2026-11-05.md)
+- [Baseline offline test results — 245 tests](docs/TEST-RESULTS-2026-11-05.md)
 - [Historical offline test results](docs/TEST-RESULTS-2026-11-03.md)
 - [Source extraction audit](docs/audits/SOURCE-EXTRACTION-2026-11-03.md)
 - [Integration modularization and GitHub onboarding plan](docs/INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md)
 - [Latest migrated Sonar GET evidence](fortis_approvals/evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md)
+- [Current isolated review evidence — image, restore, WebAuthn, live GET and offline tests](fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md)
 - [Original extraction SHA-256 manifest](docs/SOURCE-MANIFEST.sha256)
 - [Current working-copy SHA-256 manifest](docs/CURRENT-SOURCE-MANIFEST.sha256)
 - [Full modularized source manifest](docs/MODULARIZED-SOURCE-MANIFEST.sha256)
@@ -40,13 +41,31 @@ The current-state document was copied from `rd-graphs/docs/guides/FORTIS-APPROVA
 
 This is a development/source copy only. Editing it does not change the active Fortis Approvals Gateway image or container. The owner-documented deployed image and existing volumes remain separate deployment artifacts; their exact historical identifiers are preserved in the deployment reference. Do not run provisioning, cutover, build, rollback or Compose scripts as part of ordinary source work.
 
+## Isolated review status — 2026-11-05
+
+Production remains on image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`
+and ports 19103/19104. The owner-tested modularized review image
+`sha256:a6d3cbc645903fc3a36698868790ea1e191d73d1e9d5c01f7cecc97697c56e84`
+runs beside it on 19203/19204 with separately restored state. Image smoke,
+backup integrity/ACL/restore checks, 282 offline tests, a live Sonar GET and
+owner login/History have been verified. The reject-only ASK/owner Reject check also passed, with the Issue remaining OPEN. No Production cutover or GitHub activation has
+occurred. See the [review evidence](fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md)
+for exact source snapshot, backup hashes, limits and remaining gates.
+
 ## Git status
 
-Local Git was initialized on `main` after owner approval of this standalone source boundary. No commit or remote has been created. The original `rd-graphs/fortis_approvals` subtree remains untouched as the preserved original copy. Remote creation and publishing await a separate visibility and credential decision.
+The primary clone `/workspace/repo/Repos/fortis-approvals` stays on `main`.
+The verified modularized bootstrap was published as
+`bootstrap/verified-source-2026-11-05` at `3355941`. Review work is isolated in
+`/workspace/repo/Worktrees/fortis-approvals/candidate-origin-overrides-20261105`
+on `candidate/test-origin-overrides-20261105`. Check current branch, staged
+changes and remote refs before any write; publication of a source branch does
+not deploy a Gateway or update a Windows clone. The original `rd-graphs`
+subtree remains untouched.
 
 ## GitHub readiness
 
-The repository scaffold includes `.github/workflows/source-ci.yml`, Dependabot, issue and pull-request templates, `CONTRIBUTING.md`, `SECURITY.md`, and `scripts/test-source.sh`. CI uses a read-only `GITHUB_TOKEN` permission set and runs only offline tests. No GitHub remote/repository has been created, no code has been pushed, no branch-protection rules have been configured, and no GitHub credential or token volume has been provisioned. Those are separate owner decisions.
+The repository scaffold includes `.github/workflows/source-ci.yml`, Dependabot, issue and pull-request templates, `CONTRIBUTING.md`, `SECURITY.md`, and `scripts/test-source.sh`. CI uses a read-only `GITHUB_TOKEN` permission set and runs only offline tests. The bootstrap source is already published. Branch-protection and Actions acceptance are not established by a successful push. The Gateway GitHub integration remains unregistered, with no GitHub token volume, grants or live policy; this is separate from the existing Repo Git credential helper.
 
 ## Safety
 
