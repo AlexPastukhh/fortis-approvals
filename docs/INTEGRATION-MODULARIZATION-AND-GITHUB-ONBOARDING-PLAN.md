@@ -33,8 +33,8 @@ Both owner decisions, receipts, replay and Sonar GET passed. Independent
 Repo -> Gateway reads confirmed file content digest, branch SHA, both
 EXECUTED statuses and exact draft PR refs/head/base. Production and main
 were unchanged by the scenario; M1 remains retained. PR #8 Source CI run
-42101319273 passed. CI status was read through the GitHub connector, not
-through the Gateway; Gateway CI visibility remains the next scoped slice.
+42101319273 passed. At M2 acceptance CI status was read through the GitHub connector. M3 below
+now independently accepts the same CI result through the actual Repo Gateway client.
 
 Reuse this evidence unless a relevant input changes. The current production
 Gateway and all its state remain outside the pilot. Preserve the accepted
@@ -176,37 +176,30 @@ have already been closed.
 - Existing review evidence: fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md.
 - Deferred Production contract: MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md.
 
-## Accepted M1/M2 and next bounded slice
+## Accepted M1/M2/M3 — minimal live workflow complete
 
-M1 branch and M2 file/draft-PR acceptance are complete. Do not repeat their
-credential provision, owner ceremonies, broad host audit or state restoration.
-Keep the current M2 pilot/state/receipts and retained M1 return point.
-Detailed operator receipts stay outside Git; source evidence is in
-fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md and
-fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M2-20261106.md.
+M1 branch, M2 file/draft PR and M3 read-only Source CI acceptance are complete.
+M3 source is e8dd217e1279c5ec8e1ad6b4e2ff893d01aa5dbc. The owner-run package
+reported FORTIS_GITHUB_CI_READ_LIVE_PASS, exit 0. The actual Repo Gateway client
+read Source CI run 42101319273 for PR #8/head
+a2cb4a59bf2251cc05301a9da17e3a9fd02a19ee: completed/success, ciPassed=true.
+A separate authenticated Repo -> Gateway read reproduced that exact result.
+Sonar returned OK, copied M2 receipts were verified, M2 was retained for return,
+and the Production baseline was unchanged. No GitHub mutation was part of M3.
 
-The next minimal slice is read-only Source CI visibility through the actual
-Repo Gateway client for the accepted test PR/head SHA. Add only the required
-Actions read and typed list_workflow_runs scope. Add Checks/status reads only
-if the actual workflow needs them. Exact repository scope and projected
-responses remain mandatory. No workflow dispatch/rerun/cancel, merge or
-workflow-file writes are implied by this read-only slice.
+The accepted chain now covers Repo -> Gateway reads, owner Reject/strong
+WebAuthn Approve, exact branch/file execution, durable receipts and replay,
+draft PR creation, and GitHub CI result readback through the same Gateway.
+Do not repeat accepted M1/M2/M3 preparation or broaden scope without a concrete
+workflow need. Keep current M3 state and all retained predecessors/receipts.
+Source evidence lives in fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md,
+FORTIS-GITHUB-PILOT-M2-20261106.md and FORTIS-GITHUB-PILOT-M3-20261106.md.
+Detailed operator receipts stay outside Git.
 
-Use one substantive source PR containing the minimal runtime, resumable
-owner-run update/return path and focused regressions. Preserve M2 state and
-all provider receipts. Verify the CI result's exact workflow, event and head
-SHA over the Gateway, plus ordinary Sonar readback. Do not count connector
-CI reads as Gateway acceptance. Production cutover and retirement of legacy
-direct Git credentials stay deferred until their own required workflows are
-covered and the owner authorizes the concrete rollout.
-
-
-## M3 source checkpoint — live Gateway CI read pending
-
-The CI opt-in, typed Repo read scenario and existing owner-run update/return
-entrypoint now support the accepted PR/head/run selection. New tests cover
-real TLS reads, explicit opt-in/default denial, preserved mutation restrictions,
-wrong run/head/event, pending/failure reporting and pagination. Windows tests
-cover accepted M2 admission and return to its retained state. Review full CI,
-merge source and execute one owner-run CIRead package after Actions read is
-enabled. Do not repeat M1/M2 mutations or count this source work as live M3 PASS.
+The scope is still one configured repository/test branch/file, selected typed
+operations and Actions metadata reads. Merge, workflow controls and workflow-file
+writes are not granted. A concrete additional operation gets its own narrow
+policy and validation only when needed. Production rollout needs its reviewed
+release/backup/rollback packet and separate owner GO. Retirement of legacy
+direct Git credentials waits until required workflows are covered. No cleanup,
+merge or Production rollout is implied by this acceptance checkpoint.
