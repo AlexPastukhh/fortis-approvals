@@ -146,3 +146,28 @@ data, excluded from the release source manifest/package. This lets the draft
 PR's existing Source CI verify the unchanged release source. Code, other paths
 and non-UUID files in the same directory remain manifested; a packaging
 regression verifies this narrow boundary.
+
+### M3: read Source CI for the accepted file/PR commit
+
+`FORTIS_GITHUB_CI_READS=1` is a separate explicit read opt-in and requires the
+accepted file/PR branch configuration. It adds only `list_workflow_runs` ALLOW
+for the same repository. The existing write scope/policies remain unchanged;
+workflow dispatch, rerun and cancel are not granted. Responses use the existing
+closed public projection; no raw provider logs, credentials or arbitrary URLs.
+
+Use the same `Run-GitHub-FilePR-E2E.ps1` entrypoint with `-ScenarioKind CIRead`.
+Start takes the protected completed M2 record, the exact workflow run ID and
+`-ConfirmActionsReadPermission` after the owner enables repository Actions read
+on the existing Gateway pilot PAT. No token re-entry or WebAuthn ceremony is
+needed for these ALLOW reads. The runner verifies both existing M2 receipts,
+retains its admitted container/image/state, clones the stopped M2 state into a
+fresh volume and starts the reviewed CI-enabled image on the same test ports.
+
+The actual Repo Gateway client verifies the selected PR/head/branch and exact
+Source CI run ID, event and SHA. It reports current status/conclusion and
+ciPassed separately; a failed or pending workflow is never called successful.
+It also checks copied M2 receipts and an ordinary Sonar GET. The marker
+`FORTIS_GITHUB_CI_READ_LIVE_PASS` confirms the read path, while report.ciPassed
+states whether the workflow itself passed. Resume reuses the CI record and
+repeats only reads. Rollback with ScenarioKind CIRead returns to retained M2
+and prints `FORTIS_GITHUB_CI_RETURNED_TO_M2_PASS`; GitHub is not mutated.

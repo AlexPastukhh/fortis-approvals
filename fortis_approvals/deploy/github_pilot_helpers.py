@@ -150,6 +150,9 @@ def admit(container, expected, *, pilot):
     if pilot and expected.get('filePrBranch'):
         require(bool(re.fullmatch('fortis-e2e/[0-9a-f-]{36}-approve', expected['filePrBranch'])), 'PILOT_FILE_PR_BRANCH_INVALID')
         required['FORTIS_GITHUB_FILE_PR_BRANCH'] = expected['filePrBranch']
+    if pilot and expected.get('ciReads'):
+        require(bool(expected.get('filePrBranch')), 'PILOT_CI_REQUIRES_FILE_PR_SCOPE')
+        required['FORTIS_GITHUB_CI_READS'] = '1'
     require(env == required, 'PILOT_PUBLIC_CONFIGURATION_MISMATCH')
     require(container['State']['Status'] == expected['status'], 'PILOT_CONTAINER_STATUS_MISMATCH')
     if expected['status'] == 'running' and expected.get('requireHealthy', True):

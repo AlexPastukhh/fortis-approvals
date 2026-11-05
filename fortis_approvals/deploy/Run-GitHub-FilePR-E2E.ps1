@@ -3,6 +3,8 @@
 param(
     [ValidateSet('Start','Resume','Rollback','SelfTest')][string]$Mode='Start',
     [string]$PreviousRecord='', [string]$Record='', [string]$ExpectedSourceCommit='',
+    [ValidateSet('FilePR','CIRead')][string]$ScenarioKind='FilePR',
+    [long]$ExpectedWorkflowRunId=0, [switch]$ConfirmActionsReadPermission,
     [switch]$ConfirmPullRequestsPermission
 )
 $EntryMode=$Mode
@@ -35,11 +37,28 @@ function Assert-M1Record {
     if ($Value.scenario.runId -cne $Id -or $Value.scenario.sourceSha -cne $Value.sourceCommit -or
         $Value.scenario.approve.branch -cne ('fortis-e2e/' + $Id + '-approve')) { throw 'FILE_PR_M1_BRANCH_IDENTITY_INVALID' }
 }
+function Assert-M2Record {
+    param($Value)
+    Assert-M1Record $Value.previous
+    if ($Value.schema -ne 2 -or $Value.phase -cne 'Complete' -or $Value.scenario.phase -cne 'DONE' -or
+        $Value.sourceCommit -cne 'cf0553d0690a693fcc3e11ac8d3685f61aefe86d' -or
+        $Value.image -cne 'sha256:2c1a6f5a8c079305711dda907bc245f1cbf0692181fd8be8a2b719a1fa6f2980' -or
+        $Value.owner -cne 'AlexPastukhh' -or $Value.repository -cne 'fortis-approvals' -or
+        $Value.receipt.receiptsVerified -ne $true -or $Value.receipt.ownerDecisionsVerified -ne $true -or
+        $Value.runId -cnotmatch '^[0-9a-f]{32}$' -or $Value.pilotId -cnotmatch '^[0-9a-f]{64}$' -or
+        $Value.pilotName -cne ('fortis-github-pilot-' + $Value.runId) -or
+        $Value.stateVolume -cne ('fortis-github-pilot-state-' + $Value.runId) -or
+        $Value.tokenVolume -cne $Value.previous.tokenVolume -or
+        $Value.filePrBranch -cne $Value.previous.scenario.approve.branch -or
+        $Value.scenario.branch -cne $Value.filePrBranch -or
+        $Value.scenario.commitSha -cne 'a2cb4a59bf2251cc05301a9da17e3a9fd02a19ee' -or
+        $Value.scenario.pullRequestNumber -ne 8) {throw 'CI_READ_ACCEPTED_M2_REQUIRED'}
+}
 function Previous-Expected {
     param([string]$Status)
     $P=$script:R.previous
     return @{id=$P.pilotId; name=$P.pilotName; image=$P.image; stateVolume=$P.stateVolume
-        tokenVolume=$P.tokenVolume; owner=$P.owner; repository=$P.repository; status=$Status}
+        tokenVolume=$P.tokenVolume; owner=$P.owner; repository=$P.repository; status=$Status; filePrBranch=$P.filePrBranch}
 }
 function Admit-Previous {
     param([string]$Status)
@@ -57,7 +76,7 @@ function Assert-ExtensionPrepared {
     Check-RepoSource; Assert-Production; Admit-Previous 'running'
 }
 function Return-M1 {
-    if ($script:R.phase -ceq 'ReturnedM1') { Admit-Previous 'running'; Assert-Production; return }
+    if ($script:R.phase -cin @('ReturnedM1','ReturnedM2')) { Admit-Previous 'running'; Assert-Production; return }
     if ($script:R.pilotId) {
         $C=Container $script:R.pilotId
         if ($C.State.Status -cnotin @('created','exited','running')) { throw 'FILE_PR_RETURN_CONTAINER_STATE_UNKNOWN' }
@@ -86,8 +105,10 @@ function Return-M1 {
         Wait-Healthy $script:R.previous.pilotId; Admit-Previous 'running'
     }
     Assert-Production
-    $script:R.phase='ReturnedM1'; Save-Record
-    Write-Host 'FORTIS_GITHUB_FILE_PR_RETURNED_TO_M1_PASS'
+    if ($script:R.ciReads) {$script:R.phase='ReturnedM2'} else {$script:R.phase='ReturnedM1'}
+    Save-Record
+    if ($script:R.ciReads) {Write-Host 'FORTIS_GITHUB_CI_RETURNED_TO_M2_PASS'}
+    else {Write-Host 'FORTIS_GITHUB_FILE_PR_RETURNED_TO_M1_PASS'}
 }
 function Run-FilePRScenario {
     Admit-Pilot 'running'; Admit-Previous 'exited'; Assert-Production; Check-RepoSource
@@ -124,9 +145,7 @@ function Run-FilePRScenario {
         if (-not $Check.complete) {throw 'FILE_PR_COMPLETED_READBACK_FAILED'}
     }
     $script:R.receipt=Helper @{action='file_pr_receipts';scenario=$script:R.scenario} -InsidePilot
-    $Code="import json,uuid;from fortis_approvals.clients.gateway_transport import GatewayTransport;g=GatewayTransport(endpoint='https://host.docker.internal:19204',allow_test_endpoint=True);r=g.post('/v1/reads',{'requestId':str(uuid.uuid4()),'service':'sonarcloud','operation':'get_quality_gate','target':'AlexPastukhh_obs-planning-docs','params':{},'reason':'File PR pilot Sonar regression'});print(json.dumps({'status':r['data']['status']}))"
-    $Sonar=(Private-Process @('exec','--user','1000:1000','--workdir','/workspace/repo/Repos/fortis-approvals',
-        'fortis-repo-test','python3','-B','-c',$Code) '') | ConvertFrom-Json
+    $Sonar=Read-SonarRegression
     Assert-Production; $script:R.phase='Complete'; Save-Record
     [ordered]@{sourceCommit=$script:R.sourceCommit;image=$script:R.image;runId=$script:R.scenario.runId
         branch=$script:R.scenario.branch;path=$script:R.scenario.path;commitSha=$script:R.scenario.commitSha
@@ -134,6 +153,32 @@ function Run-FilePRScenario {
         ownerDecisionsVerified=$script:R.receipt.ownerDecisionsVerified;sonarReadStatus=$Sonar.status
         productionBaselineUnchanged=$true;retainedM1=$true;record=$script:RecordPath} | ConvertTo-Json -Depth 6
     Write-Host 'FORTIS_GITHUB_FILE_PR_LIVE_E2E_PASS'
+}
+
+function Read-SonarRegression {
+    $Code="import json,uuid;from fortis_approvals.clients.gateway_transport import GatewayTransport;g=GatewayTransport(endpoint='https://host.docker.internal:19204',allow_test_endpoint=True);r=g.post('/v1/reads',{'requestId':str(uuid.uuid4()),'service':'sonarcloud','operation':'get_quality_gate','target':'AlexPastukhh_obs-planning-docs','params':{},'reason':'File PR pilot Sonar regression'});print(json.dumps({'status':r['data']['status']}))"
+    $Sonar=(Private-Process @('exec','--user','1000:1000','--workdir','/workspace/repo/Repos/fortis-approvals',
+        'fortis-repo-test','python3','-B','-c',$Code) '') | ConvertFrom-Json
+    return $Sonar
+}
+function Run-CIReadScenario {
+    Admit-Pilot 'running'; Admit-Previous 'exited'; Assert-Production; Check-RepoSource
+    Assert-OnlyWriter $script:R.stateVolume $script:R.pilotId
+    $Args=@('exec','-i','--user','1000:1000','--workdir','/workspace/repo/Repos/fortis-approvals',
+        'fortis-repo-test','python3','-B','-m','fortis_approvals.integrations.github.repo_client.ci_read_scenario')
+    $Report=(Private-Process $Args (ConvertTo-Json $script:R.scenario -Depth 20 -Compress)) | ConvertFrom-Json
+    # Verify the accepted M2 file/PR receipts survived the stopped-state clone.
+    $script:R.receipt=Helper @{action='file_pr_receipts';scenario=$script:R.previous.scenario} -InsidePilot
+    $Sonar=Read-SonarRegression
+    Assert-Production
+    $script:R.scenario.phase='DONE';$script:R.result=$Report;$script:R.phase='Complete';Save-Record
+    [ordered]@{sourceCommit=$script:R.sourceCommit;image=$script:R.image;report=$Report
+        m2ReceiptsPreserved=$script:R.receipt.receiptsVerified;sonarReadStatus=$Sonar.status
+        productionBaselineUnchanged=$true;retainedM2=$true;record=$script:RecordPath} | ConvertTo-Json -Depth 10
+    Write-Host 'FORTIS_GITHUB_CI_READ_LIVE_PASS'
+}
+function Run-SelectedScenario {
+    if ($script:R.ciReads) {Run-CIReadScenario} else {Run-FilePRScenario}
 }
 
 if ($Mode -ceq 'SelfTest') {
@@ -145,6 +190,25 @@ if ($Mode -ceq 'SelfTest') {
         scenario=@{phase='DONE';sourceSha='cd9af3ca6e43ec03134477beb2b284a837c67236';runId='c6884d29-cfc7-4dfc-8cc8-0081720792df'
             approve=@{branch='fortis-e2e/c6884d29-cfc7-4dfc-8cc8-0081720792df-approve'}}}
     Assert-M1Record $P
+    $M2=[pscustomobject]@{schema=2;phase='Complete';sourceCommit='cf0553d0690a693fcc3e11ac8d3685f61aefe86d'
+        image='sha256:2c1a6f5a8c079305711dda907bc245f1cbf0692181fd8be8a2b719a1fa6f2980';owner='AlexPastukhh';repository='fortis-approvals'
+        previous=$P;runId='22222222222242228222222222222222';pilotId=('c' * 64);pilotName='fortis-github-pilot-22222222222242228222222222222222'
+        stateVolume='fortis-github-pilot-state-22222222222242228222222222222222';tokenVolume=$P.tokenVolume;filePrBranch=$P.scenario.approve.branch
+        receipt=@{receiptsVerified=$true;ownerDecisionsVerified=$true}
+        scenario=@{phase='DONE';branch=$P.scenario.approve.branch;commitSha='a2cb4a59bf2251cc05301a9da17e3a9fd02a19ee';pullRequestNumber=8}}
+    Assert-M2Record $M2
+    foreach ($Case in @('incomplete','bad-commit','bad-receipt','wrong-branch')) {
+        $Bad=ConvertFrom-Json (ConvertTo-Json $M2 -Depth 20)
+        switch ($Case) {
+            'incomplete' {$Bad.phase='Running'}
+            'bad-commit' {$Bad.scenario.commitSha='e' * 40}
+            'bad-receipt' {$Bad.receipt.receiptsVerified=$false}
+            'wrong-branch' {$Bad.filePrBranch='main'}
+        }
+        $Denied=$false
+        try {Assert-M2Record $Bad} catch {$Denied=$true}
+        if (-not $Denied) {throw 'CI_READ_M2_ADMISSION_SELFTEST_FAILED'}
+    }
     foreach ($Case in @('incomplete','wrong-source','wrong-image','wrong-repo','wrong-state','wrong-branch')) {
         $Bad=ConvertFrom-Json (ConvertTo-Json $P -Depth 10)
         switch ($Case) {
@@ -190,7 +254,15 @@ if ($Mode -ceq 'SelfTest') {
     $script:R.phase='Running';$script:NewState='running';$script:OldState='exited';$script:Actions.Clear();$script:Changed=$true;$Denied=$false
     try {Return-M1} catch {if ($_.Exception.Message -ceq 'FILE_PR_RETAINED_M1_STATE_CHANGED') {$Denied=$true} else {throw}}
     if (-not $Denied -or ($script:Actions -join ',') -cne 'stop-new') {throw 'FILE_PR_CHANGED_M1_SELFTEST_FAILED'}
-    Write-Host 'FORTIS_GITHUB_FILE_PR_WINDOWS_SELFTEST_PASS cases=10'
+    $script:R.ciReads=$true;$script:R.phase='Running';$script:NewState='running';$script:OldState='exited';$script:Actions.Clear();$script:Changed=$false
+    Return-M1
+    if ($script:R.phase -cne 'ReturnedM2' -or ($script:Actions -join ',') -cne 'stop-new,start-m1') {throw 'CI_READ_RETURN_M2_SELFTEST_FAILED'}
+    Return-M1
+    if ($script:Actions.Count -ne 2) {throw 'CI_READ_RETURN_REPLAY_SELFTEST_FAILED'}
+    $script:R.phase='Running';$script:NewState='running';$script:OldState='exited';$script:Actions.Clear();$script:Changed=$true;$Denied=$false
+    try {Return-M1} catch {if ($_.Exception.Message -ceq 'FILE_PR_RETAINED_M1_STATE_CHANGED') {$Denied=$true} else {throw}}
+    if (-not $Denied -or ($script:Actions -join ',') -cne 'stop-new') {throw 'CI_READ_CHANGED_M2_SELFTEST_FAILED'}
+    Write-Host 'FORTIS_GITHUB_FILE_PR_WINDOWS_SELFTEST_PASS cases=18'
     return
 }
 
@@ -198,12 +270,17 @@ Check-Package
 $script:Helper64=Code64 (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'github_pilot_helpers.py') -Raw)
 if ((Docker-Text @('info','--format','{{.OSType}}')) -cne 'linux') {throw 'PILOT_LINUX_DOCKER_ENGINE_REQUIRED'}
 if ($Mode -ceq 'Start') {
-    if (-not $PreviousRecord -or -not $ConfirmPullRequestsPermission -or $Record) {throw 'FILE_PR_M1_RECORD_AND_PR_PERMISSION_ACK_REQUIRED'}
-    $P=Read-ProtectedRecord $PreviousRecord;Assert-M1Record $P
+    $IsCI=$ScenarioKind -ceq 'CIRead'
+    if (-not $PreviousRecord -or $Record -or
+        (-not $IsCI -and -not $ConfirmPullRequestsPermission) -or
+        ($IsCI -and (-not $ConfirmActionsReadPermission -or $ExpectedWorkflowRunId -le 0))) {throw 'PILOT_PREVIOUS_RECORD_AND_REQUIRED_PERMISSION_ACK_REQUIRED'}
+    $P=Read-ProtectedRecord $PreviousRecord
+    if ($IsCI) {Assert-M2Record $P} else {Assert-M1Record $P}
+    $Schema=2;if ($IsCI) {$Schema=3}
     $Id=[Guid]::NewGuid().ToString('N');$ScenarioId=([Guid]::ParseExact($Id,'N')).ToString('D')
     $script:RecordPath=Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot') $Id) 'record.json'
     Protect-Directory (Split-Path $script:RecordPath -Parent)
-    $script:R=[ordered]@{schema=2;runId=$Id;phase='Prepared';sourceCommit=$ExpectedSourceCommit;previous=$P
+    $script:R=[ordered]@{schema=$Schema;ciReads=$IsCI;result=$null;runId=$Id;phase='Prepared';sourceCommit=$ExpectedSourceCommit;previous=$P
         previousStopped=$false;productionBaseline=$P.productionBaseline;owner=$P.owner;repository=$P.repository
         filePrBranch=$P.scenario.approve.branch;image='';pilotId='';pilotName=('fortis-github-pilot-' + $Id)
         stateVolume=('fortis-github-pilot-state-' + $Id);tokenVolume=$P.tokenVolume;sourceReceipt=$null;receipt=$null
@@ -211,21 +288,34 @@ if ($Mode -ceq 'Start') {
             branch=$P.scenario.approve.branch;path=('docs/fortis-e2e/' + $P.scenario.runId + '.txt');expectedHeadSha=$P.scenario.sourceSha
             baseSha=$null;pushRequestId=[Guid]::NewGuid().ToString('D');prRequestId=[Guid]::NewGuid().ToString('D')
             phase='READ';commitSha=$null;pullRequestNumber=$null}}
+    if ($IsCI) {
+        $script:R.filePrBranch=$P.filePrBranch
+        $script:R.scenario=[ordered]@{format='fortis-github-ci-read-v1';runId=$ScenarioId;owner=$P.owner;repository=$P.repository
+            branch=$P.filePrBranch;headSha=$P.scenario.commitSha;pullRequestNumber=$P.scenario.pullRequestNumber
+            workflowRunId=$ExpectedWorkflowRunId;phase='READ'}
+    }
     Save-Record
 } else {
     if (-not $Record) {throw 'FILE_PR_EXISTING_RECORD_REQUIRED'}
     $script:R=Read-ProtectedRecord $Record
-    Assert-M1Record $script:R.previous
-    if ($script:R.schema -ne 2 -or $script:R.sourceCommit -cne $ExpectedSourceCommit -or
+    if ($ScenarioKind -ceq 'CIRead') {
+        Assert-M2Record $script:R.previous
+        if ($script:R.schema -ne 3 -or $script:R.ciReads -ne $true) {throw 'CI_READ_RECORD_KIND_INVALID'}
+    } else {
+        Assert-M1Record $script:R.previous
+        if ($script:R.schema -ne 2 -or $script:R.ciReads) {throw 'FILE_PR_RECORD_KIND_INVALID'}
+    }
+    if ($script:R.sourceCommit -cne $ExpectedSourceCommit -or
         $script:R.runId -cnotmatch '^[0-9a-f]{32}$' -or $script:R.pilotName -cne ('fortis-github-pilot-' + $script:R.runId) -or
         $script:R.stateVolume -cne ('fortis-github-pilot-state-' + $script:R.runId) -or
         $script:R.tokenVolume -cne $script:R.previous.tokenVolume -or
-        $script:R.filePrBranch -cne $script:R.previous.scenario.approve.branch) {throw 'FILE_PR_RECORD_IDENTITY_INVALID'}
+        (($script:R.ciReads -and $script:R.filePrBranch -cne $script:R.previous.filePrBranch) -or
+         (-not $script:R.ciReads -and $script:R.filePrBranch -cne $script:R.previous.scenario.approve.branch))) {throw 'FILE_PR_RECORD_IDENTITY_INVALID'}
 }
 Write-Host ('FILE_PR_RECORD=' + $script:RecordPath)
 if ($Mode -ceq 'Rollback') {Return-M1;return}
 if ($script:R.phase -cin @('Running','Complete')) {
-    try {Run-FilePRScenario} catch {Write-Host 'FILE_PR_PAUSED_RESUME_SAME_RECORD_OR_ROLLBACK';throw};return
+    try {Run-SelectedScenario} catch {Write-Host 'FILE_PR_PAUSED_RESUME_SAME_RECORD_OR_ROLLBACK';throw};return
 }
 Assert-ExtensionPrepared
 Build-PilotImage
@@ -236,9 +326,13 @@ Assert-OnlyWriter $script:R.previous.stateVolume $script:R.previous.pilotId
 $NewId=$script:R.pilotId
 try {
     $script:R.pilotId=$script:R.previous.pilotId
-    $C=$script:R.previous.scenario.approve
-    $null=Helper @{action='receipt';expected=@{request_id=$C.requestId;repository=$script:R.repository
-        branch=$C.branch;sha=$script:R.previous.scenario.sourceSha}} -InsidePilot
+    if ($script:R.ciReads) {
+        $null=Helper @{action='file_pr_receipts';scenario=$script:R.previous.scenario} -InsidePilot
+    } else {
+        $C=$script:R.previous.scenario.approve
+        $null=Helper @{action='receipt';expected=@{request_id=$C.requestId;repository=$script:R.repository
+            branch=$C.branch;sha=$script:R.previous.scenario.sourceSha}} -InsidePilot
+    }
 } finally {$script:R.pilotId=$NewId}
 Create-PilotVolume $script:R.stateVolume 'file-pr-isolated-state'
 try {
@@ -257,4 +351,4 @@ try {
     try {Return-M1} catch {Write-Host 'FILE_PR_RETURN_REQUIRES_INSPECTION';throw}
     throw
 }
-try {Run-FilePRScenario} catch {Write-Host 'FILE_PR_PAUSED_RESUME_SAME_RECORD_OR_ROLLBACK';throw}
+try {Run-SelectedScenario} catch {Write-Host 'FILE_PR_PAUSED_RESUME_SAME_RECORD_OR_ROLLBACK';throw}

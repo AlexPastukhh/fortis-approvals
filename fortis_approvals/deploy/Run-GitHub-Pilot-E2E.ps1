@@ -99,7 +99,7 @@ function Expected-Pilot {
     param([string]$Status)
     return [ordered]@{ id=$script:R.pilotId; name=$script:R.pilotName; image=$script:R.image
         stateVolume=$script:R.stateVolume; tokenVolume=$script:R.tokenVolume; status=$Status
-        owner=$script:R.owner; repository=$script:R.repository; filePrBranch=$script:R.filePrBranch }
+        owner=$script:R.owner; repository=$script:R.repository; filePrBranch=$script:R.filePrBranch; ciReads=$script:R.ciReads }
 }
 function Admit-Review {
     param([string]$Status)
@@ -388,6 +388,9 @@ function Create-PilotContainer {
         $script:R.image)
     if ($script:R.filePrBranch) {
         $Arguments=$Arguments[0..($Arguments.Count-2)] + @('--env',('FORTIS_GITHUB_FILE_PR_BRANCH=' + $script:R.filePrBranch),$script:R.image)
+    }
+    if ($script:R.ciReads) {
+        $Arguments=$Arguments[0..($Arguments.Count-2)] + @('--env','FORTIS_GITHUB_CI_READS=1',$script:R.image)
     }
     $script:R.pilotId=Docker-Text $Arguments
     if ($script:R.pilotId -cnotmatch '^[0-9a-f]{64}$') { throw 'PILOT_CREATED_ID_INVALID_INSPECT_BEFORE_RETRY' }

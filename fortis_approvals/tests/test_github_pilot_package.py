@@ -138,6 +138,14 @@ class AdmissionTests(unittest.TestCase):
         c,e=self.fixture()
         self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
 
+    def test_ci_runtime_environment_is_explicit_and_requires_file_pr_scope(self):
+        c,e=self.fixture();e['ciReads']=True
+        with self.assertRaisesRegex(RuntimeError,'CI_REQUIRES_FILE_PR'):HELPERS.admit(c,e,pilot=True)
+        e['filePrBranch']='fortis-e2e/11111111-1111-4111-8111-111111111111-approve'
+        with self.assertRaisesRegex(RuntimeError,'PUBLIC_CONFIGURATION'):HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'] += ['FORTIS_GITHUB_FILE_PR_BRANCH='+e['filePrBranch'],'FORTIS_GITHUB_CI_READS=1']
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+
     def test_production_state_writable_credentials_and_exposed_ports_are_denied(self):
         for mutate in (lambda c:c['Mounts'][0].update(Name='fortis-r7-state'),
                        lambda c:c['Mounts'][-1].update(RW=True),

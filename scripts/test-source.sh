@@ -32,6 +32,7 @@ tests=(
   test_github_pilot.py
   test_github_pilot_package.py
   test_github_file_pr.py
+  test_github_ci_read.py
   test_r7_runtime_endpoints.py
   test_review_state_restore.py
   test_review_runtime_contract.py

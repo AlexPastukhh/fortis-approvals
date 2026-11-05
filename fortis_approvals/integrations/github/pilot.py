@@ -16,7 +16,8 @@ READS = frozenset({('github', 'get_repository'), ('github', 'list_branches')})
 ACTION = ('github', 'create_branch')
 FILE_PR_READS = frozenset({('github', 'get_file'), ('github', 'list_pull_requests'), ('github', 'get_pull_request')})
 FILE_PR_ACTIONS = frozenset({('github', 'push_files'), ('github', 'create_pull_request')})
-CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH')
+CI_READS = frozenset({('github', 'list_workflow_runs')})
+CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS')
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class GitHubPilotConfig:
     repository: str
     branch_prefix: str = 'fortis-e2e/'
     file_pr_branch: str = ''
+    ci_reads: bool = False
 
     def __post_init__(self):
         if type(self.owner) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.owner):
@@ -50,6 +52,9 @@ class GitHubPilotConfig:
         elif self.file_pr_branch != '':
             raise ValueError('GITHUB_PILOT_FILE_PR_BRANCH_INVALID')
 
+        if type(self.ci_reads) is not bool or (self.ci_reads and not self.file_pr_branch):
+            raise ValueError('GITHUB_PILOT_CI_OPT_IN_INVALID')
+
     @property
     def file_path(self):
         if not self.file_pr_branch: return None
@@ -68,11 +73,13 @@ def config_from_environment(environment):
         if any(key in environment for key in CONFIG_KEYS):
             raise ValueError('GITHUB_PILOT_PARTIAL_CONFIGURATION')
         return None
+    ci = environment.get(CONFIG_KEYS[4], '0')
+    if ci not in ('0', '1'): raise ValueError('GITHUB_PILOT_CI_OPT_IN_INVALID')
     return GitHubPilotConfig(
         owner=environment.get(CONFIG_KEYS[0], ''),
         repository=environment.get(CONFIG_KEYS[1], ''),
         branch_prefix=environment.get(CONFIG_KEYS[2], 'fortis-e2e/'),
-        file_pr_branch=environment.get(CONFIG_KEYS[3], ''))
+        file_pr_branch=environment.get(CONFIG_KEYS[3], ''), ci_reads=ci == '1')
 
 
 class GitHubPilotAdapter(GitHubAdapter):
@@ -107,7 +114,8 @@ class GitHubPilotAdapter(GitHubAdapter):
             raise Denied('GITHUB_PILOT_ACTION_DENIED')
 
     def read(self, request):
-        operations = {name for _, name in READS | (FILE_PR_READS if self.pilot.file_pr_branch else frozenset())}
+        operations = {name for _, name in READS | (FILE_PR_READS if self.pilot.file_pr_branch else frozenset()) |
+                      (CI_READS if self.pilot.ci_reads else frozenset())}
         if (type(request) is not dict or request.get('service') != 'github' or
                 request.get('operation') not in operations):
             raise Denied('GITHUB_PILOT_READ_DENIED')
@@ -158,7 +166,7 @@ def install_pilot(*, core, portal, broker, config, root, actor, transport=None):
         transport if transport is not None else GitHubHTTPTransport.from_file(),
         config=config, receipt_store=root / 'github-receipts.sqlite')
     register_github_integration(core=core, broker=broker, adapter=adapter)
-    reads = READS | (FILE_PR_READS if config.file_pr_branch else frozenset())
+    reads = READS | (FILE_PR_READS if config.file_pr_branch else frozenset()) | (CI_READS if config.ci_reads else frozenset())
     actions = {ACTION} | (FILE_PR_ACTIONS if config.file_pr_branch else frozenset())
     for service, operation in reads:
         core.policies[(actor, service, operation)] = 'ALLOW'
