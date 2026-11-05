@@ -14,12 +14,16 @@ Core. Use one machine ingress, Core, Owner Portal and approval queue. An
 external ChatGPT GitHub connector or the legacy Git CLI credential helper
 cannot substitute for the pilot's Repo -> Gateway path.
 
-Source PR #1 is merged; the approved source baseline is bc8d92d. Review already
-proved the existing owner credential, restored history, Sonar GET and an ASK
-rejection. Baseline CI passed 287 Python tests and 12 Windows checks. GitHub
-contracts, fixed-origin transport, adapter, receipts, Repo client and explicit
-registration helper exist. Live composition remains Sonar-only: registration,
-actor grants, policies and a separate provider credential are still needed.
+The first live GitHub approval-to-branch E2E is accepted (2026-11-06),
+using source cd9af3ca6e43ec03134477beb2b284a837c67236 in
+AlexPastukhh/fortis-approvals. The owner-run package reported
+FORTIS_GITHUB_PILOT_LIVE_E2E_PASS: Reject kept the first branch absent;
+strong WebAuthn approval executed the second branch at the frozen SHA;
+receipt verification, completed-request replay and Sonar GET passed.
+Independent Repo -> Gateway readback confirmed both branch results.
+Production baseline was unchanged. The current isolated pilot includes
+GitHub create_branch alongside Sonar; original review remains retained.
+Detailed operator receipt stays outside Git; no credentials are included here.
 
 Reuse this evidence unless a relevant input changes. The current production
 Gateway and all its state remain outside the pilot. Preserve the accepted
@@ -161,14 +165,29 @@ have already been closed.
 - Existing review evidence: fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md.
 - Deferred Production contract: MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md.
 
-## Source implementation checkpoint — live acceptance pending
+## Accepted M1 and next bounded slice
 
-The task branch now contains the opt-in runtime/prefix scope, shared actor
-policy wiring, strong owner approval, typed resumable scenario, private
-provision/clone/admission helpers and one Start/Resume/Rollback entrypoint.
-Targeted tests include real TLS and cryptographic WebAuthn with fake upstreams,
-state preservation, unsafe deployment denial and lost-response resume. These
-are implementation checks; no live GitHub call, token provisioning, pilot
-startup or owner decision has been performed by this source work. Run the
-existing source CI and Windows parser/private-pipe self-test on the complete
-candidate, then review/merge the single pilot PR before the owner-run package.
+M1 is complete; do not rerun its credential provision, state restore or owner
+Reject/Approve cycle. Keep the accepted pilot, state and receipts as the return
+point for the next image. Production and legacy-credential retirement remain
+deferred.
+
+M2 preparation is limited to the already accepted fortis-e2e/ working branch:
+one small UTF-8 evidence file under docs/fortis-e2e/, followed by a draft PR to
+main. Both writes require ASK and strong owner WebAuthn. Pin the exact branch,
+path and expected head; read back the resulting content/commit and PR refs/SHA,
+verify durable receipts and replay using persisted request IDs. Reconcile an
+ambiguous outcome before any retry. Preserve the M1 owner/history/receipt state
+when updating the isolated image and retain the M1 image/container for return.
+
+Only the needed file/PR reads and push_files/create_pull_request grants may be
+added. No PR merge, workflow changes or workflow control is part of M2. The
+provider credential needs repository Pull requests read/write in addition to
+its existing Contents read/write and Metadata read; provisioning stays on the
+owner-controlled Windows side. Opening the draft PR will invoke the repository's
+existing pull_request CI; include that known effect in the owner preview.
+
+This task branch starts with the accepted M1 checkpoint. Add the M2 runtime,
+resumable scenario, owner-run update/return path and focused regressions here,
+then open one substantive source PR. Do not open a plan-only PR or count M2 as
+accepted until its live file and PR readbacks pass.
