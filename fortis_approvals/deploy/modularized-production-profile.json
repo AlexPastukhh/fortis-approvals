@@ -1,0 +1,87 @@
+{
+  "format": "fortis-modularized-production-profile-v1",
+  "containerName": "fortis-approvals-gateway",
+  "rollbackContainerName": "fortis-approvals-gateway-before-modularized",
+  "failedContainerName": "fortis-approvals-gateway-modularized-failed",
+  "previousImageId": "sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402",
+  "imageId": "sha256:a6d3cbc645903fc3a36698868790ea1e191d73d1e9d5c01f7cecc97697c56e84",
+  "imageSourceSnapshotSha256": "3a0d8f99f11a2f27dd1467593e1ac37ce452a183c19c7abf685643e1727b6d14",
+  "user": "10001:10001",
+  "workingDirectory": "/opt/fortis",
+  "command": [
+    "python",
+    "-m",
+    "fortis_approvals.r7_unified_server"
+  ],
+  "ownerOrigin": "http://localhost:19103",
+  "machineHost": "host.docker.internal:19104",
+  "rpId": "localhost",
+  "environment": {
+    "FORTIS_SONAR_REGION": "eu",
+    "FORTIS_SONAR_ORGANIZATIONS": "alexpastukhh",
+    "FORTIS_SONAR_PROJECT_KEY": "AlexPastukhh_obs-planning-docs"
+  },
+  "ports": {
+    "19103/tcp": [
+      {
+        "HostIp": "127.0.0.1",
+        "HostPort": "19103"
+      }
+    ],
+    "19104/tcp": [
+      {
+        "HostIp": "127.0.0.1",
+        "HostPort": "19104"
+      }
+    ]
+  },
+  "mounts": [
+    {
+      "Type": "volume",
+      "Name": "fortis-r7-state",
+      "Destination": "/state",
+      "RW": true
+    },
+    {
+      "Type": "volume",
+      "Name": "fortis-r7-identity",
+      "Destination": "/run/r7-identity",
+      "RW": false
+    },
+    {
+      "Type": "volume",
+      "Name": "fortis-r7-grant",
+      "Destination": "/run/r7-grant",
+      "RW": false
+    },
+    {
+      "Type": "volume",
+      "Name": "fortis-r7-sonar-token",
+      "Destination": "/run/r7-sonar-token",
+      "RW": false
+    }
+  ],
+  "network": "fortis-r7-p1_default",
+  "networkAliases": [
+    "fortis",
+    "fortis-r7-p1-fortis-1"
+  ],
+  "tmpfs": {
+    "/tmp": "size=16m,mode=1777"
+  },
+  "pidsLimit": 100,
+  "memoryBytes": 0,
+  "restartPolicy": {
+    "Name": "no",
+    "MaximumRetryCount": 0
+  },
+  "healthcheck": {
+    "Interval": 20000000000,
+    "Timeout": 5000000000,
+    "StartPeriod": 20000000000,
+    "Retries": 3
+  },
+  "healthWaitSeconds": 100,
+  "stopTimeoutSeconds": 20,
+  "executionStatus": "proposal; no executable lifecycle controller; separate release GO required"
+}

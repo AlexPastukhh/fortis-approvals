@@ -1,0 +1,29 @@
+# SonarCloud integration
+
+**Status:** live in the deployed Gateway; source implementation has been moved into this provider package. Legacy root module names remain as import/CLI compatibility shims.
+
+## Canonical implementation locations
+
+- Gateway write adapter and Sonar HTTPS transport: `gateway/sonar.py`.
+- Gateway read-only adapter: `gateway/read_adapter.py`.
+- Bounded project inventory: `gateway/inventory.py`.
+- Owner-only read probe and preflight: `gateway/probe.py`, `gateway/preflight.py`.
+- Repo typed client: `repo_client/client.py`.
+- Repo review/status workflow: `repo_client/workflows.py`.
+- Sonar-specific operation schemas: `contract.py`.
+- Shared machine transport: `../../clients/gateway_transport.py`.
+- Shared envelope/broker and ingress: `../../repo_action_contract.py` and `../../repo_ingress.py`.
+
+Compatibility modules at `fortis_approvals/sonar.py`, `sonar_read.py`, `sonar_inventory.py`, `sonar_probe.py`, `sonar_preflight.py`, `repo_sonar_tools.py` and `sonar_review_scenario.py` re-export the canonical modules. New code must import the canonical integration paths.
+
+## Current operations
+
+- READ / ALLOW: list projects, list issues, get issue, get quality gate.
+- ACTION / ASK: propose `accept_issue`; only owner WebAuthn approval can execute the Sonar mutation.
+- STATUS: the initiating machine actor can read its request state.
+
+## Credential and trust boundary
+
+The upstream Sonar token is Gateway-only at `/run/r7-sonar-token/token`, supplied through the existing separate read-only volume. Fortis Repo receives only its distinct machine ingress grant and Gateway public certificate. Do not move, rename or reprovision the live Sonar volume during this refactor.
+
+The migration preserves current operation names, response projections, policy, request IDs and approval lifecycle. The live GET was repeated through the migrated Repo client and shared transport on 2026-11-05; `get_quality_gate` returned `OK` for `AlexPastukhh_obs-planning-docs` with `scope=CURRENT_DEFAULT_BRANCH` and `prShaBinding=NOT_VERIFIED_D2` ([evidence](../../evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md)). The deployed Gateway image was not changed. Compatibility wrappers remain until the next reviewed image build includes the provider package.

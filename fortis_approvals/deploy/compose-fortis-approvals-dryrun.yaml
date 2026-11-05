@@ -1,0 +1,63 @@
+# SUPERSEDED HISTORICAL CANDIDATE — DO NOT DEPLOY.
+# The owner selected a minimal in-place naming cleanup for the existing R7-P1 Gateway.
+# This draft changes the Compose project/service and proposes new external volumes;
+# that approach is no longer in scope. Keep this file only as historical evidence.
+# Never run with `up`, `create`, `start` or `down`.
+name: fortis-approvals
+
+services:
+  gateway:
+    image: fortis-approvals-gateway
+    pull_policy: never
+    restart: "no"
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 100
+    environment:
+      FORTIS_SONAR_REGION: "eu"
+      FORTIS_SONAR_ORGANIZATIONS: "alexpastukhh"
+      FORTIS_SONAR_PROJECT_KEY: "AlexPastukhh_obs-planning-docs"
+    ports:
+      - "127.0.0.1:19103:19103"
+      - "127.0.0.1:19104:19104"
+    volumes:
+      - type: volume
+        source: approvals_state
+        target: /state
+      - type: volume
+        source: approvals_identity
+        target: /run/r7-identity
+        read_only: true
+      - type: volume
+        source: approvals_grant
+        target: /run/r7-grant
+        read_only: true
+      - type: volume
+        source: approvals_sonar_credential
+        target: /run/r7-sonar-token
+        read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "-m", "fortis_approvals.r7_unified_server", "health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  approvals_state:
+    external: true
+    name: fortis-approvals-state
+  approvals_identity:
+    external: true
+    name: fortis-approvals-tls-identity
+  approvals_grant:
+    external: true
+    name: fortis-approvals-machine-grant
+  approvals_sonar_credential:
+    external: true
+    name: fortis-approvals-sonar-credential

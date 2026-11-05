@@ -1,0 +1,1 @@
+"""SonarCloud integration layout tests."""

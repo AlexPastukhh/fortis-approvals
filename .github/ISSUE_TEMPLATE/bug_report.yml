@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible source or offline-test problem.
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never include real tokens, grants, private keys, cookies, database files,
+        production hostnames, or private project data. Use synthetic examples only.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What failed, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Offline reproduction
+      description: Include exact commands and sanitized output.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, OS, and commit SHA.
+    validations:
+      required: true

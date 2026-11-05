@@ -1,0 +1,62 @@
+# Isolated review instance. Never use this file for production cutover.
+# Host ports 19203/19204 map to the image's fixed internal ports 19103/19104.
+# State must be restored from the verified R7 backup into the dedicated review volume.
+services:
+  fortis-review:
+    image: fortis-approvals-gateway:modularized-review-origin-20261105
+    pull_policy: never
+    container_name: fortis-gateway-modularized-review-20261105
+    restart: "no"
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 100
+    environment:
+      FORTIS_OWNER_ORIGIN: "http://localhost:19203"
+      FORTIS_MACHINE_HOST: "host.docker.internal:19204"
+      FORTIS_SONAR_REGION: "eu"
+      FORTIS_SONAR_ORGANIZATIONS: "alexpastukhh"
+      FORTIS_SONAR_PROJECT_KEY: "AlexPastukhh_obs-planning-docs"
+    ports:
+      - "127.0.0.1:19203:19103"
+      - "127.0.0.1:19204:19104"
+    volumes:
+      - type: volume
+        source: review_state
+        target: /state
+      - type: volume
+        source: r7_identity
+        target: /run/r7-identity
+        read_only: true
+      - type: volume
+        source: r7_grant
+        target: /run/r7-grant
+        read_only: true
+      - type: volume
+        source: r7_sonar_token
+        target: /run/r7-sonar-token
+        read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "-m", "fortis_approvals.r7_unified_server", "health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  review_state:
+    external: true
+    name: fortis-r7-state-review-20261105
+  r7_identity:
+    external: true
+    name: fortis-r7-identity
+  r7_grant:
+    external: true
+    name: fortis-r7-grant
+  r7_sonar_token:
+    external: true
+    name: fortis-r7-sonar-token
