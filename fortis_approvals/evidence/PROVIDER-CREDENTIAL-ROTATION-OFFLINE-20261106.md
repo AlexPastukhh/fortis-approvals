@@ -55,3 +55,8 @@ The container registry still has 18 stable cases; it links technical owners and
 separates source readiness from owner/live acceptance. Root navigation clarifies
 that admitted native GitHub uses Gateway; the legacy helper section is not its
 publication path. These are navigation/source checks, not a new-provider live test.
+
+The active navigation audit checked 26 entry/owner/use-case files and 229 local
+or mapped repository links/anchors, with no missing targets. Content review found
+two stale PR-ASK summaries in the agent guide; they were replaced by links to the
+single native policy owner. Runtime status and historical evidence remain separate.

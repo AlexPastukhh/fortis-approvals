@@ -41,7 +41,9 @@ schemas; после подключения используется общий �
 HTTP, нестандартный порт, собственный CA/mTLS, OAuth refresh, подпись запросов,
 webhooks/streaming, файлы и пустой `204` response требуют отдельного trusted
 transport/протокола и его проверок. До его реализации не объявлять API готовым.
-Пределы штатного transport: request body 256 KiB, response по умолчанию 256 KiB
+Имена `Route.query_keys` сейчас соответствуют `[a-z][a-z0-9_]*`; API с другими
+именами query-параметров требует адаптации transport. Пределы штатного transport:
+request body 256 KiB, response по умолчанию 256 KiB
 (настраивается trusted source до 1 MiB), JSON обязателен и для успешного ответа.
 Наличие scaffold/token/catalog не заменяет первый live acceptance provider.
 

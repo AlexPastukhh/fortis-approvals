@@ -39,7 +39,7 @@ An approval does not create missing provider permissions. Provider credentials s
 | `ASK` | This exact operation requires owner consent | Create `PENDING`; execute only after owner WebAuthn approval |
 | `DENY` | This operation is unavailable | Reject without upstream execution |
 
-Unknown operations and missing policy rules must fail closed as `DENY`. Do not assign policy by broad verb alone: one kind of creation can be allowed while another requires approval. The configured native profile uses ASK for PR creation; its operation-specific table is authoritative.
+Unknown operations and missing policy rules must fail closed as `DENY`. Do not assign policy by broad verb alone: one kind of creation can be allowed while another requires approval. The [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) owns its operation-specific rules; check live capabilities for the installed policy.
 
 Use operation-level rules and explicit scopes (organization, repository, project, branch, resource). Keep the upstream token scope as narrow as practical. If an operation is not intended to be available, withhold its actor grant/policy and avoid unnecessary upstream token scope. Implemented adapter methods alone do not provide access.
 
@@ -51,11 +51,10 @@ endpoints and accepted scope. Production remains the Sonar instance on
 GitHub/worktree live cycle in `AlexPastukhh/fortis-approvals`.
 
 - Sonar typed reads are ALLOW; `accept_issue` is ASK + owner WebAuthn for the
-  configured project. The [optional analysis-review source profile](ANALYSIS-REVIEW-CONTRACT.md) is not deployed; do not send its operations to an older runtime.
+  configured project. The [optional analysis-review source profile](ANALYSIS-REVIEW-CONTRACT.md) is disabled in the accepted runtime; source presence does not enable its operations.
 - The [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) owns the exact
-  operation/policy table. Ordinary registered task push is ALLOW; CI-file
-  changes, PR/ready/merge and cleanup require ASK. No per-commit approval is
-  needed for an ordinary task push.
+  operation/policy table and preconditions; do not maintain a second policy
+  matrix here. Check effective capabilities before acting.
 - GitHub registration is opt-in; it does not itself assign grants or policies.
   Source-present legacy methods are not automatically admitted in native mode.
 - Provider credentials stay in Gateway. The separate legacy Repo Git helper
