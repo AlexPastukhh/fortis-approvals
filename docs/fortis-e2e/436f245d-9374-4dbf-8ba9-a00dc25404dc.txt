@@ -1,3 +1,4 @@
 Native Gateway live worktree E2E
 Run: 436f245d-9374-4dbf-8ba9-a00dc25404dc
 Step: 1
+Step: 2
