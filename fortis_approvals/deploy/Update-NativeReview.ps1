@@ -11,11 +11,17 @@ $Mode=$RequestedMode; $Record=$RequestedRecord; $AnalysisConfig=$RequestedConfig
 $Image='sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d'
 $ImageRevision='2f88d92091e7d652ea0f33486fbeb38f2eaedd21'
 $PreviousPath=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\bf089ec8547f4a0bbc95004f692e70bf\record.json'
-if (-not $Record) { $Record=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033-native-v2\record.json' }
+if (-not $Record) { $Record=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033-native-v3\record.json' }
 $script:RecordPath=[IO.Path]::GetFullPath($Record)
 $PriorAttemptPath=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033\record.json'
+$PriorNativeAttemptPath=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033-native-v2\record.json'
 $script:Helper64=Code64 (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'github_pilot_helpers.py') -Raw)
 
+function Set-Step {
+    param([string]$Name)
+    $script:Step=$Name
+    Write-Host ('FORTIS_REVIEW_STEP_' + $Name)
+}
 function Json-Items {
     param([string]$Text)
     # ConvertFrom-Json in Windows PowerShell 5.1 returns a root array as one object.
@@ -27,11 +33,17 @@ function Docker-Json {
     param([string[]]$Arguments)
     Json-Items (Docker-Text $Arguments)
 }
-function Run-Python {
-    param([string]$Code,[string]$InputText='', [string[]]$Arguments=@())
+function Repo-Python-Arguments {
+    param([string]$Code)
     $Encoded=Code64 $Code
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<review-update>','exec'))"
-    Private-Process ($Arguments + @('python','-I','-B','-c',$Wrapper)) $InputText
+    @('exec','-i','--user','1000:1000','fortis-repo-test','python3','-I','-B','-c',$Wrapper)
+}
+function Repo-Python {
+    param([string]$Code,[string]$InputText='')
+    $Arguments=@(Repo-Python-Arguments $Code)
+    try { Private-Process $Arguments $InputText }
+    catch { throw ('UPDATE_REPO_CLIENT_PROBE_FAILED: ' + $_.Exception.Message) }
 }
 function Image-Python {
     param([string]$Code,[string]$InputText='')
@@ -98,16 +110,50 @@ function Admit-Update {
         status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     $Public=Public-Inspect $C
     if ($Candidate) {
-        if ($C.Config.Labels.'io.fortis.review-update' -cne $script:R.runId) { throw 'UPDATE_CONTAINER_PROVENANCE_INVALID' }
+        if ($C.Config.Labels.'io.fortis.review-update' -cne $P.runId) { throw 'UPDATE_CONTAINER_PROVENANCE_INVALID' }
         $Entries=@($Public.Config.Env | Where-Object { $_.StartsWith('FORTIS_ANALYSIS_REVIEW_CONFIG=') })
-        if ($script:R.analysisConfig) {
-            if ($Entries.Count -ne 1 -or $Entries[0] -cne ('FORTIS_ANALYSIS_REVIEW_CONFIG=' + $script:R.analysisConfig)) {
+        if ($P.analysisConfig) {
+            if ($Entries.Count -ne 1 -or $Entries[0] -cne ('FORTIS_ANALYSIS_REVIEW_CONFIG=' + $P.analysisConfig)) {
                 throw 'UPDATE_ANALYSIS_CONFIG_CHANGED'
             }
             $Public.Config.Env=@($Public.Config.Env | Where-Object { -not $_.StartsWith('FORTIS_ANALYSIS_REVIEW_CONFIG=') })
         } elseif ($Entries.Count) { throw 'UPDATE_UNEXPECTED_ANALYSIS_CONFIG' }
     }
     $null=Helper @{action='admit';container=$Public;expected=$E;pilot=$true} -Image $Image
+}
+function Check-PriorNativeAttempt {
+    param($CanonicalPrevious)
+    if (-not (Test-Path -LiteralPath $PriorNativeAttemptPath)) { return '' }
+    $SavedPath=$script:RecordPath
+    try {
+        $script:RecordPath=$PriorNativeAttemptPath; Assert-RecordAcl
+        $A=Get-Content -LiteralPath $PriorNativeAttemptPath -Raw | ConvertFrom-Json
+    } finally { $script:RecordPath=$SavedPath }
+    if ($A.schema -ne 5 -or $A.stateProfile -cne 'native-v1' -or $A.phase -cne 'Returned' -or
+        $A.image -cne $Image -or $A.imageRevision -cne $ImageRevision -or $A.analysisConfig -or
+        $A.priorAttemptHash -cne (Check-PriorAttempt $CanonicalPrevious) -or
+        $A.runId -cnotmatch '^[0-9a-f]{32}$' -or
+        $A.pilotName -cne ('fortis-github-pilot-' + $A.runId) -or
+        $A.stateVolume -cne ('fortis-github-pilot-state-' + $A.runId) -or
+        -not (Same-Json $A.previous $CanonicalPrevious) -or
+        $A.previousRecordHash -cne (Get-FileHash -LiteralPath $PreviousPath -Algorithm SHA256).Hash) {
+        throw 'UPDATE_PRIOR_NATIVE_ATTEMPT_NOT_SAFELY_RETURNED'
+    }
+    foreach ($Key in @('owner','repository','tokenVolume','filePrBranch','ciReads','nativeWorktree','requiredWorkflows','bootstrapTask')) {
+        if ($A.$Key -cne $CanonicalPrevious.$Key) { throw 'UPDATE_PRIOR_NATIVE_CONFIG_CHANGED' }
+    }
+    if ($A.pilotId -cnotmatch '^[0-9a-f]{64}$' -or -not $A.sourceReceipt) {
+        throw 'UPDATE_PRIOR_NATIVE_RESOURCES_REQUIRE_REVIEW'
+    }
+    $C=Container $A.pilotId
+    if ($C.State.Status -cne 'exited') { throw 'UPDATE_PRIOR_NATIVE_CONTAINER_NOT_STOPPED' }
+    Admit-Update $C $A -Candidate -AllowUnhealthy
+    Assert-Volume $A.stateVolume; Assert-OnlyWriter $A.stateVolume
+    $V=@(Docker-Json @('volume','inspect',$A.stateVolume))[0]
+    if ($V.Labels.'io.fortis.review-update' -cne $A.runId) { throw 'UPDATE_PRIOR_NATIVE_STATE_PROVENANCE_INVALID' }
+    $null=Helper @{action='inspect';github=$true;native=$true} -Image $Image -Mounts @('--mount',
+        ('type=volume,source=' + $A.stateVolume + ',target=/source,readonly'))
+    return (Get-FileHash -LiteralPath $PriorNativeAttemptPath -Algorithm SHA256).Hash
 }
 function Source-Receipt {
     Helper @{action='inspect';github=$true;native=$true} -Image $script:R.previous.image -Mounts @('--mount',
@@ -135,7 +181,7 @@ function Find-Candidate {
 }
 function Assert-UpdateRecord {
     $P=Check-PreviousRecord
-    if ($script:R.schema -ne 5 -or $script:R.stateProfile -cne 'native-v1' -or $script:R.image -cne $Image -or $script:R.imageRevision -cne $ImageRevision -or
+    if ($script:R.schema -ne 5 -or $script:R.updaterVersion -ne 3 -or $script:R.stateProfile -cne 'native-v1' -or $script:R.image -cne $Image -or $script:R.imageRevision -cne $ImageRevision -or
         $script:R.runId -cnotmatch '^[0-9a-f]{32}$' -or
         $script:R.pilotName -cne ('fortis-github-pilot-' + $script:R.runId) -or
         $script:R.stateVolume -cne ('fortis-github-pilot-state-' + $script:R.runId) -or
@@ -147,6 +193,9 @@ function Assert-UpdateRecord {
     }
     if ($script:R.priorAttemptHash -and $script:R.priorAttemptHash -cne (Check-PriorAttempt $P)) {
         throw 'UPDATE_PRIOR_ATTEMPT_RECORD_CHANGED'
+    }
+    if ($script:R.priorNativeAttemptHash -and $script:R.priorNativeAttemptHash -cne (Check-PriorNativeAttempt $P)) {
+        throw 'UPDATE_PRIOR_NATIVE_ATTEMPT_RECORD_CHANGED'
     }
     foreach ($Key in @('owner','repository','tokenVolume','filePrBranch','ciReads','nativeWorktree','requiredWorkflows','bootstrapTask')) {
         if ($script:R.$Key -cne $P.$Key) { throw 'UPDATE_NATIVE_CONFIG_CHANGED' }
@@ -227,9 +276,17 @@ r=g.post('/v1/reads',dict(requestId=str(uuid.uuid4()),service='sonarcloud',opera
 assert r['data']['status'] in ('OK','ERROR','WARN','NONE')
 print(json.dumps(dict(nativeCapabilities=True,githubRead=True,sonarRead=True)))
 '@
-    $script:R.clientChecks=(Run-Python $Code '' @('exec','-i','--user','1000:1000','fortis-repo-test')) | ConvertFrom-Json
+    return ((Repo-Python $Code) | ConvertFrom-Json)
 }
 function Test-Local {
+    $ProbeCode='print(123)'
+    $ProbeArguments=@(Repo-Python-Arguments $ProbeCode)
+    $ExpectedArguments=@('exec','-i','--user','1000:1000','fortis-repo-test','python3','-I','-B','-c')
+    if ($ProbeArguments.Count -ne 10) { throw 'UPDATE_REPO_ARGV_SELFTEST_FAILED' }
+    for ($Index=0; $Index -lt $ExpectedArguments.Count; $Index++) {
+        if ($ProbeArguments[$Index] -cne $ExpectedArguments[$Index]) { throw 'UPDATE_REPO_ARGV_SELFTEST_FAILED' }
+    }
+    if (-not $ProbeArguments[9].Contains("'" + (Code64 $ProbeCode) + "'")) { throw 'UPDATE_REPO_CODE_TRANSPORT_SELFTEST_FAILED' }
     $Items=@(Json-Items '[{"Id":"one"},{"Id":"two"}]')
     $One=@(Json-Items '[{"Id":"one"}]')
     if ($Items.Count -ne 2 -or $Items[0].Id -cne 'one' -or $Items[1].Id -cne 'two' -or
@@ -258,14 +315,17 @@ function Test-Local {
 
 if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or
     $PSVersionTable.PSEdition -cne 'Desktop') { throw 'UPDATE_WINDOWS_POWERSHELL_51_REQUIRED' }
+Set-Step 'LOCAL_SELFTEST'
 Test-Local
 if ($Mode -eq 'SelfTest') { Write-Host 'FORTIS_REVIEW_UPDATE_SELFTEST_PASS'; return }
 if ($Mode -eq 'Rollback') {
     Assert-RecordAcl
     $script:R=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
+    Set-Step 'RETURN_PREVIOUS'
     Return-Previous; return
 }
 if (Test-Path -LiteralPath $script:RecordPath) { throw 'UPDATE_RECORD_EXISTS_USE_ROLLBACK_OR_INSPECT' }
+Set-Step 'PREFLIGHT_SOURCE'
 $Previous=Check-PreviousRecord
 $PriorAttemptHash=Check-PriorAttempt $Previous
 $Baseline=Production-Baseline
@@ -282,6 +342,7 @@ from fortis_approvals.integrations.sonarcloud.gateway.analysis_transport import 
 from fortis_approvals.integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
 print('IMAGE_ANALYSIS_REVIEW_IMPORT_PASS')
 '@
+Set-Step 'IMAGE_SMOKE'
 $SmokeResult=Image-Python $Smoke
 foreach ($Marker in @('IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_PASS','IMAGE_GITHUB_IMPORT_PASS',
     'IMAGE_GITHUB_NOT_REGISTERED_PASS','IMAGE_ANALYSIS_REVIEW_IMPORT_PASS')) {
@@ -301,11 +362,15 @@ print(json.dumps(json.loads(raw),separators=(',',':')))
 '@
     $Config=Image-Python $Validate $Raw
 }
+Set-Step 'PREFLIGHT_CLIENT_READS'
+$PreflightClientChecks=Check-Clients
+Set-Step 'RETAINED_ATTEMPT_ADMISSION'
+$PriorNativeAttemptHash=Check-PriorNativeAttempt $Previous
 $RunId=[Guid]::NewGuid().ToString('N')
-$script:R=[ordered]@{schema=5;stateProfile='native-v1';priorAttemptHash=$PriorAttemptHash;runId=$RunId;phase='Prepared';stopIntent=$false;pilotId=''
+$script:R=[ordered]@{schema=5;updaterVersion=3;stateProfile='native-v1';priorAttemptHash=$PriorAttemptHash;priorNativeAttemptHash=$PriorNativeAttemptHash;runId=$RunId;phase='Prepared';stopIntent=$false;pilotId=''
     pilotName=('fortis-github-pilot-' + $RunId);stateVolume=('fortis-github-pilot-state-' + $RunId)
     image=$Image;imageRevision=$ImageRevision;previous=$Previous;previousRecordHash=(Get-FileHash -LiteralPath $PreviousPath -Algorithm SHA256).Hash
-    productionBaseline=$Baseline;sourceReceipt=$null;analysisConfig=$Config;clientChecks=$null
+    productionBaseline=$Baseline;sourceReceipt=$null;analysisConfig=$Config;preflightClientChecks=$PreflightClientChecks;clientChecks=$null;failureStep='';failureMessage=''
     owner=$Previous.owner;repository=$Previous.repository;tokenVolume=$Previous.tokenVolume;filePrBranch=$Previous.filePrBranch
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Previous.requiredWorkflows;bootstrapTask=$Previous.bootstrapTask}
 if (((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n') -ccontains $script:R.stateVolume -or
@@ -317,13 +382,16 @@ try {
     Assert-UpdateRecord
     Assert-Production; Admit-Update (Container $Previous.pilotId) $Previous
     Assert-OnlyWriter $Previous.stateVolume $Previous.pilotId
+    Set-Step 'STOP_SOURCE'
     $script:R.phase='Stopping'; $script:R.stopIntent=$true; Save-Record
     $null=Docker-Text @('stop','--timeout','20',$Previous.pilotId)
     $Old=Container $Previous.pilotId; Admit-Update $Old $Previous
     if ($Old.State.Status -cne 'exited') { throw 'UPDATE_OLD_STOP_UNCONFIRMED' }
     $script:R.phase='Stopped'; Save-Record
     Assert-OnlyWriter $Previous.stateVolume
+    Set-Step 'INSPECT_SOURCE_STATE'
     $script:R.sourceReceipt=Source-Receipt; Save-Record
+    Set-Step 'CLONE_NATIVE_STATE'
     $script:R.phase='Cloning'; Save-Record
     $null=Docker-Text @('volume','create','--label',('io.fortis.review-update=' + $RunId),$script:R.stateVolume)
     Assert-Volume $script:R.stateVolume; Assert-OnlyWriter $script:R.stateVolume
@@ -334,13 +402,18 @@ try {
         ('type=volume,source=' + $script:R.stateVolume + ',target=/target'))
     if (-not (Same-Json $Cloned $script:R.sourceReceipt)) { throw 'UPDATE_CLONE_RECEIPT_MISMATCH' }
     Check-RetainedSource; Assert-Production
+    Set-Step 'CREATE_REPLACEMENT'
     Create-Replacement
     Assert-OnlyWriter $script:R.stateVolume
+    Set-Step 'START_REPLACEMENT'
     $script:R.phase='Starting'; Save-Record
     $null=Docker-Text @('start',$script:R.pilotId)
     Wait-Healthy $script:R.pilotId; Admit-Update (Container $script:R.pilotId) $script:R -Candidate
     Assert-OnlyWriter $script:R.stateVolume $script:R.pilotId
-    Check-Clients; Check-RetainedSource; Assert-Production
+    Set-Step 'CLIENT_READBACK'
+    $script:R.clientChecks=Check-Clients
+    Set-Step 'FINAL_VERIFY'
+    Check-RetainedSource; Assert-Production
     $script:R.phase='Complete'; Save-Record
     [ordered]@{image=$Image;record=$script:RecordPath;review='http://localhost:19203';previousRetained=$true
         productionUnchanged=$true;analysisProfileConfigured=[bool]$Config;newOperationsLiveVerified=$false
@@ -348,7 +421,9 @@ try {
     Write-Host 'FORTIS_REVIEW_IMAGE_UPDATE_PASS'
     if (-not $Config) { Write-Host 'ANALYSIS_OPERATIONS_DISABLED_CONFIGURATION_PENDING' }
 } catch {
-    $Failure=$_.Exception.Message
+    $Failure=('step=' + $script:Step + '; ' + $_.Exception.Message)
+    $script:R.failureStep=$script:Step; $script:R.failureMessage=$Failure
+    try { Save-Record } catch { Write-Warning 'UPDATE_FAILURE_RECORD_WRITE_FAILED' }
     try { Return-Previous } catch { Write-Warning ('UPDATE_RETURN_INCOMPLETE: ' + $_.Exception.Message) }
     throw ('REVIEW_UPDATE_FAILED: ' + $Failure + '; record=' + $script:RecordPath)
 }

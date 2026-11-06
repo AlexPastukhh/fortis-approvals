@@ -23,13 +23,14 @@ OWNER-REPORTED: Windows main обновлён до того же source SHA; с�
 `sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`
 с revision label этого commit. Offline smoke после явного добавления
 `/opt/fortis` в `sys.path` прошёл, включая analysis-review imports.
-Новый image ещё не запущен; исходный native runtime в таблице не заменён.
-OWNER-REPORTED: первая попытка [owner-run updater](WINDOWS-REVIEW-UPDATE.md)
-остановилась на старом allowlist state и выдала маркер возврата прежнего review.
-LIVE-VERIFIED после возврата: native capabilities отвечают, Sonar read — `OK`.
-Это не host inspect всех контейнеров и не подтверждение нового image. Native-aware
-исправление подготовлено; его Windows запуск остаётся MANUAL-PENDING.
-[Evidence и причина отказа](../../fortis_approvals/evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md).
+Постоянный переход на новый image не подтверждён; исходный review возвращён
+по owner output. OWNER-REPORTED: две попытки [updater](WINDOWS-REVIEW-UPDATE.md)
+завершились возвратом: сначала legacy state allowlist, затем process exit 127.
+LIVE-VERIFIED после второго возврата: точный client probe через Repo `python3`
+успешно прочитал native capabilities, GitHub branches и Sonar quality gate.
+Это не host inspect или image cutover PASS. Исправление Repo exec/preflight
+подготовлено; полный Windows запуск v3 остаётся MANUAL-PENDING.
+[Evidence и причины отказов](../../fortis_approvals/evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md).
 
 ## Что завершено
 

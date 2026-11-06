@@ -7,8 +7,8 @@ helpers. The state helper now adds an explicit native profile while retaining
 strict legacy behavior. Protected historical worktrees/records are unchanged.
 New arrays are explicitly enumerated at the `ConvertFrom-Json` boundary for PowerShell 5.1.
 
-Targeted offline checks after the native-state correction: 37 tests passed
-(6 updater config/embedded-code/package checks, 7 real native-layout preservation
+Targeted offline checks after the Repo interpreter correction: 38 tests passed
+(7 updater config/embedded-code/package/exec-contract checks, 7 real native-layout preservation
 and denial regressions, 14 legacy state/admission/scenario regressions and
 10 image/storage source gates). They cover exact
 config owner/project, malformed/duplicate/extra fields and workflow paths,
@@ -42,12 +42,35 @@ LIVE-VERIFIED after owner-reported return: authenticated native capabilities
 respond at the isolated machine ingress and Sonar `get_quality_gate` returns
 `OK`. This proves those reads respond, not a host image/health inventory.
 
-MANUAL-PENDING: corrected native clone/start/health/readback/return on Windows.
-The retry uses a new protected record, verifies the old attempt safely returned
-without created resources, and preserves/hash-binds the old record. No Windows
-Docker lifecycle action was performed from Fortis Repo. PowerShell is unavailable
-here; the corrected script still runs actual owner-side local selftests before
-Docker and no Windows execution PASS is inferred from the offline suite.
+OWNER-REPORTED second attempt: standalone source `0b72155f317bf5165b40d403547230e2b4d25076`,
+file SHA256 `64c5e4d3a321a5569e2cb4a1962fe63c7f60ed2eb74263e90f38dc56257784dd`.
+Reported `PILOT_PRIVATE_PROCESS_FAILED:127:` followed by
+`FORTIS_REVIEW_UPDATE_RETURNED_PREVIOUS`. There was no update PASS.
+
+SOURCE-VERIFIED: the Repo client probe invoked `docker exec ... python`, although
+the actual Repo environment has `/usr/bin/python3` and no `python` command.
+Image-side helpers use the Gateway image interpreter correctly; the Repo call
+is the distinct missing executable. The corrected helper explicitly builds
+`docker exec -i --user 1000:1000 fortis-repo-test python3 -I -B -c ...`.
+
+LIVE-VERIFIED after the second return: extracted the exact embedded client probe
+from the corrected script and ran it with `/usr/bin/python3 -I -B -c` inside
+Fortis Repo. Native capabilities, GitHub branches and Sonar quality gate reads
+all succeeded through authenticated Gateway. This verifies the actual code,
+imports and Repo interpreter; it does not reproduce Windows Docker CLI transport.
+
+SOURCE-VERIFIED: client preflight now runs before any source stop. The same
+argument builder is checked in the owner-side PowerShell selftest. Step markers
+and protected failureStep/failureMessage preserve failure context across return.
+The v3 record hash-binds prior attempts, validates the retained stopped v2
+candidate/state read-only and takes a new source clone; it never reuses or deletes
+the stale fork.
+
+MANUAL-PENDING: corrected v3 Windows transport, retained-attempt admission and
+complete clone/start/readback/return. No Windows Docker lifecycle action was
+performed from Fortis Repo. PowerShell is unavailable here; actual owner-side
+selftests run before Docker. No v3 Windows execution PASS is inferred from the
+offline suite or the real Repo probe.
 
 SOURCE-VERIFIED: the standalone bundle is reproducible from a clean source
 commit. It embeds exact Python asset bytes and selected unchanged pilot

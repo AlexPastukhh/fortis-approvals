@@ -56,6 +56,14 @@ class UpdateConfigTests(unittest.TestCase):
         for raw in ('not json', '{"owner":"Other","owner":"AlexPastukhh"}', ''):
             with self.subTest(raw=raw), self.assertRaises(Denied): validate(raw)
 
+    def test_repo_exec_contract_and_client_probe_precede_source_stop(self):
+        source = SCRIPT.read_text()
+        function = re.search(r'function Repo-Python-Arguments \{(.*?)\n\}', source, re.S).group(1)
+        self.assertIn("@('exec','-i','--user','1000:1000','fortis-repo-test','python3','-I','-B','-c',$Wrapper)", function)
+        self.assertLess(source.index('$PreflightClientChecks=Check-Clients'), source.index("Set-Step 'STOP_SOURCE'"))
+        self.assertIn("$script:R.clientChecks=Check-Clients", source)
+        self.assertIn("UPDATE_REPO_ARGV_SELFTEST_FAILED", source)
+
     def test_all_embedded_python_compiles_without_host_or_provider_access(self):
         for code in re.findall(r"\$\w+=@'\n(.*?)\n'@", SCRIPT.read_text(), re.S):
             compile(code, '<updater-embedded-python>', 'exec')

@@ -14,7 +14,7 @@ PowerShell 5.1. Это ограниченный переход от принят
   Проверяются точные ID/name/image/state/token/native scope и ACL. Record не
   переписывается; bootstrap worktree и retained M3 сохраняются.
 - Новый private record по умолчанию находится в
-  `%LOCALAPPDATA%\Fortis\GitHubPilot\review-update-515ad033-native-v2\record.json`.
+  `%LOCALAPPDATA%\Fortis\GitHubPilot\review-update-515ad033-native-v3\record.json`.
   Intent записывается до мутаций. State копируется в новый пустой named volume;
   исходный контейнер, state и image остаются. Автоматического удаления нет.
 - State helper использует явный native profile: помимо прежних БД сохраняет
@@ -38,6 +38,14 @@ PowerShell 5.1. Это ограниченный переход от принят
 отсутствия clone receipt/созданного контейнера и любых planned resources.
 Его hash записывается в новый record; старый файл не перезаписывается.
 
+Record второй попытки `review-update-515ad033-native-v2/record.json` также
+сохраняется. Если он существует, проверяются `Returned`, исходный record/scope,
+точный остановленный candidate, label/identity его state volume, отсутствие
+writer и корректность retained native state через RO inspect. Его контейнер и
+state остаются; для нового запуска берётся свежая копия текущего исходного
+review. Старый fork не используется повторно: после возврата могли появиться
+новые requests/tasks/artifacts. Оба record hash закрепляются в новом record.
+
 ## Один запуск
 
 Для передачи создаётся один standalone `.ps1` через
@@ -59,7 +67,11 @@ review release; production import/RUN процесс ею не заменяет�
 
 Внутри запуска до любых Docker-команд проверяются реальные PowerShell 5.1
 JSON arrays, private stdin/subprocess transport, NTFS ACL и atomic record
-replacement. Ошибка останавливает запуск. Отдельная ручная диагностика для
+replacement, а также точные аргументы Repo exec (`python3`, UID и container).
+До остановки исходного review выполняется тот же полный client probe, что и
+после запуска: native capabilities, GitHub branches и Sonar quality gate.
+Repo использует `python3`; Gateway image использует свой `python`.
+Ошибка останавливает запуск. Отдельная ручная диагностика для
 этого не требуется. `-Mode SelfTest` запускает только эти локальные проверки.
 
 По умолчанию сохраняется прежний runtime profile. Новый код в image сам по
@@ -87,6 +99,9 @@ smoke, clone, health или readback. При startup failure скрипт пыт
 только свою admitted замену, проверить неизменность исходного stopped state и
 вернуть прежний review. Маркер: `FORTIS_REVIEW_UPDATE_RETURNED_PREVIOUS`.
 При неоднозначности выводит `UPDATE_RETURN_INCOMPLETE`; сохраняет все артефакты.
+Маркеры `FORTIS_REVIEW_STEP_<name>` обозначают текущий шаг. Ошибка после начала
+переключения сохраняет `failureStep`/`failureMessage` в protected record; итоговый
+error содержит исходный шаг даже после возврата.
 
 После прерывания сначала читается записанный record. Повтор Start с тем же
 record запрещён; `-Mode Rollback` продолжает только безопасный возврат по нему,
