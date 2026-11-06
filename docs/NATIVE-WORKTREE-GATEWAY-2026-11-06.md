@@ -42,10 +42,12 @@ Legacy pilot profiles keep their own policy. Ready, merge, workflow changes and
 cleanup retain ASK. Creation keeps durable IDs, frozen ref snapshots, result
 verification and UNCERTAIN/no-blind-retry behavior.
 
-The running image may still use the preceding ASK policy until the accepted
-source is built/deployed. Check live capabilities and the
+The isolated review image has been updated and its live capabilities advertise
+PR creation as ALLOW. Deployment and effect verification are recorded in
+[live evidence](../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md).
+For other/future runtimes, check capabilities and the
 [current-state owner](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md); a source merge
-alone does not change it.
+alone does not change an installed image.
 
 ## Caller authorization for ASK submission
 

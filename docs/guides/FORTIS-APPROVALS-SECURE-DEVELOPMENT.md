@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | Production `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Sonar READ/ASK; image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. GitHub/native обновление сюда не переносилось |
 | Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; Native/GitHub/Sonar + общий extension framework; image/record и границы проверки ниже. Analysis profile выключен |
-| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; перед этой документационной задачей сверено `a1bb13415191cf4e22d295996a154864d3fb9af0`, чистый |
+| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; перед live-проверкой PR ALLOW сверено `e48e59ae54b456a390a02a63551b8e4f2ea4a4fc`, чистый |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
 Core/Owner Portal. Native запуск сохранил M3 для возврата, owner credentials,
@@ -39,9 +39,9 @@ READY при запуске означал готовность, а не E2E PAS
 
 Подробные SHA, request IDs и границы проверки находятся только в
 [live evidence](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
-Матрица native-политик не дублируется здесь: обычный task push — ALLOW,
-изменения CI, PR/ready/merge/cleanup — ASK; точные условия — в
-[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
+Матрица native-политик и точные условия живут в
+[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md); live capabilities
+после обновления review сверены с ним.
 
 ## Граница доверия и исполнения
 
@@ -61,7 +61,7 @@ credential ему не передаётся. Core/owner decision и локаль
 
 ## Известные ограничения
 
-- Дополнительные операции Sonar/CI реализованы как отдельный [source-кандидат](../ANALYSIS-REVIEW-CONTRACT.md), ещё не внедрённый в runtime. В действующем профиле Quality Gate относится
+- Дополнительные операции Sonar/CI присутствуют в image как [source-кандидат](../ANALYSIS-REVIEW-CONTRACT.md), но их runtime profile выключен. В действующем профиле Quality Gate относится
   к `CURRENT_DEFAULT_BRANCH`, `prShaBinding=NOT_VERIFIED_D2`; Sonar `OK` не
   подтверждает анализ конкретного GitHub SHA. `ACCEPTED` не означает исправление кода.
 - Source CI для merge привязан к точному PR head; это проверка GitHub CI,
@@ -97,23 +97,16 @@ volumes, от которых зависит owner deployment record. Git хра�
 и архивы сохраняют provenance, а не текущие next steps.
 
 Общий [extension framework](../INTEGRATION-EXTENSIONS.md) активирован в review
-с пустым списком новых providers. OWNER-REPORTED: image
-`sha256:bbbcda6a5ff86f8d58602f0dff61196d984d19ba15ccd0c39c903b30caf08cba`
-(runtime source `48315a2ada6df40c6e300e8e7359e92316a7b9a2`, исправленный Windows
-controller из `a1bb13415191cf4e22d295996a154864d3fb9af0`), protected record
-`%LOCALAPPDATA%\Fortis\GatewayReleases\1fe554004e7c41ffb6be3405be9f4518\record.json`.
-LIVE-VERIFIED из Repo: catalog digest
-`19632eb46e842ded25d4abf7fc1b41e586e7b536a0f414bbbf133adb69252271`, native capabilities,
-GitHub main read и прежний Sonar default-branch gate. Проверки и пределы — в
-[evidence активации](../../fortis_approvals/evidence/EXTENSIONS-LIVE-ACTIVATION-20261106.md).
+с пустым списком новых providers. Последний owner-run обновил image до принятого
+source с PR ALLOW. Repo подтвердил capabilities, GitHub main read, прежний Sonar
+default-branch gate и неизменный пустой catalog. Текущие image/source/record,
+configuration digest и проверка PR creation хранятся в
+[live evidence](../../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md).
+Предыдущее внедрение сохранено в
+[extension evidence](../../fortis_approvals/evidence/EXTENSIONS-LIVE-ACTIVATION-20261106.md).
 
-Optional Sonar/CI analysis profile остаётся выключенным: контрольный
-`list_project_branches` вернул 403. Для этих операций нужны согласованные profile,
-CI binding/manifest, permissions и live acceptance. Новый framework их автоматически
-не включает; default-branch OK не доказывает PR/SHA binding.
-
-Изменение создания PR на ALLOW подготовлено в следующем source commit после
-use-case навигации/правила ASK. В текущем image PR creation ещё ASK (live
-capabilities проверены). ALLOW ограничен точным native actor + configured repo;
-для применения нужен новый image. Нормативная source policy — в
-[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
+Optional Sonar/CI analysis profile остаётся выключенным: последнее отдельное
+контрольное чтение `list_project_branches` вернуло 403. Для этих операций нужны
+согласованные profile, CI binding/manifest, permissions и live acceptance.
+Обновление image и общий framework их автоматически не включают;
+default-branch OK не доказывает PR/SHA binding.

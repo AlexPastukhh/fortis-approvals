@@ -33,10 +33,17 @@ No remote was created for Container, and no unrelated changes were committed.
   new policy, no provider secrets or Docker/Windows substitute was used.
 - Manifests and Gateway syntax are verified before commit.
 
-## Live boundary
+## Live boundary at source validation
 
 Existing review still advertises create_pull_request in askGitHub. A new accepted
 Gateway image is required for ALLOW. Legacy pilot policies remain unchanged.
 Extension activation evidence separately records empty catalog, native/GitHub/
 legacy Sonar reads and optional analysis HTTP 403. New Sonar/CI operations and
 new provider token/effect acceptance are not claimed.
+
+## Subsequent deployment
+
+The owner subsequently updated review. The resulting live capabilities and PR
+creation effect are recorded separately in
+[PR ALLOW live evidence](PR-CREATION-ALLOW-LIVE-20261106.md); the preceding section
+retains the boundary observed during source validation.
