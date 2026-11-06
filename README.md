@@ -4,6 +4,15 @@ Canonical source for the Fortis Approvals Gateway: typed service operations,
 ALLOW/ASK/DENY policy, owner WebAuthn decisions and durable execution receipts.
 Provider credentials remain in Gateway; Repo uses a separate machine grant.
 
+## Documentation through use cases
+
+Start from the container registry through `/workspace/repo/README.md` in Fortis
+Repo. It owns common Docker/Gateway/client/token/GitHub/Actions/Mirror goals;
+this repository owns their detailed contracts, deployed state and evidence.
+Add/update the relevant use case when introducing a workflow. Application-specific
+use cases belong to the application repo. Do not duplicate the container registry.
+Read [AGENTS.md](AGENTS.md) for standing authorization to submit ASK proposals.
+
 ## Start here
 
 | Need | Document |

@@ -19,7 +19,7 @@ All grants are restricted to the configured owner/repository and authenticated R
 | workspace.sync_task | ALLOW | Clean task, exact HEAD and upstream main; ordinary merge |
 | github.push_commits | ALLOW | Registered task/*, exact existing Git commit SHA and expected remote SHA, ancestry and atomic remote lease |
 | github.push_commits affecting .github/workflows | ASK | Every new commit is scanned, including intermediate changes reverted at the tip; preview bound to bundle digest |
-| github.create_pull_request | ASK | Registered task branch to main; draft or regular PR |
+| github.create_pull_request | ALLOW | Exact installed actor + configured repository only; registered task branch to main; draft or regular PR. Other actor/repo rules are unchanged |
 | github.mark_pr_ready | ASK | Open draft from this repository, exact HEAD/node ID |
 | github.merge_pull_request | ASK | Open ready PR, exact HEAD, required workflow ID 408327525 successful for that HEAD; merge method merge |
 | github.update_workflow_file | ASK | Existing dedicated typed workflow operation on a registered task branch; separate GitHub workflow permission |
@@ -31,6 +31,30 @@ All grants are restricted to the configured owner/repository and authenticated R
 | Sonar reads / accept_issue | Existing ALLOW / ASK | Existing Sonar integration unchanged |
 
 GitHub token permissions already used by the accepted pilot cover Contents read/write, Pull requests read/write and Actions read. Checks and commit-status reads need their corresponding read permissions if used. Workflow-file publication additionally needs GitHub workflow write permission. No token belongs in Repo or chat.
+
+## PR creation source rollout
+
+The table describes this source policy. The owner-requested PR ALLOW is an exact
+(actor, github, create_pull_request, configured repository) rule; it does not
+change the generic ASK fallback, grant another actor/repo, or relax registered
+task/main/ref checks. Native capabilities derive the PR policy from Core.
+Legacy pilot profiles keep their own policy. Ready, merge, workflow changes and
+cleanup retain ASK. Creation keeps durable IDs, frozen ref snapshots, result
+verification and UNCERTAIN/no-blind-retry behavior.
+
+The running image may still use the preceding ASK policy until the accepted
+source is built/deployed. Check live capabilities and the
+[current-state owner](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md); a source merge
+alone does not change it.
+
+## Caller authorization for ASK submission
+
+The user permits preparing and submitting necessary ASK proposals within the
+assigned task without an extra conversational permission round. Submit the
+reviewable intent directly; the external effect remains behind Owner Portal.
+A chat confirmation is not a WebAuthn proof. A real outer MCP/tool-review block
+must still be reported and respected. Container UC-CONT-007 owns this usage route;
+this contract owns the operation policy and preconditions.
 
 ## Execution boundary
 

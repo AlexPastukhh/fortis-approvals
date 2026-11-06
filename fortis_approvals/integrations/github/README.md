@@ -21,9 +21,10 @@ owns results and limits. No reprovisioning is needed for the accepted review.
 | Native Repo client/worker and closed machine routes | `../../workflow/client.py`, `../../workflow/worker.py`, `../../workflow/ingress.py` |
 
 The [native contract](../../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) is the
-single current operation/policy table. Source implementation is broader than
+single source operation/policy table; deployed scope is in current state. Source implementation is broader than
 admitted operations. Native includes `push_commits` and `mark_pr_ready`; ordinary
-registered task push is ALLOW. Never infer access from a client method or the
+registered task push is ALLOW. This source also permits PR creation for the exact
+installed actor/configured repo; deployment of that change is tracked separately. Never infer access from a client method or the
 provider token alone. Reads use closed public projections, not arbitrary provider
 responses or raw file contents; `get_file` reports verified hashes/size.
 

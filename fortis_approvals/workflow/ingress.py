@@ -41,8 +41,10 @@ class NativeIngress:
         core=self.broker.core
         if path=='/v1/workspace/capabilities':
             require(not body,'WORKFLOW_PARAMS_INVALID')
+            pr_policy=core._policy(actor,dict(service='github',operation='create_pull_request',target=self.github.config.repository))
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
-                allowGitHub=['push_commits'],askGitHub=['create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file'],
+                allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
+                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
                 sensitivePush='ASK',gitHubCredentialInRepo=False)
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')

@@ -171,8 +171,8 @@ class NativeTLS(unittest.TestCase):
         self.login()
         pr_id=str(uuid.uuid4())
         self.assertEqual(self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Offline PR',draft=True,
-            request_id=pr_id,reason='Owner preview exact branch')['state'],'PENDING')
-        self.assertEqual(self.decide(pr_id,'approve')[1]['state'],'EXECUTED')
+            request_id=pr_id,reason='Create bounded native draft PR')['state'],'EXECUTED')
+        self.assertIsNone(self.core._read(pr_id)['decision'])
         ready=str(uuid.uuid4())
         self.assertEqual(self.flow.github.mark_pr_ready('sandbox',1,head,request_id=ready,reason='Mark reviewed draft ready')['state'],'PENDING')
         self.assertEqual(self.decide(ready,'approve')[1]['state'],'EXECUTED')
@@ -203,6 +203,56 @@ class NativeTLS(unittest.TestCase):
         self.assertFalse((self.fixture.worktrees/'real-cycle').exists())
         with self.assertRaises(Denied):
             self.machine.get_app().github.task('sandbox','real-cycle')
+
+    def test_regular_pr_allow_is_exact_actor_repo_without_owner_and_replays_once(self):
+        self.create();state=self.edit_commit()
+        self.flow.publish('sandbox','real-cycle',None,state['headSha'],request_id=str(uuid.uuid4()),reason='Publish regular PR fixture')
+        capabilities=self.gateway.post('/v1/workspace/capabilities',{})
+        self.assertIn('create_pull_request',capabilities['allowGitHub'])
+        self.assertNotIn('create_pull_request',capabilities['askGitHub'])
+        ident=str(uuid.uuid4())
+        def create(title='Automatic bounded PR'):
+            return self.flow.github.create_pull_request('sandbox','task/real-cycle','main',title,draft=False,
+                request_id=ident,reason='Create PR without owner session')
+        self.assertIsNone(self.cookie)
+        self.assertEqual(create()['state'],'EXECUTED');row=self.core._read(ident)
+        self.assertIsNone(row['decision']);self.assertIsNone(row['owner'])
+        self.assertEqual(row['result']['pullRequest']['head']['sha'],state['headSha'])
+        self.assertEqual(create()['state'],'EXECUTED');self.assertEqual(self.api.posts,1)
+        with self.assertRaises(Denied):create('Different intent')
+        self.assertEqual(self.api.posts,1)
+        actor=row['actor'];query=dict(service='github',operation='create_pull_request',target='sandbox')
+        self.assertEqual(self.core._policy('unrelated-actor',query),'DENY')
+        self.assertEqual(self.core._policy(actor,{**query,'target':'foreign'}),'ASK')
+        for service,operation in (('github','mark_pr_ready'),('github','merge_pull_request'),
+                                  ('github','update_workflow_file'),('workspace','cleanup_task')):
+            self.assertEqual(self.core._policy(actor,dict(service=service,operation=operation,target='sandbox')),'ASK')
+
+    def test_pr_allow_rejects_foreign_repo_base_and_unregistered_branch(self):
+        self.create()
+        for repo,head,base in (('foreign','task/real-cycle','main'),('sandbox','task/missing','main'),
+                              ('sandbox','task/real-cycle','task/other'),('sandbox','main','main')):
+            with self.subTest(repo=repo,head=head,base=base),self.assertRaises(Denied):
+                self.flow.github.create_pull_request(repo,head,base,'Denied PR',request_id=str(uuid.uuid4()),reason='Scope denial')
+        self.assertEqual(self.api.posts,0)
+
+    def test_pr_allow_lost_response_never_retries_post(self):
+        self.create();state=self.edit_commit()
+        self.flow.publish('sandbox','real-cycle',None,state['headSha'],request_id=str(uuid.uuid4()),reason='Publish lost response fixture')
+        original=self.api.request
+        def lose(method,path,**kwargs):
+            result=original(method,path,**kwargs)
+            if method=='POST' and path.endswith('/pulls'):raise TimeoutError('Offline lost PR response')
+            return result
+        ident=str(uuid.uuid4())
+        with patch.object(self.api,'request',side_effect=lose):
+            for _ in range(2):
+                row=self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Uncertain PR',
+                    request_id=ident,reason='Same intent after lost response')
+                self.assertEqual(row['state'],'UNCERTAIN')
+        self.assertEqual(self.api.posts,1)
+        self.assertEqual(self.flow.result(ident,reconcile=True)['state'],'UNCERTAIN')
+        self.assertEqual(self.api.posts,1)
 
     def test_sensitive_workflow_in_native_push_requires_owner_and_replay(self):
         self.create();state=self.edit_commit(sensitive=True);ident=str(uuid.uuid4())
@@ -258,8 +308,8 @@ class NativeTLS(unittest.TestCase):
         self.create();state=self.edit_commit()
         self.flow.publish('sandbox','real-cycle',None,state['headSha'],request_id=str(uuid.uuid4()),reason='Normal native push')
         self.login();ident=str(uuid.uuid4())
-        self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Test PR',draft=False,request_id=ident,reason='Create non-draft')
-        self.assertEqual(self.decide(ident,'approve')[1]['state'],'EXECUTED')
+        self.assertEqual(self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Test PR',draft=False,
+            request_id=ident,reason='Create non-draft')['state'],'EXECUTED')
         self.api.ci_status='failure'
         with self.assertRaises(Denied):
             self.flow.github.merge_pull_request('sandbox',1,state['headSha'],merge_method='merge',

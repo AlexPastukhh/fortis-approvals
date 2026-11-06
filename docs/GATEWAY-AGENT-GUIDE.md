@@ -86,6 +86,20 @@ verify `EXECUTED` plus effect/receipt, not just approval. Reconcile `UNCERTAIN`
 without blindly repeating a mutation. The AI never invokes owner routes.
 Unsupported services or operations stop at the integration boundary.
 
+## One owner approval per ASK effect
+
+Within an assigned task the user authorizes the AI to submit the necessary
+reviewable ASK intents without a preliminary conversational permission question.
+Submit with the typed client, keep the same requestId, report PENDING/portal,
+then wait for Owner Portal Approve/Reject. This authorization to create a proposal
+does not impersonate owner WebAuthn or authorize unrelated effects. ALLOW runs
+within task scope; DENY is not a reason to switch credentials/channels.
+An actual outer tool-review rejection must be reported and respected.
+
+The full goal/route lives in container UC-CONT-007, reached via
+`/workspace/repo/README.md`. Container cases also own new client/provider/operation/
+token and delivery goals; the contracts here remain their technical owners.
+
 ## Adding a new service or authorization
 
 For new providers use the [extension contract](INTEGRATION-EXTENSIONS.md): one

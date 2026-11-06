@@ -82,3 +82,7 @@ branches and Sonar quality gate (CURRENT_DEFAULT_BRANCH OK; PR/SHA binding remai
 NOT_VERIFIED_D2). This proves the prior review is reachable again, not activation
 of extensions. Retry installation and its new Docker env round-trip remain pending.
 Targeted source packaging/storage checks after the controller fix: 10 PASS.
+
+Subsequent successful activation and live readback are recorded separately in
+[activation evidence](EXTENSIONS-LIVE-ACTIVATION-20261106.md). The earlier
+source/recovery snapshot above is retained; it is not the current-state owner.
