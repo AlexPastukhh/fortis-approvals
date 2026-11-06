@@ -11,7 +11,7 @@
 | Контур | Endpoints | Подтверждённое состояние |
 | --- | --- | --- |
 | Production `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Sonar READ/ASK; image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. GitHub/native обновление сюда не переносилось |
-| Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; source `06791650ca86617e5c9f951439ef8cc53ec98847`, image `sha256:e3ef9029a13284f5baadc7c1529c5d3b94a67fc9c045be1ed91950937c46c5f1`; живой цикл завершён |
+| Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; OWNER-REPORTED v3 image update PASS: source `2f88d92091e7d652ea0f33486fbeb38f2eaedd21`, image `sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`; analysis profile выключен |
 | Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; после PR №13 — `2f88d92091e7d652ea0f33486fbeb38f2eaedd21`, чистый (LIVE-VERIFIED при подготовке updater) |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
@@ -23,14 +23,17 @@ OWNER-REPORTED: Windows main обновлён до того же source SHA; с�
 `sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`
 с revision label этого commit. Offline smoke после явного добавления
 `/opt/fortis` в `sys.path` прошёл, включая analysis-review imports.
-Постоянный переход на новый image не подтверждён; исходный review возвращён
-по owner output. OWNER-REPORTED: две попытки [updater](WINDOWS-REVIEW-UPDATE.md)
-завершились возвратом: сначала legacy state allowlist, затем process exit 127.
-LIVE-VERIFIED после второго возврата: точный client probe через Repo `python3`
-успешно прочитал native capabilities, GitHub branches и Sonar quality gate.
-Это не host inspect или image cutover PASS. Исправление Repo exec/preflight
-подготовлено; полный Windows запуск v3 остаётся MANUAL-PENDING.
-[Evidence и причины отказов](../../fortis_approvals/evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md).
+OWNER-REPORTED: v3 [updater](WINDOWS-REVIEW-UPDATE.md) прошёл все шаги и выдал
+`FORTIS_REVIEW_IMAGE_UPDATE_PASS`: прежний review/state сохранён, Production
+baseline неизменён, native/GitHub/Sonar checks успешны. Две предыдущие попытки
+завершились возвратом; их records и retained artifacts сохранены.
+LIVE-VERIFIED после успешного update: точный client probe из Repo успешно прочитал
+native capabilities, GitHub branches и Sonar quality gate. Новый Sonar read
+`list_project_branches` получил HTTP 403 при `analysisProfileConfigured=false`.
+Image/host lifecycle подтверждены owner output, не отдельным Docker inspect из
+Repo. Новые grants/policies, workflow binding, permissions, CI manifest и live
+acceptance новых операций остаются незавершёнными.
+[Evidence обновления и предыдущих отказов](../../fortis_approvals/evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md).
 
 ## Что завершено
 
@@ -72,7 +75,7 @@ credential ему не передаётся. Core/owner decision и локаль
 
 ## Известные ограничения
 
-- Дополнительные операции Sonar/CI реализованы как отдельный [source-кандидат](../ANALYSIS-REVIEW-CONTRACT.md), ещё не внедрённый в runtime. В действующем профиле Quality Gate относится
+- Код дополнительных операций Sonar/CI включён в новый review image, но [analysis profile](../ANALYSIS-REVIEW-CONTRACT.md) не активирован; новые grants/policies не включены. В действующем профиле Quality Gate относится
   к `CURRENT_DEFAULT_BRANCH`, `prShaBinding=NOT_VERIFIED_D2`; Sonar `OK` не
   подтверждает анализ конкретного GitHub SHA. `ACCEPTED` не означает исправление кода.
 - Source CI для merge привязан к точному PR head; это проверка GitHub CI,

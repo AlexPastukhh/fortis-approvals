@@ -34,8 +34,10 @@ Repo helper credential or add mounts to a historical Compose file incidentally.
 of the accepted native review to the owner's prebuilt analysis-review image.
 It reuses the pilot state/ACL/admission helpers; it does not rerun provisioning.
 [Windows runbook](../../docs/guides/WINDOWS-REVIEW-UPDATE.md) owns inputs,
-startup checks, failure return and verification limits. This is a source-reviewed
-entrypoint, not a recorded live deployment or new-operation acceptance.
+startup checks, failure return and verification limits. The owner reported a
+successful v3 image update; [evidence](../evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md)
+records the result and subsequent Repo reads. The optional analysis profile
+remains disabled; this is not new-operation acceptance.
 
 ## Production references and deferred release
 

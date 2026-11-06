@@ -21,9 +21,9 @@
 исчезновением из Pending нужно измерить; HTTP 202 само по себе не доказывает
 причину задержки UI.
 
-Source-кандидат первого пункта описан в [analysis-review contract](ANALYSIS-REVIEW-CONTRACT.md): там живут операции, scopes, политики opt-in и ограничения binding. Отдельно требуется owner-reviewed deployment, CI manifest и live-проверка реальных ответов/permissions; прежний Sonar default-branch OK не заменяет такую проверку.
+Source-кандидат первого пункта описан в [analysis-review contract](ANALYSIS-REVIEW-CONTRACT.md): там живут операции, scopes, политики opt-in и ограничения binding. Owner-run image update выполнен с выключенным analysis profile. Далее требуются явный opt-in, проверенный workflow binding, CI manifest и live-проверка реальных ответов/permissions; прежний Sonar default-branch OK не заменяет такую проверку.
 
-Для owner-run обновления review подготовлен [Windows entrypoint](guides/WINDOWS-REVIEW-UPDATE.md). Его наличие и offline image smoke не закрывают live acceptance первого пункта.
+Для owner-run обновления review подготовлен [Windows entrypoint](guides/WINDOWS-REVIEW-UPDATE.md). Owner-reported PASS обновления image с выключенным profile не закрывает live acceptance первого пункта.
 
 ## Незавершённое сопровождение принятого native этапа
 

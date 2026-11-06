@@ -66,11 +66,38 @@ The v3 record hash-binds prior attempts, validates the retained stopped v2
 candidate/state read-only and takes a new source clone; it never reuses or deletes
 the stale fork.
 
-MANUAL-PENDING: corrected v3 Windows transport, retained-attempt admission and
-complete clone/start/readback/return. No Windows Docker lifecycle action was
-performed from Fortis Repo. PowerShell is unavailable here; actual owner-side
-selftests run before Docker. No v3 Windows execution PASS is inferred from the
-offline suite or the real Repo probe.
+OWNER-REPORTED successful third attempt (v3 package source
+`143f944a67b3532eae5a2402fd51560cca091b16`, published file SHA256
+`75a0d9958f3b4b6e36ab17732fc618858b6659749e5f3e2b8318772a66c6627b`):
+all step markers from LOCAL_SELFTEST through FINAL_VERIFY, followed by
+`FORTIS_REVIEW_IMAGE_UPDATE_PASS` and no parent-process exit error. Output:
+
+- image: `sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`;
+- record: `C:\Users\alexa\AppData\Local\Fortis\GitHubPilot\review-update-515ad033-native-v3\record.json`;
+- review: `http://localhost:19203`;
+- previousRetained=true, productionUnchanged=true;
+- nativeCapabilities=true, githubRead=true, sonarRead=true;
+- analysisProfileConfigured=false, newOperationsLiveVerified=false;
+- explicit marker: `ANALYSIS_OPERATIONS_DISABLED_CONFIGURATION_PENDING`.
+
+This is owner evidence of the v3 Windows transport, retained-attempt admission,
+stopped native state clone, create/start/health/readback and retained-source/
+Production checks. The success path did not exercise a v3 failure return. Prior
+return observations remain attached to the first two attempts. New container ID
+and exact state volume identity remain in the protected owner record; no
+independent Windows Docker inspect was performed from Repo.
+
+LIVE-VERIFIED after the successful update: the same extracted client probe ran
+from Repo through authenticated review ingress and passed all three reads.
+A separate typed read `sonarcloud.list_project_branches` for the pinned project
+was rejected with HTTP 403 (`FORTIS_HTTP_403`), consistent with disabled opt-in.
+No new-operation ALLOW or mutation success is claimed. No Windows Docker
+lifecycle action was performed from Fortis Repo.
+
+MANUAL-PENDING / NOT VERIFIED: activation/configuration of the analysis profile,
+provider permissions, real workflow binding and CI manifest, new-operation live
+acceptance, and complete v3 failure-return behavior. The existing native E2E
+history is not a substitute for those checks after profile activation.
 
 SOURCE-VERIFIED: the standalone bundle is reproducible from a clean source
 commit. It embeds exact Python asset bytes and selected unchanged pilot
@@ -85,4 +112,4 @@ Production or the separate pending HTTP 202 client task.
 
 [Runbook](../../docs/guides/WINDOWS-REVIEW-UPDATE.md) owns usage and failure
 semantics; [analysis contract](../../docs/ANALYSIS-REVIEW-CONTRACT.md) owns
-operation/policy/binding semantics. This evidence records no live cutover PASS.
+operation/policy/binding semantics. The image update PASS is owner-reported; optional-profile acceptance is still pending.
