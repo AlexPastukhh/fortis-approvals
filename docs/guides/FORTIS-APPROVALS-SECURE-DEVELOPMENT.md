@@ -11,8 +11,8 @@
 | Контур | Endpoints | Подтверждённое состояние |
 | --- | --- | --- |
 | Production `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Sonar READ/ASK; image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. GitHub/native обновление сюда не переносилось |
-| Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; source `06791650ca86617e5c9f951439ef8cc53ec98847`, image `sha256:e3ef9029a13284f5baadc7c1529c5d3b94a67fc9c045be1ed91950937c46c5f1`; живой цикл завершён |
-| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; после PR №11 — `54d332a12a478cd4d01b6d43d634b307092498a4`, чистый |
+| Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; по owner output updater v3: source `2f88d92091e7d652ea0f33486fbeb38f2eaedd21`, image `sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`; native/GitHub/Sonar readback PASS, analysis profile выключен |
+| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; перед extension candidate сверено `2f88d92091e7d652ea0f33486fbeb38f2eaedd21`, чистый |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
 Core/Owner Portal. Native запуск сохранил M3 для возврата, owner credentials,
@@ -95,3 +95,11 @@ volumes, от которых зависит owner deployment record. Git хра�
 для image/state/секретов нужен отдельный owner-controlled backup/restore.
 Историческая [acceptance matrix](../../fortis_approvals/deploy/FORTIS-UNIVERSAL-GATEWAY-ACCEPTANCE-MATRIX-20261101.md)
 и архивы сохраняют provenance, а не текущие next steps.
+
+Общий [extension framework](../INTEGRATION-EXTENSIONS.md) для новых providers,
+ALLOW/ASK и credential volume подготовлен как source candidate в
+`task/extensible-provider-registry-20261106`. Он **не установлен** в review или
+Production. Проверки и Windows MANUAL-PENDING — в
+[evidence](../../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).
+Обновление image выше не включило optional analysis operations: для них ещё
+нужны согласованный analysis profile/CI binding, permissions и live acceptance.

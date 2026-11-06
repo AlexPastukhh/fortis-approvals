@@ -11,13 +11,14 @@ RUN python -m pip install --disable-pip-version-check --no-cache-dir -r /opt/req
     useradd --no-log-init -u 10001 -g 10001 -M -s /usr/sbin/nologin fortis
 RUN mkdir -p /opt/fortis/fortis_approvals/static /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway /opt/fortis/fortis_approvals/integrations/github/gateway /state /run/r7-identity /run/r7-grant /run/r7-sonar-token
 COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/owner_auth.py fortis_approvals/owner_portal.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py fortis_approvals/r5_read_candidate.py fortis_approvals/r5_read_server.py fortis_approvals/r7_unified_candidate.py fortis_approvals/r7_unified_server.py fortis_approvals/a3_server.py fortis_approvals/server.py /opt/fortis/fortis_approvals/
-COPY fortis_approvals/integrations/__init__.py fortis_approvals/integrations/review_schema.py fortis_approvals/integrations/analysis_review.py /opt/fortis/fortis_approvals/integrations/
-COPY fortis_approvals/integrations/sonarcloud/__init__.py fortis_approvals/integrations/sonarcloud/contract.py fortis_approvals/integrations/sonarcloud/analysis_contract.py /opt/fortis/fortis_approvals/integrations/sonarcloud/
-COPY fortis_approvals/integrations/sonarcloud/gateway/ /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway/
-COPY fortis_approvals/integrations/github/__init__.py fortis_approvals/integrations/github/contract.py fortis_approvals/integrations/github/analysis_contract.py fortis_approvals/integrations/github/registration.py fortis_approvals/integrations/github/pilot.py /opt/fortis/fortis_approvals/integrations/github/
-COPY fortis_approvals/integrations/github/gateway/ /opt/fortis/fortis_approvals/integrations/github/gateway/
+# All reviewed provider packages and the extension runtime are packaged once.
+COPY fortis_approvals/integrations/ /opt/fortis/fortis_approvals/integrations/
+COPY fortis_approvals/extensions/ /opt/fortis/fortis_approvals/extensions/
+COPY fortis_approvals/clients/ /opt/fortis/fortis_approvals/clients/
 COPY fortis_approvals/workflow/__init__.py fortis_approvals/workflow/common.py fortis_approvals/workflow/store.py fortis_approvals/workflow/git_backend.py fortis_approvals/workflow/adapters.py fortis_approvals/workflow/ingress.py fortis_approvals/workflow/runtime.py /opt/fortis/fortis_approvals/workflow/
 COPY fortis_approvals/static /opt/fortis/fortis_approvals/static
+COPY fortis_approvals/deploy/github_pilot_helpers.py /opt/fortis/operator/state_helpers.py
+COPY fortis_approvals/deploy/image_offline_smoke.py /opt/fortis/operator/image_smoke.py
 USER 10001:10001
 EXPOSE 19103 19104
 CMD ["python","-m","fortis_approvals.r7_unified_server"]

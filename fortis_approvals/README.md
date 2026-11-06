@@ -66,3 +66,7 @@ python3 -B -m compileall -q fortis_approvals
 ## Старые артефакты
 
 `deploy/` содержит preserved deployment-artifact references и исторические G2/G4/R5/A3/P1 scripts. **Не запускать** старые provisioning, preflight, cutover, build или rollback scripts как часть обычной работы. Одноразовые GO-1/GO-2/GO-3 операции завершены. Исторические документы сохранены в `archive/20261103-pre-live-doc-cleanup/`; краткий указатель deployment-файлов: [deploy README](deploy/README.md). Историческая матрица проектирования и acceptance gates от 2026-11-01: [FORTIS-UNIVERSAL-GATEWAY-ACCEPTANCE-MATRIX-20261101.md](deploy/FORTIS-UNIVERSAL-GATEWAY-ACCEPTANCE-MATRIX-20261101.md) — архивный указатель на неизменённый оригинал, не текущий release status.
+
+Новые providers подключаются через [`extensions/`](extensions/README.md): общий
+ALLOW/ASK runtime, именованные credentials, клиент и scaffold. Нормативный
+порядок — [extension contract](../docs/INTEGRATION-EXTENSIONS.md).

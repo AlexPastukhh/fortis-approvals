@@ -4,6 +4,7 @@ No Docker build, token provisioning, volume creation, registration or deployment
 """
 from pathlib import Path
 import shlex
+import fnmatch
 import shutil
 import subprocess
 import sys
@@ -35,10 +36,13 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
 
     def test_provider_package_allowlist_and_no_github_activation(self):
         src = DOCKERFILE.read_text(encoding="utf-8")
-        self.assertIn("fortis_approvals/integrations/sonarcloud/gateway/", src)
-        self.assertIn("fortis_approvals/integrations/github/gateway/", src)
-        self.assertIn("fortis_approvals/integrations/github/registration.py", src)
-        self.assertNotIn("integrations/github/repo_client", src)
+        self.assertIn("COPY fortis_approvals/integrations/ /opt/fortis/fortis_approvals/integrations/", src)
+        self.assertIn("COPY fortis_approvals/extensions/ /opt/fortis/fortis_approvals/extensions/", src)
+        self.assertIn("COPY fortis_approvals/clients/ /opt/fortis/fortis_approvals/clients/", src)
+        self.assertNotIn("COPY . ", src)
+        ignored=(ROOT/'.dockerignore').read_text().splitlines()
+        for entry in ('**/tests','**/.env','**/*.key','**/*.pem','**/*.sqlite','**/private'):
+            self.assertIn(entry,ignored)
         self.assertNotIn("fortis-github-token", src)
         self.assertNotIn("/run/github-token", src)
         self.assertNotIn("FORTIS_GITHUB_TOKEN", src)
@@ -50,6 +54,11 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                  if line.strip() and not line.lstrip().startswith("#")]
         copies = [shlex.split(line)[1:] for line in lines if line.startswith("COPY ")]
         self.assertGreaterEqual(len(copies), 7)
+        # Candidate inputs match files eligible for Git archive; ignored scratch
+        # files must not make a pre-commit packaging check falsely pass.
+        eligible = set(subprocess.check_output(
+            ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+            cwd=ROOT).decode().split('\0'))
         with tempfile.TemporaryDirectory(prefix="fortis-modularized-image-") as tmp:
             root = Path(tmp)
             for parts in copies:
@@ -60,18 +69,28 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                 sources = [ROOT / item for item in parts[:-1]]
                 if len(sources) == 1 and sources[0].is_dir():
                     for source in sources[0].rglob("*"):
-                        if source.is_file():
+                        relative = source.relative_to(ROOT).as_posix()
+                        excludes = (ROOT / '.dockerignore').read_text().splitlines()
+                        if source.is_file() and relative in eligible and not any(
+                            fnmatch.fnmatch(relative, pattern) or any(
+                                fnmatch.fnmatch('/'.join(source.relative_to(ROOT).parts[:n]), pattern)
+                                for n in range(1, len(source.relative_to(ROOT).parts)))
+                            for pattern in excludes):
                             rel = source.relative_to(sources[0])
                             out = target / rel
                             out.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copyfile(source, out)
                 elif len(sources) == 1 and not destination_text.endswith("/"):
+                    self.assertIn(sources[0].relative_to(ROOT).as_posix(), eligible)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(sources[0], target)
                 else:
                     target.mkdir(parents=True, exist_ok=True)
                     for source in sources:
+                        self.assertIn(source.relative_to(ROOT).as_posix(), eligible)
                         shutil.copyfile(source, target / source.name)
+            self.assertFalse(list(root.rglob('tests')))
+            self.assertFalse(list(root.rglob('*.key')))
             code = (
                 "import sys; "
                 f"sys.path.insert(0, {str(root)!r}); "

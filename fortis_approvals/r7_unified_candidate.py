@@ -68,7 +68,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               ingress_grant, sonar_transport,
                               organizations, region='eu', actor_grants=None,
                               project_keys=None, github_pilot=None,
-                              github_transport=None, analysis_review=None):
+                              github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -148,7 +148,16 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                 actor=grants[ingress_grant], github_transport=github_transport)
     ingress = RepoIngress(broker,host=ingress_host,max_bytes=524288,
         max_read_response_bytes=262144 if analysis_review is not None else 65536)
+    machine_base = ingress
     if native is not None:
         from .workflow.runtime import wrap
         ingress = wrap(ingress,native)
+    if extensions is not None:
+        from .extensions.runtime import ExtensionRuntime
+        from .extensions.model import discover
+        from .extensions.ingress import ExtensionIngress
+        runtime = ExtensionRuntime(extensions, providers=discover(tuple(extensions.value['providers'])) if extension_providers is None else extension_providers,
+            actors=actors, default_actor=grants[ingress_grant], vault=credential_vault).install(core, portal)
+        ingress = ExtensionIngress(machine_base, runtime, delegate=ingress)
+        portal._extension_runtime = runtime
     return core,owner,portal,ingress

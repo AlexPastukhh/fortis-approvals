@@ -65,3 +65,11 @@ new owner credential, stop Production or replay a historical cutover as part
 of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/FOLLOW-UP-PLAN.md).
+
+## New operation onboarding
+
+`Manage-Integrations.ps1` is the persistent owner controller for the extension
+framework: Apply/Check/Credential/Return. Inputs, token handling and supported
+state profile are defined once in the [extension contract](../../docs/INTEGRATION-EXTENSIONS.md).
+Windows/Docker execution of this source candidate is not yet accepted; see the
+[offline evidence](../evidence/EXTENSIONS-OFFLINE-20261106.md).
