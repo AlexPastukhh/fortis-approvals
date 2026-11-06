@@ -3,8 +3,9 @@
 План согласован 2026-11-06 после завершения native Git/worktree live цикла.
 Текущее внедрение описано в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
 Перечень ниже фиксирует будущие задачи; эта документационная работа их не реализует.
-Общий Fortis backlog находится в [Fortis Container](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/FUTURE-IMPROVEMENTS.md);
-здесь ведутся детали этого этапа без второй копии общего backlog.
+Общий Fortis backlog принадлежит локальному `fortis-container`; вход — через
+реестр юзкейсов в `/workspace/repo/README.md`. У него пока нет remote repository.
+Здесь ведутся детали этого этапа без второй копии общего backlog.
 
 ## Следующие задачи
 
@@ -50,17 +51,17 @@ Mirror владеет общим [workflow](https://github.com/AlexPastukhh/dock
 ## Повторяемое подключение операций
 
 Общий source mechanism ALLOW/ASK + именованные Gateway credentials описан в
-[extension contract](INTEGRATION-EXTENSIONS.md). Он подготовлен отдельно от
-Sonar/CI activation. Осталось принять owner controller на реальном Windows/Docker,
-затем подтвердить конкретный provider. Результаты проверок ведутся только в его
-[evidence](../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).
+[extension contract](INTEGRATION-EXTENSIONS.md). Owner controller принят на реальном
+Windows/Docker с пустым catalog; [результаты и границы](../fortis_approvals/evidence/EXTENSIONS-LIVE-ACTIVATION-20261106.md)
+не подтверждают конкретный новый provider/token/effect. Их acceptance и отдельное
+включение Sonar/CI analysis profile остаются будущей работой.
 
 ## Use-case navigation and owner interaction
 
 Общие сценарии контейнера ведутся в `fortis-container/docs/use-cases/README.md`,
 достижимом через `/workspace/repo/README.md`. ASK-заявки в порученной задаче
 отправляются без предварительного устного разрешения; эффект подтверждается
-в Owner Portal. Изменение создания PR на ALLOW реализуется после этих двух
-документационных шагов отдельным source commit: exact actor/repository, без
-расширения других grants. Source проверки и rollout не означают live применение;
-до обновления image сохраняется предыдущее ASK.
+в Owner Portal. После этих двух шагов PR ALLOW реализован отдельным source
+commit для exact actor/repository и внедрён в review. Результат — в
+[live evidence](../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md);
+прочие задачи оценки GitHub workflow остаются в пункте 2.
