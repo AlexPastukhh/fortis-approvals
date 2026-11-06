@@ -35,8 +35,21 @@ or the legacy Git credential helper.
 
 ## PR effect
 
-Capabilities confirm policy installation. Actual PR creation acceptance will be
-recorded here after publishing this documentation task through Gateway.
+An ordinary documentation PR, not a throwaway test, was created through the typed
+GitHub client without a preliminary chat permission round or Owner Portal decision:
+
+- Native task push: request `22ab5360-4e29-4c53-9b00-beaf79e9f424`, `EXECUTED`;
+  readback preserved commit `b7acfaf328033ed2d41030b0730e83ad63bd1403`.
+- PR creation: request `498ce727-d182-46c4-a398-77b911d564f5`, `EXECUTED`.
+- GitHub readback: [PR #17](https://github.com/AlexPastukhh/fortis-approvals/pull/17),
+  open, `draft=false`, head `task/pr-allow-live-evidence-20261106` at that exact
+  commit, base `main` at the deployed source SHA.
+
+This confirms the real create effect under ALLOW, beyond capability advertisement.
+The receipt is added by a subsequent documentation commit on the same PR. CI for
+that final head and owner-approved merge remain separate steps, not claims made
+by the creation receipt. Source manifests, modified Markdown targets, whitespace,
+Gateway syntax and the 18-case registry/workspace navigation checks passed.
 
 ## Limits
 
