@@ -1,6 +1,6 @@
 # Native Git/worktree Gateway workflow
 
-Status: implemented source and offline acceptance. Native GitHub live acceptance is still required. Production remains unchanged. This profile is opt-in and uses the existing Core, TLS machine grant, owner session and WebAuthn device.
+Status: native source and new-task live cycles accepted on 2026-11-06 in isolated review. [Live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) owns SHA/CI/request receipts and verification limits. Production remains unchanged. This profile is opt-in and uses the existing Core, TLS machine grant, owner session and WebAuthn device.
 
 ## Active policy in the native profile
 
@@ -46,9 +46,19 @@ The command-line entrypoint is python3 -B -m fortis_approvals.workflow.client OP
 
 This is a Linux Docker Repo worker, not a Windows shell bridge or a transparent arbitrary git push proxy. The existing Windows Mirror receiver remains a separate established mechanism after approved main update. No new arbitrary Windows-command capability is introduced.
 
-## First source bootstrap
+## Bounds
 
-The currently accepted M3 image cannot receive native Git bundles. To honor Gateway-only publication, this implementation is committed locally and packaged from that exact clean task worktree, without publishing through the old helper or connector. This is one explicit source-bootstrap exception to publication-before-owner-build: source review/CI publication follows through the new isolated Gateway. It is not a Production deployment.
+Bundle: 24 MiB; at most 200 new commits. Edited content: 16 KiB per request,
+20 files; selected stage paths: 64. Paths/preview are bounded, Git processes
+resource-limited and operations serialized. Larger repositories, Git LFS,
+submodule workflows, remote branch deletion, conflict-resolution automation
+and squash/rebase merges are not accepted by this slice. Required CI is an
+explicit configured workflow ID, not a claim that every future repository's
+branch-protection rules have been modeled.
+
+## Completed first source bootstrap
+
+The retained M3 image could not receive native Git bundles. The implementation was committed locally and packaged from its exact clean task worktree. This explicit bootstrap exception allowed the owner to start the isolated native image first; source publication, CI and merges then completed through that Gateway without the old helper or connector. It was not a Production deployment. The following sequence describes the completed bootstrap, not a request to run it again.
 
 The owner package uses Run-GitHub-FilePR-E2E.ps1 -ScenarioKind Native. It:
 
@@ -63,14 +73,23 @@ Use the existing owner device at http://localhost:19203. No fresh enrollment or 
 
 The bootstrap task gateway-worktree-native-git-20261106 cannot be cleaned by the new profile while the owner record depends on its source path. Retargeting an accepted future package to merged canonical main is a separate small follow-up, after the source merge.
 
-## Live acceptance to perform next
+## Accepted live path and remaining work
 
-Use requests through the new Gateway exclusively:
+Both existing-source publication and a newly created task completed through
+Gateway: source PR №10 and test PR №11, exact-head Source CI, approved merge,
+Docker main fast-forward and approved test-task cleanup. [Live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md)
+records the receipts; [offline evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md)
+records the broader denial, binary and concurrency cases. Do not treat those
+offline cases as additional live GitHub acceptance.
 
-1. Register/adopt the exact clean bootstrap task and publish its existing source commits; confirm identical local/upstream SHA and successful repeated request-ID readback.
-2. Propose a draft source PR (ASK), approve on the existing owner device, and read Source CI through Gateway for that exact head.
-3. Mark ready (ASK), merge the exact successful head (ASK), then update canonical Docker main through the typed fast-forward operation.
-4. On a disposable task, exercise edit/check/stage/commit/push, a second fast-forward push, stale-head rejection, rejected sensitive proposal, and approved cleanup. Preserve evidence and request IDs; no connector/helper fallback.
-5. Read Sonar again and verify the Production baseline. Review any missing catalog permission based on an actual denied required read; no broad privilege expansion.
+The Repo client currently in main rejects HTTP 202 when `result`/`reconcile`
+reads PENDING. A fix and regression are local in a separate task worktree;
+until merged, use the typed `WorkflowTransport.post` result/reconcile route
+with `accept_202=True` for pending reads. Preserve the same request ID; never
+resubmit an action to work around status handling. An early owner decision
+does not change that requirement.
 
-Limits: bundle 24 MiB, 200 new commits, bounded paths/preview, edited content 16 KiB per request/20 files, selected stage paths 64. Git objects are resource-limited and operations serialized. Larger repositories, Git LFS, submodule workflows, remote branch deletion, conflict-resolution automation and squash/rebase merges are not accepted by this slice. Required CI is an explicit configured workflow ID; this is not a claim that every future repository's branch-protection rules have been modeled.
+Windows Mirror delivery, deeper Sonar operation design, GitHub workflow review,
+UI feedback, code review and deployment follow-ups are tracked only in the
+[follow-up plan](FOLLOW-UP-PLAN.md). Native acceptance does not retire the
+legacy credential helper for other repositories.

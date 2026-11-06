@@ -1,21 +1,30 @@
 # Fortis Approvals documentation
 
-- [AI-agent guide: Gateway role, policies and adding a service](GATEWAY-AGENT-GUIDE.md)
-- [Native Git/worktree Gateway policy and bootstrap](NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
-- [Provider integration catalog](../fortis_approvals/integrations/README.md)
-- [Integration modularization and GitHub onboarding plan](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md)
-- [Current state and operating scope](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
-- [Source map and commands](../fortis_approvals/README.md)
-- [Deployment artifacts and historical scripts](../fortis_approvals/deploy/README.md)
-- [Latest live Sonar READ / ASK / Reject / Approve evidence](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261104.md)
-- [Migrated Sonar Repo-client live GET evidence](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md)
-- [Native Git/worktree offline evidence — 342 tests](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md)
-- [Earlier offline test results — 245 tests](TEST-RESULTS-2026-11-05.md)
-- [Historical offline test results](TEST-RESULTS-2026-11-03.md)
-- [Source extraction audit](audits/SOURCE-EXTRACTION-2026-11-03.md)
-- [Original extraction SHA-256 manifest](SOURCE-MANIFEST.sha256)
-- [Current working-copy SHA-256 manifest](CURRENT-SOURCE-MANIFEST.sha256)
-- [Full modularized source SHA-256 manifest](MODULARIZED-SOURCE-MANIFEST.sha256)
-- [Source manifest update and verification policy](SOURCE-MANIFESTS.md)
+Each active topic has one owner document; entry points link to it rather than
+repeat runtime snapshots or policy tables.
 
-The Gateway agent guide owns AI usage and service-integration instructions. The package README is the source-level map; the current-state guide owns the live pilot description; the deploy README distinguishes current references from historical-only scripts. Do not treat old handoffs or provisioning scripts as current runbooks.
+| Topic | Source of truth |
+| --- | --- |
+| Deployed instances, verified scope and limits | [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
+| AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
+| Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
+| Upcoming work and acceptance goals | [Follow-up plan](FOLLOW-UP-PLAN.md) |
+| Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
+| Provider-specific implementation | [Integration catalog](../fortis_approvals/integrations/README.md) |
+| Deployment scripts and retained return paths | [Deployment index](../fortis_approvals/deploy/README.md) |
+| Completed onboarding milestones | [Onboarding record](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md) |
+
+## Evidence and historical references
+
+- [Native Git/worktree live cycle — 2026-11-06](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
+- [Native offline acceptance — 342 tests](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md).
+- [M1 branch pilot](../fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md) and [M2 file/draft-PR pilot](../fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M2-20261106.md).
+- [Sonar READ / ASK / Reject / Approve — 2026-11-04](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261104.md).
+- [Migrated Sonar GET — 2026-11-05](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md).
+- [Earlier isolated review](../fortis_approvals/evidence/FORTIS-REVIEW-PREFLIGHT-20261105.md).
+- [Earlier offline test reports](TEST-RESULTS-2026-11-05.md), [extraction tests](TEST-RESULTS-2026-11-03.md), [extraction audit](audits/SOURCE-EXTRACTION-2026-11-03.md).
+- [Deferred Production release contract](MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md).
+- [Manifest policy](SOURCE-MANIFESTS.md): [immutable extraction](SOURCE-MANIFEST.sha256), [current baseline paths](CURRENT-SOURCE-MANIFEST.sha256), [full source tree](MODULARIZED-SOURCE-MANIFEST.sha256).
+
+Dated evidence describes its own snapshot. Old handoffs and archived provisioning
+instructions do not override the current-state or operation contract.

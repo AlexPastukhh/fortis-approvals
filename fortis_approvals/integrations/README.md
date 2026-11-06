@@ -5,7 +5,7 @@ This directory is the home for provider-specific contracts, Gateway adapters, Re
 | Integration | Status | Source of truth |
 |---|---|---|
 | [SonarCloud](sonarcloud/README.md) | Live; source migrated | Provider code lives in `gateway/` and `repo_client/`; root-level imports are compatibility shims |
-| [GitHub](github/README.md) | Implemented in source; NOT registered or deployed | Typed contract, fixed-origin transport, Gateway adapter, registration helper and Repo client; no actor grants, policy or credential |
+| [GitHub](github/README.md) | Opt-in live in isolated native review; not enabled in Production | Provider schema/REST adapter/client here; native policy, Git bundles and worker under `../workflow/`. See the [native contract](../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | [_integration_template](_integration_template/README.md) | Template | Copy for a new provider; never enables an integration |
 
 Shared Core, Owner Portal, machine ingress, authentication and Gateway transport remain in shared package locations. Provider folders must not create duplicate authentication systems or owner approval queues.
