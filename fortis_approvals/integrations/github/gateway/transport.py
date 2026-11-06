@@ -33,7 +33,7 @@ _ROUTES = (
     ("PUT", re.compile(_BASE + r"/pulls/[1-9][0-9]*/merge$")),
     ("PUT", re.compile(_BASE + r"/contents/[A-Za-z0-9_.%~/-]+$")),
 )
-_QUERY_KEYS = frozenset({"page", "per_page", "state", "head", "base", "ref"})
+_QUERY_KEYS = frozenset({"head_sha", "event", "branch","page", "per_page", "state", "head", "base", "ref"})
 
 
 class GitHubTransportError(RuntimeError):
@@ -129,6 +129,30 @@ class GitHubHTTPTransport:
         return (type(method) is str and type(path) is str and
                 any(verb == method and pattern.fullmatch(path)
                     for verb, pattern in _ROUTES))
+
+    def mark_ready(self, node_id):
+        # One fixed GraphQL mutation; no caller-controlled query, URL or selection.
+        if type(node_id) is not str or not re.fullmatch(r"[A-Za-z0-9_+=/-]{1,240}",node_id):
+            raise Denied("GITHUB_PR_NODE_INVALID")
+        body={"query":"mutation FortisReady($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id isDraft}}}",
+              "variables":{"id":node_id}}
+        outgoing=request.Request(API_ORIGIN+"/graphql",method="POST",
+            data=json.dumps(body,separators=(",",":")).encode("ascii"),
+            headers={"Authorization":"Bearer "+self._token,"Content-Type":"application/json","Accept":"application/json"})
+        opener=self._opener or request.build_opener(request.ProxyHandler({}),
+            request.HTTPSHandler(context=ssl.create_default_context()),_NoRedirect())
+        try:
+            with opener.open(outgoing,timeout=self._timeout) as response:
+                if response.status!=200:raise GitHubTransportError("GITHUB_READY_FAILED")
+                raw=response.read(MAX_RESPONSE_BYTES+1)
+                if len(raw)>MAX_RESPONSE_BYTES:raise GitHubTransportError("GITHUB_READY_FAILED")
+                result=json.loads(raw,object_pairs_hook=_unique_pairs,parse_constant=_reject_constant)
+                row=result.get("data",{}).get("markPullRequestReadyForReview",{}).get("pullRequest",{})
+                if result.get("errors") or row.get("id")!=node_id or row.get("isDraft") is not False:
+                    raise GitHubTransportError("GITHUB_READY_FAILED")
+        except GitHubTransportError:raise
+        except (error.HTTPError,error.URLError,OSError,ValueError,TypeError,AttributeError):
+            raise GitHubTransportError("GITHUB_READY_FAILED") from None
 
     def request(self, method, path, *, params=None, body=None,
                 expected_statuses=(200,), allow_not_found=False):

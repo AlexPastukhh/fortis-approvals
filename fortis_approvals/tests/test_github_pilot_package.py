@@ -146,6 +146,18 @@ class AdmissionTests(unittest.TestCase):
         c['Config']['Env'] += ['FORTIS_GITHUB_FILE_PR_BRANCH='+e['filePrBranch'],'FORTIS_GITHUB_CI_READS=1']
         self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
 
+    def test_native_runtime_scope_and_required_workflow_are_explicit(self):
+        c,e=self.fixture()
+        e.update(filePrBranch='fortis-e2e/11111111-1111-4111-8111-111111111111-approve',ciReads=True,
+                 nativeWorktree=True,requiredWorkflows='408327525',bootstrapTask='source-bootstrap')
+        c['Config']['Env'] += ['FORTIS_GITHUB_FILE_PR_BRANCH='+e['filePrBranch'],'FORTIS_GITHUB_CI_READS=1']
+        with self.assertRaisesRegex(RuntimeError,'PUBLIC_CONFIGURATION'):HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'] += ['FORTIS_GITHUB_NATIVE_WORKTREE=1','FORTIS_GITHUB_REQUIRED_WORKFLOWS=408327525',
+                               'FORTIS_GITHUB_BOOTSTRAP_TASK=source-bootstrap']
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        e['requiredWorkflows']='1'
+        with self.assertRaisesRegex(RuntimeError,'NATIVE_CONFIGURATION'):HELPERS.admit(c,e,pilot=True)
+
     def test_production_state_writable_credentials_and_exposed_ports_are_denied(self):
         for mutate in (lambda c:c['Mounts'][0].update(Name='fortis-r7-state'),
                        lambda c:c['Mounts'][-1].update(RW=True),

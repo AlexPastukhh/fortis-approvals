@@ -52,6 +52,12 @@ def smoke():
         assert GitHubPilotConfig
         assert callable(register_github_integration)
         assert GitHubAdapter and GitHubHTTPTransport
+    from fortis_approvals.workflow.git_backend import GitHubGitBackend
+    from fortis_approvals.workflow.runtime import install
+    import subprocess
+    assert subprocess.check_output(['git','--version']).startswith(b'git version ')
+    assert GitHubGitBackend and install
+    print('IMAGE_NATIVE_GIT_IMPORT_PASS')
     print('IMAGE_SONAR_OFFLINE_SMOKE_PASS')
     print('IMAGE_GITHUB_IMPORT_PASS')
     print('IMAGE_GITHUB_NOT_REGISTERED_PASS')

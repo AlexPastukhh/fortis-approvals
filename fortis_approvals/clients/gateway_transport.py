@@ -95,6 +95,7 @@ class GatewayTransport:
             raise Denied("FORTIS_GATEWAY_TIMEOUT_INVALID")
         if type(max_response_bytes) is not int or not 1024 <= max_response_bytes <= 262144:
             raise Denied("FORTIS_RESPONSE_LIMIT_INVALID")
+        self.post_paths = _POST_PATHS
         self.endpoint = endpoint.rstrip("/")
         self.grant_path = grant_path
         self.certificate_path = certificate_path
@@ -104,7 +105,7 @@ class GatewayTransport:
 
     def _open(self, method, path, payload=None, *, accept_202=False):
         if method == "POST":
-            if path not in _POST_PATHS or type(payload) is not dict:
+            if path not in self.post_paths or type(payload) is not dict:
                 raise Denied("FORTIS_GATEWAY_ROUTE_DENIED")
         elif method == "GET":
             if payload is not None or not _STATUS_PATH.fullmatch(path):

@@ -4,6 +4,7 @@
 FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /opt/fortis
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY fortis_approvals/requirements-owner.txt /opt/requirements-owner.txt
 RUN python -m pip install --disable-pip-version-check --no-cache-dir -r /opt/requirements-owner.txt && \
     groupadd -g 10001 fortis && \
@@ -15,6 +16,7 @@ COPY fortis_approvals/integrations/sonarcloud/__init__.py fortis_approvals/integ
 COPY fortis_approvals/integrations/sonarcloud/gateway/ /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway/
 COPY fortis_approvals/integrations/github/__init__.py fortis_approvals/integrations/github/contract.py fortis_approvals/integrations/github/registration.py fortis_approvals/integrations/github/pilot.py /opt/fortis/fortis_approvals/integrations/github/
 COPY fortis_approvals/integrations/github/gateway/ /opt/fortis/fortis_approvals/integrations/github/gateway/
+COPY fortis_approvals/workflow/__init__.py fortis_approvals/workflow/common.py fortis_approvals/workflow/store.py fortis_approvals/workflow/git_backend.py fortis_approvals/workflow/adapters.py fortis_approvals/workflow/ingress.py fortis_approvals/workflow/runtime.py /opt/fortis/fortis_approvals/workflow/
 COPY fortis_approvals/static /opt/fortis/fortis_approvals/static
 USER 10001:10001
 EXPOSE 19103 19104

@@ -153,6 +153,11 @@ def admit(container, expected, *, pilot):
     if pilot and expected.get('ciReads'):
         require(bool(expected.get('filePrBranch')), 'PILOT_CI_REQUIRES_FILE_PR_SCOPE')
         required['FORTIS_GITHUB_CI_READS'] = '1'
+    if pilot and expected.get('nativeWorktree'):
+        require(expected.get('ciReads') and expected.get('requiredWorkflows') == '408327525' and
+                bool(re.fullmatch('[a-z0-9][a-z0-9-]{0,99}',expected.get('bootstrapTask',''))), 'PILOT_NATIVE_CONFIGURATION_INVALID')
+        required.update(FORTIS_GITHUB_NATIVE_WORKTREE='1',FORTIS_GITHUB_REQUIRED_WORKFLOWS=expected['requiredWorkflows'],
+                        FORTIS_GITHUB_BOOTSTRAP_TASK=expected['bootstrapTask'])
     require(env == required, 'PILOT_PUBLIC_CONFIGURATION_MISMATCH')
     require(container['State']['Status'] == expected['status'], 'PILOT_CONTAINER_STATUS_MISMATCH')
     if expected['status'] == 'running' and expected.get('requireHealthy', True):

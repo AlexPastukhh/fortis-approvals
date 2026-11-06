@@ -17,7 +17,7 @@ ACTION = ('github', 'create_branch')
 FILE_PR_READS = frozenset({('github', 'get_file'), ('github', 'list_pull_requests'), ('github', 'get_pull_request')})
 FILE_PR_ACTIONS = frozenset({('github', 'push_files'), ('github', 'create_pull_request')})
 CI_READS = frozenset({('github', 'list_workflow_runs')})
-CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS')
+CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS', 'FORTIS_GITHUB_NATIVE_WORKTREE', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS', 'FORTIS_GITHUB_BOOTSTRAP_TASK')
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,9 @@ class GitHubPilotConfig:
     branch_prefix: str = 'fortis-e2e/'
     file_pr_branch: str = ''
     ci_reads: bool = False
+    native_worktree: bool = False
+    required_workflows: tuple = ()
+    bootstrap_task: str = ''
 
     def __post_init__(self):
         if type(self.owner) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.owner):
@@ -55,6 +58,20 @@ class GitHubPilotConfig:
         if type(self.ci_reads) is not bool or (self.ci_reads and not self.file_pr_branch):
             raise ValueError('GITHUB_PILOT_CI_OPT_IN_INVALID')
 
+        if type(self.native_worktree) is not bool or type(self.required_workflows) is not tuple:
+            raise ValueError('GITHUB_NATIVE_CONFIG_INVALID')
+        if self.native_worktree:
+            if (not self.ci_reads or not 1 <= len(self.required_workflows) <= 10 or
+                    any(type(x) is not int or not 0 < x < 2**63 for x in self.required_workflows) or
+                    len(set(self.required_workflows)) != len(self.required_workflows)):
+                raise ValueError('GITHUB_NATIVE_REQUIRED_CI_INVALID')
+        elif self.required_workflows:
+            raise ValueError('GITHUB_NATIVE_PARTIAL_CONFIG')
+
+        if (type(self.bootstrap_task) is not str or
+                (self.bootstrap_task and (not self.native_worktree or not re.fullmatch('[a-z0-9][a-z0-9-]{0,99}',self.bootstrap_task)))):
+            raise ValueError('GITHUB_BOOTSTRAP_TASK_INVALID')
+
     @property
     def file_path(self):
         if not self.file_pr_branch: return None
@@ -75,11 +92,18 @@ def config_from_environment(environment):
         return None
     ci = environment.get(CONFIG_KEYS[4], '0')
     if ci not in ('0', '1'): raise ValueError('GITHUB_PILOT_CI_OPT_IN_INVALID')
+    native = environment.get(CONFIG_KEYS[5], '0')
+    if native not in ('0','1'): raise ValueError('GITHUB_NATIVE_OPT_IN_INVALID')
+    required = environment.get(CONFIG_KEYS[6], '')
+    if required and not re.fullmatch('[1-9][0-9]*(?:,[1-9][0-9]*){0,9}',required):
+        raise ValueError('GITHUB_NATIVE_REQUIRED_CI_INVALID')
     return GitHubPilotConfig(
         owner=environment.get(CONFIG_KEYS[0], ''),
         repository=environment.get(CONFIG_KEYS[1], ''),
         branch_prefix=environment.get(CONFIG_KEYS[2], 'fortis-e2e/'),
-        file_pr_branch=environment.get(CONFIG_KEYS[3], ''), ci_reads=ci == '1')
+        file_pr_branch=environment.get(CONFIG_KEYS[3], ''), ci_reads=ci == '1',
+        native_worktree=native == '1', required_workflows=tuple(map(int,required.split(','))) if required else (),
+        bootstrap_task=environment.get(CONFIG_KEYS[7],''))
 
 
 class GitHubPilotAdapter(GitHubAdapter):

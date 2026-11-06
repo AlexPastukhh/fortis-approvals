@@ -1,0 +1,33 @@
+"""Trusted opt-in native Git/worktree composition, one existing Core/portal."""
+from .adapters import NativeGitHubAdapter, WorkspaceAdapter
+from .common import WORKSPACE_OPS
+from .git_backend import GitHubGitBackend
+from .ingress import NativeIngress
+from .store import Store
+from ..integrations.github.contract import GITHUB_READ_OPERATIONS
+from ..integrations.github.gateway.transport import GitHubHTTPTransport
+from ..integrations.github.registration import register_github_integration
+
+
+def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90):
+    store=Store(root/'native-git')
+    adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
+        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=(config.repository,)),store=store)
+    register_github_integration(core=core,broker=broker,adapter=adapter)
+    reads=GITHUB_READ_OPERATIONS-{('github','list_repositories')}
+    writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file')}
+    for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
+    for service,operation in writes:core.policies[(actor,service,operation)]='ASK'
+    core.policies[(actor,'github','push_commits')]=adapter.push_policy
+    broker.actor_read_operations[actor]=broker.actor_read_operations.get(actor,frozenset())|reads
+    broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
+    workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)
+    core.adapters['workspace']=workspace
+    for operation in WORKSPACE_OPS:core.policies[(actor,'workspace',operation)]='ASK' if operation=='cleanup_task' else 'ALLOW'
+    portal.strong_operations=portal.strong_operations|writes|{('workspace','cleanup_task')}
+    return dict(adapter=adapter,workspace=workspace,store=store,actor=actor)
+
+
+def wrap(ingress,installed):
+    return NativeIngress(ingress,github=installed['adapter'],workspace=installed['workspace'],
+                         store=installed['store'],actor=installed['actor'])
