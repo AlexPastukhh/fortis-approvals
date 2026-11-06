@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 from .core import Authenticator, Core, Denied
 from .owner_auth import OwnerWebAuthn
 from .owner_portal import OwnerPortal
-from .repo_action_contract import RepoIntentBroker, SONAR_READ_OPERATIONS
+from .repo_action_contract import RepoIntentBroker
+from .integrations.sonarcloud.contract import LEGACY_READ_OPERATIONS as SONAR_READ_OPERATIONS
 from .repo_ingress import RepoIngress
 from .r5_read_candidate import _GRANT, _RESERVED_OWNER_ORIGINS
 from .integrations.sonarcloud.gateway.sonar import SonarIssueAdapter
@@ -67,7 +68,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               ingress_grant, sonar_transport,
                               organizations, region='eu', actor_grants=None,
                               project_keys=None, github_pilot=None,
-                              github_transport=None):
+                              github_transport=None, analysis_review=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -82,6 +83,11 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         raise Denied('R7_DISTINCT_OWNER_INGRESS_REQUIRED')
     if type(ingress_grant) is not str or not _GRANT.fullmatch(ingress_grant):
         raise Denied('R7_MACHINE_GRANT_INVALID')
+    if analysis_review is not None:
+        from .integrations.analysis_review import AnalysisReviewConfig
+        if not isinstance(analysis_review, AnalysisReviewConfig):
+            raise ValueError('ANALYSIS_REVIEW_CONFIG_REQUIRED')
+        analysis_review.check_endpoints(owner_origin, ingress_host)
     if github_pilot is not None:
         from .integrations.github.pilot import GitHubPilotConfig
         if not isinstance(github_pilot, GitHubPilotConfig):
@@ -136,7 +142,12 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             from .integrations.github.pilot import install_pilot
             install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,
                           root=root, actor=grants[ingress_grant], transport=github_transport)
-    ingress = RepoIngress(broker,host=ingress_host,max_bytes=524288)
+    if analysis_review is not None:
+        from .integrations.analysis_review import install
+        install(core=core, portal=portal, broker=broker, config=analysis_review, root=root,
+                actor=grants[ingress_grant], github_transport=github_transport)
+    ingress = RepoIngress(broker,host=ingress_host,max_bytes=524288,
+        max_read_response_bytes=262144 if analysis_review is not None else 65536)
     if native is not None:
         from .workflow.runtime import wrap
         ingress = wrap(ingress,native)

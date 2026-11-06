@@ -4,7 +4,7 @@ from .common import WORKSPACE_OPS
 from .git_backend import GitHubGitBackend
 from .ingress import NativeIngress
 from .store import Store
-from ..integrations.github.contract import GITHUB_READ_OPERATIONS
+from ..integrations.github.contract import LEGACY_READ_OPERATIONS
 from ..integrations.github.gateway.transport import GitHubHTTPTransport
 from ..integrations.github.registration import register_github_integration
 
@@ -14,7 +14,7 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
         backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=(config.repository,)),store=store)
     register_github_integration(core=core,broker=broker,adapter=adapter)
-    reads=GITHUB_READ_OPERATIONS-{('github','list_repositories')}
+    reads=LEGACY_READ_OPERATIONS-{('github','list_repositories')}
     writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file')}
     for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
     for service,operation in writes:core.policies[(actor,service,operation)]='ASK'

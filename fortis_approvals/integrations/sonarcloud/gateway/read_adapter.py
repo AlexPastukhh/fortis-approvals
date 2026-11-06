@@ -16,21 +16,26 @@ _ALLOWED_ROUTES = {
     '/api/issues/search': frozenset({'componentKeys', 'p', 'ps', 'issues'}),
     '/api/qualitygates/project_status': frozenset({'projectKey'}),
 }
+from ..analysis_contract import GET_ROUTES, READ_NAMES
+from .analysis_reader import AnalysisReader
 _STATUSES = frozenset({'OK', 'WARN', 'ERROR', 'NONE'})
 
 
 class SonarReadOnlyTransport:
     """Independent GET-only allowlist. Never expose the underlying transport."""
 
-    def __init__(self, underlying):
+    def __init__(self, underlying, *, analysis_review=False):
+        if type(analysis_review) is not bool: raise ValueError("SONAR_REVIEW_OPT_IN_INVALID")
+        self._routes = dict(_ALLOWED_ROUTES)
+        if analysis_review: self._routes.update({k: frozenset(v) for k, v in GET_ROUTES.items()})
         if not callable(getattr(underlying, 'call', None)):
             raise ValueError('SONAR_READ_TRANSPORT_REQUIRED')
         self._underlying = underlying
 
     def call(self, method, path, params):
-        if (method != 'GET' or path not in _ALLOWED_ROUTES or
+        if (method != 'GET' or path not in self._routes or
                 type(params) is not dict or
-                not set(params) <= _ALLOWED_ROUTES[path] or
+                not set(params) <= self._routes[path] or
                 not all(type(k) is str and type(v) is str
                             for k, v in params.items())):
             raise Denied('SONAR_READ_ONLY_ROUTE_DENIED')
@@ -171,6 +176,8 @@ class SonarReadAdapter:
         req = validate_read_query(query)
         operation, target = req['operation'], req['target']
         params = req['params']
+        if operation in READ_NAMES:
+            return AnalysisReader(self).read(req)
         if operation == 'list_projects':
             if target not in self._organizations:
                 raise Denied('SONAR_READ_ORGANIZATION_DENIED')

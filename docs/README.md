@@ -7,6 +7,7 @@ repeat runtime snapshots or policy tables.
 | --- | --- |
 | Deployed instances, verified scope and limits | [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
 | AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
+| Optional analysis-review source operations (not deployed) | [Analysis review contract](ANALYSIS-REVIEW-CONTRACT.md) |
 | Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | Upcoming work and acceptance goals | [Follow-up plan](FOLLOW-UP-PLAN.md) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |

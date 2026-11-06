@@ -33,6 +33,15 @@ _ROUTES = (
     ("PUT", re.compile(_BASE + r"/pulls/[1-9][0-9]*/merge$")),
     ("PUT", re.compile(_BASE + r"/contents/[A-Za-z0-9_.%~/-]+$")),
 )
+_ROUTES += (
+    ("GET", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/attempts/[1-9][0-9]*(?:/jobs)?$")),
+    ("GET", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/artifacts$")),
+    ("GET", re.compile(_BASE + r"/actions/jobs/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/actions/artifacts/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/check-runs/[1-9][0-9]*(?:/annotations)?$")),
+    ("POST", re.compile(_BASE + r"/actions/jobs/[1-9][0-9]*/rerun$")),
+    ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/rerun-failed-jobs$")),
+)
 _QUERY_KEYS = frozenset({"head_sha", "event", "branch","page", "per_page", "state", "head", "base", "ref"})
 
 
@@ -218,3 +227,56 @@ class GitHubHTTPTransport:
         except (error.URLError, TimeoutError, OSError, UnicodeError,
                 ValueError, RecursionError):
             raise GitHubTransportError("GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID") from None
+
+    def redact(self, value):
+        value = value.replace(self._token, '[REDACTED]')
+        value = re.sub(r'(?i)(authorization\s*[:=]\s*)([^\r\n]+)', r'\1[REDACTED]', value)
+        value = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sq[a-z]_[A-Za-z0-9_]{20,})', '[REDACTED]', value)
+        return value
+
+    def download(self, path, *, maximum):
+        """Two hops only. API bearer never follows a download redirect."""
+        from urllib.parse import urlsplit
+        if (type(path) is not str or
+                not re.fullmatch(_BASE + r'/(?:actions/jobs/[1-9][0-9]*/logs|actions/artifacts/[1-9][0-9]*/zip)', path)):
+            raise Denied('GITHUB_DOWNLOAD_ROUTE_DENIED')
+        if type(maximum) is not int or not 1 <= maximum <= 2*1024*1024:
+            raise Denied('GITHUB_DOWNLOAD_LIMIT_INVALID')
+
+        class NoFollow(request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = self._opener or request.build_opener(request.ProxyHandler({}),
+            request.HTTPSHandler(context=ssl.create_default_context()), NoFollow())
+        first = request.Request(API_ORIGIN + path, headers={
+            'Authorization': 'Bearer ' + self._token, 'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28'})
+        location = None
+        try:
+            with opener.open(first, timeout=self._timeout) as response:
+                if response.status == 302: location = response.headers.get('Location')
+                else: raise GitHubTransportError('GITHUB_DOWNLOAD_REDIRECT_REQUIRED')
+        except error.HTTPError as exc:
+            if exc.code == 302: location = exc.headers.get('Location')
+            exc.close()
+            if location is None: raise GitHubTransportError('GITHUB_DOWNLOAD_UNAVAILABLE') from None
+        except (error.URLError, OSError, ValueError):
+            raise GitHubTransportError('GITHUB_DOWNLOAD_UNAVAILABLE') from None
+        try:
+            parts = urlsplit(location)
+            # Narrow GitHub-owned Azure account names, not arbitrary Azure tenants.
+            allowed = re.fullmatch(r'(?:productionresultssa[0-9]+|pipelinesghubeus[0-9]+)\.blob\.core\.windows\.net', parts.hostname or '')
+            if (parts.scheme != 'https' or not allowed or parts.port not in (None, 443) or
+                    parts.username or parts.password or parts.fragment):
+                raise GitHubTransportError('GITHUB_DOWNLOAD_HOST_DENIED')
+            second = request.Request(location, headers={'Accept-Encoding': 'identity'})
+            with opener.open(second, timeout=self._timeout) as response:
+                if response.status != 200: raise GitHubTransportError('GITHUB_DOWNLOAD_UNAVAILABLE')
+                content = response.read(maximum + 1)
+                if len(content) > maximum: raise GitHubTransportError('GITHUB_DOWNLOAD_TOO_LARGE')
+                return content
+        except GitHubTransportError:
+            raise
+        except (error.HTTPError, error.URLError, OSError, ValueError, TypeError):
+            raise GitHubTransportError('GITHUB_DOWNLOAD_UNAVAILABLE') from None
