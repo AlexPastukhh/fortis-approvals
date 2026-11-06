@@ -118,7 +118,8 @@ provider владелец выдаёт отдельно; каталог не м�
 
 Контроллер поддерживает текущий native-v1 review record и собственные следующие
 records. Он сохраняет owner identity, native state и прежний контейнер, а Production
-проверяет неизменным. Config/image/Repo-client preflight выполняются **до stop**.
+проверяет неизменным. Config/image/Repo-client preflight и round-trip публичного env-файла через Docker
+выполняются **до stop**.
 После clone новый контейнер staged: мутации и owner POST закрыты до проверки
 каталога/probes и owner-only активации. После активации автоматический возврат
 запрещён: новый state уже может содержать эффекты. До неё при ошибке сохраняются
