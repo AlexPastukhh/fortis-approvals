@@ -110,3 +110,9 @@ Optional Sonar/CI analysis profile остаётся выключенным: по
 согласованные profile, CI binding/manifest, permissions и live acceptance.
 Обновление image и общий framework их автоматически не включают;
 default-branch OK не доказывает PR/SHA binding.
+
+Source-only owner tooling now includes one-command legacy GitHub/Sonar token
+rotation through the permanent controller. The [runbook](../CREDENTIAL-ROTATION.md)
+owns its restart/shared-volume effects; [offline evidence](../../fortis_approvals/evidence/PROVIDER-CREDENTIAL-ROTATION-OFFLINE-20261106.md)
+records validation. Windows/Docker execution and real token replacement are
+MANUAL-PENDING; the currently deployed image does not need a rebuild for this tooling.

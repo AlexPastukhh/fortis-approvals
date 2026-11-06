@@ -71,5 +71,9 @@ Remaining work is in the [follow-up plan](../../docs/FOLLOW-UP-PLAN.md).
 `Manage-Integrations.ps1` is the persistent owner controller for the extension
 framework: Apply/Check/Credential/Return. Inputs, token handling and supported
 state profile are defined once in the [extension contract](../../docs/INTEGRATION-EXTENSIONS.md).
-Windows/Docker execution of this source candidate is not yet accepted; see the
-[offline evidence](../evidence/EXTENSIONS-OFFLINE-20261106.md).
+The base controller is accepted with an empty catalog; current deployment and
+limits are in [current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+For existing GitHub/Sonar token replacement use the same entrypoint with
+`-Action Credential -Service github|sonarcloud -Rotate`; the
+[rotation runbook](../../docs/CREDENTIAL-ROTATION.md) owns steps, shared Sonar
+effects, recovery and the pending Windows acceptance.

@@ -30,6 +30,23 @@ native Git или существующие Sonar/GitHub контракты. Ст
 Для нового чата точки входа: этот контракт → README нужного provider →
 current state → последнее evidence. Будущие задачи остаются в follow-up plan.
 
+## Подходит ли мой API
+
+Штатный `JSONAPI` покрывает HTTPS на порту 443 с системным доверием TLS,
+фиксированные GET/POST/PUT/PATCH/DELETE маршруты, JSON body/ответ и Bearer либо
+API-key header. Без токена тоже можно. AI реализует небольшой provider и закрытые
+schemas; после подключения используется общий клиент, отдельный клиент на каждый
+сервис писать не требуется. Это не подключение произвольного URL одним вызовом.
+
+HTTP, нестандартный порт, собственный CA/mTLS, OAuth refresh, подпись запросов,
+webhooks/streaming, файлы и пустой `204` response требуют отдельного trusted
+transport/протокола и его проверок. До его реализации не объявлять API готовым.
+Имена `Route.query_keys` сейчас соответствуют `[a-z][a-z0-9_]*`; API с другими
+именами query-параметров требует адаптации transport. Пределы штатного transport:
+request body 256 KiB, response по умолчанию 256 KiB
+(настраивается trusted source до 1 MiB), JSON обязателен и для успешного ответа.
+Наличие scaffold/token/catalog не заменяет первый live acceptance provider.
+
 ## Определение операции
 
 `Operation` задаёт `name`, `description`, `kind` (`read`/`write`), валидаторы
@@ -93,7 +110,8 @@ WebAuthn; при изменении preview, поколения токена и�
 Один дополнительный named volume `fortis-review-secrets` монтируется в Gateway
 read-only на `/run/fortis-secrets`. Каждый токен имеет alias и случайное поколение;
 файлы 0600 и каталог 0700 принадлежат uid/gid 10001. Существующие legacy volumes
-остаются отдельными. Новый токен не требует нового mount на каждое подключение.
+остаются отдельными; их [ротация GitHub/Sonar](CREDENTIAL-ROTATION.md) использует
+тот же controller с `-Service`, а не credential alias. Новый токен не требует нового mount на каждое подключение.
 
 После принятия source первая и последующие установки используют один entrypoint
 из Windows репозитория (SHA — точный одобренный merged commit):
@@ -137,4 +155,21 @@ params, reason=…, request_id=…)`, `result(request_id, reconcile=False)`.
 префиксом. Pending HTTP 202 поддерживается. UUID сохраняется для точного retry;
 изменённый запрос с прежним UUID конфликтует. Новое чтение требует нового UUID,
 так как replay возвращает сохранённый результат, а не свежие данные.
+
+Пример после реализации `tickets/read_item` и owner activation:
+
+```python
+import uuid
+from fortis_approvals.extensions.client import default_client
+
+client = default_client()
+request_id = str(uuid.uuid4())  # Сохранить вместе с параметрами до отправки write.
+result = client.call('tickets', 'read_item', 'record-123', {},
+                     reason='Порученная проверка записи', request_id=request_id)
+# При PENDING ждать Owner Portal; client.result(request_id) читает тот же intent.
+```
+
+ALLOW/ASK выбирает trusted config операции. Клиент не получает токен и не
+назначает себе политику. Условный пример не означает, что tickets уже внедрён.
+
 Каталог показывает effective policy, scope и readiness без значения токена.

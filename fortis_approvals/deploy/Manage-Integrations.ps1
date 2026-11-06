@@ -4,6 +4,7 @@ param(
     [ValidateSet('Apply','Credential','Check','Return','SelfTest')][string]$Action='Check',
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
+    [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
@@ -291,6 +292,9 @@ function Resume-Target {
     Write-Host 'FORTIS_INTEGRATIONS_ACTIVATED'
 }
 
+. (Join-Path $PSScriptRoot 'Provider-Credentials.ps1')
+
+if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INVALID'}
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
 if($Action -eq 'SelfTest'){
@@ -358,6 +362,7 @@ $LockPath=Join-Path $ReleaseBase 'controller.lock'
 if((Test-Path -LiteralPath $LockPath) -and ((Get-Item -LiteralPath $LockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'RELEASE_LOCK_REPARSE_POINT_DENIED'}
 try{$ControllerLock=[IO.File]::Open($LockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{throw 'RELEASE_CONTROLLER_ALREADY_RUNNING_OR_LOCK_UNAVAILABLE'}
 try {
+if($Action -eq 'Credential' -and $Service){Put-ProviderCredential $Service;return}
 Ensure-Vault
 if($Action -eq 'Credential'){
     Put-Credential $CredentialName -Rotation:$Rotate
