@@ -99,7 +99,8 @@ function Expected-Pilot {
     param([string]$Status)
     return [ordered]@{ id=$script:R.pilotId; name=$script:R.pilotName; image=$script:R.image
         stateVolume=$script:R.stateVolume; tokenVolume=$script:R.tokenVolume; status=$Status
-        owner=$script:R.owner; repository=$script:R.repository; filePrBranch=$script:R.filePrBranch; ciReads=$script:R.ciReads }
+        owner=$script:R.owner; repository=$script:R.repository; filePrBranch=$script:R.filePrBranch; ciReads=$script:R.ciReads
+        nativeWorktree=$script:R.nativeWorktree; requiredWorkflows=$script:R.requiredWorkflows; bootstrapTask=$script:R.bootstrapTask }
 }
 function Admit-Review {
     param([string]$Status)
@@ -350,6 +351,7 @@ function Build-PilotImage {
     $Smoke=Private-Process @('run','--rm','-i','--pull=never','--network','none','--read-only','--user','10001:10001',
         '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
         '--tmpfs','/tmp:rw,nosuid,nodev,size=64m','--entrypoint','python',$script:R.image,'-B','-c',$SmokeCode) ''
+    if ($script:R.nativeWorktree -and $Smoke -notmatch 'IMAGE_NATIVE_GIT_IMPORT_PASS') {throw 'PILOT_NATIVE_IMAGE_SMOKE_FAILED'}
     if ($Smoke -notmatch 'IMAGE_SONAR_OFFLINE_SMOKE_PASS' -or $Smoke -notmatch 'IMAGE_GITHUB_NOT_REGISTERED_PASS') {
         throw 'PILOT_OFFLINE_IMAGE_SMOKE_FAILED'
     }
@@ -391,6 +393,11 @@ function Create-PilotContainer {
     }
     if ($script:R.ciReads) {
         $Arguments=$Arguments[0..($Arguments.Count-2)] + @('--env','FORTIS_GITHUB_CI_READS=1',$script:R.image)
+    }
+    if ($script:R.nativeWorktree) {
+        $Arguments=$Arguments[0..($Arguments.Count-2)] + @('--env','FORTIS_GITHUB_NATIVE_WORKTREE=1',
+            '--env',('FORTIS_GITHUB_REQUIRED_WORKFLOWS=' + $script:R.requiredWorkflows),
+            '--env',('FORTIS_GITHUB_BOOTSTRAP_TASK=' + $script:R.bootstrapTask),$script:R.image)
     }
     $script:R.pilotId=Docker-Text $Arguments
     if ($script:R.pilotId -cnotmatch '^[0-9a-f]{64}$') { throw 'PILOT_CREATED_ID_INVALID_INSPECT_BEFORE_RETRY' }

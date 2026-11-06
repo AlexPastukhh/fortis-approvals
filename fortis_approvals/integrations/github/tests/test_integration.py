@@ -308,6 +308,21 @@ class TransportTests(unittest.TestCase):
                 GitHubTransportError, "GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID"):
             transport.request("GET", "/repos/Alex/tunnel")
 
+    def test_mark_ready_has_one_fixed_graphql_mutation_and_no_generic_proxy(self):
+        node='PR_fixture_node'
+        opener=_Opener(json.dumps({'data':{'markPullRequestReadyForReview':{'pullRequest':{'id':node,'isDraft':False}}}}).encode())
+        transport=GitHubHTTPTransport('github_pat_'+'x'*60,opener=opener)
+        transport.mark_ready(node)
+        self.assertEqual(opener.request.full_url,'https://api.github.com/graphql')
+        body=json.loads(opener.request.data)
+        self.assertEqual(body['variables'],{'id':node})
+        self.assertIn('markPullRequestReadyForReview(input:{pullRequestId:$id})',body['query'])
+        with self.assertRaises(Denied):transport.request('POST','/graphql',body={'query':'anything'})
+        with self.assertRaises(Denied):transport.mark_ready('node"; arbitrary query')
+        bad=_Opener(b'{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"wrong","isDraft":false}}}}')
+        with self.assertRaises(GitHubTransportError):
+            GitHubHTTPTransport('github_pat_'+'x'*60,opener=bad).mark_ready(node)
+
     def test_redirect_is_not_followed_and_error_is_redacted(self):
         from urllib.error import HTTPError
         class RedirectOpener:

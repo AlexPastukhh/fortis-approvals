@@ -126,9 +126,18 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         core,actor_operations={actor:{G4_OPERATION} for actor in actors},
         actor_read_operations={actor: SONAR_READ_OPERATIONS for actor in actors},
         read_adapter=reader)
+    native = None
     if github_pilot is not None:
-        from .integrations.github.pilot import install_pilot
-        install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,
-                      root=root, actor=grants[ingress_grant], transport=github_transport)
+        if github_pilot.native_worktree:
+            from .workflow.runtime import install
+            native = install(core=core,portal=portal,broker=broker,config=github_pilot,
+                root=root,actor=grants[ingress_grant],transport=github_transport)
+        else:
+            from .integrations.github.pilot import install_pilot
+            install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,
+                          root=root, actor=grants[ingress_grant], transport=github_transport)
     ingress = RepoIngress(broker,host=ingress_host,max_bytes=524288)
+    if native is not None:
+        from .workflow.runtime import wrap
+        ingress = wrap(ingress,native)
     return core,owner,portal,ingress

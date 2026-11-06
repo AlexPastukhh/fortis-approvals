@@ -17,7 +17,7 @@ GITHUB_READ_OPERATIONS = frozenset({
     ("github", "get_commit_status"),
 })
 GITHUB_ACTION_OPERATIONS = frozenset({
-    ("github", "create_branch"), ("github", "push_files"), ("github", "create_pull_request"),
+    ("github", "create_branch"), ("github", "push_files"), ("github", "push_commits"), ("github", "mark_pr_ready"), ("github", "create_pull_request"),
     ("github", "merge_pull_request"), ("github", "update_workflow_file"),
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
@@ -115,6 +115,19 @@ def validate_github_action(operation, target, params):
             raise Denied("GITHUB_CREATE_BRANCH_PARAMS_DENIED")
         _branch(params["branch"])
         _sha(params["sourceSha"])
+    elif operation == "push_commits":
+        if set(params) != {"task", "artifactSha256", "expectedHeadSha", "newSha"}:
+            raise Denied("GITHUB_PUSH_COMMITS_PARAMS_DENIED")
+        if type(params["task"]) is not str or not re.fullmatch("[a-z0-9][a-z0-9-]{0,99}",params["task"]):
+            raise Denied("GITHUB_TASK_INVALID")
+        if type(params["artifactSha256"]) is not str or not re.fullmatch("[0-9a-f]{64}",params["artifactSha256"]):
+            raise Denied("GITHUB_ARTIFACT_INVALID")
+        if params["expectedHeadSha"] is not None: _sha(params["expectedHeadSha"])
+        _sha(params["newSha"])
+    elif operation == "mark_pr_ready":
+        if set(params) != {"number","expectedHeadSha"} or type(params["number"]) is not int or not 1 <= params["number"] <= 1000000:
+            raise Denied("GITHUB_READY_PARAMS_DENIED")
+        _sha(params["expectedHeadSha"])
     elif operation == "push_files":
         if set(params) != {"branch", "expectedHeadSha", "message", "files"}:
             raise Denied("GITHUB_PUSH_PARAMS_DENIED")

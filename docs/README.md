@@ -1,6 +1,7 @@
 # Fortis Approvals documentation
 
 - [AI-agent guide: Gateway role, policies and adding a service](GATEWAY-AGENT-GUIDE.md)
+- [Native Git/worktree Gateway policy and bootstrap](NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
 - [Provider integration catalog](../fortis_approvals/integrations/README.md)
 - [Integration modularization and GitHub onboarding plan](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md)
 - [Current state and operating scope](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
@@ -8,7 +9,8 @@
 - [Deployment artifacts and historical scripts](../fortis_approvals/deploy/README.md)
 - [Latest live Sonar READ / ASK / Reject / Approve evidence](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261104.md)
 - [Migrated Sonar Repo-client live GET evidence](../fortis_approvals/evidence/FORTIS-SONAR-LIVE-GET-AFTER-MODULARIZATION-20261105.md)
-- [Latest offline test results — 245 tests](TEST-RESULTS-2026-11-05.md)
+- [Native Git/worktree offline evidence — 342 tests](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md)
+- [Earlier offline test results — 245 tests](TEST-RESULTS-2026-11-05.md)
 - [Historical offline test results](TEST-RESULTS-2026-11-03.md)
 - [Source extraction audit](audits/SOURCE-EXTRACTION-2026-11-03.md)
 - [Original extraction SHA-256 manifest](SOURCE-MANIFEST.sha256)

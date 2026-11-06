@@ -131,6 +131,14 @@ class GitHubClient:
             "body": body, "draft": draft,
         }, request_id=request_id, reason=reason)
 
+    def push_commits(self, repo, task, artifact_sha256, expected_head_sha, new_sha, *, request_id, reason):
+        return self.action("push_commits",repo,dict(task=task,artifactSha256=artifact_sha256,
+            expectedHeadSha=expected_head_sha,newSha=new_sha),request_id=request_id,reason=reason)
+
+    def mark_pr_ready(self, repo, number, expected_head_sha, *, request_id, reason):
+        return self.action("mark_pr_ready",repo,dict(number=number,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason)
+
     def merge_pull_request(self, repo, number, expected_head_sha,
                            merge_method="squash", *, request_id, reason):
         return self.action("merge_pull_request", repo, {

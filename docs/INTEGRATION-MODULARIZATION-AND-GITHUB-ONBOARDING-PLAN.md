@@ -201,12 +201,17 @@ direct Git credentials stay deferred until their own required workflows are
 covered and the owner authorizes the concrete rollout.
 
 
-## M3 source checkpoint — live Gateway CI read pending
+## M3 accepted; native worktree cycle is the next acceptance
 
-The CI opt-in, typed Repo read scenario and existing owner-run update/return
-entrypoint now support the accepted PR/head/run selection. New tests cover
-real TLS reads, explicit opt-in/default denial, preserved mutation restrictions,
-wrong run/head/event, pending/failure reporting and pagination. Windows tests
-cover accepted M2 admission and return to its retained state. Review full CI,
-merge source and execute one owner-run CIRead package after Actions read is
-enabled. Do not repeat M1/M2 mutations or count this source work as live M3 PASS.
+The owner-run M3 result is FORTIS_GITHUB_CI_READ_LIVE_PASS: exact PR 8 head
+a2cb4a59bf2251cc05301a9da17e3a9fd02a19ee, Source CI run 42101319273,
+completed/success, retained M2 receipts, Sonar OK and unchanged Production.
+Do not repeat M1-M3 or their provisioning.
+
+The next slice implements the actual existing-commit worktree workflow through
+Gateway. Its current policy, source-bootstrap exception, bounded acceptance
+sequence and limits are in NATIVE-WORKTREE-GATEWAY-2026-11-06.md. That document
+supersedes the earlier push_files expansion proposal above for the native
+profile. Native GitHub acceptance is pending; local Git fixtures are not a live
+GitHub PASS. Use no connector and no legacy GitHub credential helper to publish
+or accept this source. Preserve Production and the retained M3 return point.
