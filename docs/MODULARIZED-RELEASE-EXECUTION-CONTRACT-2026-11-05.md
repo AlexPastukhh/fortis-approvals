@@ -1,9 +1,10 @@
 # Modularized release execution contract — 2026-11-05
 
-> **Priority update — 2026-11-06:** retain this contract for later Production
-> rollout. First complete the minimal isolated GitHub E2E described in the
-> [current onboarding plan](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
-> Implementing this Production executor is not a prerequisite for the pilot.
+> **Status update — 2026-11-06:** isolated native GitHub/worktree acceptance is
+> complete; see [live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
+> This Production contract remains deferred. Its pinned 2026-11-05 image/profile
+> is an earlier proposal, not the accepted native image or a current rollout GO.
+> Revalidate exact replacement inputs before implementing a release executor.
 
 Status: source-review proposal. This document and the JSON profile describe
 an exact intended release, but contain no lifecycle executor and grant no
