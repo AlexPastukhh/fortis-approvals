@@ -14,11 +14,16 @@ PowerShell 5.1. Это ограниченный переход от принят
   Проверяются точные ID/name/image/state/token/native scope и ACL. Record не
   переписывается; bootstrap worktree и retained M3 сохраняются.
 - Новый private record по умолчанию находится в
-  `%LOCALAPPDATA%\Fortis\GitHubPilot\review-update-515ad033\record.json`.
+  `%LOCALAPPDATA%\Fortis\GitHubPilot\review-update-515ad033-native-v2\record.json`.
   Intent записывается до мутаций. State копируется в новый пустой named volume;
   исходный контейнер, state и image остаются. Автоматического удаления нет.
-- Helper из принятого pilot проверяет stopped SQLite state: целостность,
-  отсутствие journals/незавершённых запросов, owner binding, байты и права.
+- State helper использует явный native profile: помимо прежних БД сохраняет
+  `native-git/workflow.sqlite`, зарегистрированные tasks/jobs, content-addressed
+  bundles и пустой изолированный Git runner. Проверяет целостность SQLite,
+  отсутствие journals/незавершённых запросов и jobs, owner binding, hashes и
+  права. Временные `git-auth-*`/`git-fetch-*` и другие неизвестные элементы,
+  symlinks/hardlinks, непустой runner config и повреждённые bundles блокируют
+  копирование. Legacy pilot profile остаётся строгим и отдельно тестируется.
   Копируется только state. Credential volumes подключаются к замене RO;
   их содержимое не выгружается в Repo, пакет или вывод.
 - Скрипт может остановить только точно принятый исходный review и собственную
@@ -27,6 +32,11 @@ PowerShell 5.1. Это ограниченный переход от принят
 - Сеть: offline smoke/validation/clone helpers без сети; новый Gateway использует
   прежний bridge и provider transport. Read-only postchecks из `fortis-repo-test`
   идут через Gateway (capabilities, GitHub branches, Sonar quality gate).
+
+Первый failed record `review-update-515ad033/record.json` сохраняется. Если он
+существует, повторная попытка допускается только после проверки `Returned`,
+отсутствия clone receipt/созданного контейнера и любых planned resources.
+Его hash записывается в новый record; старый файл не перезаписывается.
 
 ## Один запуск
 

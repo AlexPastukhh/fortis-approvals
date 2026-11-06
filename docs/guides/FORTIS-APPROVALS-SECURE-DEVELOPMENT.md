@@ -24,9 +24,12 @@ OWNER-REPORTED: Windows main обновлён до того же source SHA; с�
 с revision label этого commit. Offline smoke после явного добавления
 `/opt/fortis` в `sys.path` прошёл, включая analysis-review imports.
 Новый image ещё не запущен; исходный native runtime в таблице не заменён.
-[Owner-run updater](WINDOWS-REVIEW-UPDATE.md) подготовлен, Windows execution —
-MANUAL-PENDING. Последний owner inspect идентифицирует исходный review,
-но смешанный вывод по нескольким контейнерам не доказывает их индивидуальный health.
+OWNER-REPORTED: первая попытка [owner-run updater](WINDOWS-REVIEW-UPDATE.md)
+остановилась на старом allowlist state и выдала маркер возврата прежнего review.
+LIVE-VERIFIED после возврата: native capabilities отвечают, Sonar read — `OK`.
+Это не host inspect всех контейнеров и не подтверждение нового image. Native-aware
+исправление подготовлено; его Windows запуск остаётся MANUAL-PENDING.
+[Evidence и причина отказа](../../fortis_approvals/evidence/FORTIS-REVIEW-UPDATER-OFFLINE-20261106.md).
 
 ## Что завершено
 

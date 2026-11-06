@@ -28,19 +28,58 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def inspect_state(volume, *, uid=10001, gid=10001, github=False):
+NATIVE_DIRS = ('native-git', 'native-git/artifacts', 'native-git/git',
+               'native-git/git/runner', 'native-git/git/runner/home',
+               'native-git/git/runner/empty-hooks')
+
+
+def native_files(root, *, uid, gid):
+    """Closed persistent native layout. Never copy transient Git auth/config."""
+    expected = {'native-git': {'artifacts', 'workflow.sqlite', 'git'},
+        'native-git/git': {'runner'},
+        'native-git/git/runner': {'home', 'empty-hooks', 'empty.config'},
+        'native-git/git/runner/home': set(), 'native-git/git/runner/empty-hooks': set()}
+    for name in NATIVE_DIRS:
+        directory = root / name
+        info = directory.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
+                stat.S_IMODE(info.st_mode) == 0o700, 'PILOT_NATIVE_DIRECTORY_INVALID')
+        if name in expected:
+            require({p.name for p in directory.iterdir()} == expected[name],
+                    'PILOT_NATIVE_UNKNOWN_FILES_OR_TEMPORARY_GIT_STATE')
+    files = {'native-git/workflow.sqlite', 'native-git/git/runner/empty.config'}
+    for artifact in (root / 'native-git/artifacts').iterdir():
+        require(re.fullmatch('[0-9a-f]{64}\\.bundle', artifact.name) is not None,
+                'PILOT_NATIVE_ARTIFACT_NAME_INVALID')
+        files.add('native-git/artifacts/' + artifact.name)
+    return files
+
+
+def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False):
     files = FILES | ({'github-receipts.sqlite'} if github else set())
+    require(not native or github, 'PILOT_NATIVE_REQUIRES_GITHUB_STATE')
     databases = DBS + (('github-receipts.sqlite',) if github else ())
+    if native: databases += ('native-git/workflow.sqlite',)
     volume = Path(volume)
     root = volume / 'private'
     info = root.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
             stat.S_IMODE(info.st_mode) == 0o700, 'PILOT_STATE_DIRECTORY_INVALID')
-    require({p.name for p in root.iterdir()} == files, 'PILOT_SOURCE_UNKNOWN_FILES_OR_JOURNAL')
+    require({p.name for p in root.iterdir()} == files | ({'native-git'} if native else set()),
+            'PILOT_SOURCE_UNKNOWN_FILES_OR_JOURNAL')
+    if native: files |= native_files(root, uid=uid, gid=gid)
     for name in files:
         info = (root / name).lstat()
         require(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
                 stat.S_IMODE(info.st_mode) == 0o600, 'PILOT_SOURCE_FILE_INVALID')
+        if native: require(info.st_nlink == 1, 'PILOT_NATIVE_HARDLINK_DENIED')
+    if native:
+        require((root / 'native-git/git/runner/empty.config').read_bytes() == b'', 'PILOT_NATIVE_RUNNER_CONFIG_NOT_EMPTY')
+        for name in files:
+            if name.startswith('native-git/artifacts/'):
+                artifact = root / name
+                require(0 < artifact.stat().st_size <= 24 * 1024 * 1024 and
+                        file_hash(artifact) == artifact.name[:-7], 'PILOT_NATIVE_ARTIFACT_DIGEST_MISMATCH')
     require((root / MARKER).read_bytes() == b'fortis-r7-unified-v1\n', 'PILOT_SOURCE_MARKER_INVALID')
     connections = {}
     try:
@@ -62,20 +101,34 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False):
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
+        if native:
+            db = connections['native-git/workflow.sqlite']
+            require({r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")} ==
+                    {'artifacts', 'tasks', 'jobs'}, 'PILOT_NATIVE_SCHEMA_UNKNOWN')
+            states = dict(db.execute('SELECT state,COUNT(*) FROM jobs GROUP BY state'))
+            require(set(states) <= {'DONE', 'FAILED'}, 'PILOT_NATIVE_HAS_UNFINISHED_JOBS')
+            for (digest,) in db.execute('SELECT digest FROM artifacts'):
+                require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) and
+                        'native-git/artifacts/' + digest + '.bundle' in files, 'PILOT_NATIVE_ARTIFACT_UNAVAILABLE')
+            summary['native'] = {'tasks': db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0],
+                'artifacts': db.execute('SELECT COUNT(*) FROM artifacts').fetchone()[0],
+                'jobStates': states}
         if github: summary['githubReceipts'] = connections['github-receipts.sqlite'].execute('SELECT COUNT(*) FROM receipts').fetchone()[0]
     finally:
         for db in connections.values(): db.close()
     return {'sha256': {name: file_hash(root / name) for name in sorted(files)}, 'summary': summary}
 
 
-def clone_state(source, target, *, uid=10001, gid=10001, github=False):
-    files = FILES | ({'github-receipts.sqlite'} if github else set())
+def clone_state(source, target, *, uid=10001, gid=10001, github=False, native=False):
     source, target = Path(source), Path(target)
     require(not source.is_symlink() and not target.is_symlink() and source.is_dir() and target.is_dir(), 'PILOT_VOLUME_ROOT_INVALID')
     require(source.resolve() != target.resolve() and not any(target.iterdir()), 'PILOT_CLONE_TARGET_NOT_EMPTY')
-    before = inspect_state(source, uid=uid, gid=gid, github=github)
+    before = inspect_state(source, uid=uid, gid=gid, github=github, native=native)
+    files = set(before['sha256'])
     private = target / 'private'
     private.mkdir(mode=0o700)
+    if native:
+        for name in NATIVE_DIRS: (private / name).mkdir(mode=0o700)
     for name in sorted(files):
         descriptor = os.open(private / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
@@ -83,9 +136,10 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False):
             output.flush(); os.fsync(output.fileno())
         os.chmod(private / name, 0o600)
         os.chown(private / name, uid, gid)
-    os.chmod(private, 0o700); os.chown(private, uid, gid)
-    require(inspect_state(target, uid=uid, gid=gid, github=github) == before, 'PILOT_CLONE_VERIFICATION_FAILED')
-    require(inspect_state(source, uid=uid, gid=gid, github=github) == before, 'PILOT_SOURCE_CHANGED_DURING_CLONE')
+    for directory in ([private] + [private / name for name in NATIVE_DIRS] if native else [private]):
+        os.chmod(directory, 0o700); os.chown(directory, uid, gid)
+    require(inspect_state(target, uid=uid, gid=gid, github=github, native=native) == before, 'PILOT_CLONE_VERIFICATION_FAILED')
+    require(inspect_state(source, uid=uid, gid=gid, github=github, native=native) == before, 'PILOT_SOURCE_CHANGED_DURING_CLONE')
     return before
 
 
@@ -225,8 +279,8 @@ def main():
     value = json.load(sys.stdin)
     action = value['action']
     if action == 'provision': result = provision_token(value['token'])
-    elif action == 'clone': result = clone_state('/source', '/target', github=value.get('github', False))
-    elif action == 'inspect': result = inspect_state('/source', github=value.get('github', False))
+    elif action == 'clone': result = clone_state('/source', '/target', github=value.get('github', False), native=value.get('native', False))
+    elif action == 'inspect': result = inspect_state('/source', github=value.get('github', False), native=value.get('native', False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])
     elif action == 'file_pr_receipts': result = verify_file_pr_receipts(value['scenario'])

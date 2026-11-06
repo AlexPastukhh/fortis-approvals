@@ -11,8 +11,9 @@ $Mode=$RequestedMode; $Record=$RequestedRecord; $AnalysisConfig=$RequestedConfig
 $Image='sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d'
 $ImageRevision='2f88d92091e7d652ea0f33486fbeb38f2eaedd21'
 $PreviousPath=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\bf089ec8547f4a0bbc95004f692e70bf\record.json'
-if (-not $Record) { $Record=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033\record.json' }
+if (-not $Record) { $Record=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033-native-v2\record.json' }
 $script:RecordPath=[IO.Path]::GetFullPath($Record)
+$PriorAttemptPath=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033\record.json'
 $script:Helper64=Code64 (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'github_pilot_helpers.py') -Raw)
 
 function Json-Items {
@@ -66,6 +67,29 @@ function Check-PreviousRecord {
     }
     return $P
 }
+function Check-PriorAttempt {
+    param($CanonicalPrevious)
+    if (-not (Test-Path -LiteralPath $PriorAttemptPath)) { return '' }
+    $SavedPath=$script:RecordPath
+    try {
+        $script:RecordPath=$PriorAttemptPath; Assert-RecordAcl
+        $A=Get-Content -LiteralPath $PriorAttemptPath -Raw | ConvertFrom-Json
+    } finally { $script:RecordPath=$SavedPath }
+    if ($A.schema -ne 5 -or $A.phase -cne 'Returned' -or $A.image -cne $Image -or
+        $A.imageRevision -cne $ImageRevision -or $A.sourceReceipt -or $A.pilotId -or
+        $A.runId -cnotmatch '^[0-9a-f]{32}$' -or
+        $A.pilotName -cne ('fortis-github-pilot-' + $A.runId) -or
+        $A.stateVolume -cne ('fortis-github-pilot-state-' + $A.runId) -or
+        -not (Same-Json $A.previous $CanonicalPrevious) -or
+        $A.previousRecordHash -cne (Get-FileHash -LiteralPath $PreviousPath -Algorithm SHA256).Hash) {
+        throw 'UPDATE_PRIOR_ATTEMPT_NOT_SAFELY_RETURNED'
+    }
+    if (((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n') -ccontains $A.stateVolume -or
+        ((Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n') -ccontains $A.pilotName) {
+        throw 'UPDATE_PRIOR_ATTEMPT_HAS_RESOURCES_REQUIRES_REVIEW'
+    }
+    return (Get-FileHash -LiteralPath $PriorAttemptPath -Algorithm SHA256).Hash
+}
 function Admit-Update {
     param($C,$P,[switch]$Candidate,[switch]$AllowUnhealthy)
     $E=@{id=$P.pilotId;name=$P.pilotName;image=$P.image;stateVolume=$P.stateVolume;tokenVolume=$P.tokenVolume
@@ -86,7 +110,7 @@ function Admit-Update {
     $null=Helper @{action='admit';container=$Public;expected=$E;pilot=$true} -Image $Image
 }
 function Source-Receipt {
-    Helper @{action='inspect';github=$true} -Image $script:R.previous.image -Mounts @('--mount',
+    Helper @{action='inspect';github=$true;native=$true} -Image $script:R.previous.image -Mounts @('--mount',
         ('type=volume,source=' + $script:R.previous.stateVolume + ',target=/source,readonly'))
 }
 function Check-RetainedSource {
@@ -111,7 +135,7 @@ function Find-Candidate {
 }
 function Assert-UpdateRecord {
     $P=Check-PreviousRecord
-    if ($script:R.schema -ne 5 -or $script:R.image -cne $Image -or $script:R.imageRevision -cne $ImageRevision -or
+    if ($script:R.schema -ne 5 -or $script:R.stateProfile -cne 'native-v1' -or $script:R.image -cne $Image -or $script:R.imageRevision -cne $ImageRevision -or
         $script:R.runId -cnotmatch '^[0-9a-f]{32}$' -or
         $script:R.pilotName -cne ('fortis-github-pilot-' + $script:R.runId) -or
         $script:R.stateVolume -cne ('fortis-github-pilot-state-' + $script:R.runId) -or
@@ -120,6 +144,9 @@ function Assert-UpdateRecord {
         -not (Same-Json $script:R.previous $P) -or
         $script:R.previousRecordHash -cne (Get-FileHash -LiteralPath $PreviousPath -Algorithm SHA256).Hash) {
         throw 'UPDATE_RECORD_IDENTITY_INVALID'
+    }
+    if ($script:R.priorAttemptHash -and $script:R.priorAttemptHash -cne (Check-PriorAttempt $P)) {
+        throw 'UPDATE_PRIOR_ATTEMPT_RECORD_CHANGED'
     }
     foreach ($Key in @('owner','repository','tokenVolume','filePrBranch','ciReads','nativeWorktree','requiredWorkflows','bootstrapTask')) {
         if ($script:R.$Key -cne $P.$Key) { throw 'UPDATE_NATIVE_CONFIG_CHANGED' }
@@ -240,6 +267,7 @@ if ($Mode -eq 'Rollback') {
 }
 if (Test-Path -LiteralPath $script:RecordPath) { throw 'UPDATE_RECORD_EXISTS_USE_ROLLBACK_OR_INSPECT' }
 $Previous=Check-PreviousRecord
+$PriorAttemptHash=Check-PriorAttempt $Previous
 $Baseline=Production-Baseline
 Admit-Update (Container $Previous.pilotId) $Previous
 Assert-OnlyWriter $Previous.stateVolume $Previous.pilotId
@@ -274,7 +302,7 @@ print(json.dumps(json.loads(raw),separators=(',',':')))
     $Config=Image-Python $Validate $Raw
 }
 $RunId=[Guid]::NewGuid().ToString('N')
-$script:R=[ordered]@{schema=5;runId=$RunId;phase='Prepared';stopIntent=$false;pilotId=''
+$script:R=[ordered]@{schema=5;stateProfile='native-v1';priorAttemptHash=$PriorAttemptHash;runId=$RunId;phase='Prepared';stopIntent=$false;pilotId=''
     pilotName=('fortis-github-pilot-' + $RunId);stateVolume=('fortis-github-pilot-state-' + $RunId)
     image=$Image;imageRevision=$ImageRevision;previous=$Previous;previousRecordHash=(Get-FileHash -LiteralPath $PreviousPath -Algorithm SHA256).Hash
     productionBaseline=$Baseline;sourceReceipt=$null;analysisConfig=$Config;clientChecks=$null
@@ -301,7 +329,7 @@ try {
     Assert-Volume $script:R.stateVolume; Assert-OnlyWriter $script:R.stateVolume
     $V=@(Docker-Json @('volume','inspect',$script:R.stateVolume))[0]
     if ($V.Labels.'io.fortis.review-update' -cne $RunId) { throw 'UPDATE_STATE_PROVENANCE_INVALID' }
-    $Cloned=Helper @{action='clone';github=$true} -Root -Mounts @('--mount',
+    $Cloned=Helper @{action='clone';github=$true;native=$true} -Root -Mounts @('--mount',
         ('type=volume,source=' + $Previous.stateVolume + ',target=/source,readonly'),'--mount',
         ('type=volume,source=' + $script:R.stateVolume + ',target=/target'))
     if (-not (Same-Json $Cloned $script:R.sourceReceipt)) { throw 'UPDATE_CLONE_RECEIPT_MISMATCH' }
