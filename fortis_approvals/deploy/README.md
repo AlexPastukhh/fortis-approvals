@@ -28,6 +28,15 @@ record. Production is not GitHub-enabled. Never replace this with the legacy
 Repo helper credential or add mounts to a historical Compose file incidentally.
 [Provider boundary](../integrations/github/README.md).
 
+## Owner-run image update
+
+[`Update-NativeReview.ps1`](Update-NativeReview.ps1) prepares one bounded update
+of the accepted native review to the owner's prebuilt analysis-review image.
+It reuses the pilot state/ACL/admission helpers; it does not rerun provisioning.
+[Windows runbook](../../docs/guides/WINDOWS-REVIEW-UPDATE.md) owns inputs,
+startup checks, failure return and verification limits. This is a source-reviewed
+entrypoint, not a recorded live deployment or new-operation acceptance.
+
 ## Production references and deferred release
 
 - `compose-r7-p2-20261103.yaml` is a dated configuration reference. The owner

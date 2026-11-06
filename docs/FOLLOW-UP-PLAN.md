@@ -23,6 +23,8 @@
 
 Source-кандидат первого пункта описан в [analysis-review contract](ANALYSIS-REVIEW-CONTRACT.md): там живут операции, scopes, политики opt-in и ограничения binding. Отдельно требуется owner-reviewed deployment, CI manifest и live-проверка реальных ответов/permissions; прежний Sonar default-branch OK не заменяет такую проверку.
 
+Для owner-run обновления review подготовлен [Windows entrypoint](guides/WINDOWS-REVIEW-UPDATE.md). Его наличие и offline image smoke не закрывают live acceptance первого пункта.
+
 ## Незавершённое сопровождение принятого native этапа
 
 - Довести подготовленное исправление `WorkflowClient.result` для HTTP 202 и

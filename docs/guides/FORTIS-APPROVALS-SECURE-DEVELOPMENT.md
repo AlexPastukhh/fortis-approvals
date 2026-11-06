@@ -12,14 +12,21 @@
 | --- | --- | --- |
 | Production `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Sonar READ/ASK; image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. GitHub/native обновление сюда не переносилось |
 | Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; source `06791650ca86617e5c9f951439ef8cc53ec98847`, image `sha256:e3ef9029a13284f5baadc7c1529c5d3b94a67fc9c045be1ed91950937c46c5f1`; живой цикл завершён |
-| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; после PR №11 — `54d332a12a478cd4d01b6d43d634b307092498a4`, чистый |
+| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; после PR №13 — `2f88d92091e7d652ea0f33486fbeb38f2eaedd21`, чистый (LIVE-VERIFIED при подготовке updater) |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
 Core/Owner Portal. Native запуск сохранил M3 для возврата, owner credentials,
 history и receipts; Production baseline не изменился по owner-run проверкам.
 READY при запуске означал готовность, а не E2E PASS. Итоговый PASS подтверждён
 последующим [живым циклом](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
-Новый host Docker inspect в рамках обновления документации не выполнялся.
+OWNER-REPORTED: Windows main обновлён до того же source SHA; собран image
+`sha256:515ad033db0a4af7e2d29a3138d53d6a3f6e8e7909bd884145828bcc6ea28a4d`
+с revision label этого commit. Offline smoke после явного добавления
+`/opt/fortis` в `sys.path` прошёл, включая analysis-review imports.
+Новый image ещё не запущен; исходный native runtime в таблице не заменён.
+[Owner-run updater](WINDOWS-REVIEW-UPDATE.md) подготовлен, Windows execution —
+MANUAL-PENDING. Последний owner inspect идентифицирует исходный review,
+но смешанный вывод по нескольким контейнерам не доказывает их индивидуальный health.
 
 ## Что завершено
 
@@ -69,7 +76,7 @@ credential ему не передаётся. Core/owner decision и локаль
 - Native scope — один actor, `AlexPastukhh/fortis-approvals`, зарегистрированные
   `task/*`. Общая миграция остальных репозиториев и удаление legacy PAT/helper
   не проводились. Наличие helper остаётся отдельным обходным каналом доступа.
-- Windows main этим live циклом не обновлялся и не проверялся. Mirror остаётся
+- Сам native live цикл не проверял Windows main; последующий pull подтверждён владельцем, как указано выше. Mirror остаётся
   отдельным получателем; его AI API и полноценная адресация worktree ещё впереди.
 - При ожидании cleanup обнаружена несовместимость `WorkflowClient.result` с
   HTTP 202 (`PENDING`). Исправление и регрессионный тест подготовлены в отдельном

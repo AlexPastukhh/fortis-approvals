@@ -38,6 +38,7 @@ tests=(
   test_r7_runtime_endpoints.py
   test_review_state_restore.py
   test_review_runtime_contract.py
+  test_review_update.py
   test_smoke_tmpfs.py
   test_smoke_locked_backup.py
   test_review_repo_get.py
