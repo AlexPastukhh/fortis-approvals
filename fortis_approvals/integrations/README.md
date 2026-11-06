@@ -13,3 +13,5 @@ Shared Core, Owner Portal, machine ingress, authentication and Gateway transport
 An integration is enabled only when its adapter, strict typed contract, actor grant, policy, client operation, tests and deployment are all explicitly connected. A token or folder alone never enables access.
 
 See [modularization and GitHub onboarding plan](../../docs/INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
+
+For new operations or providers use the [shared onboarding workflow](../../docs/OPERATION-ONBOARDING-WORKFLOW.md) and [short change card](_integration_template/OPERATION-CHANGE.md).

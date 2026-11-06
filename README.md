@@ -10,6 +10,7 @@ Provider credentials remain in Gateway; Repo uses a separate machine grant.
 | --- | --- |
 | What is deployed and verified | [Current state](docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
 | AI usage and adding a service | [Gateway agent guide](docs/GATEWAY-AGENT-GUIDE.md) |
+| Add or extend provider operations | [Operation onboarding workflow](docs/OPERATION-ONBOARDING-WORKFLOW.md) |
 | Native worktree commands and policy | [Native Git/worktree workflow](docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | Completed live GitHub cycle | [Live evidence, 2026-11-06](fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) |
 | Remaining work | [Follow-up plan](docs/FOLLOW-UP-PLAN.md) |

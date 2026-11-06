@@ -28,6 +28,8 @@ instructions and may depend on owner-held files outside this repository.
 
 ## Change boundaries
 
+For operation/provider changes, follow the [operation onboarding workflow](docs/OPERATION-ONBOARDING-WORKFLOW.md). Prepare activation config/scopes and feature probes with the code, before owner release.
+
 - Keep provider-specific schemas, transports, adapters, and Repo clients in
   their provider integration package.
 - Keep machine authentication, Core policy, owner approval, and ingress in

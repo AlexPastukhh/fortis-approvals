@@ -7,6 +7,7 @@ repeat runtime snapshots or policy tables.
 | --- | --- |
 | Deployed instances, verified scope and limits | [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
 | AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
+| Adding/extending operations: preparation → activation → acceptance | [Operation onboarding workflow](OPERATION-ONBOARDING-WORKFLOW.md) |
 | Optional analysis-review source operations (not deployed) | [Analysis review contract](ANALYSIS-REVIEW-CONTRACT.md) |
 | Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | Upcoming work and acceptance goals | [Follow-up plan](FOLLOW-UP-PLAN.md) |
@@ -16,6 +17,8 @@ repeat runtime snapshots or policy tables.
 | Completed onboarding milestones | [Onboarding record](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md) |
 
 ## Evidence and historical references
+
+- [Operation rollout timing and failure audit — 2026-11-06](audits/OPERATION-ROLLOUT-2026-11-06.md).
 
 - [Native Git/worktree live cycle — 2026-11-06](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
 - [Native offline acceptance — 342 tests](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md).
