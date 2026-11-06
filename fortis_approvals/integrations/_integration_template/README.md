@@ -13,7 +13,8 @@ stage order and release/feature completion criteria.
 - `contract.py`: exact typed operation names, target syntax, required fields, bounds and public response projection.
 - `gateway/`: provider-specific adapters with fixed origins, methods and routes; no generic URL/method/body proxy.
 - `repo_client/`: provider-specific typed client using shared Gateway transport; no provider credential.
-- `tests/`: schema, actor grants, policy, response validation, redirects, size limits, redaction and approval lifecycle.
+- Registration/composition reference: how shared envelope validation, trusted intent construction, result projection/delivery, owner preview/strong approval, adapter and grants/policies are connected. A folder alone is not registration.
+- `tests/`: schema, actor grants, policy, response validation, redirects, size limits, redaction and approval lifecycle; explicitly include the new provider in the supported test collection.
 - `deployment/`: secret mount declaration, provisioning procedure, image manifest changes and owner-reviewed release steps.
 
 ## Enablement checklist

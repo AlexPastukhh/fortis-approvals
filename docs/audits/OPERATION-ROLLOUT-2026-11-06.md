@@ -101,3 +101,35 @@ manifest changes. Время ушло на создание части release-�
    а не уже доступные новые команды.
 5. Замеры stage durations: активное исполнение, ожидание owner, provider/CI и
    повторные попытки отдельно. Без них точный процент потерь установить нельзя.
+
+## Повторная проверка вывода и workflow
+
+Арифметика повторно проверена по тем же Git objects: elapsed 11210 s,
+post-merge 6706 s (59.82%), два fix cycles 2431 s. Build log повторно связан с
+тегом `analysis-review-2f88d920` и image `515ad033...`; cached build 4.6 s относится
+к этому образу. Оценку «40 минут можно целиком убрать» эти данные не доказывают:
+необходимая разработка/проверки и ожидания внутри интервалов не разделены.
+
+Проверка текущего кода выявила дополнительные ограничения:
+
+| Наблюдение | Подтверждение | Вывод |
+| --- | --- | --- |
+| Общий profile связывает независимые возможности | `AnalysisReviewConfig` требует непустые GitHub workflow bindings, `install` создаёт GitHub adapter и вместе включает Sonar/GitHub reads | Соответствует нынешнему контракту, но мешает Sonar-only activation. Нужна независимая capability config; одних поправок updater недостаточно |
+| Policy/grant не всегда config-only | Policies/grants задаются Python composition; supported config имеет закрытые поля | No-image путь применим только к уже поддержанным config knobs. Новые настройки/смена hardcoded policy требуют source/image changes |
+| Новый provider не подключается одной папкой | Shared `OPERATIONS/READ_OPERATIONS`, validators, submit/result projection явно знают Sonar/GitHub; registration GitHub отдельная | Обязателен полный wiring check; adapter и copied template сами не дают новый API |
+| ASK read требует result delivery | `RepoIntentBroker._public_result` отдаёт ID/state; native result разрешён только workspace/github | Approval reuse возможно, но новый service нуждается в actor-bound bounded result contract; raw Core результат не выдаётся |
+| Provider tests не собираются автоматически из любой новой папки | `scripts/test-source.sh` явно discover GitHub и Sonar tests; Source CI вызывает этот script | Новый provider должен попасть в test collection и packaging, иначе зелёный CI неполон |
+| Новые чаты main ещё не получают эти entrypoints | `git merge-base --is-ancestor` для `00d42b7` и runtime-doc commit `8349bb8` в main вернул false | Workflow/docs пока proposal в task-ветках; review/merge и согласованность current-state docs — часть внедрения |
+
+Offline без provider calls: конструктор `AnalysisReviewConfig` отклонил как
+пустой bindings, так и Sonar project с пустым workflows при отключённых CI
+controls/mutations. `validate_intent` для незарегистрированного offline service
+вернул `REPO_OPERATION_NOT_SUPPORTED`. Runtime/config/grants не менялись.
+
+Workflow исправлен по контрпримерам: client-only и source-only не требуют
+Gateway deployment, deny-only проверяет запреты, mutation-only не вынуждает
+добавлять read permissions, ASK-read требует безопасного получения результата.
+Accepted response и завершённый внешний эффект различаются. Карточка облегчена:
+обязателен короткий delta/target/result, остальные поля условны и переиспользуют
+принятые provider/owner records. Это проверка проекта процесса и кода отдельных
+точек; новый сторонний provider end-to-end здесь не внедрялся.

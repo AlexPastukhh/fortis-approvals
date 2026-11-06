@@ -1,27 +1,32 @@
 # Карточка изменения операций
 
-Скопировать в evidence/рабочую документацию конкретного изменения. Это вход для
-[общего workflow](../../../docs/OPERATION-ONBOARDING-WORKFLOW.md), а не второй
-каталог контрактов/политик или runtime status. Для существующего provider не
-копировать весь integration template.
+Короткая секция на пакет изменений/PR; отдельный файл не обязателен. Ссылаться на
+contract/config/evidence владельцев, не копировать весь integration template
+для расширения существующего provider. [Общий workflow](../../../docs/OPERATION-ONBOARDING-WORKFLOW.md).
 
-| Поле | Значение изменения |
+| Обязательное поле | Значение изменения |
 | --- | --- |
-| Provider / цель / минимальный работающий результат | Заполнить |
-| Тип изменения | Client-only / config-only / code / credential / state migration |
-| Новые или изменяемые operation IDs | Ссылки на authoritative contract/schema; эффект read/mutation и execution/approval path по отдельности |
-| Actor, target scope, effective policy | Ссылки на trusted config/policy; точный ALLOW/ASK/DENY |
-| Обязательные реальные IDs/bindings | Где установлены; неизвестные значения — BLOCKED |
-| Upstream permissions / credential availability | Подтверждено / owner action / UNKNOWN; ссылка на Gateway-side reference, без token |
-| ASK preview, effect/readback, replay/uncertain | Ссылки на implementation/tests; применимость |
-| State/dependency/packaging changes | Inventory/migration, image allowlist; либо явно отсутствуют |
-| Activation config / release inputs | Полный public config + source/image references; без placeholders |
-| Проверки до owner run | Targeted tests, exact command/import/config checks и preflight probes |
-| Новые live probes / ASK acceptance | Какие эффекты/чтения доказывают требуемый результат |
-| Return / resume | Проверенный runtime record и границы возврата |
-| Blockers | Список либо «обязательных blockers нет» |
-| Evidence и итог | Ссылки; source/image/config/live по отдельности |
+| Provider, цель и минимальный результат | Заполнить |
+| Уровень завершения и target | Source-only / review activation / release в указанном контуре |
+| Тип изменения и IDs | Client / поддержанный config / server code / credential / state; ссылки на contract delta |
+| Actor, scope, effective policy | Изменения и ссылки на trusted composition/config; либо «без изменения» |
+| Проверки результата | Применимые source/live/denial/ASK checks; уровень подтверждаемого эффекта |
+| Blockers | Неизвестные обязательные inputs либо «нет»; отдельно ожидаемые LIVE-PENDING |
 
-Имена, поля, bounds и policies принадлежат code contracts и trusted composition.
-Текущий статус принадлежит current-state документу; в карточке сохраняется
-исторический результат конкретного изменения и ссылки на владельцев данных.
+Ниже заполняется только то, что затронуто. Остальное переиспользуется из принятого
+provider/deployment record со ссылкой; не требует повторного согласования.
+
+| Условное поле | Значение изменения |
+| --- | --- |
+| Новый effect / approval path | Read/mutation отдельно от ALLOW/ASK; preview, retry/uncertain, actor-bound result contract |
+| IDs/bindings/discovery | Реальные inputs и способ получить их; требования каждой capability независимо |
+| Новые permissions / credential | Confirmed / owner action / LIVE-PENDING; Gateway-side reference без token; reload/restart semantics |
+| Registration/result/preview wiring | Validators, intent builder, result projection/delivery, composition и owner strong approval |
+| State/dependency/packaging | Inventory/migration, test collection, image allowlist; затронутые source/client/owner artifacts |
+| Runtime activation | Public config и source/image/client versions, credential references, release/return inputs |
+| Итог | Evidence links и source/image/config/live статус изменённых IDs отдельно |
+
+Текущий runtime status принадлежит current-state документу. Карточка сохраняет
+решения и исторический результат конкретного изменения. Source-only не требует
+Windows run; отсутствие проверки нового чтения не блокирует mutation-only с
+другим достаточным способом подтвердить согласованный результат.
