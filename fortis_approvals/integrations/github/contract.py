@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from ...core import Denied
 
+from .analysis_contract import READS as ANALYSIS_READS, ACTIONS as ANALYSIS_ACTIONS, READ_NAMES as ANALYSIS_READ_NAMES, ACTION_NAMES as ANALYSIS_ACTION_NAMES, validate_read as validate_analysis_read, validate_action as validate_analysis_action, validate_result as validate_analysis_result
+
 GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_repositories"), ("github", "get_repository"),
     ("github", "list_branches"), ("github", "list_commits"), ("github", "get_file"),
@@ -22,6 +24,9 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
 })
+LEGACY_READ_OPERATIONS = GITHUB_READ_OPERATIONS
+GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS
+GITHUB_ACTION_OPERATIONS = GITHUB_ACTION_OPERATIONS | ANALYSIS_ACTIONS
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -70,6 +75,8 @@ def validate_github_read(operation, target, params):
             raise Denied("GITHUB_OWNER_OR_PARAMS_DENIED")
         return params
     _repo(target)
+    if operation in ANALYSIS_READ_NAMES:
+        return validate_analysis_read(operation, params)
     if operation in ("get_repository",):
         if params:
             raise Denied("GITHUB_READ_PARAMS_DENIED")
@@ -110,6 +117,8 @@ def validate_github_action(operation, target, params):
     if type(params) is not dict:
         raise Denied("GITHUB_ACTION_PARAMS_DENIED")
     _repo(target)
+    if operation in ANALYSIS_ACTION_NAMES:
+        return validate_analysis_action(operation, params)
     if operation == "create_branch":
         if set(params) != {"branch", "sourceSha"}:
             raise Denied("GITHUB_CREATE_BRANCH_PARAMS_DENIED")
@@ -212,6 +221,8 @@ def validate_github_action(operation, target, params):
 
 def validate_github_read_projection(operation, result):
     """Reject raw provider responses and enforce exact public projections."""
+    if operation in ANALYSIS_READ_NAMES:
+        return validate_analysis_result(operation, result)
     if type(result) is not dict or result.get("operation") != operation:
         raise Denied("GITHUB_READ_PROJECTION_DENIED")
 

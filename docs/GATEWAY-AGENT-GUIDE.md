@@ -51,7 +51,7 @@ endpoints and accepted scope. Production remains the Sonar instance on
 GitHub/worktree live cycle in `AlexPastukhh/fortis-approvals`.
 
 - Sonar typed reads are ALLOW; `accept_issue` is ASK + owner WebAuthn for the
-  configured project. Deeper Sonar operation analysis is still planned.
+  configured project. The [optional analysis-review source profile](ANALYSIS-REVIEW-CONTRACT.md) is not deployed; do not send its operations to an older runtime.
 - The [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) owns the exact
   operation/policy table. Ordinary registered task push is ALLOW; CI-file
   changes, PR/ready/merge and cleanup require ASK. No per-commit approval is

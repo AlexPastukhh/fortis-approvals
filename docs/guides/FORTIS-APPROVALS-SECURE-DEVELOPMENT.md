@@ -61,7 +61,7 @@ credential ему не передаётся. Core/owner decision и локаль
 
 ## Известные ограничения
 
-- Более глубокий разбор операций Sonar **не выполнен**. Quality Gate относится
+- Дополнительные операции Sonar/CI реализованы как отдельный [source-кандидат](../ANALYSIS-REVIEW-CONTRACT.md), ещё не внедрённый в runtime. В действующем профиле Quality Gate относится
   к `CURRENT_DEFAULT_BRANCH`, `prShaBinding=NOT_VERIFIED_D2`; Sonar `OK` не
   подтверждает анализ конкретного GitHub SHA. `ACCEPTED` не означает исправление кода.
 - Source CI для merge привязан к точному PR head; это проверка GitHub CI,

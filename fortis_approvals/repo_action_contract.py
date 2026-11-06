@@ -12,6 +12,8 @@ import re
 import uuid
 
 from .core import Denied, canonical
+from .integrations.sonarcloud.analysis_contract import READ_NAMES as SONAR_ANALYSIS_READS, ACTION_NAMES as SONAR_REVIEW_ACTIONS
+from .integrations.sonarcloud.gateway.analysis_reader import validate_result as validate_sonar_analysis_result
 from .integrations.sonarcloud.contract import (
     SONAR_ACTION_OPERATIONS, SONAR_READ_OPERATIONS,
     validate_sonar_action, validate_sonar_read,
@@ -173,6 +175,8 @@ class RepoIntentBroker:
         result = adapter.read(request)
         if service == 'github':
             validate_github_read_projection(request['operation'], result)
+        elif request['operation'] in SONAR_ANALYSIS_READS:
+            validate_sonar_analysis_result(request['operation'], result)
         else:
             # Sonar's long-standing nested projection checks are retained.
             public_fields = {
@@ -235,7 +239,30 @@ class RepoIntentBroker:
         if adapter is None:
             raise Denied('REPO_ADAPTER_UNAVAILABLE')
         params = request['params']
-        if action == ('sonarcloud', 'accept_issue'):
+        if action[0] == 'sonarcloud' and (action[1] in SONAR_REVIEW_ACTIONS or
+                action[1] == 'accept_issue' and 'comment' in params):
+            from .integrations.sonarcloud.gateway.review_actions import SonarReviewAdapter
+            if not isinstance(adapter, SonarReviewAdapter):
+                raise Denied('REPO_SONAR_REVIEW_UNAVAILABLE')
+            if self.core._policy(actor, request) != 'ASK':
+                raise Denied('REPO_SONAR_ASK_REQUIRED')
+            try:
+                prior = self.core.client(ingress_credential, 'status', request['requestId'])
+            except Denied as exc:
+                if str(exc) != 'REQUEST_NOT_AVAILABLE': raise
+                prior = None
+            if prior is not None:
+                original = prior['request']
+                original_params = {k: v for k, v in original['params'].items() if k != 'expectedIssueSha256'}
+                if (any(original[k] != request[k] for k in ('requestId', 'service', 'operation', 'target', 'reason')) or
+                        original_params != request['params']):
+                    raise Denied('REPO_REQUEST_ID_CONFLICT')
+                body = original
+            else:
+                body = adapter.build_intent(request)
+            if self.core._policy(actor, body) != 'ASK':
+                raise Denied('REPO_SONAR_ASK_REQUIRED')
+        elif action == ('sonarcloud', 'accept_issue'):
             from .integrations.sonarcloud.gateway.sonar import SonarIssueAdapter
             # Scope and exact readback digest are trusted-adapter outputs,
             # not caller-supplied fingerprints or a guessed version.

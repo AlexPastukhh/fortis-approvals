@@ -27,6 +27,10 @@ registered task push is ALLOW. Never infer access from a client method or the
 provider token alone. Reads use closed public projections, not arbitrary provider
 responses or raw file contents; `get_file` reports verified hashes/size.
 
+## Optional analysis review
+
+The [analysis-review source contract](../../../docs/ANALYSIS-REVIEW-CONTRACT.md) owns the new run/attempt, jobs/logs, check/annotation and artifact/manifest reads plus ASK CI controls. The CI-only router can admit explicitly configured repositories without widening native Git scope. This source profile is not deployed and has no default grants.
+
 ## Two Git write mechanisms
 
 `push_files` is the legacy bounded REST interface: create a new commit from at

@@ -13,7 +13,8 @@ from urllib.parse import urlsplit
 from .core import Authenticator, Core, Denied
 from .owner_auth import OwnerWebAuthn
 from .owner_portal import OwnerPortal
-from .repo_action_contract import RepoIntentBroker, SONAR_READ_OPERATIONS
+from .repo_action_contract import RepoIntentBroker
+from .integrations.sonarcloud.contract import LEGACY_READ_OPERATIONS as SONAR_READ_OPERATIONS
 from .repo_ingress import RepoIngress
 from .integrations.sonarcloud.gateway.read_adapter import SonarReadAdapter
 
