@@ -1,6 +1,6 @@
 # Analysis review — source operation contract
 
-Status: **SOURCE CANDIDATE, not deployed or live-provider accepted**.
+Status: **SOURCE PRESENT; optional profile disabled, no live-provider acceptance**.
 This document owns the optional Sonar/GitHub analysis profile, schemas and
 correlation limits. The [current-state document](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
 owns deployed scope. The [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md)

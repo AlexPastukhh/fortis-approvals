@@ -32,6 +32,15 @@ All grants are restricted to the configured owner/repository and authenticated R
 
 GitHub token permissions already used by the accepted pilot cover Contents read/write, Pull requests read/write and Actions read. Checks and commit-status reads need their corresponding read permissions if used. Workflow-file publication additionally needs GitHub workflow write permission. No token belongs in Repo or chat.
 
+## Caller authorization for ASK submission
+
+The user permits preparing and submitting necessary ASK proposals within the
+assigned task without an extra conversational permission round. Submit the
+reviewable intent directly; the external effect remains behind Owner Portal.
+A chat confirmation is not a WebAuthn proof. A real outer MCP/tool-review block
+must still be reported and respected. Container UC-CONT-007 owns this usage route;
+this contract owns the operation policy and preconditions.
+
 ## Execution boundary
 
 Repo sends typed requests to the Gateway. Local operations are queued only after Core authorization. The Repo worker claims the existing request, checks authoritative git worktree list --porcelain -z, canonical paths, common Git directory, branch and immutable preconditions, executes the fixed command, then reports a durable local receipt. Core remains DISPATCHED until that effect is confirmed. Cleanup authorization alone is never reported as successful deletion.

@@ -1,5 +1,8 @@
 # Fortis Approvals documentation
 
+Goal-based entry: `/workspace/repo/README.md` → the container use-case registry.
+Gateway scenarios are container scenarios; this map indexes technical owners.
+
 Each active topic has one owner document; entry points link to it rather than
 repeat runtime snapshots or policy tables.
 

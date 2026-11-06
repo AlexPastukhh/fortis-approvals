@@ -54,3 +54,11 @@ Mirror владеет общим [workflow](https://github.com/AlexPastukhh/dock
 Sonar/CI activation. Осталось принять owner controller на реальном Windows/Docker,
 затем подтвердить конкретный provider. Результаты проверок ведутся только в его
 [evidence](../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).
+
+## Use-case navigation and owner interaction
+
+Общие сценарии контейнера ведутся в `fortis-container/docs/use-cases/README.md`,
+достижимом через `/workspace/repo/README.md`. ASK-заявки в порученной задаче
+отправляются без предварительного устного разрешения; эффект подтверждается
+в Owner Portal. Изменение создания PR на ALLOW выполняется после этих двух
+документационных шагов отдельным source commit и не объявляется live заранее.
