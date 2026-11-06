@@ -111,3 +111,9 @@ Optional Sonar/CI analysis profile остаётся выключенным: ко
 `list_project_branches` вернул 403. Для этих операций нужны согласованные profile,
 CI binding/manifest, permissions и live acceptance. Новый framework их автоматически
 не включает; default-branch OK не доказывает PR/SHA binding.
+
+Изменение создания PR на ALLOW подготовлено в следующем source commit после
+use-case навигации/правила ASK. В текущем image PR creation ещё ASK (live
+capabilities проверены). ALLOW ограничен точным native actor + configured repo;
+для применения нужен новый image. Нормативная source policy — в
+[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md).

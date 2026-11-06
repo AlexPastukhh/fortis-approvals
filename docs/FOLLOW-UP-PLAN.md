@@ -60,5 +60,7 @@ Sonar/CI activation. Осталось принять owner controller на ре�
 Общие сценарии контейнера ведутся в `fortis-container/docs/use-cases/README.md`,
 достижимом через `/workspace/repo/README.md`. ASK-заявки в порученной задаче
 отправляются без предварительного устного разрешения; эффект подтверждается
-в Owner Portal. Изменение создания PR на ALLOW выполняется после этих двух
-документационных шагов отдельным source commit и не объявляется live заранее.
+в Owner Portal. Изменение создания PR на ALLOW реализуется после этих двух
+документационных шагов отдельным source commit: exact actor/repository, без
+расширения других grants. Source проверки и rollout не означают live применение;
+до обновления image сохраняется предыдущее ASK.

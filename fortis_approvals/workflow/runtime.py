@@ -19,6 +19,9 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
     for service,operation in writes:core.policies[(actor,service,operation)]='ASK'
     core.policies[(actor,'github','push_commits')]=adapter.push_policy
+    # Only this admitted actor AND exact configured repository receive PR ALLOW.
+    # The generic ASK and all other actor/repository scopes remain unchanged.
+    core.policies[(actor,'github','create_pull_request',config.repository)]='ALLOW'
     broker.actor_read_operations[actor]=broker.actor_read_operations.get(actor,frozenset())|reads
     broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
     workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)
