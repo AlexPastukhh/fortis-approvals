@@ -80,3 +80,7 @@ Resume uses original record/request IDs; ambiguous results require reconciliatio
 Return/rollback only changes the admitted review instance, not Production or
 already-created GitHub branches/PRs. Preserve retained M3 state and the protected
 bootstrap worktree until their owner-run references are deliberately replaced.
+
+Owner token replacement uses the existing controller: see the
+[credential rotation runbook](../../../docs/CREDENTIAL-ROTATION.md). No provider
+secret belongs in Repo/chat; source availability is separate from live rotation.

@@ -2,7 +2,9 @@
 
 # New provider integration template
 
-**Status:** template only. Copy this folder to a provider-specific directory and replace every placeholder before implementation.
+**Status:** historical manual layout for maintaining existing integrations. For a
+new provider, run the shared scaffold linked above; the sections below describe
+the older layout and are not a second onboarding procedure.
 
 ## Required contents
 
