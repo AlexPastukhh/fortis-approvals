@@ -30,7 +30,10 @@ the existing credential-file Git/manifest exclusions. This is a source check, no
 
 ## Manual acceptance still required
 
-`Manage-Integrations.ps1` was inspected as source only. Windows PowerShell 5.1,
+This offline record covers controller source inspection. The Windows CI job is
+configured to run the real PowerShell parser and non-Docker SelfTest (JSON array
+handling and caller parameter forwarding); consult its exact-head run separately.
+Windows PowerShell 5.1 host execution beyond that self-test,
 NTFS ACL, Docker CLI/volumes, confidential prompt, pull/build continuation,
 stop/clone/start, staged activation, interrupted resume and return (including a
 stopped activated candidate) are **MANUAL-PENDING** on the actual owner host.

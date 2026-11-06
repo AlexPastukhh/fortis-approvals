@@ -7,12 +7,12 @@ param(
     [switch]$Build, [switch]$Pull,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
+$ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
 $ErrorActionPreference='Stop'
 $ReleaseBase=Join-Path $env:LOCALAPPDATA 'Fortis\GatewayReleases'
 $Pointer=Join-Path $ReleaseBase 'current.json'
 $AttemptPointer=Join-Path $ReleaseBase 'attempt.json'
-$ForwardParameters=@{}+ $PSBoundParameters
 $script:Step='PREFLIGHT';$script:Image=$Image
 
 function Json-Items { param([string]$Text) $Parsed=ConvertFrom-Json -InputObject $Text; foreach($Item in $Parsed){Write-Output $Item} }
@@ -234,7 +234,10 @@ function Resume-Target {
 
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
-if($Action -eq 'SelfTest'){Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return}
+if($Action -eq 'SelfTest'){
+    if($ForwardParameters['Action'] -cne 'SelfTest' -or $ForwardParameters.ContainsKey('Mode')){throw 'RELEASE_PARAMETER_FORWARDING_SELFTEST_FAILED'}
+    Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return
+}
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
