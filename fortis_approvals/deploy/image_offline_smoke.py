@@ -1,6 +1,11 @@
 """Offline smoke of installed Gateway modules; no real tokens/state/network."""
 import json
+import sys
 from pathlib import Path
+
+# -I scripts under /opt/fortis/operator need an explicit package root.
+if "__file__" in globals() and Path(__file__).parent.name == "operator":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tempfile
 import uuid
 
@@ -57,6 +62,13 @@ def smoke():
     import subprocess
     assert subprocess.check_output(['git','--version']).startswith(b'git version ')
     assert GitHubGitBackend and install
+    from fortis_approvals.extensions.cli import check_config
+    from fortis_approvals.extensions.client import IntegrationClient
+    from fortis_approvals.extensions.staging import ReleaseGate
+    empty = check_config({'schemaVersion': 1, 'providers': {}})
+    assert empty['status'] == 'READY' and empty['operations'] == []
+    assert IntegrationClient and ReleaseGate
+    print('IMAGE_EXTENSIONS_OFFLINE_PASS')
     print('IMAGE_NATIVE_GIT_IMPORT_PASS')
     print('IMAGE_SONAR_OFFLINE_SMOKE_PASS')
     print('IMAGE_GITHUB_IMPORT_PASS')

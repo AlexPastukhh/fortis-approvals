@@ -42,3 +42,7 @@ instructions and may depend on owner-held files outside this repository.
   from a source change. Deployment requires a separate owner-reviewed release.
 - Add offline tests for validation, denial paths, response projections,
   idempotency, stale preconditions, and secret redaction.
+
+New providers follow the [extension contract](docs/INTEGRATION-EXTENSIONS.md).
+Their `integrations/<service>/tests/` are discovered automatically by the supported
+suite; CI and the Docker provider list do not require per-provider edits.

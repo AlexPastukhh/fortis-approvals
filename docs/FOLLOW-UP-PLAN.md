@@ -46,3 +46,11 @@ Source-кандидат первого пункта описан в [analysis-re
 Матрица текущих разрешений живёт только в [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
 Mirror владеет общим [workflow](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/WORKFLOW.md);
 здесь не создаётся новая система Windows-команд и не меняется его source.
+
+## Повторяемое подключение операций
+
+Общий source mechanism ALLOW/ASK + именованные Gateway credentials описан в
+[extension contract](INTEGRATION-EXTENSIONS.md). Он подготовлен отдельно от
+Sonar/CI activation. Осталось принять owner controller на реальном Windows/Docker,
+затем подтвердить конкретный provider. Результаты проверок ведутся только в его
+[evidence](../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).

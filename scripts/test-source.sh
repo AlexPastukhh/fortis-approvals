@@ -5,10 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
 
-"$PYTHON" -B -m unittest discover \
-  -s fortis_approvals/integrations/github/tests -p 'test_*.py' -v
-"$PYTHON" -B -m unittest discover \
-  -s fortis_approvals/integrations/sonarcloud/tests -p 'test_*.py' -v
+# Every provider package participates; adding one never needs a CI script edit.
+for provider_tests in fortis_approvals/integrations/*/tests; do
+  if [[ -d "$provider_tests" ]]; then
+    "$PYTHON" -B -m unittest discover -s "$provider_tests" -p 'test_*.py' -v
+  fi
+done
 
 tests=(
   test_core.py
@@ -35,6 +37,10 @@ tests=(
   test_github_ci_read.py
   test_native_workflow.py
   test_analysis_review.py
+  test_extensions.py
+  test_extensions_http.py
+  test_extensions_tooling.py
+  test_extensions_tls.py
   test_r7_runtime_endpoints.py
   test_review_state_restore.py
   test_review_runtime_contract.py

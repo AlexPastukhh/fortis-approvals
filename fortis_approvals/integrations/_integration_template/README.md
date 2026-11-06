@@ -1,3 +1,5 @@
+> For new providers use the [shared extension scaffold and contract](../../../docs/INTEGRATION-EXTENSIONS.md). This older manual wiring template is retained for existing integrations.
+
 # New provider integration template
 
 **Status:** template only. Copy this folder to a provider-specific directory and replace every placeholder before implementation.

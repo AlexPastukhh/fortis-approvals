@@ -88,22 +88,22 @@ Unsupported services or operations stop at the integration boundary.
 
 ## Adding a new service or authorization
 
-A new token alone does not make a service available. A service integration is complete only when its credential, adapter, typed contract, actor grant, policy, client operation, tests and deployment are all connected. Use the [provider integration template](../fortis_approvals/integrations/_integration_template/README.md) and keep each provider's implementation and documentation in its own folder.
+For new providers use the [extension contract](INTEGRATION-EXTENSIONS.md): one
+provider package, declared ALLOW/ASK scopes, named Gateway credentials, shared
+client/routes, automatic test/image discovery and a persistent owner controller.
+The generated stub stays disabled until implemented and tested. No manual Core,
+Docker COPY or CI registry edits are needed for each provider.
 
-1. **Define scope first.** Record the service, trusted tenant/organization, allowed resources, region, required operations and minimum provider scopes. Decide which operations are `ALLOW`, `ASK` or `DENY`. Keep high-risk provider scopes out of the initial credential if they are not needed yet.
-2. **Provision the credential on the Gateway side.** Use a dedicated secret/volume and owner-controlled provisioning. Never put the provider token in Git, a Repo workspace, an AI request, a client grant or a log. The Repo machine grant authenticates Repo to Gateway; it is not the provider token.
-3. **Implement a service-specific adapter.** Pin trusted upstream origins, HTTP methods, routes and parameter sets. Validate targets and upstream responses; bound timeouts and response sizes; disable unsafe redirects; redact errors. Separate read-only transport from mutation transport where appropriate. Do not create a generic `request(url, method, headers, body)` escape hatch.
-4. **Register typed operations and schemas.** Extend the closed operation allowlists and validators in [`repo_action_contract.py`](../fortis_approvals/repo_action_contract.py). Keep READ queries separate from ACTION intents. Define exact required fields, types, bounds, target scope and public response projection; reject extra fields and caller-supplied tokens, URLs, methods, actors or policy.
-5. **Wire actor grants and policy.** Extend the trusted composition in [`r7_unified_candidate.py`](../fortis_approvals/r7_unified_candidate.py): read operations go into `actor_read_operations`; action operations go into `actor_operations`; policy entries are registered in the trusted `policies` map. Use `ALLOW`, `ASK` or `DENY` per actor/service/operation (and narrower target rules where needed). The module name is a retained historical name, not a promise that this is the final architecture.
-6. **Connect ingress and the client.** Add only explicit typed routes/dispatch and matching client methods. Base machine ingress exposes `POST /v1/reads`, `POST /v1/actions` and `GET /v1/requests/{requestId}`. Native adds only the closed workspace/Git routes in `workflow/ingress.py`; neither surface is a general proxy. The shared Repo transport is [`clients/gateway_transport.py`](../fortis_approvals/clients/gateway_transport.py); provider clients live under `integrations/<provider>/repo_client/`. GitHub adapter plumbing is attached only through [`integrations/github/registration.py`](../fortis_approvals/integrations/github/registration.py), which does not configure actor grants or policies.
-7. **Test the security boundary.** Add tests for schema rejection, unknown operations, actor grants, target scopes, default DENY, ALLOW execution, ASK/PENDING, Reject with no dispatch, approval-bound execution, stale previews, credential redaction and upstream response validation. Use mocked/offline transports for normal tests; reserve live mutation for a separately approved owner-run E2E.
-8. **Review deployment separately.** Update the image source allowlist, secret provisioning and deployment artifacts only through the approved release procedure. Editing this development checkout does not change the active Gateway image or container.
+Existing native Git and Sonar/GitHub implementations retain their own operation
+contracts. Source changes do not activate a deployed container; deployment and
+real permission/effect acceptance are separate recorded outcomes.
 
-### Code ownership map
+## Code ownership map
 
 | Concern | Current source of truth |
 |---|---|
-| Closed operation names and request schemas | [`repo_action_contract.py`](../fortis_approvals/repo_action_contract.py) |
+| New provider registration/config/catalog/credentials | [`extensions/`](../fortis_approvals/extensions/README.md) |
+| Existing closed operation names and request schemas | [`repo_action_contract.py`](../fortis_approvals/repo_action_contract.py) |
 | Actor grants, adapter wiring and current policy map | [`r7_unified_candidate.py`](../fortis_approvals/r7_unified_candidate.py) |
 | Default-DENY policy lookup, durable request lifecycle and execution | [`core.py`](../fortis_approvals/core.py) |
 | Authenticated typed machine ingress | [`repo_ingress.py`](../fortis_approvals/repo_ingress.py) |
