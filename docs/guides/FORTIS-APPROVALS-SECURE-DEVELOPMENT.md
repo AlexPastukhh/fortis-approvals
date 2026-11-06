@@ -103,3 +103,8 @@ Production. Проверки и Windows MANUAL-PENDING — в
 [evidence](../../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).
 Обновление image выше не включило optional analysis operations: для них ещё
 нужны согласованный analysis profile/CI binding, permissions и live acceptance.
+
+После неудачной первой установки extensions прежний review восстановлен
+owner-run recovery; чтения native/GitHub/Sonar снова проверены через Gateway.
+Расширения ещё не активированы. Детали сбоя, восстановления и оставшиеся проверки
+ведутся только в [evidence](../../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).

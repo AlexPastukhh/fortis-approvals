@@ -17,6 +17,45 @@ $script:Step='PREFLIGHT';$script:Image=$Image
 
 function Json-Items { param([string]$Text) $Parsed=ConvertFrom-Json -InputObject $Text; foreach($Item in $Parsed){Write-Output $Item} }
 function Docker-Json { param([string[]]$Arguments) Json-Items (Docker-Text $Arguments) }
+function Extension-EnvLines {
+    param([string]$Configuration,[string]$Nonce)
+    @(( 'FORTIS_EXTENSIONS_CONFIG='+$Configuration ),( 'FORTIS_RELEASE_NONCE='+$Nonce ))
+}
+function Check-ExtensionEnv {
+    param([string[]]$Lines,[string]$Configuration,[string]$Nonce)
+    $Expected=@(Extension-EnvLines $Configuration $Nonce)
+    $Actual=@($Lines|Where-Object{$_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -or $_.StartsWith('FORTIS_RELEASE_NONCE=')})
+    if($Actual.Count -ne 2 -or @($Actual|Where-Object{$Expected -cnotcontains $_}).Count -or
+       @($Actual|Select-Object -Unique).Count -ne 2){throw 'RELEASE_CONFIG_CHANGED'}
+}
+function Assert-PublicEnvFile {
+    param([string]$Path,[string[]]$Expected)
+    $Code=@'
+import json,os,sys
+lines=json.load(sys.stdin)
+expected=dict(line.split('=',1) for line in lines)
+actual={k:v for k,v in os.environ.items() if k.startswith('FORTIS_')}
+assert len(expected)==len(lines) and actual==expected,'RELEASE_ENV_ROUNDTRIP_FAILED'
+print('RELEASE_ENV_ROUNDTRIP_PASS')
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<public-env-preflight>','exec'))"
+    $Result=Private-Process @('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','64','--memory','256m','--env-file',$Path,'--entrypoint','python',
+        $script:Image,'-I','-B','-c',$Wrapper) (ConvertTo-Json -InputObject $Expected -Compress)
+    if($Result -cne 'RELEASE_ENV_ROUNDTRIP_PASS'){throw 'RELEASE_ENV_ROUNDTRIP_FAILED'}
+}
+function Forward-NativeParameters {
+    param([Collections.IDictionary]$Parameters)
+    $Native=@()
+    foreach($Key in $Parameters.Keys){
+        $Value=$Parameters[$Key]
+        if($Value -is [Management.Automation.SwitchParameter]){if($Value){$Native+=('-'+$Key)}}
+        else{$Native+=@(('-'+$Key),[string]$Value)}
+    }
+    $Native
+}
 function Step { param([string]$Name) $script:Step=$Name; Write-Host ('FORTIS_INTEGRATIONS_STEP_' + $Name) }
 function Assert-DirectoryAcl {
     param([string]$Path)
@@ -162,6 +201,26 @@ function Admit {
         vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     $null=State-Helper @{action='admit';container=$Public;expected=$Expected;pilot=$true}
 }
+function Admit-ReturnCandidate {
+    param($C,$P)
+    try {Admit $C $P -AllowUnhealthy;return}
+    catch {if($_.Exception.Message -cne 'RELEASE_CONFIG_CHANGED'){throw}}
+    # Return only: exact released env-builder bug, never-started cloned state.
+    if($script:R.phase -cnotin @('Created','Returned') -or $script:R.activated -or $script:R.probesPassed -or
+       $C.State.Status -cne 'created' -or $C.State.StartedAt -cne '0001-01-01T00:00:00Z' -or
+       $C.State.FinishedAt -cne '0001-01-01T00:00:00Z' -or -not $script:R.sourceReceipt){throw 'RELEASE_RETURN_CANDIDATE_NOT_PRISTINE'}
+    $Broken=('FORTIS_EXTENSIONS_CONFIG='+$P.extensionsConfig+' FORTIS_RELEASE_NONCE='+$P.releaseNonce)
+    $Actual=@($C.Config.Env|Where-Object{$_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -or $_.StartsWith('FORTIS_RELEASE_NONCE=')})
+    if($Actual.Count -ne 1 -or $Actual[0] -cne $Broken){throw 'RELEASE_RETURN_CONFIG_NOT_KNOWN_BUG'}
+    if(-not (Same-Json (Receipt $P.stateVolume) $script:R.sourceReceipt)){throw 'RELEASE_RETURN_CANDIDATE_STATE_CHANGED'}
+    # Normalize only the proven broken public pair in an in-memory projection;
+    # full image/ID/security/mount/legacy-env admission still has to pass.
+    $Copy=$C|ConvertTo-Json -Depth 50 -Compress|ConvertFrom-Json
+    $Copy.Config.Env=@($Copy.Config.Env|Where-Object{-not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and -not $_.StartsWith('FORTIS_RELEASE_NONCE=')})
+    $Copy.Config.Env+=@(Extension-EnvLines $P.extensionsConfig $P.releaseNonce)
+    Admit $Copy $P -AllowUnhealthy
+    Write-Host 'FORTIS_INTEGRATIONS_RETURN_NEVER_STARTED_ENV_BUG'
+}
 function Receipt {
     param([string]$Volume)
     State-Helper @{action='inspect';github=$true;native=$true} @('--mount',('type=volume,source='+$Volume+',target=/source,readonly'))
@@ -178,13 +237,13 @@ function Return-Source {
     $P=$script:R.runtime
     $Names=(Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n'
     if($Names -ccontains $P.pilotName){
-        $C=Container $P.pilotName;Admit $C $P -AllowUnhealthy
+        $C=Container $P.pilotName;Admit-ReturnCandidate $C $P
         if($C.State.Status -ceq 'running'){
             $GateInput=ConvertTo-Json -InputObject @{nonce=$P.releaseNonce;configurationDigest=$script:R.configurationDigest} -Compress
             if((Image-CLI @('gate-record-status') $GateInput -StateVolume $P.stateVolume).active){throw 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'}
             $null=Docker-Text @('stop','--timeout','20',$C.Id)
         } elseif($C.State.Status -cnotin @('created','exited')){throw 'RELEASE_CANDIDATE_STATE_UNKNOWN'}
-        $C=Container $C.Id;Admit $C $P -AllowUnhealthy
+        $C=Container $C.Id;Admit-ReturnCandidate $C $P
         if($C.State.Status -cnotin @('created','exited')){throw 'RELEASE_STOP_UNCONFIRMED'}
     }
     # After stop: no concurrent effect can race the marker check. Also check when
@@ -236,6 +295,18 @@ if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
 if($Action -eq 'SelfTest'){
     if($ForwardParameters['Action'] -cne 'SelfTest' -or $ForwardParameters.ContainsKey('Mode')){throw 'RELEASE_PARAMETER_FORWARDING_SELFTEST_FAILED'}
+    $Sample='{"schemaVersion":1,"providers":{}}'
+    $Nonce='11111111-1111-4111-8111-111111111111'
+    $Lines=@(Extension-EnvLines $Sample $Nonce)
+    Check-ExtensionEnv $Lines $Sample $Nonce
+    $Denied=$false
+    try {Check-ExtensionEnv @('FORTIS_EXTENSIONS_CONFIG='+$Sample+' FORTIS_RELEASE_NONCE='+$Nonce) $Sample $Nonce}
+    catch {if($_.Exception.Message -cne 'RELEASE_CONFIG_CHANGED'){throw};$Denied=$true}
+    if(-not $Denied){throw 'RELEASE_MALFORMED_ENV_SELFTEST_FAILED'}
+    $Forwarded=@(Forward-NativeParameters @{SourceSha='a value with spaces';Build=([switch]$true);Pull=([switch]$false)})
+    $Index=[array]::IndexOf($Forwarded,'-SourceSha')
+    if($Forwarded.Count -ne 3 -or $Forwarded -cnotcontains '-Build' -or $Index -lt 0 -or
+       $Forwarded[$Index+1] -cne 'a value with spaces'){throw 'RELEASE_NATIVE_ARGUMENT_SELFTEST_FAILED'}
     Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
@@ -255,11 +326,7 @@ if($Build){
         # functions with a newly pulled script. No confidential values are arguments.
         $ForwardParameters.Remove('Pull')
         $Next=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
-        foreach($Key in $ForwardParameters.Keys){
-            $Value=$ForwardParameters[$Key]
-            if($Value -is [Management.Automation.SwitchParameter]){if($Value){$Next+=('-'+$Key)}}
-            else{$Next+=@('-'+$Key,[string]$Value)}
-        }
+        $Next+=@(Forward-NativeParameters $ForwardParameters)
         & (Join-Path $PSHOME 'powershell.exe') @Next
         if($LASTEXITCODE -ne 0){throw 'RELEASE_UPDATED_MANAGER_FAILED'}
         return
@@ -355,6 +422,13 @@ $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';sourc
     activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''}
 Save;Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
 try {
+    Step 'PUBLIC_ENV_PREFLIGHT'
+    $EnvFile=Join-Path $Directory 'public.env'
+    $EnvLines=@($Old.Config.Env|Where-Object{$_.StartsWith('FORTIS_') -and -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and -not $_.StartsWith('FORTIS_RELEASE_NONCE=')})
+    $EnvLines+=@(Extension-EnvLines $CompactConfig $Nonce)
+    [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
+    Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
+    Assert-PublicEnvFile $EnvFile $EnvLines
     Step 'STOP_SOURCE';Assert-Production;Admit (Container $Old.Id) $Source.runtime
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
@@ -370,10 +444,6 @@ try {
     if(-not (Same-Json $Clone $script:R.sourceReceipt)){throw 'RELEASE_STATE_CLONE_MISMATCH'}
     Assert-SourceUnchanged
     Step 'CREATE_STAGED'
-    $EnvFile=Join-Path $Directory 'public.env'
-    $EnvLines=@($Old.Config.Env|Where-Object{$_.StartsWith('FORTIS_') -and -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and -not $_.StartsWith('FORTIS_RELEASE_NONCE=')})
-    $EnvLines+=@('FORTIS_EXTENSIONS_CONFIG='+$CompactConfig,'FORTIS_RELEASE_NONCE='+$Nonce)
-    [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     $Arguments=@('create','--pull=never','--name',$Runtime.pilotName,'--label',('io.fortis.review-update='+$RunId),
         '--restart','no','--init','--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
         '--pids-limit','100','--memory','512m','--memory-swap','1g','--network','bridge','--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
