@@ -31,7 +31,8 @@ function Container {
     return $Items[0]
 }
 function Private-Process {
-    param([string[]]$Arguments, [string]$InputText, [string]$Executable = '')
+    param([string[]]$Arguments, [string]$InputText, [string]$Executable = '',
+          [switch]$DiagnosticDockerClone)
     foreach ($Argument in $Arguments) {
         if ($Argument.Contains('"') -or $Argument.EndsWith('\')) { throw 'PILOT_NATIVE_ARGUMENT_DENIED' }
     }
@@ -50,6 +51,20 @@ function Private-Process {
         if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PILOT_PRIVATE_PROCESS_TIMEOUT' }
         $Output=$OutputTask.Result; $Diagnostic=$ErrorTask.Result
         if ($Process.ExitCode -ne 0) {
+            # Only the credential-free state-clone call may expose a bounded,
+            # redacted Docker CLI error. All other callers keep stderr private.
+            if ($Process.ExitCode -eq 125 -and $DiagnosticDockerClone) {
+                $Lines=@($Diagnostic -split '\r?\n' | Where-Object {
+                    $_ -match '^(?:docker:\s*)?(?:Error response from daemon:|error during connect:|invalid argument|unknown flag|failed to|Unable to find image)'
+                })
+                $Detail='DOCKER_CLI_ERROR_UNCLASSIFIED'
+                if ($Lines.Count) {
+                    $Detail=$Lines[0].Trim()
+                    $Detail=[regex]::Replace($Detail,'(?i)(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|Bearer\s+\S+|https?://\S+)','[REDACTED]')
+                    if($Detail.Length -gt 400){$Detail=$Detail.Substring(0,400)}
+                }
+                throw ('PILOT_DOCKER_CLONE_FAILED_125: ' + $Detail)
+            }
             $Codes=@([regex]::Matches($Diagnostic,'(?:RuntimeError|ValueError|Denied): ([A-Z][A-Z0-9_]+)') |
                 ForEach-Object { $_.Groups[1].Value })
             if ($Diagnostic -match '"error"\s*:\s*"([A-Z][A-Z0-9_]+)"') { $Codes += $Matches[1] }
