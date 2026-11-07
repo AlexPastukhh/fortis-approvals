@@ -28,7 +28,7 @@ for the agent entrypoint and scoped ASK-proposal authorization.
 | AI usage and adding a service | [Gateway agent guide](docs/GATEWAY-AGENT-GUIDE.md) |
 | Native worktree commands and policy | [Native Git/worktree workflow](docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | Completed live GitHub cycle | [Live evidence, 2026-11-06](fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) |
-| Remaining work | [Follow-up plan](docs/FOLLOW-UP-PLAN.md) |
+| Remaining work | [Follow-up plan](docs/BACKLOG-IMPROVEMENTS.md) |
 | Code and deployment references | [Source map](fortis_approvals/README.md), [deployment index](fortis_approvals/deploy/README.md) |
 | All documentation and provenance | [Documentation map](docs/README.md) |
 

@@ -90,7 +90,7 @@ A one-line client change (`accept_202=True`) and TLS regression were prepared in
 `task/native-client-pending-status-20261106`; the saved red test failed and green
 test passed. At documentation revalidation these are uncommitted local changes,
 not merged source or a new deployed image. Follow-up is tracked in the
-[plan](../../docs/FOLLOW-UP-PLAN.md).
+[plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
 The [offline evidence](FORTIS-NATIVE-GIT-OFFLINE-20261106.md) separately covers
 binary/deletion/mode preservation, sensitive workflow history, rejection,

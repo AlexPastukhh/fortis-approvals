@@ -5,7 +5,7 @@ review, а переключение Primary тогда ещё было отде�
 оно [завершено владельцем](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md),
 Legacy остановлен. Текущие операции и политики
 описаны только в [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md),
-дальнейшая работа — в [follow-up plan](FOLLOW-UP-PLAN.md).
+дальнейшая работа — в [follow-up plan](BACKLOG-IMPROVEMENTS.md).
 
 ## Принятые результаты
 
@@ -36,6 +36,6 @@ credential остаётся в Gateway. Это не означает удале�
 отдельного изменения owner-run record. [Deployment references](../fortis_approvals/deploy/README.md).
 
 Дальнейший глубокий разбор Sonar операций, оптимальности GitHub workflow, UI,
-кода и Mirror выделен в [отдельный план](FOLLOW-UP-PLAN.md). Прежние next-step
+кода и Mirror выделен в [отдельный план](BACKLOG-IMPROVEMENTS.md). Прежние next-step
 предложения о расширении `push_files` и ожидании native acceptance заменены
 фактически принятым native контрактом.

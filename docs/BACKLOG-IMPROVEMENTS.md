@@ -1,4 +1,4 @@
-# Дальнейшие работы: Gateway и Mirror
+# Backlog улучшений — Fortis Approvals Gateway
 
 План согласован 2026-11-06 после завершения native Git/worktree live цикла.
 Текущее внедрение описано в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
@@ -6,7 +6,25 @@
 Общий Fortis backlog принадлежит `fortis-container`; вход — через
 реестр юзкейсов в `/workspace/repo/README.md`. Наличие GitHub remote в этом repo
 не означает допуск к нему действующего Gateway (UC-CONT-018).
-Здесь ведутся детали этого этапа без второй копии общего backlog.
+Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
+
+## Новый приоритет: UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
+
+- Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; однократный read-only `reconcile` не смог подтвердить результат. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.
+- Исследовать точную первопричину с безопасными снимками ошибок: worker journaling между `DISPATCHED` / `git add` / receipt, исключения после частичного эффекта, timeout, stale precondition, отсутствие error detail. Не полагаться на `job.result IS NOT NULL`: это может быть JSON-строка `null`, не receipt.
+- Сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
+- Разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
+- Разделить `Backup` admission на проверку **активных** запросов и управление **историческими неразрешёнными** эффектами. Холодная копия volume защищает байты, но не является проверкой логического состояния; нельзя ослаблять весь release guard для одной ошибки.
+- Исторический инцидент был разово закрыт после owner-requested холодной verified копии; Production сейчас здоров. Не восстанавливать удалённую заявку из старой копии при штатном релизе. Это *исследовательская задача*, не срочная новая миграция.
+
+## Улучшение детерминированного релиза (2026-11-07)
+
+- Подготовить единый Windows PowerShell 5.1 operator entrypoint: `SelfTest → Check/Build exact SHA → Apply → live READ/Owner Portal → Backup → Promote → readback`, с учётом фазы protected release, кратких PASS-маркеров и остановки без повторного Apply при ambiguity.
+- При Docker/PowerShell ошибках сохранять и безопасно редактировать **весь ограниченный stderr** и exit status; не обрывать traceback на первой `NativeCommandError`. Отделить owner-preflight, immutable image build, offline smoke и live acceptance, чтобы не дублировать длинные команды вручную.
+- Формализовать условие `FORTIS_PRIMARY_ALREADY_ACTIVE`: считать успехом только при совпадении protected `primary.json`, точного image/container ID, `healthy`, `unless-stopped`, multi-repo capability и реальных Gateway READ.
+- Для нового GitHub repo не заводить второй allowlist. Проверять доступность токену, owner/`main`, canonical worktree, origin и действующие API policies; чтение не является доказательством Contents write. Отсутствующие required status rules не обходить при merge.
+- При будущих релизах distinguish snapshot-копию state от controller-managed `Backup` (последний требуется для `Promote`); не создавать rescue volume без необходимости, но не удалять защищённую rollback-копию автоматически.
+
 
 ## Следующие задачи
 

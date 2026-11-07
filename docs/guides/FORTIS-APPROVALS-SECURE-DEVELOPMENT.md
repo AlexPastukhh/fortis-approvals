@@ -7,7 +7,7 @@ Backup/Promote, перезапуска Docker Desktop и остановки Lega
 Этот документ владеет текущим статусом;
 [agent guide](../GATEWAY-AGENT-GUIDE.md) — правилами использования,
 [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — матрицей операций,
-[отдельный план](../FOLLOW-UP-PLAN.md) — будущими задачами.
+[отдельный план](../BACKLOG-IMPROVEMENTS.md) — будущими задачами.
 
 ## Развёрнутые контуры
 
@@ -88,7 +88,7 @@ credential ему не передаётся. Core/owner decision и локаль
   новые host-independent disaster recovery и все свежие ALLOW/ASK/DENY проверки
   остаются незавершёнными. Полный аудит/рефакторинг кода, редактор политик,
   multi-agent isolation, scheduler, RDG G3 и защищённая Windows import/RUN
-  доставка не считаются завершёнными. [План дальнейших работ](../FOLLOW-UP-PLAN.md).
+  доставка не считаются завершёнными. [План дальнейших работ](../BACKLOG-IMPROVEMENTS.md).
 
 ## Работа с исходниками и восстановление
 

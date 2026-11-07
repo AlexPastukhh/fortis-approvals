@@ -1,0 +1,29 @@
+# Multi-repo и release workflow — проверка 2026-11-07
+
+**Тип данных:** owner-reported Windows/Docker host output и отдельно Repo-verified live typed Gateway reads/writes. Не является новым разрешением менять Production. Точные runtime records хранит owner Windows `%LOCALAPPDATA%/Fortis/GatewayReleases`; этот документ не копирует их приватное содержимое.
+
+## Что реально выполнено
+
+- Source `fortis-approvals/main` `0a262ea50832aae4db200ce0d0b431e45c22dd07`, CI ранее был подтверждён владельцем. Owner `Manage-Integrations.ps1 -Action Apply -Build -SourceSha ... -EnableDynamicGitHubRepositories` собрал новый image `sha256:9ba7d33ec95116b4c7645d397d18f720da188b29b3718aff2318eb8f93955d4e`, прошёл offline smoke, Source admission, state clone, staged catalog и `FORTIS_INTEGRATIONS_ACTIVATED`.
+- После активации owner подтвердил `FORTIS_PRIMARY_BACKUP_PASS fortis-gateway-backup-bbef837bd8e14459bd029cfac100a71e`, `NEW_PRIMARY_BACKUP_VERIFIED`, `FORTIS_PRIMARY_ALREADY_ACTIVE` и окончательную проверку `MULTI_REPO_PRIMARY_PROMOTED_AND_HEALTHY` (точный container/image, restart policy, protected primary pointer). `ALREADY_ACTIVE` — допустимый no-op только с независимым readback.
+- После обновления через реальный typed `default_client()`: `dynamicRepositories=True`, 34 доступных токену owner-owned репозитория, чтение `fortis-approvals`, `fortis-commit-guard`, `testpublic`, `tunnel`, `docke-windows-mirror`, `script-control-center`. `fortis-container` вернул 403 и **не включён в доступ токена**. Чтение Sonar Quality Gate для `AlexPastukhh_obs-planning-docs` прошло.
+- **Реальный multi-repo WRITE:** из отдельного зарегистрированного task worktree `tunnel/task/docs-host-boundary-backlog-20261107` через Gateway прошли `workspace.stage`, `workspace.commit`, `github.push_commits` с `EXECUTED`. Remote readback `task/docs-host-boundary-backlog-20261107` == `d0091531d9978313ab48b8e55c85418edab13988`, и `github.create_pull_request` вернул `EXECUTED`. Это доказывает доступ на запись **конкретно в `tunnel`**, не все 34 repo, не CI/merge.
+
+## Что оказалось избыточным или неочевидным
+
+- `Backup-Primary` отклонял один старый `workspace.stage` с `UNCERTAIN` на логическом `inspect_state` и не мог создать штатный новый backup. При этом empty Owner `Pending` **не означает** отсутствие `UNCERTAIN`. Ручной повтор `reconcile=True` не дал receipt. Внешний Git HEAD после следующего commit не подтверждает результат старого stage.
+- Попытка отдельного rescue сценария сперва оборвалась на wrapper `docker.exe : Traceback` в PowerShell 5.1 и не создала копии; второй сценарий создал холодную копию 39 файлов с hash/metadata check. После этого по явному owner запросу была удалена ровно одна устаревшая заявка и события из работающего state при остановленном контейнере; строгий state inspect прошёл. Этот ручной SQL-путь **не является стандартной операцией или рекомендацией для повторения**. Будущий терминальный статус/аудит см. [`BACKLOG-IMPROVEMENTS.md`](BACKLOG-IMPROVEMENTS.md).
+- Ранние `Check`, image build, isolated smoke и read-only preflight были полезны для диагностики, но `Apply -Build -SourceSha -EnableDynamicGitHubRepositories` **обязательно пересобирает** source-pinned image — ранний образ нельзя передать в `Apply -Image` вместе с opt-in. Не строить новый образ заранее без отдельной цели.
+- Холодная копия Docker volume — byte-level recovery copy. Она не делает state admitted и не заменяет controller `Backup`, требуемый для `Promote`. При корректной логической базе сначала выбирать штатный controller; дополнительный rescue оправдан только конкретным blocker/риском.
+- Read/CI/source verification не равны live WRITE, WebAuthn или успешному Promote. PowerShell 5.1 native stderr может оборвать report до истинной причины. Использовать ограниченный traceback/exit capture и точные фазовые markers; после FAIL не повторять `Apply`, использовать retained protected record и штатный `Return/Resume`.
+- **Guards Repo1/Repo2** нужны при изменении *их* Docker/container/worker/Windows chains. При обновлении отдельного `fortis-gateway` без изменения `fortis-repo-test` пересобирать/перезапускать Repo Guards не требуется. Для host-only задач давать owner-run guarded PowerShell 5.1 команды, а не притворяться, что Repo Linux контролирует Windows Engine.
+
+## Рекомендуемый повторяемый маршрут
+
+1. Read-only live capabilities/Git status/owner state: проверить точный repo, worktree, token access и разрешения. Не проходить весь registry и не выполнять старый onboarding.
+2. Изменить source в зарегистрированном task worktree; нужный suite → typed stage/commit/push; CI/PR/owner merge проверять по exact SHA. Не выполнять лишний `Pull` там, где source и remote уже на проверенном SHA.
+3. При обновлении runtime сделать **один** controller `SelfTest/Check` для exact accepted Windows main; затем `Apply -Build -SourceSha -EnableDynamicGitHubRepositories`, если opt-in вводится впервые. Контроллер выполняет свои offline/preflight и clone — не дублировать ручной smoke без обнаруженного риска.
+4. Проверить Owner Portal + конкретные typed live reads и согласованные writes; один controller `Backup` после Apply и `Promote`, protected pointer/image/health readback. Не считать вывод `ALREADY_ACTIVE` достаточным без независимой сверки.
+5. Остановиться при `UNCERTAIN`/unknown receipt; не перезапускать эффект и не обходить правила публикации. Закрытие инцидента — отдельная owner-authorized процедура с проверенными preconditions.
+
+Нормативные источники: [`Manage-Integrations.ps1`](../fortis_approvals/deploy/Manage-Integrations.ps1), [`Primary-Gateway.ps1`](../fortis_approvals/deploy/Primary-Gateway.ps1), [`NativeGitHubAdapter`](../fortis_approvals/workflow/adapters.py), [native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md), [UC owner-passkey](use-cases/owner-passkey.md). Важны текущие `capabilities`, не эта датированная таблица.
