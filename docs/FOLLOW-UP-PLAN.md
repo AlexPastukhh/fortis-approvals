@@ -3,8 +3,9 @@
 План согласован 2026-11-06 после завершения native Git/worktree live цикла.
 Текущее внедрение описано в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
 Перечень ниже фиксирует будущие задачи; эта документационная работа их не реализует.
-Общий Fortis backlog принадлежит локальному `fortis-container`; вход — через
-реестр юзкейсов в `/workspace/repo/README.md`. У него пока нет remote repository.
+Общий Fortis backlog принадлежит `fortis-container`; вход — через
+реестр юзкейсов в `/workspace/repo/README.md`. Наличие GitHub remote в этом repo
+не означает допуск к нему действующего Gateway (UC-CONT-018).
 Здесь ведутся детали этого этапа без второй копии общего backlog.
 
 ## Следующие задачи
@@ -39,8 +40,10 @@ Source-кандидат первого пункта описан в [analysis-re
 
 - Управляемый владельцем редактор политик отдельно для Sonar/GitHub с областью
   actor/project/repository/branch/file; сейчас правила заданы trusted config/code.
-- Production release/rollback, перенос принятого review и общая миграция
-  репозиториев с последующим закрытием legacy helper/PAT — отдельные задачи.
+- **Primary promotion и остановка Legacy выполнены 2026-11-07**
+  ([live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)).
+  Следующие image releases, отработанное восстановление/DR вне Docker host,
+  общая миграция других репозиториев и закрытие legacy helper/PAT — отдельные задачи.
 - Более широкие multi-agent identities, scheduler, RDG writer enforcement,
   supply-chain review и backup/rotation — в общем Fortis backlog.
 
@@ -65,3 +68,5 @@ Windows/Docker с пустым catalog; [результаты и границы]
 commit для exact actor/repository и внедрён в review. Результат — в
 [live evidence](../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md);
 прочие задачи оценки GitHub workflow остаются в пункте 2.
+С 2026-11-07 принятый review-runtime переименован в действующий Primary;
+вспомогательный Legacy остановлен ([cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)).

@@ -1,6 +1,6 @@
 # Native Git/worktree Gateway workflow
 
-Status: native source and new-task live cycles accepted on 2026-11-06 in isolated review. [Live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) owns SHA/CI/request receipts and verification limits. Production remains unchanged. This profile is opt-in and uses the existing Core, TLS machine grant, owner session and WebAuthn device.
+Status: native source and new-task live cycles accepted on 2026-11-06 in isolated review. [Dated live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) owns SHA/CI/request receipts and verification limits. **The statement that Legacy Production was unchanged applies to that 2026-11-06 acceptance, not to today's deployment:** the accepted Primary was promoted on 2026-11-07 and Legacy was stopped; use [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) and [cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md). This profile remains explicit/opt-in and uses the existing Core, TLS machine grant, owner session and WebAuthn device.
 
 ## Active policy in the native profile
 

@@ -1,5 +1,15 @@
 # Добавление и замена токенов Gateway
 
+**После переключения Primary (2026-11-07):** основной контейнер —
+`fortis-gateway` на 19204, Legacy `fortis-approvals-gateway` остановлен и
+сохранён. Этот runbook создан до переключения и **owner-run credential rotation
+после него отдельно не подтверждён**. Перед исполнением проверить текущий
+controller, защищённые records, точные IDs/volumes/список планируемых restart
+(`FORTIS_CREDENTIAL_TARGET`) и отсутствие незавершённых ASK/effects. Не
+перезапускать Legacy вручную и не считать прежнюю схему двух running runtime
+актуальной. [Текущее состояние](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) ·
+[cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+
 Вход для контейнера — UC-CONT-011. Этот документ владеет маршрутом выбора
 controller; provider README владеет upstream permissions, current state — внедрением.
 Токен вводит владелец на Windows, не AI и не чат.
@@ -8,8 +18,8 @@ controller; provider README владеет upstream permissions, current state �
 
 | Подключение | Постоянный entrypoint |
 | --- | --- |
-| Действующий GitHub/native review | `Credential -Service github -Rotate` |
-| Действующий Sonar в review и production | `Credential -Service sonarcloud -Rotate` |
+| Действующий GitHub/native Primary | `Credential -Service github -Rotate` |
+| Sonar: Primary и сохранённый Legacy (общий исторический token volume) | `Credential -Service sonarcloud -Rotate` — сначала проверить текущий restart plan |
 | Named credentials новых providers | `Credential -CredentialName <alias>`; замена с `-Rotate` по [extension contract](INTEGRATION-EXTENSIONS.md#токены-и-windows-entrypoint) |
 
 `-Service` и `-CredentialName` не смешиваются. Запись alias `github` в новый vault
@@ -31,15 +41,21 @@ prompt. Нет значения токена в argv/env, Git, record или в�
 передаёт его только временному owner helper с доступом к credential volume.
 
 Новый image, build, mounts, контейнеры и конфигурация Gateway не создаются.
-Оба старых transport читают токен при старте, поэтому controller останавливает
-и запускает **те же** затрагиваемые контейнеры:
+Действующий Primary читает токены при старте. Controller строит план только
+из допущенных затронутых контейнеров и показывает его **до ввода токена**:
 
-- GitHub: только активный review; production не меняется.
-- Sonar: активные review **и production**, поскольку они используют один token
-  volume. Будет короткая недоступность обоих контуров. Image и конфигурация прежние.
+- GitHub: Primary, без запуска остановленного Legacy.
+- Sonar: Primary; Legacy использует исторический общий token volume, но после
+  2026-11-07 остановлен. Его возврат/ротация требуют отдельной проверки record
+  и повторного допуска; не считать второй restart обязательным.
 
-Controller выбирает текущий review по защищённому deployment record, проверяет
-его admission, production baseline, RO token mounts и всех consumers volume.
+Работающий Primary будет временно остановлен на замену токена. План и exact
+admission важнее старого названия роли `review` в controller output; image и
+конфигурация при успешной ротации не пересоздаются.
+
+Controller выбирает действующий Primary по защищённым deployment/promotion
+records, проверяет его admission, остановленный Legacy baseline, RO token mounts
+и всех consumers volume.
 Неизвестный активный consumer или writer блокирует действие. Retained containers
 не запускаются и не удаляются; общий credential volume при этом получает новый токен.
 
@@ -58,7 +74,8 @@ Owner Portal; controller не переписывает approvals и не под�
 Файл заменяется атомарно с проверкой прежнего поколения metadata, UID/GID 10001
 и mode 0600. Прежнее значение не читается и не копируется в backup. После запуска
 выполняются только чтения **Repo → Gateway → provider**: GitHub branches/PR/Actions
-либо Sonar quality gate в обоих контурах. PASS: `FORTIS_PROVIDER_CREDENTIAL_ROTATED`.
+либо Sonar quality gate у работающих допущенных consumers (после retirement
+обычно только Primary). PASS: `FORTIS_PROVIDER_CREDENTIAL_ROTATED`.
 Это подтверждает проверенные чтения; права внешних мутаций не доказываются readback.
 Новый токен должен иметь нужные права по [GitHub](../fortis_approvals/integrations/github/README.md#credential-and-permission-boundary)
 или [Sonar](../fortis_approvals/integrations/sonarcloud/README.md#credential-and-trust-boundary).

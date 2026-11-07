@@ -1,7 +1,10 @@
 # Fortis Approvals documentation
 
-Goal-based entry: `/workspace/repo/README.md` → the container use-case registry.
-Gateway scenarios are container scenarios; this map indexes technical owners.
+Goal-based entry: `/workspace/repo/README.md` → the active container registry.
+Every chat scans its titles and reads UC-CONT-002 (Docker → GitHub → CI →
+Windows/Mirror) and UC-CONT-003 (GitHub through typed Gateway client) in full;
+other case details are task-dependent. This map indexes technical owners,
+not a second container registry.
 
 Each active topic has one owner document; entry points link to it rather than
 repeat runtime snapshots or policy tables.
@@ -22,6 +25,7 @@ repeat runtime snapshots or policy tables.
 
 ## Evidence and historical references
 
+- [Primary Gateway promotion, recovery backup, Docker restart and Legacy retirement — 2026-11-07](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 - [Native Git/worktree live cycle — 2026-11-06](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
 - [Native offline acceptance — 342 tests](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-OFFLINE-20261106.md).
 - [M1 branch pilot](../fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M1-20261106.md) and [M2 file/draft-PR pilot](../fortis_approvals/evidence/FORTIS-GITHUB-PILOT-M2-20261106.md).
