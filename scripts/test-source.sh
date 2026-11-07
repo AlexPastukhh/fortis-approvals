@@ -36,6 +36,7 @@ tests=(
   test_github_file_pr.py
   test_github_ci_read.py
   test_native_workflow.py
+  test_dynamic_github_repos.py
   test_analysis_review.py
   test_extensions.py
   test_extensions_http.py
