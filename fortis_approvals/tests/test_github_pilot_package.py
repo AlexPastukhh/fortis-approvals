@@ -18,6 +18,22 @@ SPEC.loader.exec_module(HELPERS)
 SHA = 'a' * 40
 
 
+class PrimaryBackupCliRegressionTests(unittest.TestCase):
+    def test_primary_backup_clone_uses_two_explicit_mount_options(self):
+        source = (ROOT / 'fortis_approvals/deploy/Primary-Gateway.ps1').read_text()
+        backup = source.split('function Backup-Primary {', 1)[1].split('function Promote-Primary {', 1)[0]
+        clone = backup.split("$Clone=State-Helper @{action='clone'", 1)[1].split(' -Root', 1)[0]
+        self.assertEqual(clone.count("'--mount'"), 2, 'Docker requires --mount before each mount specification')
+        self.assertIn('target=/source,readonly', clone)
+        self.assertIn('target=/target', clone)
+
+    def test_state_helper_rejects_unpaired_mount_arguments(self):
+        source = (ROOT / 'fortis_approvals/deploy/Manage-Integrations.ps1').read_text()
+        helper = source.split('function State-Helper {', 1)[1].split('function Ensure-Vault {', 1)[0]
+        self.assertIn('RELEASE_STATE_MOUNT_PAIR_INVALID', helper)
+        self.assertIn("$Mounts[$Index] -cne '--mount'", helper)
+
+
 class StateTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='pilot-package-offline-')
