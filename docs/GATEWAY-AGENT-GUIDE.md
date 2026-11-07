@@ -1,6 +1,6 @@
 # Fortis Approvals Gateway — guide for AI agents and service integrations
 
-> **Before this service-specific guide:** in Fortis Repo, open `/workspace/repo/README.md`, scan the linked container use-case registry and read UC-CONT-002/003 in full. The registry owns the cross-project Docker/GitHub/CI/Windows/Mirror workflow. This document owns the Gateway-specific rules, not a second workflow.
+> **Before this service-specific guide:** in Fortis Repo, open `/workspace/repo/README.md`, read the short introduction of the linked container use-case registry and UC-CONT-002/003 in full; do not scan the entire registry. The registry owns the cross-project Docker/GitHub/CI/Windows/Mirror workflow. This document owns the Gateway-specific rules, not a second workflow.
 >
 > **Start here when an AI agent needs an authenticated request to an external service.** Fortis Approvals is the intended central broker for service credentials, typed operations and owner approvals. It is not a generic HTTP proxy.
 
