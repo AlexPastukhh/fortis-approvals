@@ -60,9 +60,15 @@ review and a verified follow-up, not a guessed workflow ID. The original
 bootstrap repo retains its pinned required-workflow check.
 
 **Rollout boundary:** installing this image alone does not enable the feature.
-The existing owner release manager carries forward validated environment
-values and must gain a separately reviewed owner-controlled way to enable the
-new flag in protected release records. Do not edit an active container's env,
+The **source candidate** extends `Manage-Integrations.ps1` with
+`-EnableDynamicGitHubRepositories`, accepted only with a source-pinned
+`-Build -SourceSha <approved-main-sha>` for `-Action Check`/`-Action Apply`.
+The owner controller binds the flag to the protected runtime release record,
+regenerates the public environment and makes `State-Helper` reject a mismatched
+container (including flag absence, duplication or unexpected enablement).
+The flag is retained on later accepted releases when the source runtime has it;
+`Backup`/`Promote` cannot independently enable it. This new code **is not yet
+applied to the accepted Windows main or the running Gateway.** Do not edit an active container's env,
 change owner records, rotate credentials, or rebuild/recreate Primary from this
 document. Until the complete release flow, backup, source/CI, owner proof and
 live acceptance pass, deployed capabilities remain single-repository.

@@ -189,6 +189,40 @@ class AdmissionTests(unittest.TestCase):
         e['requiredWorkflows']='1'
         with self.assertRaisesRegex(RuntimeError,'NATIVE_CONFIGURATION'):HELPERS.admit(c,e,pilot=True)
 
+    def test_dynamic_repository_flag_requires_exact_protected_expected_environment(self):
+        c,e=self.fixture()
+        e.update(filePrBranch='fortis-e2e/11111111-1111-4111-8111-111111111111-approve',
+                 ciReads=True,nativeWorktree=True,requiredWorkflows='408327525',
+                 bootstrapTask='source-bootstrap')
+        c['Config']['Env'] += [
+            'FORTIS_GITHUB_FILE_PR_BRANCH='+e['filePrBranch'], 'FORTIS_GITHUB_CI_READS=1',
+            'FORTIS_GITHUB_NATIVE_WORKTREE=1', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS=408327525',
+            'FORTIS_GITHUB_BOOTSTRAP_TASK=source-bootstrap']
+        # Legacy primary remains valid with the flag entirely absent.
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        # An operator cannot silently opt in without the protected release record.
+        c['Config']['Env'].append('FORTIS_GITHUB_NATIVE_MULTI_REPO=1')
+        with self.assertRaisesRegex(RuntimeError,'PILOT_PUBLIC_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        # A protected opt-in is invalid until exactly the expected env exists.
+        e['dynamicRepositories']=True
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        c['Config']['Env'][-1]='FORTIS_GITHUB_NATIVE_MULTI_REPO=0'
+        with self.assertRaisesRegex(RuntimeError,'PILOT_PUBLIC_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'][-1]='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'
+        c['Config']['Env'].append('FORTIS_GITHUB_NATIVE_MULTI_REPO=1')
+        with self.assertRaisesRegex(RuntimeError,'PILOT_DUPLICATE_ENVIRONMENT'):
+            HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'].pop()
+        e['dynamicRepositories']='true'
+        with self.assertRaisesRegex(RuntimeError,'PILOT_DYNAMIC_REPOSITORIES_CONFIGURATION_INVALID'):
+            HELPERS.admit(c,e,pilot=True)
+        e['dynamicRepositories']=True
+        e['nativeWorktree']=False
+        with self.assertRaisesRegex(RuntimeError,'PILOT_DYNAMIC_REPOSITORIES_CONFIGURATION_INVALID'):
+            HELPERS.admit(c,e,pilot=True)
+
     def test_production_state_writable_credentials_and_exposed_ports_are_denied(self):
         for mutate in (lambda c:c['Mounts'][0].update(Name='fortis-r7-state'),
                        lambda c:c['Mounts'][-1].update(RW=True),
