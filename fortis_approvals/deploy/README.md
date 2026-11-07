@@ -2,10 +2,13 @@
 
 [Current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns
 instance/image/endpoint facts. The accepted Sonar + GitHub/native runtime on
-19203/19204 is the operational Primary candidate; the older Sonar-only
-instance on 19103/19104 is Legacy. Physical promotion and autostart are
-controlled by [Primary operations](../../docs/PRIMARY-GATEWAY-OPERATIONS.md).
-Do not infer promotion solely from merged source.
+19203/19204 is the active **`fortis-gateway` Primary**, promoted in place,
+healthy and `unless-stopped` after owner-confirmed Docker Desktop restart.
+The Sonar-only `fortis-approvals-gateway` on former 19103/19104 is stopped
+(`restart=no`) and retained, not deleted. Physical promotion and autostart are
+controlled by [Primary operations](../../docs/PRIMARY-GATEWAY-OPERATIONS.md)
+and supported by [live evidence](../evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+Do not infer any *future* promotion solely from merged source.
 [Live evidence](../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) records owner
 bootstrap, CI/merge/main/cleanup results and verification limits.
 
@@ -27,8 +30,8 @@ policy and bootstrap/return conditions are in the [native contract](../../docs/N
 
 The isolated instance has a separate GitHub credential, RO mounted at
 `/run/github-token/token`; exact run-specific volume identity is in the protected
-record. Production is not GitHub-enabled. Never replace this with the legacy
-Repo helper credential or add mounts to a historical Compose file incidentally.
+record. The retained Legacy Sonar-only container is not GitHub-enabled; the active
+Primary is. Never replace the Primary token with the legacy Repo helper credential or add mounts to a historical Compose file incidentally.
 [Provider boundary](../integrations/github/README.md).
 
 ## Production references and deferred release

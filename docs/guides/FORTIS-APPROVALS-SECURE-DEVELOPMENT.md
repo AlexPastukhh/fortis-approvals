@@ -1,8 +1,10 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Актуализировано 2026-11-07 по live readback Sonar/GitHub и owner Docker output.
-Миграция Primary подготовлена в source; до owner-run `-Action Promote`
-историческое имя контейнера остаётся прежним. Этот документ владеет текущим статусом;
+Актуализировано 2026-11-07 по owner Docker output и live Repo readback **после**
+Backup/Promote, перезапуска Docker Desktop и остановки Legacy. Primary работает
+под стабильным именем `fortis-gateway`; источник подтверждений —
+[свидетельства переключения](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+Этот документ владеет текущим статусом;
 [agent guide](../GATEWAY-AGENT-GUIDE.md) — правилами использования,
 [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — матрицей операций,
 [отдельный план](../FOLLOW-UP-PLAN.md) — будущими задачами.
@@ -11,16 +13,18 @@
 
 | Контур | Endpoints | Подтверждённое состояние |
 | --- | --- | --- |
-| Legacy `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Исторический Sonar-only runtime, image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. До завершённого переключения остаётся работающим; затем — остановленный резерв. |
-| Основной рабочий Gateway (до promotion: `fortis-github-pilot-0a83fd...`) | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native + extension framework; image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`. Реальные Sonar/GitHub READ 2026-11-07 PASS. Целевое имя `fortis-gateway` только после owner-run promotion. |
-| Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; перед live-проверкой PR ALLOW сверено `e48e59ae54b456a390a02a63551b8e4f2ea4a4fc`, чистый |
+| Legacy `fortis-approvals-gateway` | Бывшие Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | **Остановлен** (`exited`, `restart=no`), ID `0852c39c9e5d…`, image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. Контейнер, image, volumes и records сохранены для контролируемого отката; порт не используется штатным клиентом. |
+| Primary `fortis-gateway` | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | **Работает после Docker Desktop restart** (`running`, `healthy`, `unless-stopped`), ID `043d3497b2d1…`, image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`. Sonar/GitHub/Approvals READ после остановки Legacy: PASS. |
+| Fortis Repo (`fortis-repo-test`) | `/workspace/repo/Repos/fortis-approvals`, task worktrees в `Worktrees/fortis-approvals/` | Автозапуск после Docker Desktop restart подтверждён; чистый Docker `main` во время live readback — `fab6f0101f849eb1343ad0b6365ee0bcb0034f24`. |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
 Core/Owner Portal. Native запуск сохранил M3 для возврата, owner credentials,
 history и receipts; Production baseline не изменился по owner-run проверкам.
 READY при запуске означал готовность, а не E2E PASS. Итоговый PASS подтверждён
 последующим [живым циклом](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
-Новый host Docker inspect в рамках обновления документации не выполнялся.
+В рамках нового переключения факты Docker ID/image/health/restart подтверждены
+выводом Windows-владельца, а защищённый machine API — живыми запросами Repo.
+Внешние клиенты старого 19104 исчерпывающе не инвентаризированы.
 
 ## Что завершено
 
@@ -70,15 +74,19 @@ credential ему не передаётся. Core/owner decision и локаль
 - Native scope — один actor, `AlexPastukhh/fortis-approvals`, зарегистрированные
   `task/*`. Общая миграция остальных репозиториев и удаление legacy PAT/helper
   не проводились. Наличие helper остаётся отдельным обходным каналом доступа.
-- Windows main этим live циклом не обновлялся и не проверялся. Mirror остаётся
-  отдельным получателем; его AI API и полноценная адресация worktree ещё впереди.
+- В историческом native live цикле Windows main не обновлялся; для Primary
+  cutover Windows main уже получен через Mirror и проверен чистым на
+  `fab6f0101f849eb1343ad0b6365ee0bcb0034f24`. Mirror AI API и полная
+  адресация worktree всё ещё отдельные задачи.
 - При ожидании cleanup обнаружена несовместимость `WorkflowClient.result` с
   HTTP 202 (`PENDING`). Исправление и регрессионный тест подготовлены в отдельном
   `task/native-client-pending-status-20261106`, но на момент сверки не закоммичены
   и не входят в `main`. Успех cleanup подтверждён с тем же request ID.
 - После Approve/Reject UI некоторое время не показывает обратную связь.
   Это наблюдение пользователя; причина задержки ещё не исследована.
-- Production cutover, полный аудит/рефакторинг кода, редактор политик,
+- Legacy Sonar-only runtime выведен из работы в рамках Primary cutover;
+  новые host-independent disaster recovery и все свежие ALLOW/ASK/DENY проверки
+  остаются незавершёнными. Полный аудит/рефакторинг кода, редактор политик,
   multi-agent isolation, scheduler, RDG G3 и защищённая Windows import/RUN
   доставка не считаются завершёнными. [План дальнейших работ](../FOLLOW-UP-PLAN.md).
 

@@ -47,10 +47,12 @@ Use operation-level rules and explicit scopes (organization, repository, project
 
 [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns deployed images,
 endpoints and accepted scope. The **operational Primary route** is the accepted Sonar + GitHub/native Gateway
-on 19203/19204. Its host container still has the historic `fortis-github-pilot-*`
-name until owner promotion to `fortis-gateway`; the older Sonar-only
-`fortis-approvals-gateway` on 19103/19104 is Legacy. Read the protected
-`primary.json` and live Docker identity before assuming promotion was applied.
+on 19203/19204. Owner confirmed the **existing** container was promoted
+in-place to `fortis-gateway` (ID `043d3497b2d1…`), with `unless-stopped` and
+healthy post-restart. The older Sonar-only `fortis-approvals-gateway` on
+19103/19104 is stopped Legacy (`restart=no`), retained for controlled recovery.
+Read protected `primary.json` and live Docker identity before acting on any
+later promotion or rollback; see [live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 [Primary operations](PRIMARY-GATEWAY-OPERATIONS.md) own backup, promotion,
 autostart and rollback boundaries.
 

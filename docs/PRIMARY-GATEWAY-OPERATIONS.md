@@ -1,11 +1,16 @@
 # Primary Fortis Gateway — operator procedure
 
-Status: source prepared 2026-11-07. **Not host-applied until owner reports success.**
+Status: **host-applied 2026-11-07**, owner-confirmed Backup → Promote →
+Docker Desktop restart → Legacy stop; Repo post-retirement checks PASS.
+[Live acceptance and rollback evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)
+records verified results and the checks that were **not** exercised.
 Keep historical release records, all provider token volumes, Owner WebAuthn and
-retained M3/bootstrap artifacts. The accepted primary candidate is container
+retained M3/bootstrap artifacts. The promoted Primary is the pre-existing container
 `043d3497b2d1`, image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`.
 Ports remain 127.0.0.1:19203/19204 and Owner Origin remains `http://localhost:19203`.
-The Sonar-only Legacy container is `fortis-approvals-gateway` on 19103/19104.
+The Sonar-only Legacy container `fortis-approvals-gateway` (ID `0852c39c9e5d…`)
+is now **exited**, `restart=no`, retained with its image and volumes; its old
+19103/19104 bindings are no longer the normal endpoint.
 
 ## Architecture and roles
 
@@ -85,8 +90,9 @@ must continue using the original attempt record, not fabricated identifiers.
    Docker Desktop must itself start with the user session; engine-level service
    before Windows logon is a different deployment goal.
 5. Record verified host output, final release pointer, retained recovery volume,
-   and actual rollback procedure in current-state evidence. Until this evidence,
-   documentation must say **prepared, not deployed**.
+   and recovery limits in the [2026-11-07 live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+   The reported owner host output and Repo readback confirm deployment; a fresh
+   full ALLOW/ASK/DENY policy acceptance cycle is still outstanding.
 
 ## STOP and rollback boundaries
 
