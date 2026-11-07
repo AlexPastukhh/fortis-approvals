@@ -2,7 +2,13 @@
 
 Status: native source and new-task live cycles accepted on 2026-11-06 in isolated review. [Dated live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) owns SHA/CI/request receipts and verification limits. **The statement that Legacy Production was unchanged applies to that 2026-11-06 acceptance, not to today's deployment:** the accepted Primary was promoted on 2026-11-07 and Legacy was stopped; use [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) and [cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md). This profile remains explicit/opt-in and uses the existing Core, TLS machine grant, owner session and WebAuthn device.
 
-## Active policy in the native profile
+## Policy in the native source profile
+
+This is the source contract. Before cleanup, check live capabilities:
+`cleanupTask = {merged: ALLOW, unmerged: ASK, proof: github-main-v1}` identifies
+this policy. A runtime without that marker retains the previous receipt-only
+ASK contract; do not send it the new request shape. Deployment/acceptance work
+is tracked only in the [backlog](BACKLOG-IMPROVEMENTS.md).
 
 All grants are restricted to the configured owner, admitted repository mode and authenticated Repo actor. An operation missing from this profile is denied.
 
@@ -25,7 +31,8 @@ All grants are restricted to the configured owner, admitted repository mode and 
 | github.update_workflow_file | ASK | Existing dedicated typed workflow operation on a registered task branch; separate GitHub workflow permission |
 | workspace.update_main | ALLOW | Legacy route: executed Gateway merge receipt and exact main SHA; clean local main, fast-forward only |
 | workspace.update_main_from_pr | ALLOW | Owner GitHub UI merge evidence, exact PR head/merge/current remote main; clean local main, fast-forward only |
-| workspace.cleanup_task | ASK | Requires an executed Gateway merge receipt, exact approved merged head and updated main; clean task including ignored files, no other checkout; bootstrap retained. Owner UI merge alone is not its accepted proof |
+| workspace.cleanup_task, merged task | ALLOW | Trusted proof of exact task HEAD accepted in current GitHub main; local worker verifies immutable main bundle/ancestry. Clean task including ignored files, exact registered path/branch, bootstrap retained |
+| workspace.cleanup_task, unmerged or unproven task | ASK | Same local guards; explicit owner WebAuthn decision binds exact repository/task/HEAD and preview before removing unmerged local work |
 | create_branch, push_files | DENY in native profile | Old M1–M3 APIs remain available only in their old pilot profiles |
 | list_repositories | ALLOW in dynamic mode; DENY in single-repo mode | Authenticated token inventory for configured owner; visibility is not write permission |
 | direct main push, force history rewrite, remote deletion, raw shell/URL/refspec | DENY | Not exposed by this profile |
@@ -190,7 +197,39 @@ automatic stash/reset/clean. Both main-update routes also require clean primary.
 The client/API change procedure belongs to
 [UC-GW-003](use-cases/integrations.md#uc-gw-003).
 
-The existing `workspace.cleanup_task` still requires a Gateway `mergeRequestId`.
-Do not invent a merge ASK to clean up after owner UI merge. Preserve that
-worktree until the applicable cleanup proof is supported or a separate reviewed
-owner cleanup is performed; the development gap is tracked in the backlog.
+## Task worktree cleanup
+
+Use `WorkflowClient.cleanup_task(repository, task, expected_head_sha, request_id=...,
+reason=...)` after inspecting the exact registered task. The closed request
+contains only `task` and `expectedHeadSha`; the caller cannot select ALLOW,
+assert `merged`, pass `force`, or supply a filesystem path. No Gateway merge ASK
+is needed after a GitHub UI merge. Older requests with `mergeRequestId` remain
+accepted and validate that executed merge receipt too; old queued worker jobs
+retain their previous exact-main/ancestry guards. New previews also retain
+`mergeSha` for older Repo workers: those workers can refuse the new proof,
+but cannot remove unmerged work or fail because that legacy field is missing.
+
+The Gateway derives ALLOW from authenticated GitHub evidence: either exact task
+HEAD is an ancestor of current remote `main`, or a closed merged same-repository
+`task/<slug>` PR has that exact HEAD, targets `main`, and its merge SHA is an
+ancestor of current main. The second path covers squash/rebase. Associated PR
+lookup is bounded to 100 entries; missing or inconclusive merge evidence is
+ASK, never automatic deletion. Invalid responses/access failures do not grant
+ALLOW. A later main commit is fine; a changed main during one request invalidates
+its original proof (approval is denied or execution becomes stale). A PR for an older task head does not cover additional local commits.
+
+Both paths bind the proof in the Core preview and recheck it before dispatch.
+For ASK the owner authorizes loss of the unmerged **committed** local task;
+without approval there is no removal. The worker independently fetches the
+exact main bundle through Gateway, verifies the accepted commit's ancestry,
+then checks the selected task's actual HEAD, canonical path/branch, common Git
+directory, worktree lock and tracked/index/untracked/ignored state. A stale
+local primary may remain untouched. Dirty or ignored files block removal even
+after approval; preserve or publish them first, without automatic reset/clean.
+
+Only that clean linked worktree and its exact local `task/<slug>` branch are
+removed, then its Gateway registration is closed. The remote branch and main
+are unchanged. No `worktree remove --force`, bulk prune or remote deletion is
+exposed. Bootstrap/deployment source still must be retained while protected
+records refer to it. Reuse the UUID only for the same intent; an uncertain
+partial effect goes to reconcile, never a blind new deletion request.

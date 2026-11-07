@@ -31,7 +31,8 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
     workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)
     core.adapters['workspace']=workspace
-    for operation in WORKSPACE_OPS:core.policies[(actor,'workspace',operation)]='ASK' if operation=='cleanup_task' else 'ALLOW'
+    for operation in WORKSPACE_OPS:core.policies[(actor,'workspace',operation)]='ALLOW'
+    core.policies[(actor,'workspace','cleanup_task')]=workspace.cleanup_policy
     portal.strong_operations=portal.strong_operations|writes|{('workspace','cleanup_task')}
     return dict(adapter=adapter,workspace=workspace,store=store,actor=actor)
 

@@ -48,7 +48,8 @@ class NativeIngress:
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
-                sensitivePush='ASK',gitHubCredentialInRepo=False)
+                sensitivePush='ASK',gitHubCredentialInRepo=False,
+                cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'})
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)

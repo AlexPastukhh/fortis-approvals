@@ -165,8 +165,36 @@ class Worker:
             target=self._target(repo,task,root,run,text)
             ignored=run(['status','--porcelain=v1','--ignored','--untracked-files=all'],target)
             require(not ignored,'WORKER_CLEANUP_WOULD_LOSE_FILES')
-            require(text(['rev-parse','HEAD'],root)==job['approvedPreview']['mergeSha'],'WORKER_APPROVED_MAIN_REQUIRED')
-            require(text(['merge-base',p['expectedHeadSha'],job['approvedPreview']['mergeSha']],root)==p['expectedHeadSha'],'WORKER_TASK_NOT_MERGED')
+            preview=job['approvedPreview']
+            if 'cleanup' not in preview:
+                # Jobs from the previous server still require its approved
+                # merge receipt and exact locally updated main.
+                require(set(p)=={'task','expectedHeadSha','mergeRequestId'},'WORKER_CLEANUP_PROOF_REQUIRED')
+                sha(preview['mergeSha'])
+                require(text(['rev-parse','HEAD'],root)==preview['mergeSha'],'WORKER_APPROVED_MAIN_REQUIRED')
+                require(text(['merge-base',p['expectedHeadSha'],preview['mergeSha']],root)==p['expectedHeadSha'],
+                        'WORKER_TASK_NOT_MERGED')
+                return
+            proof=preview['cleanup']
+            require(preview.get('operation')==op and preview.get('repository')==repo and
+                    preview.get('params')==p,'WORKER_CLEANUP_BINDING_MISMATCH')
+            require(proof.get('kind') in ('ancestor','pull_request','unmerged') and
+                    type(preview.get('ownerApprovedCleanup')) is bool,'WORKER_CLEANUP_PROOF_REQUIRED')
+            sha(proof['mainSha'])
+            # Fetch through Gateway before dispatching the local deletion. Local
+            # main may lag; it is neither changed nor accepted as remote proof.
+            self._fetch(repo,root,'main',proof['mainSha'],run,text)
+            if proof['kind']=='unmerged':
+                require(preview['ownerApprovedCleanup'],'WORKER_CLEANUP_OWNER_REQUIRED')
+                require(proof.get('acceptedSha') is None,'WORKER_CLEANUP_PROOF_INVALID')
+            else:
+                sha(proof['acceptedSha'])
+                if proof['kind']=='ancestor':
+                    require(proof['acceptedSha']==p['expectedHeadSha'],'WORKER_CLEANUP_HEAD_CHANGED')
+                else:
+                    require(type(proof.get('number')) is int and proof['number']>0,'WORKER_CLEANUP_PROOF_INVALID')
+                require(text(['merge-base',proof['acceptedSha'],proof['mainSha']],root)==proof['acceptedSha'],
+                        'WORKER_TASK_NOT_MERGED')
 
     def _execute(self,job,root,run,text):
         repo=job['target'];op=job['operation'];p=job['params'];task=p.get('task')
@@ -238,8 +266,17 @@ print(len(files))
             require(text(['rev-parse','HEAD'],root)==job['approvedPreview']['mergeSha'],'WORKER_MAIN_READBACK_CHANGED')
             return self._snapshot(repo,None,root,run,text)
         if op=='cleanup_task':
+            # Fetch/approval may take time: check again immediately before the
+            # effect, especially ignored files that Git itself would discard.
+            require(text(['rev-parse','HEAD'],target)==p['expectedHeadSha'],'WORKER_CLEANUP_HEAD_CHANGED')
+            require(not run(['status','--porcelain=v1','--ignored','--untracked-files=all'],target),
+                    'WORKER_CLEANUP_WOULD_LOSE_FILES')
             run(['worktree','remove',target],root)
-            run(['branch','-d','task/'+task],root)
+            # -D is limited to this exact registered local task: remote main
+            # may be ahead of local main, or owner approved an unmerged removal.
+            run(['branch','-D','task/'+task],root)
+            require(not target.exists() and not text(['branch','--list','task/'+task]),
+                    'WORKER_CLEANUP_READBACK_FAILED')
             return dict(task=task,removed=True)
         raise Denied('WORKER_OPERATION_DENIED')
 

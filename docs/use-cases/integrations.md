@@ -53,7 +53,10 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    параметры/маршруты без отдельного миграционного контракта. Проверить TLS/machine
    identity, content-type/size, reject unknown fields, fail-closed ALLOW/ASK/DENY,
    actor/target scope, response projection, receipt/reconcile/timeout и точный
-   `requestId`. Клиентское имя не даёт новых прав само по себе; сервер без
+   `requestId`. Для условного ALLOW/ASK policy должна получать доказательство
+   из trusted state/API, повторно сверять его с подписанным preview и сохранять
+   worker preconditions при обоих решениях; флаг из payload не авторизация.
+   Клиентское имя не даёт новых прав само по себе; сервер без
    deployment не умеет вызывать новый метод.
 4. **Для local `workspace` операций** разграничить `create_task` и
    `update_main`: первая создаёт/регистрирует *изолированный* worktree только
@@ -62,8 +65,9 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    `stash/reset/clean`. Второе реально меняет `main`, требует clean tree,
    exact GitHub main/PR evidence и только `--ff-only`. Внешний merge
    владельца через GitHub UI не авторизуется фиктивным Gateway mergeRequestId.
-   Развитие этого маршрута — отдельный source candidate
-   `update_main_from_pr`, не считать его работающим до релиза image.
+   Доступность `update_main_from_pr` проверять по live capabilities и
+   [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md), а не по наличию
+   нового client method в исходниках.
 5. **Проверки перед PR:** негативные тесты wrong actor/repo/branch, missing proof,
    owner mismatch, SHA race, dirty index/working tree, повтор с тем же UUID,
    read-only или timeout/unconfirmed effect; позитивный end-to-end через

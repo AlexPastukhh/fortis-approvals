@@ -247,6 +247,60 @@ class WorkspaceAdapter:
     def __init__(self,*,core,github,store,actor,wait_seconds=90):
         self.core=core;self.github=github;self.store=store;self.actor=actor;self.wait_seconds=wait_seconds
 
+    def _ancestor(self,repo,base,head):
+        # Exact immutable SHAs; no branch name or caller-supplied merged flag.
+        raw=self.github._api('GET',self.github._path(repo,'compare/'+base+'...'+head),
+                             params={'per_page':1},allow_not_found=True)
+        require(type(raw) is dict,'WORKSPACE_CLEANUP_COMPARE_INVALID')
+        if raw.get('_httpStatus')==404:return False  # Unpublished local head.
+        require(raw.get('status') in ('ahead','behind','diverged','identical') and
+                type(raw.get('base_commit')) is dict and raw['base_commit'].get('sha')==base and
+                type(raw.get('merge_base_commit')) is dict and
+                type(raw.get('behind_by')) is int and raw['behind_by']>=0 and
+                type(raw.get('ahead_by')) is int and raw['ahead_by']>=0,
+                'WORKSPACE_CLEANUP_COMPARE_INVALID')
+        forward=(raw['status']=='identical' and base==head and raw['ahead_by']==0 or
+                 raw['status']=='ahead' and base!=head and raw['ahead_by']>0)
+        return (forward and raw['behind_by']==0 and raw['merge_base_commit'].get('sha')==base)
+
+    def _cleanup_proof(self,repo,p):
+        main=self.github._sha(self.github._ref(repo,'main').get('object',{}).get('sha'))
+        head=p['expectedHeadSha']
+        if self._ancestor(repo,head,main):
+            return dict(kind='ancestor',mainSha=main,acceptedSha=head)
+        # Squash/rebase do not retain the task HEAD as an ancestor. A closed
+        # same-repo PR must retain that exact HEAD and its merge in current main.
+        rows=self.github._api('GET',self.github._path(repo,'commits/'+head+'/pulls'),
+                              params={'per_page':100,'page':1},allow_not_found=True)
+        if type(rows) is dict and rows.get('_httpStatus')==404:rows=[]
+        require(type(rows) is list and len(rows)<=100,'WORKSPACE_CLEANUP_PULLS_INVALID')
+        full=self.github.config.owner+'/'+repo
+        for item in rows:
+            require(type(item) is dict and type(item.get('number')) is int and
+                    1<=item['number']<=1000000,'WORKSPACE_CLEANUP_PULLS_INVALID')
+            raw=self.github._api('GET',self.github._path(repo,'pulls/'+str(item['number'])))
+            require(type(raw) is dict,'WORKSPACE_CLEANUP_PULL_INVALID')
+            h=raw.get('head');b=raw.get('base');merged=raw.get('merge_commit_sha')
+            if not (raw.get('number')==item['number'] and raw.get('state')=='closed' and
+                    raw.get('merged') is True and raw.get('draft') is False and
+                    type(raw.get('merged_at')) is str and bool(raw['merged_at']) and
+                    type(h) is dict and h.get('ref')=='task/'+p['task'] and h.get('sha')==head and
+                    type(h.get('repo')) is dict and h['repo'].get('full_name')==full and
+                    type(b) is dict and b.get('ref')=='main' and
+                    type(b.get('repo')) is dict and b['repo'].get('full_name')==full):continue
+            sha(merged)
+            if self._ancestor(repo,merged,main):
+                return dict(kind='pull_request',mainSha=main,acceptedSha=merged,number=item['number'])
+        return dict(kind='unmerged',mainSha=main,acceptedSha=None)
+
+    def cleanup_policy(self,actor,payload):
+        if actor!=self.actor:return 'DENY'
+        if 'params' not in payload:return 'ASK'  # No blanket ALLOW capability.
+        try:
+            proof=self.prepare(payload)['cleanup']
+            return 'ASK' if proof['kind']=='unmerged' else 'ALLOW'
+        except (Denied,Stale,KeyError,TypeError,ValueError):return 'DENY'
+
     def prepare(self,payload):
         repo=self.github._access(payload['target']);op=payload['operation'];p=payload['params']
         require(op in WORKSPACE_OPS and type(p) is dict,'WORKSPACE_OPERATION_DENIED')
@@ -259,7 +313,8 @@ class WorkspaceAdapter:
           'sync_task':{'task','expectedHeadSha','baseSha'},'update_main':{'expectedHeadSha','mergeRequestId'},
           'update_main_from_pr':{'expectedHeadSha','number','expectedPrHeadSha','expectedMergeSha'},
           'cleanup_task':{'task','expectedHeadSha','mergeRequestId'}}
-        require(set(p)==fields[op],'WORKSPACE_PARAMS_INVALID')
+        allowed=(fields[op],{'task','expectedHeadSha'}) if op=='cleanup_task' else (fields[op],)
+        require(set(p) in allowed,'WORKSPACE_PARAMS_INVALID')
         snapshot=dict(operation=op,repository=repo,params=p)
         if 'task' in p and p['task'] is not None:
             slug(p['task'])
@@ -301,6 +356,10 @@ class WorkspaceAdapter:
         if op=='cleanup_task':
             require(repo!=self.github.config.repository or p['task']!=self.github.config.bootstrap_task,
                     'WORKSPACE_BOOTSTRAP_SOURCE_RETAINED')
+            snapshot['cleanup']=self._cleanup_proof(repo,p)
+            # Old Repo workers recognize only mergeSha + exact local-main
+            # ancestry. They can safely succeed or refuse, never lack the key.
+            snapshot['mergeSha']=snapshot['cleanup']['mainSha']
         if op=='update_main_from_pr':
             # Alternative to Gateway-side ASK merge: the owner merged in GitHub UI.
             # Bind to one exact reviewed PR, owner identity, and remote main SHA.
@@ -329,7 +388,7 @@ class WorkspaceAdapter:
             if actual!=p['expectedMergeSha']:raise Stale('WORKSPACE_EXTERNAL_MAIN_CHANGED')
             snapshot['mergeSha']=p['expectedMergeSha']
             snapshot['externalPullNumber']=p['number']
-        if op in ('cleanup_task','update_main'):
+        if op=='update_main' or (op=='cleanup_task' and 'mergeRequestId' in p):
             row=self.core._read(p['mergeRequestId'])
             require(row['actor']==self.actor and row['state']=='EXECUTED' and row['decision']=='approve' and
                 row['request']['service']=='github' and row['request']['operation']=='merge_pull_request' and
@@ -338,14 +397,24 @@ class WorkspaceAdapter:
             if op=='cleanup_task' and row['request']['params']['expectedHeadSha']!=p['expectedHeadSha']:
                 raise Stale('WORKSPACE_CLEANUP_HEAD_CHANGED')
             actual=self.github._sha(self.github._ref(repo,'main').get('object',{}).get('sha'))
-            if actual!=merged:raise Stale('WORKSPACE_APPROVED_MAIN_CHANGED')
-            snapshot['mergeSha']=merged
+            if op=='update_main':
+                if actual!=merged:raise Stale('WORKSPACE_APPROVED_MAIN_CHANGED')
+                snapshot['mergeSha']=merged
         return snapshot
 
     def apply(self,payload):
         prior=self.receipt(payload['requestId'])
         if prior is not None:return prior
         snapshot=self.prepare(payload)
+        if payload['operation']=='cleanup_task':
+            row=self.core._read(payload['requestId'])
+            require(row['actor']==self.actor and row['state']=='DISPATCHED' and
+                    row['request']==payload,'WORKSPACE_CLEANUP_AUTHORIZATION_REQUIRED')
+            if row['preview']!=snapshot:raise Stale('WORKSPACE_CLEANUP_PROOF_CHANGED')
+            approved=row['decision']=='approve' and row['owner'] is not None
+            require(approved or (row['decision'] is None and snapshot['cleanup']['kind']!='unmerged'),
+                    'WORKSPACE_CLEANUP_OWNER_REQUIRED')
+            snapshot={**snapshot,'ownerApprovedCleanup':approved}
         self.store.enqueue(self.actor,{**payload,'approvedPreview':snapshot})
         deadline=time.monotonic()+self.wait_seconds
         while time.monotonic()<deadline:
