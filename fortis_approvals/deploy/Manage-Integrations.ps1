@@ -5,7 +5,7 @@ param(
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
-    [switch]$Build, [switch]$Pull,
+    [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
 $ForwardParameters=@{}+ $PSBoundParameters
@@ -179,6 +179,21 @@ function Put-Credential {
     }
     Write-Host ('FORTIS_CREDENTIAL_READY '+$Alias)
 }
+function Read-DynamicRepositoriesFlag {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_DYNAMIC_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('dynamicRepositories')){return $false}
+        $Value=$Record['dynamicRepositories']
+    } else {
+        $Property=$Record.PSObject.Properties['dynamicRepositories']
+        if($null -eq $Property){return $false}
+        $Value=$Property.Value
+    }
+    if($Value -isnot [bool]){throw 'RELEASE_DYNAMIC_RECORD_INVALID'}
+    return $Value
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -226,6 +241,7 @@ function Admit {
     $Expected=@{id=$P.pilotId;name=$P.pilotName;image=$P.image;stateVolume=$P.stateVolume;tokenVolume=$P.tokenVolume
         owner=$P.owner;repository=$P.repository;filePrBranch=$P.filePrBranch;ciReads=$P.ciReads
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
+        dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     if($P.restartPolicy -ceq 'unless-stopped'){
         # The already deployed immutable image still validates the original
@@ -352,6 +368,21 @@ if($Action -eq 'SelfTest'){
     catch {if($_.Exception.Message -cne 'RELEASE_CONFIG_CHANGED'){throw};$Denied=$true}
     if(-not $Denied){throw 'RELEASE_MALFORMED_ENV_SELFTEST_FAILED'}
     $Forwarded=@(Forward-NativeParameters @{SourceSha='a value with spaces';Build=([switch]$true);Pull=([switch]$false)})
+    $OldRecord='{"schema":1}' | ConvertFrom-Json
+    $NewRecord='{"dynamicRepositories":true}' | ConvertFrom-Json
+    $WrongRecord='{"dynamicRepositories":"false"}' | ConvertFrom-Json
+    if((Read-DynamicRepositoriesFlag $OldRecord) -or
+        -not (Read-DynamicRepositoriesFlag $NewRecord) -or
+        (Read-DynamicRepositoriesFlag @{}) -or
+        -not (Read-DynamicRepositoriesFlag @{dynamicRepositories=$true})){
+        throw 'RELEASE_DYNAMIC_RECORD_COMPATIBILITY_SELFTEST_FAILED'
+    }
+    $Rejected=$false
+    try{$null=Read-DynamicRepositoriesFlag $WrongRecord}
+    catch{if($_.Exception.Message -cne 'RELEASE_DYNAMIC_RECORD_INVALID'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_DYNAMIC_RECORD_TYPE_SELFTEST_FAILED'}
+    $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
+    if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
     if($Forwarded.Count -ne 3 -or $Forwarded -cnotcontains '-Build' -or $Index -lt 0 -or
        $Forwarded[$Index+1] -cne 'a value with spaces'){throw 'RELEASE_NATIVE_ARGUMENT_SELFTEST_FAILED'}
@@ -359,8 +390,12 @@ if($Action -eq 'SelfTest'){
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
+if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
+    throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
+}
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -468,6 +503,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     stateVolume=('fortis-github-pilot-state-'+$RunId);tokenVolume=$Source.runtime.tokenVolume
     owner=$Source.runtime.owner;repository=$Source.runtime.repository;filePrBranch=$Source.runtime.filePrBranch
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Source.runtime.requiredWorkflows;bootstrapTask=$Source.runtime.bootstrapTask
+    dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
@@ -476,7 +512,11 @@ Save;Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
 try {
     Step 'PUBLIC_ENV_PREFLIGHT'
     $EnvFile=Join-Path $Directory 'public.env'
-    $EnvLines=@($Old.Config.Env|Where-Object{$_.StartsWith('FORTIS_') -and -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and -not $_.StartsWith('FORTIS_RELEASE_NONCE=')})
+    $EnvLines=@($Old.Config.Env|Where-Object{$_.StartsWith('FORTIS_') -and
+        -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and
+        -not $_.StartsWith('FORTIS_RELEASE_NONCE=') -and
+        -not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=')})
+    if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}
     $EnvLines+=@(Extension-EnvLines $CompactConfig $Nonce)
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce

@@ -12,7 +12,7 @@ from ..integrations.github.registration import register_github_integration
 def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90):
     store=Store(root/'native-git')
     adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
-        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=(config.repository,)),store=store)
+        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store)
     register_github_integration(core=core,broker=broker,adapter=adapter)
     reads=LEGACY_READ_OPERATIONS-{('github','list_repositories')}
     writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file')}
@@ -21,7 +21,10 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     core.policies[(actor,'github','push_commits')]=adapter.push_policy
     # Only this admitted actor AND exact configured repository receive PR ALLOW.
     # The generic ASK and all other actor/repository scopes remain unchanged.
-    core.policies[(actor,'github','create_pull_request',config.repository)]='ALLOW'
+    if config.dynamic_repositories:
+        core.policies[(actor,'github','create_pull_request')]='ALLOW'
+    else:
+        core.policies[(actor,'github','create_pull_request',config.repository)]='ALLOW'
     broker.actor_read_operations[actor]=broker.actor_read_operations.get(actor,frozenset())|reads
     broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
     workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)

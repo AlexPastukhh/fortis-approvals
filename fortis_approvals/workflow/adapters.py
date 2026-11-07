@@ -13,6 +13,94 @@ class NativeGitHubAdapter(GitHubAdapter):
     def __init__(self,transport,*,config,root,actor,backend,store):
         self.config=config;self.actor=actor;self.backend=backend;self.workflow=store
         super().__init__(transport,owner=config.owner,repositories=(config.repository,),receipt_store=Path(root)/'github-receipts.sqlite')
+        if config.dynamic_repositories:
+            # No second repository allowlist: upstream token determines access.
+            # Legacy single-repository mode remains the default until owner rollout.
+            self.repositories=None
+
+    def _repo(self,target):
+        if not self.config.dynamic_repositories:return super()._repo(target)
+        if (type(target) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',target)
+                or target in ('.','..')):
+            raise Denied('GITHUB_REPOSITORY_INVALID')
+        return target
+
+    def _access(self,repo):
+        """Token-scoped repo preflight, never a source of write authorization."""
+        repo=self._repo(repo)
+        if not self.config.dynamic_repositories:return repo
+        info=self._api('GET',self._path(repo),allow_not_found=True)
+        require(type(info) is dict and info.get('_httpStatus')!=404 and type(info.get('full_name')) is str,
+                'GITHUB_REPOSITORY_ACCESS_UNCONFIRMED')
+        require(type(info) is dict and type(info.get('full_name')) is str and
+                info['full_name'].casefold()==(self.owner+'/'+repo).casefold() and
+                info.get('archived') is False and info.get('disabled') is False and
+                info.get('default_branch')=='main','GITHUB_REPOSITORY_ACCESS_UNCONFIRMED')
+        return repo
+
+    def _dynamic_ci_gate(self,repo,head):
+        """Exact required check names from active GitHub branch rules, no local repo list.
+
+        Unknown/absent rules and unverified checks MUST NOT authorize merge.
+        Classic branch protections without visible rules require explicit
+        owner review or a subsequent verified API extension.
+        """
+        required={}
+        for page in range(1,11):
+            rules=self._api('GET',self._path(repo,'rules/branches/main'),
+                            params={'page':page,'per_page':100})
+            require(type(rules) is list,'GIT_BRANCH_RULES_INVALID')
+            for rule in rules:
+                require(type(rule) is dict and type(rule.get('type')) is str,'GIT_BRANCH_RULES_INVALID')
+                if rule['type'] in ('workflows','required_workflows','required_deployments'):
+                    raise Denied('GIT_REQUIRED_RULE_UNSUPPORTED')
+                if rule['type']!='required_status_checks':continue
+                params=rule.get('parameters')
+                require(type(params) is dict and type(params.get('required_status_checks')) is list,
+                        'GIT_REQUIRED_CHECKS_INVALID')
+                for check in params['required_status_checks']:
+                    require(type(check) is dict and type(check.get('context')) is str and
+                            0<len(check['context'])<=200,'GIT_REQUIRED_CHECKS_INVALID')
+                    app=check.get('integration_id')
+                    require(app is None or type(app) is int and (app>0 or app==-1),
+                            'GIT_REQUIRED_CHECKS_INVALID')
+                    if app==-1:app=None  # GitHub 'any source' integration selector.
+                    key=(check['context'],app);required[key]=None
+            if len(rules)<100:break
+        else:raise Denied('GIT_BRANCH_RULES_TOO_MANY')
+        require(required,'GIT_REQUIRED_CHECKS_UNCONFIGURED')
+        runs=[]
+        for page in range(1,11):
+            response=self._api('GET',self._path(repo,'commits/'+head+'/check-runs'),
+                               params={'page':page,'per_page':100})
+            require(type(response) is dict and type(response.get('check_runs')) is list,
+                    'GIT_CHECK_RUNS_INVALID')
+            runs+=response['check_runs']
+            if len(response['check_runs'])<100:break
+        else:raise Denied('GIT_CHECK_RUNS_TOO_MANY')
+        statuses=self._api('GET',self._path(repo,'commits/'+head+'/status'))
+        require(type(statuses) is dict and type(statuses.get('statuses')) is list,
+                'GIT_COMMIT_STATUS_INVALID')
+        evidence=[]
+        for (name,app) in required:
+            candidates=[r for r in runs if r.get('name')==name and r.get('head_sha')==head and
+                        (app is None or type(r.get('app')) is dict and r['app'].get('id')==app)]
+            if candidates:
+                latest=max(candidates,key=lambda r:(r.get('id') if type(r.get('id')) is int else 0))
+                require(type(latest.get('id')) is int and latest['id']>0,'GIT_CHECK_RUNS_INVALID')
+                require(latest.get('status')=='completed' and latest.get('conclusion')=='success',
+                        'GIT_REQUIRED_CI_NOT_SUCCESSFUL')
+                evidence.append(dict(context=name,runId=latest['id'],headSha=head,source='check_run'))
+                continue
+            # A check pinned to a GitHub App may not be satisfied by a legacy commit status.
+            require(app is None,'GIT_REQUIRED_CI_MISSING')
+            matches=[s for s in statuses['statuses'] if s.get('context')==name]
+            require(matches,'GIT_REQUIRED_CI_MISSING')
+            latest=max(matches,key=lambda s:(s.get('id') if type(s.get('id')) is int else 0))
+            require(type(latest.get('id')) is int and latest['id']>0,'GIT_COMMIT_STATUS_INVALID')
+            require(latest.get('state')=='success','GIT_REQUIRED_CI_NOT_SUCCESSFUL')
+            evidence.append(dict(context=name,statusId=latest['id'],headSha=head,source='commit_status'))
+        return evidence
 
     def task(self,repo,task):
         self._repo(repo);slug(task)
@@ -55,7 +143,7 @@ class NativeGitHubAdapter(GitHubAdapter):
         return witness
 
     def prepare(self,request):
-        operation=request['operation'];repo=self._repo(request['target']);p=request['params']
+        operation=request['operation'];repo=self._access(request['target']);p=request['params']
         if operation=='push_commits':
             row=self.artifact(request);task=self.task(repo,p['task'])
             actual=self._ref(repo,task['branch'],allow_not_found=True)
@@ -82,7 +170,9 @@ class NativeGitHubAdapter(GitHubAdapter):
                         re.fullmatch('[A-Za-z0-9_+=/-]{1,240}',raw['node_id']),'GIT_DRAFT_PR_REQUIRED')
                 return dict(operation=operation,repository=repo,number=p['number'],head=pr['head'],base=pr['base'],nodeId=raw['node_id'])
             require(not pr['draft'] and p['mergeMethod']=='merge','GIT_READY_PR_MERGE_REQUIRED')
-            ci=self._ci_gate(repo,p['expectedHeadSha'],pr['head']['ref'])
+            ci=(self._dynamic_ci_gate(repo,p['expectedHeadSha'])
+                if self.config.dynamic_repositories and repo!=self.config.repository
+                else self._ci_gate(repo,p['expectedHeadSha'],pr['head']['ref']))
             return {**super().prepare(request),'requiredCI':ci}
         return super().prepare(request)
 
@@ -115,7 +205,7 @@ class WorkspaceAdapter:
         self.core=core;self.github=github;self.store=store;self.actor=actor;self.wait_seconds=wait_seconds
 
     def prepare(self,payload):
-        repo=self.github._repo(payload['target']);op=payload['operation'];p=payload['params']
+        repo=self.github._access(payload['target']);op=payload['operation'];p=payload['params']
         require(op in WORKSPACE_OPS and type(p) is dict,'WORKSPACE_OPERATION_DENIED')
         fields={
           'inspect':{'task'},'fetch':{'ref','expectedSha'},'create_task':{'task','baseSha','adoptHeadSha'},
@@ -162,7 +252,8 @@ class WorkspaceAdapter:
             require(type(p['expectedIndexSha256']) is str and re.fullmatch('[0-9a-f]{64}',p['expectedIndexSha256']),'WORKSPACE_INDEX_DIGEST_INVALID')
             require(type(p['message']) is str and 0<len(p['message'].strip())<=500,'WORKSPACE_MESSAGE_INVALID')
         if op=='cleanup_task':
-            require(p['task']!=self.github.config.bootstrap_task,'WORKSPACE_BOOTSTRAP_SOURCE_RETAINED')
+            require(repo!=self.github.config.repository or p['task']!=self.github.config.bootstrap_task,
+                    'WORKSPACE_BOOTSTRAP_SOURCE_RETAINED')
         if op in ('cleanup_task','update_main'):
             row=self.core._read(p['mergeRequestId'])
             require(row['actor']==self.actor and row['state']=='EXECUTED' and row['decision']=='approve' and

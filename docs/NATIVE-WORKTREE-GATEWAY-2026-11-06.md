@@ -32,6 +32,49 @@ All grants are restricted to the configured owner/repository and authenticated R
 
 GitHub token permissions already used by the accepted pilot cover Contents read/write, Pull requests read/write and Actions read. Checks and commit-status reads need their corresponding read permissions if used. Workflow-file publication additionally needs GitHub workflow write permission. No token belongs in Repo or chat.
 
+## Dynamic token-scoped repositories — source candidate, NOT DEPLOYED
+
+A separate source candidate adds an **explicit opt-in**
+`FORTIS_GITHUB_NATIVE_MULTI_REPO=1` to the native workflow. The existing
+`FORTIS_GITHUB_REPOSITORY` stays as the legacy/bootstrap identity (and keeps its
+previous pinned required-workflow ID). It is **not** a repository allowlist in
+the new mode. Other repository names must be valid owner-owned GitHub repo
+slugs; upstream access is checked using the Gateway-only credential. The actual
+permission to publish is exercised by GitHub during the request, not inferred
+from publicly visible repository metadata. Caller-supplied Git remotes/URLs,
+filesystem paths, tokens, arbitrary Git commands and cross-owner targets stay
+denied. The Repo-local worker resolves the exact canonical checkout beneath
+`/workspace/repo/Repos/<repo>` and linked worktrees under
+`/workspace/repo/Worktrees/<repo>`, requiring an existing real primary Git
+repository, registered task worktree and correct origin. Missing directories or
+symlink paths mean STOP, not automatic repository creation.
+
+For repositories other than the bootstrap source, merge still requires ASK +
+Owner WebAuthn. The source candidate reads **active branch rules for `main`**
+from GitHub; `required_status_checks` must be present. It checks all required
+statuses against the exact PR HEAD, supports check-run/commit-status evidence,
+and rejects failed, pending, missing, unsupported or unknown requirements.
+GitHub classic branch-protection rules without available equivalent active
+rules are **not automatically supported for merging**: require explicit owner
+review and a verified follow-up, not a guessed workflow ID. The original
+bootstrap repo retains its pinned required-workflow check.
+
+**Rollout boundary:** installing this image alone does not enable the feature.
+The **source candidate** extends `Manage-Integrations.ps1` with
+`-EnableDynamicGitHubRepositories`, accepted only with a source-pinned
+`-Build -SourceSha <approved-main-sha>` for `-Action Check`/`-Action Apply`.
+The owner controller binds the flag to the protected runtime release record,
+regenerates the public environment and makes `State-Helper` reject a mismatched
+container (including flag absence, duplication or unexpected enablement).
+The flag is retained on later accepted releases when the source runtime has it;
+`Backup`/`Promote` cannot independently enable it. This new code **is not yet
+applied to the accepted Windows main or the running Gateway.** Do not edit an active container's env,
+change owner records, rotate credentials, or rebuild/recreate Primary from this
+document. Until the complete release flow, backup, source/CI, owner proof and
+live acceptance pass, deployed capabilities remain single-repository.
+[GitHub active branch rule API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch)
+is the source for new-repo required check names; this is not a second repo list.
+
 ## PR creation source rollout
 
 The table describes this source policy. The owner-requested PR ALLOW is an exact

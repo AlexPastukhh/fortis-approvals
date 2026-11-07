@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -13,11 +14,28 @@ from .common import Git, digest, file_path, repository_lock, require, secure_dir
 
 
 class Worker:
-    def __init__(self, *, owner, repositories, worktrees, gateway):
+    def __init__(self, *, owner, repositories, worktrees, gateway, dynamic_repositories=False,
+                 repository_root=None, worktree_root=None):
         self.owner=owner;self.repositories={k:Path(v) for k,v in repositories.items()}
         self.worktrees={k:Path(v) for k,v in worktrees.items()};self.gateway=gateway
+        self.dynamic_repositories=dynamic_repositories
+        self.repository_root=Path(repository_root) if repository_root is not None else None
+        self.worktree_root=Path(worktree_root) if worktree_root is not None else None
 
     def _open(self,repo):
+        if repo not in self.repositories and self.dynamic_repositories:
+            require(type(repo) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',repo) and
+                    repo not in ('.','..'),'WORKER_REPOSITORY_DENIED')
+            require(self.repository_root is not None and self.worktree_root is not None,
+                    'WORKER_REPOSITORY_ROOT_REQUIRED')
+            for parent in (self.repository_root,self.worktree_root):
+                require(parent.is_absolute() and parent.is_dir() and not parent.is_symlink() and
+                        parent==parent.resolve(),'WORKER_REPOSITORY_ROOT_INVALID')
+            source=self.repository_root/repo;tasks=self.worktree_root/repo
+            require(source.is_dir() and not source.is_symlink() and source==source.resolve() and
+                    tasks.is_dir() and not tasks.is_symlink() and tasks==tasks.resolve(),
+                    'WORKER_REPOSITORY_PATH_DENIED')
+            self.repositories[repo]=source;self.worktrees[repo]=tasks
         require(repo in self.repositories and repo in self.worktrees,'WORKER_REPOSITORY_DENIED')
         root=self.repositories[repo];require(root.is_absolute() and root==root.resolve() and
             root.is_dir() and not root.is_symlink() and (root/'.git').is_dir() and not (root/'.git').is_symlink(),'WORKER_PRIMARY_INVALID')

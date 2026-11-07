@@ -90,8 +90,13 @@ def default_client(endpoint='https://host.docker.internal:19204'):
     gateway=WorkflowTransport(endpoint=endpoint)
     capabilities=gateway.post('/v1/workspace/capabilities',{})
     repo=capabilities['repository']
-    worker=Worker(owner=capabilities['owner'],repositories={repo:'/workspace/repo/Repos/'+repo},
-        worktrees={repo:'/workspace/repo/Worktrees/'+repo},gateway=gateway)
+    dynamic=capabilities.get('dynamicRepositories',False)
+    require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
+    worker=Worker(owner=capabilities['owner'],
+        repositories={} if dynamic else {repo:'/workspace/repo/Repos/'+repo},
+        worktrees={} if dynamic else {repo:'/workspace/repo/Worktrees/'+repo},gateway=gateway,
+        dynamic_repositories=dynamic,repository_root='/workspace/repo/Repos',
+        worktree_root='/workspace/repo/Worktrees')
     return WorkflowClient(gateway=gateway,worker=worker)
 
 
