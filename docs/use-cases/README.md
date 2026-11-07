@@ -4,8 +4,13 @@
 
 | ID | Когда | Действия |
 | --- | --- | --- |
+| [UC-GW-001](sonar.md#uc-gw-001) | Sonar Quality Gate, issues и привязка к PR | Контекстный READ и проверенный результат, не домыслы о PR-проверке |
 | [UC-GW-002](integrations.md#uc-gw-002) | Подключить новый внешний provider | Проверенный extension package, минимальные scopes, owner acceptance |
 | [UC-GW-003](integrations.md#uc-gw-003) | Добавить операцию, клиентский метод или machine API | Версионированный контракт, отрицательные тесты, сохранение старых вызовов, CI и live release |
+| [UC-GW-004](credential-lifecycle.md#uc-gw-004) | Добавить или ротировать provider credential | Owner-controlled secret lifecycle без утечки и обходов |
+| [UC-GW-005](releases.md#uc-gw-005) | Установить новый image/config | SHA admission, backup, activation и live verification |
+| [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
+| [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
 
 Если в текущем `main` нет других локальных UC, **не** создавать фиктивные разделы UC-GW-001–007: их документационные кандидаты находятся в отдельных ветках. При принятии таких UC дополнить именно этот индекс и убрать дублирующий registry, а не создавать второй файл.
