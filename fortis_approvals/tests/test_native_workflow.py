@@ -204,20 +204,34 @@ class NativeTLS(unittest.TestCase):
         with self.assertRaises(Denied):
             self.machine.get_app().github.task('sandbox','real-cycle')
 
-    def test_create_task_does_not_touch_uncommitted_primary_changes(self):
-        # Creating a separate branch is not the same as fast-forwarding main.
+    def test_create_task_refuses_dirty_primary_without_losing_user_changes(self):
+        # A task based on committed main would silently omit these files.
         primary=self.fixture.primary
         (primary/'README.md').write_text('preserve tracked local change\n')
         (primary/'OWNER-NOTE.txt').write_text('preserve untracked local change\n')
         before=git(primary,'status','--porcelain=v1','--untracked-files=all')
-        self.create('dirty-primary-isolated')
+        result=self.flow.command('create_task','sandbox',
+            dict(task='dirty-primary-isolated',baseSha=self.fixture.base,adoptHeadSha=None),
+            request_id=str(uuid.uuid4()),reason='Reject task creation on dirty canonical main')
+        self.assertEqual(result['state'],'STALE',result)
         self.assertEqual(git(primary,'status','--porcelain=v1','--untracked-files=all'),before)
         self.assertEqual((primary/'README.md').read_text(),'preserve tracked local change\n')
         self.assertEqual((primary/'OWNER-NOTE.txt').read_text(),'preserve untracked local change\n')
         self.assertEqual(git(primary,'rev-parse','HEAD'),self.fixture.base)
-        self.assertEqual(git(self.fixture.worktrees/'dirty-primary-isolated','rev-parse','HEAD'),self.fixture.base)
-        self.assertEqual((self.fixture.worktrees/'dirty-primary-isolated'/'README.md').read_text(),'base\n')
-        self.assertFalse((self.fixture.worktrees/'dirty-primary-isolated'/'OWNER-NOTE.txt').exists())
+        self.assertFalse((self.fixture.worktrees/'dirty-primary-isolated').exists())
+        self.assertFalse(git(primary,'branch','--list','task/dirty-primary-isolated'))
+
+    def test_create_task_refuses_staged_primary_without_unstaging(self):
+        primary=self.fixture.primary
+        (primary/'README.md').write_text('staged owner change\n')
+        git(primary,'add','README.md')
+        before=git(primary,'diff','--cached')
+        result=self.flow.command('create_task','sandbox',
+            dict(task='staged-primary-denied',baseSha=self.fixture.base,adoptHeadSha=None),
+            request_id=str(uuid.uuid4()),reason='Protect staged main changes')
+        self.assertEqual(result['state'],'STALE',result)
+        self.assertEqual(git(primary,'diff','--cached'),before)
+        self.assertFalse((self.fixture.worktrees/'staged-primary-denied').exists())
 
     def _owner_ui_merged_pr(self,head,*,login='PilotOwner'):
         ref='refs/heads/main'
