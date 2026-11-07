@@ -1,5 +1,7 @@
 # Fortis Approvals Gateway — guide for AI agents and service integrations
 
+> **Before this service-specific guide:** in Fortis Repo, open `/workspace/repo/README.md`, scan the linked container use-case registry and read UC-CONT-002/003 in full. The registry owns the cross-project Docker/GitHub/CI/Windows/Mirror workflow. This document owns the Gateway-specific rules, not a second workflow.
+>
 > **Start here when an AI agent needs an authenticated request to an external service.** Fortis Approvals is the intended central broker for service credentials, typed operations and owner approvals. It is not a generic HTTP proxy.
 
 ## If you are an AI agent
@@ -71,13 +73,12 @@ autostart and rollback boundaries.
 ## How an AI agent should use it today
 
 Run from the approved source/task worktree. For native operations use
-`fortis_approvals.workflow.client` / `default_client()`, which selects the review
-machine endpoint on 19204; see the [command contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
-After the accepted client update, the generic typed transport defaults to the
-same Primary machine endpoint 19204 as the native and extension clients.
-Do not manually point normal work to Legacy 19104 or use direct provider URLs.
-Before Docker main receives that source update, verify the effective client
-endpoint rather than assuming the new default is installed.
+`fortis_approvals.workflow.client` / `default_client()`, which selects the
+**Primary machine endpoint 19204**; see the [command contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
+The installed Docker main includes the accepted shared typed transport default
+on Primary 19204 for native, Sonar and extensions clients. Check the actual
+client/version and live capabilities before each new integration or target.
+Do not point normal work to the stopped Legacy 19104 or use direct provider URLs.
 
 For Sonar, use the canonical
 `fortis_approvals.integrations.sonarcloud.repo_client.workflows` review/status

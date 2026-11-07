@@ -1,17 +1,24 @@
 # Fortis Approvals
 
+**Required first read for every new Fortis Repo chat:** open the active container
+use-case registry through `/workspace/repo/README.md` (its first section links
+straight to the registry); **scan all case titles**, then **read UC-CONT-002**
+(Docker → GitHub → CI → Windows/Mirror) and **UC-CONT-003** (GitHub only through
+the supported typed client + Fortis Gateway) **in full**. Other cases are
+selected as needed. These shared rules are owned by the container registry,
+not copied here.
+
 Canonical source for the Fortis Approvals Gateway: typed service operations,
 ALLOW/ASK/DENY policy, owner WebAuthn decisions and durable execution receipts.
 Provider credentials remain in Gateway; Repo uses a separate machine grant.
 
 ## Documentation through use cases
 
-Start from the container registry through `/workspace/repo/README.md` in Fortis
-Repo. It owns common Docker/Gateway/client/token/GitHub/Actions/Mirror goals;
-this repository owns their detailed contracts, deployed state and evidence.
-Add/update the relevant use case when introducing a workflow. Application-specific
-use cases belong to the application repo. Do not duplicate the container registry.
-Read [AGENTS.md](AGENTS.md) for standing authorization to submit ASK proposals.
+The container registry owns cross-project Docker/Gateway/client/token/GitHub,
+CI and Windows/Mirror goals; this repo owns technical contracts, deployed state
+and evidence. Do not create a second shared registry. New application-specific
+scenarios belong to their application repository. See [AGENTS.md](AGENTS.md)
+for the agent entrypoint and scoped ASK-proposal authorization.
 
 ## Start here
 

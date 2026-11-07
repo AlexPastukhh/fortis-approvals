@@ -27,8 +27,9 @@ native Git или существующие Sonar/GitHub контракты. Ст
    применительно к добавленным операциям. Записать evidence и затем current state.
    Успешный build или каталог не означают успешную работу внешнего API.
 
-Для нового чата точки входа: этот контракт → README нужного provider →
-current state → последнее evidence. Будущие задачи остаются в follow-up plan.
+Для нового чата сначала `/workspace/repo/README.md` → общий реестр (обзор ID,
+обязательное чтение UC-CONT-002/003); затем этот контракт → README нужного
+provider → current state → последнее evidence. Будущие задачи — в follow-up plan.
 
 ## Подходит ли мой API
 
@@ -134,9 +135,11 @@ provider владелец выдаёт отдельно; каталог не м�
 разрешает здесь только ALLOW read, не выполняет мутаций для проверки установки.
 Без probes подтверждается готовность wiring/credential, не upstream permissions.
 
-Контроллер поддерживает текущий native-v1 review record и собственные следующие
-records. Он сохраняет owner identity, native state и прежний контейнер, а Production
-проверяет неизменным. Config/image/Repo-client preflight и round-trip публичного env-файла через Docker
+Контроллер поддерживает исторический native-v1 review record и собственные
+следующие records, включая защищённый Primary pointer после Promote. Он
+сохраняет owner identity, native state и предыдущий контейнер; Legacy проверяет
+по защищённой сохранённой идентичности, а не требует его повторного запуска.
+Текущее состояние — в [Primary live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md). Config/image/Repo-client preflight и round-trip публичного env-файла через Docker
 выполняются **до stop**.
 После clone новый контейнер staged: мутации и owner POST закрыты до проверки
 каталога/probes и owner-only активации. После активации автоматический возврат
@@ -144,12 +147,14 @@ records. Он сохраняет owner identity, native state и прежний 
 артефакты и возвращается прежний контейнер. `-AttemptRecord <path>` продолжает
 Created/Staged; `-Action Return` использует последний незавершённый record.
 Не запускать второй контроллер параллельно. Точные records закрыты Windows ACL;
-контроллер не удаляет старые контейнеры/volumes и не запускает Production cutover.
+контроллер не удаляет старые контейнеры/volumes; `Apply` сам по себе не
+назначает новое постоянное имя — после активации для этого служат отдельные
+`Backup`/`Promote`. Это не инструкция повторить уже завершённый cutover.
 
 ## Клиент
 
 Из Repo используется один `fortis_approvals.extensions.client.default_client()`
-(review endpoint по умолчанию): `catalog()`, `call(service, operation, target,
+(Primary endpoint `19204` по умолчанию): `catalog()`, `call(service, operation, target,
 params, reason=…, request_id=…)`, `result(request_id, reconcile=False)`.
 Закрытые machine routes — `/v1/integrations/catalog`, `/call`, `/result` под тем же
 префиксом. Pending HTTP 202 поддерживается. UUID сохраняется для точного retry;

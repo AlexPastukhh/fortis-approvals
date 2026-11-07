@@ -1,10 +1,13 @@
 # GitHub integration
 
-**Status, 2026-11-06:** opt-in GitHub/native worktree profile is live in isolated
-review; source PR №10 and new-task PR №11 completed through Gateway. Production
-remains Sonar-only. [Current state](../../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
-owns runtime details; [live evidence](../../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md)
-owns results and limits. No reprovisioning is needed for the accepted review.
+**Current runtime:** the accepted GitHub/native worktree profile is **live in
+Primary `fortis-gateway`** (`19204`), not in the stopped Sonar-only Legacy. On
+2026-11-06 this was accepted in isolated review; source PR №10 and new-task PR
+№11 completed through Gateway. The 2026-11-07 promotion kept the same
+container/image and stopped Legacy without reprovisioning. [Current state](../../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+owns runtime details; [2026-11-06 live evidence](../../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md)
+records the original acceptance and [cutover evidence](../../evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)
+records the promotion and post-retirement reads.
 
 ## Source map
 
@@ -77,9 +80,12 @@ Core, machine identity and owner WebAuthn/queue are reused.
 - Native: the same FilePR entrypoint with `-ScenarioKind Native`; [bootstrap/return contract](../../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
 
 Resume uses original record/request IDs; ambiguous results require reconciliation.
-Return/rollback only changes the admitted review instance, not Production or
-already-created GitHub branches/PRs. Preserve retained M3 state and the protected
-bootstrap worktree until their owner-run references are deliberately replaced.
+The **historical** M1–M3 Return/rollback scripts affect only their specifically
+admitted review context, not already-created GitHub branches/PRs. After Primary
+promotion, use the [Primary recovery boundary](../../../docs/PRIMARY-GATEWAY-OPERATIONS.md)
+and its protected records, **not** historical pilot Return as automatic fallback.
+Preserve retained M3 state and the protected bootstrap worktree until owner-run
+references are deliberately replaced.
 
 Owner token replacement uses the existing controller: see the
 [credential rotation runbook](../../../docs/CREDENTIAL-ROTATION.md). No provider

@@ -1,13 +1,14 @@
 # Fortis Approvals — source map and operating status
 
-> **СТАТУС: ДЕЙСТВУЮЩИЙ SOURCE ENTRY POINT.** Текущая система — Production Sonar и отдельный native GitHub/Sonar review для одного AI actor. R7 — исторический идентификатор реализации. Нормативное описание состояния: [Fortis current state](../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+> **СТАТУС: ДЕЙСТВУЮЩИЙ SOURCE ENTRY POINT.** Текущий основной Gateway — `fortis-gateway`: Sonar, GitHub/native и extensions на `19203/19204`. Исторический Sonar-only `fortis-approvals-gateway` на `19103/19104` остановлен и сохранён для контролируемого восстановления. R7 — исторический идентификатор реализации. Нормативное состояние: [Fortis current state](../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md), [live cutover](evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 >
-> **Для AI и новых интеграций:** сначала прочитайте [Gateway agent guide](../docs/GATEWAY-AGENT-GUIDE.md). Он объясняет роль Gateway, ALLOW/ASK/DENY и порядок подключения новой авторизации/сервиса. Этот README остаётся картой текущего исходного кода и реально доступных операций.
+> **Для AI и новых интеграций:** сначала `/workspace/repo/README.md` → общий реестр (обзор ID, обязательные UC-CONT-002 и UC-CONT-003), затем [Gateway agent guide](../docs/GATEWAY-AGENT-GUIDE.md). Этот README — карта исходного кода, не второй общий workflow.
 
 ## Текущая работа и документация
 
-Production обслуживает Sonar. Изолированный review обслуживает Sonar и
-GitHub/native worktree; живой цикл до merge, Docker main и cleanup завершён.
+Primary `fortis-gateway` обслуживает Sonar, GitHub/native и extensions.
+Изолированный review — исторический этап принятия native; Legacy Sonar-only
+сохранён остановленным. Живой цикл merge/CI, Docker main и cleanup принят.
 Точные endpoints/images и ограничения — в [current state](../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
 результаты — в [live evidence](evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
 Матрица политик и native CLI — только в [native contract](../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
@@ -23,9 +24,11 @@ python3 -m fortis_approvals.integrations.sonarcloud.repo_client.workflows status
 ```
 
 Совместимый `fortis_approvals.sonar_review_scenario` сохраняется. По умолчанию
-этот клиент обращается к Production 19104. `review` читает текущий Sonar report
-и создаёт одну ASK-заявку, не запускает analysis и не делает owner decision.
-Native `workflow.client` использует отдельный review endpoint 19204.
+этот клиент обращается к **Primary 19204** согласно
+`clients/gateway_transport.py` и `integrations/sonarcloud/repo_client/client.py`.
+`review` читает текущий Sonar report и создаёт одну ASK-заявку, не запускает
+analysis и не делает owner decision. Native `workflow.client` использует тот же
+**Primary TLS endpoint 19204**, а не отдельный review-runtime.
 
 ## Архитектурные entry points
 

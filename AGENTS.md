@@ -1,9 +1,12 @@
 # Fortis Approvals agent entrypoint
 
-Read `/workspace/repo/AGENTS.md` and the active container use-case registry via
-`/workspace/repo/README.md`, then this repo README and the relevant owner contract.
-Container/Gateway/client/token/Mirror goals belong to that registry; keep detailed
-operation contracts, current state, evidence and follow-up in their own documents.
+Each new chat: read `/workspace/repo/README.md` and `/workspace/repo/AGENTS.md`,
+scan all IDs in the linked container registry, then **read UC-CONT-002 and
+UC-CONT-003 in full** before working. UC-CONT-002 owns Docker → GitHub → exact-SHA
+CI → approved merge → Docker main → Windows/Mirror; UC-CONT-003 owns typed
+GitHub-client/Gateway-only authorization, including STOP for unregistered repos.
+Read this repo README and relevant technical owner only for the chosen task.
+Do not duplicate shared cases, runtime snapshots or policy tables here.
 
 The user authorizes creating needed ASK proposals within an assigned task without
 first asking conversational permission. Submit using the typed Gateway client,
