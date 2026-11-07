@@ -132,6 +132,13 @@ function Repo-JSON {
 }
 function State-Helper {
     param($Payload,[string[]]$Mounts=@(),[switch]$Root)
+    if($Mounts.Count % 2 -ne 0){throw 'RELEASE_STATE_MOUNT_PAIR_INVALID'}
+    for($Index=0;$Index -lt $Mounts.Count;$Index+=2){
+        if($Mounts[$Index] -cne '--mount' -or
+            -not $Mounts[$Index+1].StartsWith('type=volume,source=')){
+            throw 'RELEASE_STATE_MOUNT_PAIR_INVALID'
+        }
+    }
     $Identity='10001:10001';if($Root){$Identity='0:0'}
     $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user',$Identity,
         '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',

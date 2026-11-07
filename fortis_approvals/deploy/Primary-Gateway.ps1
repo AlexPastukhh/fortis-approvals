@@ -34,7 +34,7 @@ function Backup-Primary {
         Assert-Volume $Name
         $Clone=State-Helper @{action='clone';github=$true;native=$true} @('--mount',
             ('type=volume,source='+$P.stateVolume+',target=/source,readonly'),
-            ('type=volume,source='+$Name+',target=/target')) -Root
+            '--mount',('type=volume,source='+$Name+',target=/target')) -Root
         if(-not (Same-Json $Clone $Before) -or -not (Same-Json (Receipt $P.stateVolume) $Before)){
             throw 'PRIMARY_BACKUP_CLONE_MISMATCH'
         }
