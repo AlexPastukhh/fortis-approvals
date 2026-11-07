@@ -32,9 +32,9 @@ All grants are restricted to the configured owner/repository and authenticated R
 
 GitHub token permissions already used by the accepted pilot cover Contents read/write, Pull requests read/write and Actions read. Checks and commit-status reads need their corresponding read permissions if used. Workflow-file publication additionally needs GitHub workflow write permission. No token belongs in Repo or chat.
 
-## Dynamic token-scoped repositories — source candidate, NOT DEPLOYED
+## Dynamic token-scoped repositories — activated 2026-11-07
 
-A separate source candidate adds an **explicit opt-in**
+The reviewed source and current Gateway release include an **explicit opt-in**
 `FORTIS_GITHUB_NATIVE_MULTI_REPO=1` to the native workflow. The existing
 `FORTIS_GITHUB_REPOSITORY` stays as the legacy/bootstrap identity (and keeps its
 previous pinned required-workflow ID). It is **not** a repository allowlist in
@@ -50,7 +50,7 @@ repository, registered task worktree and correct origin. Missing directories or
 symlink paths mean STOP, not automatic repository creation.
 
 For repositories other than the bootstrap source, merge still requires ASK +
-Owner WebAuthn. The source candidate reads **active branch rules for `main`**
+Owner WebAuthn. The implementation reads **active branch rules for `main`**
 from GitHub; `required_status_checks` must be present. It checks all required
 statuses against the exact PR HEAD, supports check-run/commit-status evidence,
 and rejects failed, pending, missing, unsupported or unknown requirements.
@@ -60,18 +60,20 @@ review and a verified follow-up, not a guessed workflow ID. The original
 bootstrap repo retains its pinned required-workflow check.
 
 **Rollout boundary:** installing this image alone does not enable the feature.
-The **source candidate** extends `Manage-Integrations.ps1` with
+The reviewed implementation extends `Manage-Integrations.ps1` with
 `-EnableDynamicGitHubRepositories`, accepted only with a source-pinned
 `-Build -SourceSha <approved-main-sha>` for `-Action Check`/`-Action Apply`.
 The owner controller binds the flag to the protected runtime release record,
 regenerates the public environment and makes `State-Helper` reject a mismatched
 container (including flag absence, duplication or unexpected enablement).
 The flag is retained on later accepted releases when the source runtime has it;
-`Backup`/`Promote` cannot independently enable it. This new code **is not yet
-applied to the accepted Windows main or the running Gateway.** Do not edit an active container's env,
-change owner records, rotate credentials, or rebuild/recreate Primary from this
-document. Until the complete release flow, backup, source/CI, owner proof and
-live acceptance pass, deployed capabilities remain single-repository.
+`Backup`/`Promote` cannot independently enable it. The owner applied exact merged source `0a262ea50832aae4db200ce0d0b431e45c22dd07`
+on 2026-11-07 and confirmed the active multi-repo Primary. Repo-side live read
+and `tunnel` task-branch push confirmed token-scoped access; see
+[multi-repo workflow evidence](MULTI-REPO-WORKFLOW-REVIEW-20261107.md).
+This evidence does not guarantee write scope, PR/CI rules or merge for every
+discovered repository. Do not edit the running container env or release records
+manually; all future updates still use the owner controller.
 [GitHub active branch rule API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch)
 is the source for new-repo required check names; this is not a second repo list.
 
@@ -160,5 +162,5 @@ does not change that requirement.
 
 Windows Mirror delivery, deeper Sonar operation design, GitHub workflow review,
 UI feedback, code review and deployment follow-ups are tracked only in the
-[follow-up plan](FOLLOW-UP-PLAN.md). Native acceptance does not retire the
+[follow-up plan](BACKLOG-IMPROVEMENTS.md). Native acceptance does not retire the
 legacy credential helper for other repositories.

@@ -70,7 +70,7 @@ Old source reviews and runbooks are preserved in
 new owner credential, stop Production or replay a historical cutover as part
 of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
-Remaining work is in the [follow-up plan](../../docs/FOLLOW-UP-PLAN.md).
+Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
 ## New operation onboarding
 

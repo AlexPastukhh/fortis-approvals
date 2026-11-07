@@ -12,7 +12,7 @@ Primary `fortis-gateway` обслуживает Sonar, GitHub/native и extensio
 Точные endpoints/images и ограничения — в [current state](../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
 результаты — в [live evidence](evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
 Матрица политик и native CLI — только в [native contract](../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
-Дальнейшие задачи — в [отдельном плане](../docs/FOLLOW-UP-PLAN.md).
+Дальнейшие задачи — в [отдельном плане](../docs/BACKLOG-IMPROVEMENTS.md).
 
 Из корня выбранного worktree Sonar review/status доступны через canonical CLI:
 
