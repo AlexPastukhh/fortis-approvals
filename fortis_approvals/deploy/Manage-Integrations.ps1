@@ -1,7 +1,7 @@
 # Windows PowerShell 5.1. Owner-only review controller; tokens never enter argv.
 [CmdletBinding()]
 param(
-    [ValidateSet('Apply','Credential','Check','Return','SelfTest')][string]$Action='Check',
+    [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest')][string]$Action='Check',
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
@@ -14,6 +14,7 @@ $ErrorActionPreference='Stop'
 $ReleaseBase=Join-Path $env:LOCALAPPDATA 'Fortis\GatewayReleases'
 $Pointer=Join-Path $ReleaseBase 'current.json'
 $AttemptPointer=Join-Path $ReleaseBase 'attempt.json'
+$PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
 $script:Step='PREFLIGHT';$script:Image=$Image
 
 function Json-Items { param([string]$Text) $Parsed=ConvertFrom-Json -InputObject $Text; foreach($Item in $Parsed){Write-Output $Item} }
@@ -183,7 +184,25 @@ function Get-SourceRecord {
             ciReads=$Value.ciReads;nativeWorktree=$Value.nativeWorktree;requiredWorkflows=$Value.requiredWorkflows
             bootstrapTask=$Value.bootstrapTask;vaultVolume='';extensionsConfig='';releaseNonce='';runId=$Value.runId}
     } else {throw 'RELEASE_SOURCE_PROFILE_UNSUPPORTED'}
-    return @{path=$Path;hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash;runtime=$P}
+    $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    if(Test-Path -LiteralPath $PrimaryPointer){
+        $Primary=Read-Private $PrimaryPointer
+        if($Primary.schema -cne 'fortis-primary-v1' -or $Primary.phase -cne 'Complete'){
+            throw 'PRIMARY_POINTER_SCHEMA_INVALID'
+        }
+        if($Primary.sourceRecord -ceq $Path){
+            if($Primary.sourceHash -cne $Hash -or $Primary.runtime.pilotId -cne $P.pilotId -or
+               $Primary.runtime.image -cne $P.image -or $Primary.runtime.stateVolume -cne $P.stateVolume -or
+               $Primary.runtime.runId -cne $P.runId -or
+               $Primary.runtime.originalPilotName -cne $P.pilotName -or
+               $Primary.runtime.pilotName -cne 'fortis-gateway' -or
+               $Primary.runtime.restartPolicy -cne 'unless-stopped'){
+                throw 'PRIMARY_POINTER_SOURCE_MISMATCH'
+            }
+            $P=$Primary.runtime
+        }
+    }
+    return @{path=$Path;hash=$Hash;runtime=$P}
 }
 function Admit {
     param($C,$P,[switch]$AllowUnhealthy)
@@ -200,6 +219,22 @@ function Admit {
         owner=$P.owner;repository=$P.repository;filePrBranch=$P.filePrBranch;ciReads=$P.ciReads
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
         vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
+    if($P.restartPolicy -ceq 'unless-stopped'){
+        # The already deployed immutable image still validates the original
+        # review name and restart=no. Admit the exact primary rename/policy
+        # explicitly, then normalize only those two public fields for the
+        # existing image's full security, mount, image and environment audit.
+        if($P.pilotName -cne 'fortis-gateway' -or
+           $P.originalPilotName -cne ('fortis-github-pilot-'+$P.runId) -or
+           $C.Name -cne '/fortis-gateway' -or
+           $C.HostConfig.RestartPolicy.Name -cne 'unless-stopped' -or
+           $C.HostConfig.RestartPolicy.MaximumRetryCount -ne 0){
+            throw 'PRIMARY_RUNTIME_IDENTITY_MISMATCH'
+        }
+        $Public.Name='/'+$P.originalPilotName
+        $Public.HostConfig.RestartPolicy=[ordered]@{Name='no';MaximumRetryCount=0}
+        $Expected.name=$P.originalPilotName
+    }
     $null=State-Helper @{action='admit';container=$Public;expected=$Expected;pilot=$true}
 }
 function Admit-ReturnCandidate {
@@ -234,7 +269,7 @@ function Assert-SourceUnchanged {
 }
 function Return-Source {
     if($script:R.phase -ceq 'Complete' -or $script:R.activated){throw 'RELEASE_ACTIVE_RETURN_REQUIRES_REVIEW'}
-    Assert-Production
+    Assert-Release-Production
     $P=$script:R.runtime
     $Names=(Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n'
     if($Names -ccontains $P.pilotName){
@@ -260,7 +295,7 @@ function Return-Source {
         Assert-SourceUnchanged
         $null=Docker-Text @('start',$Old.Id);Wait-Healthy $Old.Id
     } elseif($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_STATE_UNKNOWN'}
-    Assert-Production;$script:R.phase='Returned';Save
+    Assert-Release-Production;$script:R.phase='Returned';Save
     Write-Host 'FORTIS_INTEGRATIONS_RETURNED_SOURCE'
 }
 function Resume-Target {
@@ -280,7 +315,7 @@ function Resume-Target {
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         $null=Running-CLI $C.Id @('probe') $script:R.probes
         $script:R.probesPassed=$true;Save
-        Assert-SourceUnchanged;Assert-Production
+        Assert-SourceUnchanged;Assert-Release-Production
         Step 'ACTIVATE'
         $Activated=Running-CLI $C.Id @('activate') '' -Root
         if($Activated.status -cne 'ACTIVATED'){throw 'RELEASE_ACTIVATION_NOT_CONFIRMED'}
@@ -292,6 +327,7 @@ function Resume-Target {
     Write-Host 'FORTIS_INTEGRATIONS_ACTIVATED'
 }
 
+. (Join-Path $PSScriptRoot 'Primary-Gateway.ps1')
 . (Join-Path $PSScriptRoot 'Provider-Credentials.ps1')
 
 if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INVALID'}
@@ -316,6 +352,7 @@ if($Action -eq 'SelfTest'){
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -368,6 +405,8 @@ if($Action -eq 'Credential'){
     Put-Credential $CredentialName -Rotation:$Rotate
     return
 }
+if($Action -eq 'Backup'){Backup-Primary;return}
+if($Action -eq 'Promote'){Promote-Primary;return}
 if($Action -eq 'Return' -or $AttemptRecord){
     if($Action -eq 'Return'){Return-Source;return}
     if($script:R.phase -cnotin @('Created','Staged')){throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'}
@@ -410,7 +449,7 @@ $Source=Get-SourceRecord;$Old=Container $Source.runtime.pilotId;Admit $Old $Sour
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
 Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume
-$Baseline=Production-Baseline
+$Baseline=Release-Production-Baseline
 $RunId=[Guid]::NewGuid().ToString('N');$Directory=Join-Path $ReleaseBase $RunId;Protect-Directory $Directory
 $script:RecordPath=Join-Path $Directory 'record.json'
 $ConfigObject=ConvertFrom-Json -InputObject $ConfigText
@@ -434,7 +473,7 @@ try {
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
     Assert-PublicEnvFile $EnvFile $EnvLines
-    Step 'STOP_SOURCE';Assert-Production;Admit (Container $Old.Id) $Source.runtime
+    Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume

@@ -30,4 +30,4 @@ class IntegrationClient:
 
 def default_client(endpoint='https://host.docker.internal:19204'):
     return IntegrationClient(gateway=IntegrationTransport(endpoint=endpoint,
-        allow_test_endpoint=True, max_response_bytes=262144))
+        max_response_bytes=262144))

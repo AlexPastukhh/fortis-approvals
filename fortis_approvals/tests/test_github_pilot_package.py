@@ -138,6 +138,21 @@ class AdmissionTests(unittest.TestCase):
         c,e=self.fixture()
         self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
 
+    def test_primary_restart_requires_exact_name_and_policy(self):
+        c,e=self.fixture()
+        c['Name']='/fortis-gateway'
+        c['HostConfig']['RestartPolicy']={'Name':'unless-stopped','MaximumRetryCount':0}
+        e['name']='fortis-gateway';e['restartPolicy']='unless-stopped'
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        for mutate in (lambda: e.update(name='fortis-other'),
+                       lambda: e.update(restartPolicy='always'),
+                       lambda: c['HostConfig']['RestartPolicy'].update(Name='always')):
+            c,e=self.fixture()
+            c['Name']='/fortis-gateway';e['name']='fortis-gateway';e['restartPolicy']='unless-stopped'
+            c['HostConfig']['RestartPolicy']={'Name':'unless-stopped','MaximumRetryCount':0}
+            mutate()
+            with self.assertRaises(RuntimeError):HELPERS.admit(c,e,pilot=True)
+
     def test_ci_runtime_environment_is_explicit_and_requires_file_pr_scope(self):
         c,e=self.fixture();e['ciReads']=True
         with self.assertRaisesRegex(RuntimeError,'CI_REQUIRES_FILE_PR'):HELPERS.admit(c,e,pilot=True)

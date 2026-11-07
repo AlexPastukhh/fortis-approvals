@@ -46,9 +46,13 @@ Use operation-level rules and explicit scopes (organization, repository, project
 ## Current implementation
 
 [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns deployed images,
-endpoints and accepted scope. Production remains the Sonar instance on
-19103/19104. The isolated review on 19203/19204 has completed the native
-GitHub/worktree live cycle in `AlexPastukhh/fortis-approvals`.
+endpoints and accepted scope. The **operational Primary route** is the accepted Sonar + GitHub/native Gateway
+on 19203/19204. Its host container still has the historic `fortis-github-pilot-*`
+name until owner promotion to `fortis-gateway`; the older Sonar-only
+`fortis-approvals-gateway` on 19103/19104 is Legacy. Read the protected
+`primary.json` and live Docker identity before assuming promotion was applied.
+[Primary operations](PRIMARY-GATEWAY-OPERATIONS.md) own backup, promotion,
+autostart and rollback boundaries.
 
 - Sonar typed reads are ALLOW; `accept_issue` is ASK + owner WebAuthn for the
   configured project. The [optional analysis-review source profile](ANALYSIS-REVIEW-CONTRACT.md) is disabled in the accepted runtime; source presence does not enable its operations.
@@ -67,15 +71,17 @@ GitHub/worktree live cycle in `AlexPastukhh/fortis-approvals`.
 Run from the approved source/task worktree. For native operations use
 `fortis_approvals.workflow.client` / `default_client()`, which selects the review
 machine endpoint on 19204; see the [command contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
-The generic provider client defaults to Production 19104; it does not silently
-select the GitHub-enabled review. Use the explicit native transport, not a
-provider URL or a direct token.
+After the accepted client update, the generic typed transport defaults to the
+same Primary machine endpoint 19204 as the native and extension clients.
+Do not manually point normal work to Legacy 19104 or use direct provider URLs.
+Before Docker main receives that source update, verify the effective client
+endpoint rather than assuming the new default is installed.
 
 For Sonar, use the canonical
 `fortis_approvals.integrations.sonarcloud.repo_client.workflows` review/status
 entry point or the existing `sonar_review_scenario` compatibility CLI. Its
-normal default is Production 19104. Reads inspect existing analysis; they do
-not start a scan. Source/CLI usage is in the [package map](../fortis_approvals/README.md).
+normal default becomes Primary 19204 once the accepted client source is installed.
+Reads inspect existing analysis; they do not start a scan. Source/CLI usage is in the [package map](../fortis_approvals/README.md).
 
 Keep stable request IDs. `PENDING` means wait for the owner, not an error or a
 reason to submit another request. Follow the native contract's HTTP 202 caveat
