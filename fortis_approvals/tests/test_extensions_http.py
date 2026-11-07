@@ -113,6 +113,7 @@ class BoundaryTests(base_tests.ExtensionTests):
         self.ingress=ExtensionIngress(base,self.runtime,delegate=native)
         status,result=self.post('/v1/workspace/capabilities',{})
         self.assertEqual((status,result['repository']),(200,'sandbox'))
+        self.assertIs(result['dynamicRepositories'],False)  # Legacy native config has no new field.
         self.assertEqual(self.post('/v1/integrations/catalog',{})[0],200)
 
 

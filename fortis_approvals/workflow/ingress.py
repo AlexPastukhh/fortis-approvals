@@ -42,8 +42,10 @@ class NativeIngress:
         if path=='/v1/workspace/capabilities':
             require(not body,'WORKFLOW_PARAMS_INVALID')
             pr_policy=core._policy(actor,dict(service='github',operation='create_pull_request',target=self.github.config.repository))
+            dynamic=getattr(self.github.config,'dynamic_repositories',False)
+            require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
-                dynamicRepositories=self.github.config.dynamic_repositories,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
+                dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
                 sensitivePush='ASK',gitHubCredentialInRepo=False)
