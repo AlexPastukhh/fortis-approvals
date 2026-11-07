@@ -47,16 +47,13 @@ Use operation-level rules and explicit scopes (organization, repository, project
 
 ## Current implementation
 
-[Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns deployed images,
-endpoints and accepted scope. The **operational Primary route** is the accepted Sonar + GitHub/native Gateway
-on 19203/19204. Owner confirmed the **existing** container was promoted
-in-place to `fortis-gateway` (ID `043d3497b2d1…`), with `unless-stopped` and
-healthy post-restart. The older Sonar-only `fortis-approvals-gateway` on
-19103/19104 is stopped Legacy (`restart=no`), retained for controlled recovery.
-Read protected `primary.json` and live Docker identity before acting on any
-later promotion or rollback; see [live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
-[Primary operations](PRIMARY-GATEWAY-OPERATIONS.md) own backup, promotion,
-autostart and rollback boundaries.
+[Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns the latest
+owner-confirmed source/image/release record and deployed scope. Normal work uses
+Primary `fortis-gateway` on 19203/19204; Sonar-only Legacy on 19103/19104 is
+retained and stopped. Runtime IDs change on later releases; do not reuse the
+initial cutover ID as a current pin. Read protected records and live identity
+before an owner operation. [Primary operations](PRIMARY-GATEWAY-OPERATIONS.md)
+own backup, promotion, autostart and rollback; initial cutover evidence is dated.
 
 - Sonar typed reads are ALLOW; `accept_issue` is ASK + owner WebAuthn for the
   configured project. The [optional analysis-review source profile](ANALYSIS-REVIEW-CONTRACT.md) is disabled in the accepted runtime; source presence does not enable its operations.

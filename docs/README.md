@@ -1,7 +1,7 @@
 # Fortis Approvals documentation
 
 Goal-based entry: `/workspace/repo/README.md` → the active container registry.
-Every chat scans its titles and reads UC-CONT-002 (Docker → GitHub → CI →
+Every chat reads only its short introduction, without scanning the whole table, and reads UC-CONT-002 (Docker → GitHub → CI →
 Windows/Mirror) and UC-CONT-003 (GitHub through typed Gateway client) in full;
 other case details are task-dependent. This map indexes technical owners,
 not a second container registry.

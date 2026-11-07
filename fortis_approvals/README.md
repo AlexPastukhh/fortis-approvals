@@ -2,7 +2,7 @@
 
 > **СТАТУС: ДЕЙСТВУЮЩИЙ SOURCE ENTRY POINT.** Текущий основной Gateway — `fortis-gateway`: Sonar, GitHub/native и extensions на `19203/19204`. Исторический Sonar-only `fortis-approvals-gateway` на `19103/19104` остановлен и сохранён для контролируемого восстановления. R7 — исторический идентификатор реализации. Нормативное состояние: [Fortis current state](../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md), [live cutover](evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 >
-> **Для AI и новых интеграций:** сначала `/workspace/repo/README.md` → общий реестр (обзор ID, обязательные UC-CONT-002 и UC-CONT-003), затем [Gateway agent guide](../docs/GATEWAY-AGENT-GUIDE.md). Этот README — карта исходного кода, не второй общий workflow.
+> **Для AI и новых интеграций:** сначала `/workspace/repo/README.md` → короткий вход общего реестра (без просмотра всей таблицы; полное чтение обязательных UC-CONT-002 и UC-CONT-003), затем [Gateway agent guide](../docs/GATEWAY-AGENT-GUIDE.md). Этот README — карта исходного кода, не второй общий workflow.
 
 ## Текущая работа и документация
 

@@ -11,11 +11,31 @@
 ## Новый приоритет: UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
 
 - Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; однократный read-only `reconcile` не смог подтвердить результат. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.
+- Повторное наблюдение 2026-11-07 при аудите документации: `workspace.create_task`
+  для `tunnel`, task `docs-dry-audit-20261107`, request
+  `b32222b5-4a84-4816-bd39-625ab6c9995d` вернул
+  `UNCERTAIN / REMOTE_OUTCOME_UNCONFIRMED`. Read-only reconcile не изменил статус;
+  соответствующие worktree и ветка не найдены. Это не установленная первопричина
+  и не разрешение повторить/удалить запрос. Сохранять этот случай вместе со stage
+  incident при разработке диагностики; исходный запрос повторно не отправлялся.
 - Исследовать точную первопричину с безопасными снимками ошибок: worker journaling между `DISPATCHED` / `git add` / receipt, исключения после частичного эффекта, timeout, stale precondition, отсутствие error detail. Не полагаться на `job.result IS NOT NULL`: это может быть JSON-строка `null`, не receipt.
 - Сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
 - Разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
 - Разделить `Backup` admission на проверку **активных** запросов и управление **историческими неразрешёнными** эффектами. Холодная копия volume защищает байты, но не является проверкой логического состояния; нельзя ослаблять весь release guard для одной ошибки.
 - Исторический инцидент был разово закрыт после owner-requested холодной verified копии; Production сейчас здоров. Не восстанавливать удалённую заявку из старой копии при штатном релизе. Это *исследовательская задача*, не срочная новая миграция.
+
+## Согласование нормального UI-merge с последующими операциями
+
+- Добавить проверяемый cleanup proof для owner GitHub UI merge: текущий
+  `workspace.cleanup_task` требует исполненный Gateway `mergeRequestId`, тогда
+  как обычная доставка использует `update_main_from_pr`. Не создавать merge ASK
+  только ради cleanup и не удалять source worktrees/records без проверки ссылок.
+- Gateway Mirror provider находится в отдельном `task/mirror-provider-20261107`,
+  а не в принятом `main`. Его перенос/activation, scoped credentials и acceptance
+  принадлежат этому repo. Кандидат Pull привязан к Gateway merge request; перед
+  поддержкой обычного owner UI merge требуется согласовать proof и тесты.
+  Mirror Windows/UI задачи принадлежат
+  [Mirror backlog](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
 
 ## Улучшение детерминированного релиза (2026-11-07)
 
@@ -34,7 +54,7 @@
 | 2 | Оценка получившегося GitHub workflow | Разобрать путь worktree → commit/push → PR/CI → ready/merge → main/cleanup: лишние шаги, число подтверждений, ожидание worker, resume/reconcile, ограничения bundles и нужные чтения. Сохранить согласованный обычный task push ALLOW; обосновать изменения остальных политик до реализации |
 | 3 | Обратная связь Owner Portal после Approve/Reject | Сразу показать принятие решения и обработку, исключить повторное нажатие, затем показать результат или ошибку. Различать owner decision, ожидание worker и завершение эффекта; не убирать запрос как успешный до подтверждения исполнения. Проверить оба решения и медленные/ошибочные ответы |
 | 4 | Проверка корректности кода, затем необходимый рефакторинг | Проверить контракт/политики/scope, гонки состояний, idempotency, SHA/CI/receipt binding, обработку сбоев и границы credential. Убрать найденное дублирование и лишнюю сложность; рефакторить по результатам, с проверками поведения |
-| 5 | Доработка Mirror как API для AI из контейнера | В репозитории `docke-windows-mirror` выделить типизированный API состояния Windows зеркал и использовать его из GUI/AI. Определить аутентификацию, разрешённые repo, свежесть и unknown/error состояния. Сначала наблюдение; изменения Windows — отдельные операции с собственными разрешениями |
+| 5 | Gateway-side Mirror integration | Только перенос/activation provider и proof границы из раздела выше. Windows/API/UI задачи — у [Mirror backlog](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/BACKLOG-IMPROVEMENTS.md), не второй список здесь |
 | 6 | Проверка полноты Mirror для согласованного workflow | Проверить repo/worktree inventory и точный target действий, чистоту/branch/SHA/расхождения Docker/GitHub/Windows, получение только одобренного merged main. Составить фактический gap list и подтвердить Windows сценарии; не считать проверку Docker доказательством поведения WinForms/NTFS |
 
 Симптом UI установлен со слов пользователя. Причину паузы между решением и

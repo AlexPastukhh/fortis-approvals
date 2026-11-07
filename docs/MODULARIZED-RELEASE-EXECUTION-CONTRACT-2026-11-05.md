@@ -1,5 +1,12 @@
 # Modularized release execution contract — 2026-11-05
 
+> **HISTORICAL PROPOSAL — 2026-11-05.** Routine releases now use the permanent
+> controller and [Primary operations](PRIMARY-GATEWAY-OPERATIONS.md). The body
+> preserves the earlier proposed inputs; it is not a current execution plan
+> or a second backlog. Outstanding work lives only in
+> [BACKLOG-IMPROVEMENTS](BACKLOG-IMPROVEMENTS.md).
+
+
 > **Status update — 2026-11-06:** isolated native GitHub/worktree acceptance is
 > complete; see [live evidence](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
 > This Production contract remains deferred. Its pinned 2026-11-05 image/profile

@@ -4,7 +4,7 @@ Status: native source and new-task live cycles accepted on 2026-11-06 in isolate
 
 ## Active policy in the native profile
 
-All grants are restricted to the configured owner/repository and authenticated Repo actor. An operation missing from this profile is denied.
+All grants are restricted to the configured owner, admitted repository mode and authenticated Repo actor. An operation missing from this profile is denied.
 
 | Operation | Policy | Conditions |
 | --- | --- | --- |
@@ -19,14 +19,16 @@ All grants are restricted to the configured owner/repository and authenticated R
 | workspace.sync_task | ALLOW | Clean task, exact HEAD and upstream main; ordinary merge |
 | github.push_commits | ALLOW | Registered task/*, exact existing Git commit SHA and expected remote SHA, ancestry and atomic remote lease |
 | github.push_commits affecting .github/workflows | ASK | Every new commit is scanned, including intermediate changes reverted at the tip; preview bound to bundle digest |
-| github.create_pull_request | ALLOW | Exact installed actor + configured repository only; registered task branch to main; draft or regular PR. Other actor/repo rules are unchanged |
+| github.create_pull_request | ALLOW | Admitted actor; registered task branch to main. Single-repo mode pins the configured repo; dynamic mode admits token-scoped owner repos. No grant for other actors |
 | github.mark_pr_ready | ASK | Open draft from this repository, exact HEAD/node ID |
-| github.merge_pull_request | ASK | Open ready PR, exact HEAD, required workflow ID 408327525 successful for that HEAD; merge method merge |
+| github.merge_pull_request | ASK | Implemented machine gate, not the normal AI delivery route: exact ready PR HEAD and required CI; bootstrap uses its configured workflow ID, dynamic repos use supported active branch rules |
 | github.update_workflow_file | ASK | Existing dedicated typed workflow operation on a registered task branch; separate GitHub workflow permission |
-| workspace.update_main | ALLOW | Previously owner-approved and executed merge receipt, exact resulting upstream main SHA; clean local main, fast-forward only |
-| workspace.cleanup_task | ASK | Exact approved merged head, main already updated, clean task including ignored files, branch not in another worktree; bootstrap source task retained |
+| workspace.update_main | ALLOW | Legacy route: executed Gateway merge receipt and exact main SHA; clean local main, fast-forward only |
+| workspace.update_main_from_pr | ALLOW | Owner GitHub UI merge evidence, exact PR head/merge/current remote main; clean local main, fast-forward only |
+| workspace.cleanup_task | ASK | Requires an executed Gateway merge receipt, exact approved merged head and updated main; clean task including ignored files, no other checkout; bootstrap retained. Owner UI merge alone is not its accepted proof |
 | create_branch, push_files | DENY in native profile | Old M1–M3 APIs remain available only in their old pilot profiles |
-| list_repositories, direct main push, force history rewrite, remote deletion, raw shell/URL/refspec | DENY | Not exposed by this profile |
+| list_repositories | ALLOW in dynamic mode; DENY in single-repo mode | Authenticated token inventory for configured owner; visibility is not write permission |
+| direct main push, force history rewrite, remote deletion, raw shell/URL/refspec | DENY | Not exposed by this profile |
 | dispatch_workflow, rerun_workflow, cancel_workflow, approve_workflow_run | DENY | No grants |
 | Sonar reads / accept_issue | Existing ALLOW / ASK | Existing Sonar integration unchanged |
 
@@ -49,8 +51,10 @@ denied. The Repo-local worker resolves the exact canonical checkout beneath
 repository, registered task worktree and correct origin. Missing directories or
 symlink paths mean STOP, not automatic repository creation.
 
-For repositories other than the bootstrap source, merge still requires ASK +
-Owner WebAuthn. The implementation reads **active branch rules for `main`**
+For machine merge operations on repositories other than the bootstrap source,
+policy still requires ASK + Owner WebAuthn. This describes the implemented gate,
+not an instruction for the AI to submit merge requests: the normal delivery
+route is owner GitHub UI merge under UC-CONT-002. The implementation reads **active branch rules for `main`**
 from GitHub; `required_status_checks` must be present. It checks all required
 statuses against the exact PR HEAD, supports check-run/commit-status evidence,
 and rejects failed, pending, missing, unsupported or unknown requirements.
@@ -79,20 +83,14 @@ is the source for new-repo required check names; this is not a second repo list.
 
 ## PR creation source rollout
 
-The table describes this source policy. The owner-requested PR ALLOW is an exact
-(actor, github, create_pull_request, configured repository) rule; it does not
-change the generic ASK fallback, grant another actor/repo, or relax registered
-task/main/ref checks. Native capabilities derive the PR policy from Core.
-Legacy pilot profiles keep their own policy. Ready, merge, workflow changes and
-cleanup retain ASK. Creation keeps durable IDs, frozen ref snapshots, result
-verification and UNCERTAIN/no-blind-retry behavior.
-
-The isolated review image has been updated and its live capabilities advertise
-PR creation as ALLOW. Deployment and effect verification are recorded in
-[live evidence](../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md).
-For other/future runtimes, check capabilities and the
-[current-state owner](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md); a source merge
-alone does not change an installed image.
+The active policy is composed in `fortis_approvals/workflow/runtime.py` and
+advertised by live capabilities. PR creation is ALLOW for the admitted actor;
+dynamic mode uses token-scoped owner repositories, while single-repo mode pins
+the configured repository. Registered task/main/ref checks, durable request IDs
+and no-blind-retry semantics remain enforced. The original review rollout is
+[dated evidence](../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md),
+not the identity of today's Primary. Runtime scope belongs to
+[current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
 
 ## Caller authorization for ASK submission
 
@@ -100,7 +98,8 @@ The user permits preparing and submitting necessary ASK proposals within the
 assigned task without an extra conversational permission round. Submit the
 reviewable intent directly; the external effect remains behind Owner Portal.
 A chat confirmation is not a WebAuthn proof. A real outer MCP/tool-review block
-must still be reported and respected. Container UC-CONT-007 owns this usage route;
+must still be reported and respected. For PR merge, UC-CONT-002 requires the owner to merge in GitHub UI; AI does not
+call `merge_pull_request` or create its ASK. Container UC-CONT-007 owns the other ASK usage routes;
 this contract owns the operation policy and preconditions.
 
 ## Execution boundary
@@ -124,8 +123,8 @@ Bundle: 24 MiB; at most 200 new commits. Edited content: 16 KiB per request,
 resource-limited and operations serialized. Larger repositories, Git LFS,
 submodule workflows, remote branch deletion, conflict-resolution automation
 and squash/rebase merges are not accepted by this slice. Required CI is an
-explicit configured workflow ID, not a claim that every future repository's
-branch-protection rules have been modeled.
+explicit configured workflow ID for bootstrap and supported active branch rules
+for dynamic repositories. Unsupported rule models remain STOP.
 
 ## Completed first source bootstrap
 
@@ -142,9 +141,13 @@ The owner package uses Run-GitHub-FilePR-E2E.ps1 -ScenarioKind Native. It:
 
 Use the existing owner device at http://localhost:19203. No fresh enrollment or token provisioning is needed for the initial ordinary task push. Resume and Rollback use the same schema-4 record and expected source commit. Rollback stops only the new review and starts the retained M3 after unchanged-state verification. Do not delete either state volume.
 
-The bootstrap task gateway-worktree-native-git-20261106 cannot be cleaned by the new profile while the owner record depends on its source path. Retargeting an accepted future package to merged canonical main is a separate small follow-up, after the source merge.
+The bootstrap source task cannot be cleaned while an owner deployment record
+depends on its source path. Retargeting work is tracked in the backlog, not
+as an additional step of ordinary task delivery.
 
-## Accepted live path and remaining work
+<a id="accepted-live-path-and-remaining-work"></a>
+
+## Accepted live path and client status
 
 Both existing-source publication and a newly created task completed through
 Gateway: source PR №10 and test PR №11, exact-head Source CI, approved merge,
@@ -153,37 +156,41 @@ records the receipts; [offline evidence](../fortis_approvals/evidence/FORTIS-NAT
 records the broader denial, binary and concurrency cases. Do not treat those
 offline cases as additional live GitHub acceptance.
 
-The Repo client currently in main rejects HTTP 202 when `result`/`reconcile`
-reads PENDING. A fix and regression are local in a separate task worktree;
-until merged, use the typed `WorkflowTransport.post` result/reconcile route
-with `accept_202=True` for pending reads. Preserve the same request ID; never
-resubmit an action to work around status handling. An early owner decision
-does not change that requirement.
+The current Repo client rejects HTTP 202 when `result`/`reconcile` reads PENDING.
+Use the typed `WorkflowTransport.post` result/reconcile route with
+`accept_202=True` for pending reads; preserve the request ID and never resubmit
+an action merely to work around status handling. An early owner decision does
+not change that requirement. Client fixes and other unfinished acceptance are
+tracked only in the [backlog](BACKLOG-IMPROVEMENTS.md).
 
-Windows Mirror delivery, deeper Sonar operation design, GitHub workflow review,
-UI feedback, code review and deployment follow-ups are tracked only in the
-[follow-up plan](BACKLOG-IMPROVEMENTS.md). Native acceptance does not retire the
-legacy credential helper for other repositories.
+<a id="source-candidate-external-owner-github-ui-merge-acceptance-not-deployed"></a>
 
-## Source candidate: external owner GitHub UI merge acceptance (not deployed)
+## Owner GitHub UI merge acceptance — active
 
-The current **deployed** `workspace.update_main` remains bound to an executed
-Gateway `github.merge_pull_request` request ID. A new additive candidate
-`workspace.update_main_from_pr` is proposed in an isolated source task:
-`expectedHeadSha`, `number`, `expectedPrHeadSha`, `expectedMergeSha`. It checks
-GitHub's authenticated PR evidence (`closed`, `merged`, exact same-repo task
-branch, actual owner `merged_by`, exact head/merge SHA) and exact remote
-`main`, then only ff-only updates a **clean** local Docker primary. No client
-may spoof Core approval or use this route for arbitrary SHA/branch checkout.
+For normal delivery, the AI creates the PR and reports its exact HEAD/CI and
+GitHub URL; the owner merges in GitHub UI. The installed Primary advertises
+`workspace.update_main_from_pr`; live use has been verified after the
+owner-managed source/image update of 2026-11-07. Source presence alone remains
+insufficient for other runtimes: check their capabilities first.
 
-`workspace.create_task` retains the **clean canonical `main` requirement**:
-a task is created from a commit and never includes unstaged, staged or
-untracked changes in primary, so fail closed instead of silently omitting
-in-progress work. Existing dirty primary checkouts require an explicit,
-separate owner-reviewed migration of that work; do not stash/reset/clean them.
-Both `update_main` and the external merge route also require clean primary.
-The external owner-merge route remains **source-only** until an owner-managed
-Gateway image release and live evidence; a merged source PR is not deployment.
-The relevant use-case is [UC-GW-003](use-cases/integrations.md#uc-gw-003),
-not a duplicate operational runbook. No new general-purpose HTTP route,
-raw shell API, credential exposure or merged-without-proof fallback is added.
+`workspace.update_main_from_pr` takes `expectedHeadSha`, `number`,
+`expectedPrHeadSha`, `expectedMergeSha`. It checks authenticated GitHub evidence:
+closed, merged, ready same-repo `task/*` PR; actual owner `merged_by`; exact
+head/merge SHA and current remote `main`. The Repo worker only fast-forwards a
+clean local primary. This route validates owner merge evidence; it does not
+forge a Core approval or independently certify every GitHub CI requirement.
+Required checks/review must be satisfied through the configured GitHub process.
+The older `workspace.update_main` requires a Gateway merge request ID and is
+not a substitute after owner UI merge.
+
+`workspace.create_task` retains the clean canonical `main` requirement: a task
+starts from a commit, so staged/unstaged/untracked primary changes would be
+omitted. Preserve and migrate historical changes by UC-CONT-019, without
+automatic stash/reset/clean. Both main-update routes also require clean primary.
+The client/API change procedure belongs to
+[UC-GW-003](use-cases/integrations.md#uc-gw-003).
+
+The existing `workspace.cleanup_task` still requires a Gateway `mergeRequestId`.
+Do not invent a merge ASK to clean up after owner UI merge. Preserve that
+worktree until the applicable cleanup proof is supported or a separate reviewed
+owner cleanup is performed; the development gap is tracked in the backlog.

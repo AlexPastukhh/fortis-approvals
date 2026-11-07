@@ -1,127 +1,84 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Актуализировано 2026-11-07 по owner Docker output и live Repo readback **после**
-Backup/Promote, перезапуска Docker Desktop и остановки Legacy. Primary работает
-под стабильным именем `fortis-gateway`; источник подтверждений —
-[свидетельства переключения](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
-Этот документ владеет текущим статусом;
-[agent guide](../GATEWAY-AGENT-GUIDE.md) — правилами использования,
-[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — матрицей операций,
-[отдельный план](../BACKLOG-IMPROVEMENTS.md) — будущими задачами.
+Датированный срез 2026-11-07: последний owner-provided Windows release output
+и последующие Repo machine readback. Это не свежий Docker inspect с Windows:
+перед runtime-операцией сверить protected records и реальную identity.
+Этот документ владеет deployment status; [agent guide](../GATEWAY-AGENT-GUIDE.md)
+— применением, [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
+— операциями/policy, [backlog](../BACKLOG-IMPROVEMENTS.md) — будущими задачами.
 
 ## Развёрнутые контуры
 
-| Контур | Endpoints | Подтверждённое состояние |
+| Контур | Endpoint / роль | Последнее подтверждение |
 | --- | --- | --- |
-| Legacy `fortis-approvals-gateway` | Бывшие Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | **Остановлен** (`exited`, `restart=no`), ID `0852c39c9e5d…`, image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. Контейнер, image, volumes и records сохранены для контролируемого отката; порт не используется штатным клиентом. |
-| Primary `fortis-gateway` | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | **Работает после Docker Desktop restart** (`running`, `healthy`, `unless-stopped`), ID `043d3497b2d1…`, image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`. Sonar/GitHub/Approvals READ после остановки Legacy: PASS. |
-| Fortis Repo (`fortis-repo-test`) | `/workspace/repo/Repos/fortis-approvals`, task worktrees в `Worktrees/fortis-approvals/` | Автозапуск после Docker Desktop restart подтверждён; чистый Docker `main` во время live readback — `fab6f0101f849eb1343ad0b6365ee0bcb0034f24`. |
+| Primary `fortis-gateway` | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Owner post-promote: healthy, restart `unless-stopped`; Repo typed operations работают |
+| Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
+| Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
-Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью
-Core/Owner Portal. Native запуск сохранил M3 для возврата, owner credentials,
-history и receipts; Production baseline не изменился по owner-run проверкам.
-READY при запуске означал готовность, а не E2E PASS. Итоговый PASS подтверждён
-последующим [живым циклом](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
-В рамках нового переключения факты Docker ID/image/health/restart подтверждены
-выводом Windows-владельца, а защищённый machine API — живыми запросами Repo.
-Внешние клиенты старого 19104 исчерпывающе не инвентаризированы.
+Последний подтверждённый owner image release:
 
-## Что завершено
+| Поле | Значение из owner output |
+| --- | --- |
+| Source SHA образа | `217dbcc05a735052e2531d6839c9d808e433792e` |
+| Image ID | `sha256:5c5fc58ed80a4ea4fa2b39d78195395d08b8b9d4278c337fdd8fa2ba6339a109` |
+| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\fe0c906431e84f5287f764accb9f0df8\record.json` |
+| Verified controller backup | `fortis-gateway-backup-eb084fe7ee9c4b078e80a19ca4050ade` |
+| Host result | Apply activated, Backup PASS, Promote PASS, `FORTIS_GATEWAY_POST_PROMOTE_PASS` |
 
-- Sonar: `list_projects`, `list_issues`, `get_issue`, `get_quality_gate` — ALLOW;
-  `accept_issue` — ASK + owner WebAuthn для закреплённого проекта
-  `AlexPastukhh_obs-planning-docs`. [Reject/Approve evidence](../../fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261104.md).
-- GitHub M1/M2/M3: ветка, запись тестового файла через API, draft PR и чтение
-  Source CI через Gateway приняты. [Milestones](../INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md).
-- Native: настоящие существующие Git-коммиты опубликованы без изменения SHA;
-  source PR №10 прошёл CI, ready и merge. На отдельной задаче проверены
-  create/edit/check/stage/commit, два push, PR №11, CI, merge, Docker main
-  fast-forward и owner-approved удаление worktree/локальной ветки.
-- Повторы commit/push с прежним UUID не повторили эффект; устаревший digest
-  stage отклонён. Очистка подтверждена исполнением, не одним Approve.
-- Весь native live цикл выполнен запросами Gateway без GitHub-коннектора и
-  старого Git credential helper. Последний Sonar readback — `OK`.
+Последующие documentation/source merges меняют Git `main`, а не этот image.
+Container ID нового Primary в предоставленном финальном выводе не записан:
+не подставлять ID `043d3497…` от первоначального cutover. Факты reboot/autostart
+initial runtime сохранены в [cutover evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md);
+они не являются новым reboot-тестом каждого последующего image.
 
-Подробные SHA, request IDs и границы проверки находятся только в
-[live evidence](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
-Матрица native-политик и точные условия живут в
-[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md); live capabilities
-после обновления review сверены с ним.
+<a id="что-завершено"></a>
+
+## Что подтверждено через Repo
+
+- Live capabilities: `dynamicRepositories=true`, присутствует
+  `workspace.update_main_from_pr`, ordinary task push и PR creation — ALLOW.
+- Реальные task commit/push/PR и owner UI merge с обновлением Docker main
+  проверены для Gateway, Container, Mirror, Tunnel, Script Center и Tab Notifier.
+  Это не обещание прав записи для всех обнаруженных GitHub repos.
+- Provider credentials остаются в Gateway; native bundle сохраняет SHA локальных
+  Git-коммитов. Точные policy/preconditions находятся только в native contract.
+- Первоначальные Sonar READ и owner ASK Approve/Reject проверены в
+  [Sonar evidence](../../fortis_approvals/evidence/FORTIS-SONAR-LIVE-E2E-20261104.md),
+  native bootstrap — в [native evidence](../../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
+  Не считать эти датированные циклы новой полной проверкой Owner Portal после
+  каждого image. В этом аудите owner WebAuthn ceremony не запускалась.
 
 ## Граница доверия и исполнения
 
-Repo использует `/run/fortis-client/grant` и публичный `server.crt` из RO mount.
-Grant читается процессами того же UID; RO не обеспечивает изоляцию AI actors.
-Provider tokens, TLS private key, owner WebAuthn и runtime DB остаются на стороне
-Gateway. Production volumes `fortis-r7-state`, `fortis-r7-identity`,
-`fortis-r7-grant`, `fortis-r7-sonar-token` не являются исходниками Git.
-Изолированный GitHub credential подключён только в review Gateway, read-only
-по `/run/github-token/token`; его точное имя volume хранится в owner record.
+Machine grant/public trust в Repo, provider tokens/TLS private key/owner state
+в Gateway имеют разные роли. RO mount и `0600` не изолируют процессы одного UID.
+Local workspace effect исполняет Repo worker после Core authorization; approval,
+dispatch и подтверждённый receipt — разные стадии. Общий process tool Repo не
+становится автоматически ограниченным Gateway policy.
 
-Локальные typed workspace-команды авторизует Gateway, выполняет Repo worker.
-Он привязан к зарегистрированному worktree, ветке, HEAD и digest; provider
-credential ему не передаётся. Core/owner decision и локальное исполнение —
-разные стадии. `UNCERTAIN` требует сверки receipt; слепого повтора мутации нет.
-Реализация не ограничивает все остальные возможности общего Repo process tool.
+<a id="известные-ограничения"></a>
 
-## Известные ограничения
+## Действующие ограничения
 
-- Дополнительные операции Sonar/CI присутствуют в image как [source-кандидат](../ANALYSIS-REVIEW-CONTRACT.md), но их runtime profile выключен. В действующем профиле Quality Gate относится
-  к `CURRENT_DEFAULT_BRANCH`, `prShaBinding=NOT_VERIFIED_D2`; Sonar `OK` не
-  подтверждает анализ конкретного GitHub SHA. `ACCEPTED` не означает исправление кода.
-- Source CI для merge привязан к точному PR head; это проверка GitHub CI,
-  не доказательство Sonar analysis/SHA binding.
-- Native scope — один actor, `AlexPastukhh/fortis-approvals`, зарегистрированные
-  `task/*`. Общая миграция остальных репозиториев и удаление legacy PAT/helper
-  не проводились. Наличие helper остаётся отдельным обходным каналом доступа.
-- В историческом native live цикле Windows main не обновлялся; для Primary
-  cutover Windows main уже получен через Mirror и проверен чистым на
-  `fab6f0101f849eb1343ad0b6365ee0bcb0034f24`. Mirror AI API и полная
-  адресация worktree всё ещё отдельные задачи.
-- При ожидании cleanup обнаружена несовместимость `WorkflowClient.result` с
-  HTTP 202 (`PENDING`). Исправление и регрессионный тест подготовлены в отдельном
-  `task/native-client-pending-status-20261106`, но на момент сверки не закоммичены
-  и не входят в `main`. Успех cleanup подтверждён с тем же request ID.
-- После Approve/Reject UI некоторое время не показывает обратную связь.
-  Это наблюдение пользователя; причина задержки ещё не исследована.
-- Legacy Sonar-only runtime выведен из работы в рамках Primary cutover;
-  новые host-independent disaster recovery и все свежие ALLOW/ASK/DENY проверки
-  остаются незавершёнными. Полный аудит/рефакторинг кода, редактор политик,
-  multi-agent isolation, scheduler, RDG G3 и защищённая Windows import/RUN
-  доставка не считаются завершёнными. [План дальнейших работ](../BACKLOG-IMPROVEMENTS.md).
+- Sonar default-branch Quality Gate не доказывает PR/SHA binding; доступные
+  операции определяются live profile, не наличием source package.
+- Legacy Repo PAT/helper removal не подтверждён. Это не разрешённый fallback:
+  применять [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
+- Для PENDING status у текущего клиента действует HTTP 202 caveat из
+  [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md); при UNCERTAIN
+  сверять исходный UUID и receipt, не повторять эффект вслепую.
+
+Незавершённая разработка и ожидающие acceptance ведутся только в
+[единственном backlog](../BACKLOG-IMPROVEMENTS.md). Здесь — подтверждённые
+факты, границы их проверки и ограничения выбора операции.
 
 ## Работа с исходниками и восстановление
 
-Canonical source — отдельный GitHub repository `AlexPastukhh/fortis-approvals`;
-извлечённый RDG subtree сохранён. Source PR/merge не меняет установленный image,
-Windows clone или runtime volumes. Текущие client entry points и тесты —
-в [source map](../../fortis_approvals/README.md); scripts/return paths —
-в [deployment index](../../fortis_approvals/deploy/README.md).
-
-Provisioning, owner enrollment и Repo client mount уже выполнены; не повторять
-их из старых runbook. Не удалять retained M3, bootstrap source worktree или
-volumes, от которых зависит owner deployment record. Git хранит код и manifests;
-для image/state/секретов нужен отдельный owner-controlled backup/restore.
-Историческая [acceptance matrix](../../fortis_approvals/deploy/FORTIS-UNIVERSAL-GATEWAY-ACCEPTANCE-MATRIX-20261101.md)
-и архивы сохраняют provenance, а не текущие next steps.
-
-Общий [extension framework](../INTEGRATION-EXTENSIONS.md) активирован в review
-с пустым списком новых providers. Последний owner-run обновил image до принятого
-source с PR ALLOW. Repo подтвердил capabilities, GitHub main read, прежний Sonar
-default-branch gate и неизменный пустой catalog. Текущие image/source/record,
-configuration digest и проверка PR creation хранятся в
-[live evidence](../../fortis_approvals/evidence/PR-CREATION-ALLOW-LIVE-20261106.md).
-Предыдущее внедрение сохранено в
-[extension evidence](../../fortis_approvals/evidence/EXTENSIONS-LIVE-ACTIVATION-20261106.md).
-
-Optional Sonar/CI analysis profile остаётся выключенным: последнее отдельное
-контрольное чтение `list_project_branches` вернуло 403. Для этих операций нужны
-согласованные profile, CI binding/manifest, permissions и live acceptance.
-Обновление image и общий framework их автоматически не включают;
-default-branch OK не доказывает PR/SHA binding.
-
-Source-only owner tooling now includes one-command legacy GitHub/Sonar token
-rotation through the permanent controller. The [runbook](../CREDENTIAL-ROTATION.md)
-owns its restart/shared-volume effects; [offline evidence](../../fortis_approvals/evidence/PROVIDER-CREDENTIAL-ROTATION-OFFLINE-20261106.md)
-records validation. Windows/Docker execution and real token replacement are
-MANUAL-PENDING; the currently deployed image does not need a rebuild for this tooling.
+Canonical source — standalone `AlexPastukhh/fortis-approvals`; старый RDG subtree
+сохранён и не является местом разработки. [Package map](../../fortis_approvals/README.md)
+и [deployment index](../../fortis_approvals/deploy/README.md) ведут к коду и контроллеру.
+Provisioning/enrollment/client mount не повторять из старого runbook.
+Использовать текущие controller records для Resume/Return/Backup/Promote по
+[Primary operations](../PRIMARY-GATEWAY-OPERATIONS.md). Не очищать bootstrap,
+retained states и credentials, пока от них зависят owner deployment records.
+Git и image не заменяют backup persistent state и secrets.
