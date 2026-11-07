@@ -6,6 +6,7 @@ import re
 import time
 from ..core import Denied, Stale, canonical
 from ..integrations.github.gateway.adapter import GitHubAdapter
+from ..integrations.github.contract import validate_github_read, validate_github_read_projection
 from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
 
@@ -37,6 +38,48 @@ class NativeGitHubAdapter(GitHubAdapter):
                 info.get('archived') is False and info.get('disabled') is False and
                 info.get('default_branch')=='main','GITHUB_REPOSITORY_ACCESS_UNCONFIRMED')
         return repo
+
+    def read(self,request):
+        if not self.config.dynamic_repositories:
+            return super().read(request)
+        if type(request) is not dict or request.get('service')!='github':
+            return super().read(request)
+        operation=request.get('operation');target=request.get('target');params=request.get('params')
+        validate_github_read(operation,target,params)
+        if operation=='list_repositories':
+            require(target==self.owner,'GITHUB_OWNER_NOT_ALLOWLISTED')
+            names=set()
+            for page in range(1,11):
+                rows=self._api('GET','/user/repos',params={
+                    'affiliation':'owner','page':page,'per_page':100})
+                require(type(rows) is list and len(rows)<=100,
+                        'GITHUB_REPOSITORIES_RESPONSE_INVALID')
+                for row in rows:
+                    require(type(row) is dict and type(row.get('owner')) is dict and
+                            type(row['owner'].get('login')) is str,
+                            'GITHUB_REPOSITORY_RESPONSE_INVALID')
+                    if row['owner']['login'].casefold()!=self.owner.casefold():
+                        continue
+                    name=row.get('name');full_name=row.get('full_name')
+                    require(type(name) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',name)
+                            and name not in ('.','..') and type(full_name) is str and
+                            full_name.casefold()==(self.owner+'/'+name).casefold() and
+                            type(row.get('archived')) is bool and type(row.get('disabled')) is bool and
+                            type(row.get('default_branch')) is str,
+                            'GITHUB_REPOSITORY_RESPONSE_INVALID')
+                    if (row['archived'] is False and row['disabled'] is False and
+                            row['default_branch']=='main'):
+                        names.add(name)
+                if len(rows)<100:
+                    break
+            else:
+                raise Denied('GITHUB_REPOSITORY_INVENTORY_LIMIT')
+            result={'operation':'list_repositories','items':[
+                {'name':name,'owner':self.owner} for name in sorted(names,key=str.casefold)]}
+            validate_github_read_projection(operation,result)
+            return result
+        self._access(target)
+        return super().read(request)
 
     def _dynamic_ci_gate(self,repo,head):
         """Exact required check names from active GitHub branch rules, no local repo list.

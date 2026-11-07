@@ -16,6 +16,7 @@ TOKEN_FILE = "/run/github-token/token"
 MAX_RESPONSE_BYTES = 1_048_576
 _BASE = r"/repos/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}"
 _ROUTES = (
+    ("GET", re.compile(r"/user/repos$")),
     ("GET", re.compile(_BASE + r"$")),
     ("GET", re.compile(_BASE + r"/(branches|commits|pulls|actions/runs)$")),
     ("GET", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*$")),
@@ -43,7 +44,7 @@ _ROUTES += (
     ("POST", re.compile(_BASE + r"/actions/jobs/[1-9][0-9]*/rerun$")),
     ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/rerun-failed-jobs$")),
 )
-_QUERY_KEYS = frozenset({"head_sha", "event", "branch","page", "per_page", "state", "head", "base", "ref"})
+_QUERY_KEYS = frozenset({"head_sha", "event", "branch", "page", "per_page", "state", "head", "base", "ref", "affiliation"})
 
 
 class GitHubTransportError(RuntimeError):

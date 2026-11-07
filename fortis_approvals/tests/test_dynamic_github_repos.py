@@ -29,6 +29,11 @@ class FakeTokenAccess:
         self.archived=False
     def request(self,method,path,*,params=None,body=None,expected_statuses=(200,),allow_not_found=False):
         self.requests.append((method,path,params))
+        if method=='GET' and path=='/user/repos':
+            return [{'name':name,'full_name':'PilotOwner/'+name,
+                     'owner':{'login':'PilotOwner'},'archived':False,
+                     'disabled':False,'default_branch':'main'}
+                    for name in sorted(self.permitted)]
         repo=path.split('/')[3]
         if repo not in self.permitted:raise Denied('GITHUB_TOKEN_REPOSITORY_DENIED')
         if method=='GET' and path==f'/repos/PilotOwner/{repo}':
@@ -91,6 +96,46 @@ class DynamicNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied,'GITHUB_TOKEN_REPOSITORY_DENIED'):
             self.adapter._access('not-permitted')
         self.assertEqual(self.adapter.repositories,None)
+
+    def test_list_repositories_comes_from_token_visible_inventory(self):
+        result=self.adapter.read({'service':'github','operation':'list_repositories',
+                                  'target':'PilotOwner','params':{}})
+        self.assertEqual(result,{'operation':'list_repositories','items':[
+            {'name':'fortis-approvals','owner':'PilotOwner'},
+            {'name':'fortis-container','owner':'PilotOwner'},
+            {'name':'tunnel','owner':'PilotOwner'}]})
+        self.assertIn(('GET','/user/repos',{'affiliation':'owner','page':1,'per_page':100}),
+                      self.transport.requests)
+
+    def test_dynamic_reads_preflight_token_access_and_owner(self):
+        with self.assertRaisesRegex(Denied,'GITHUB_TOKEN_REPOSITORY_DENIED'):
+            self.adapter.read({'service':'github','operation':'get_repository',
+                               'target':'not-permitted','params':{}})
+        with self.assertRaisesRegex(Denied,'GITHUB_OWNER_NOT_ALLOWLISTED'):
+            self.adapter.read({'service':'github','operation':'list_repositories',
+                               'target':'OtherOwner','params':{}})
+
+    def test_list_repositories_filters_archived_disabled_non_main_and_other_owner(self):
+        rows=[
+            {'name':'allowed','full_name':'PilotOwner/allowed','owner':{'login':'PilotOwner'},
+             'archived':False,'disabled':False,'default_branch':'main'},
+            {'name':'archived','full_name':'PilotOwner/archived','owner':{'login':'PilotOwner'},
+             'archived':True,'disabled':False,'default_branch':'main'},
+            {'name':'disabled','full_name':'PilotOwner/disabled','owner':{'login':'PilotOwner'},
+             'archived':False,'disabled':True,'default_branch':'main'},
+            {'name':'master-only','full_name':'PilotOwner/master-only','owner':{'login':'PilotOwner'},
+             'archived':False,'disabled':False,'default_branch':'master'},
+            {'name':'other-owner','full_name':'OtherOwner/other-owner','owner':{'login':'OtherOwner'},
+             'archived':False,'disabled':False,'default_branch':'main'},
+        ]
+        original=self.transport.request
+        def request(method,path,**kwargs):
+            if method=='GET' and path=='/user/repos':return rows
+            return original(method,path,**kwargs)
+        self.transport.request=request
+        result=self.adapter.read({'service':'github','operation':'list_repositories',
+                                  'target':'PilotOwner','params':{}})
+        self.assertEqual(result['items'],[{'name':'allowed','owner':'PilotOwner'}])
 
     def test_explicit_404_does_not_turn_into_retry_or_write(self):
         original=self.transport.request
@@ -179,11 +224,21 @@ class DynamicNativeTests(unittest.TestCase):
                       root=self.root,actor='agent',transport=self.transport)
         self.assertIsNone(built['adapter'].repositories)
         self.assertEqual(c.policies[('agent','github','create_pull_request')],'ALLOW')
+        self.assertEqual(c.policies[('agent','github','list_repositories')],'ALLOW')
+        self.assertIn(('github','list_repositories'),broker.actor_read_operations['agent'])
         self.assertEqual(c.policies[('agent','github','merge_pull_request')],'ASK')
         self.assertNotIn(('outsider','github','create_pull_request'),c.policies)
         self.assertNotIn(('agent','github','delete_repository'),c.policies)
+        legacy=SimpleNamespace(adapters={},policies={})
+        legacy_broker=SimpleNamespace(read_adapters={},actor_read_operations={},actor_operations={})
+        legacy_root=self.root/'legacy';legacy_root.mkdir(mode=0o700);legacy_root.chmod(0o700)
+        install(core=legacy,portal=portal,broker=legacy_broker,config=cfg(False),
+                root=legacy_root,actor='legacy-agent',transport=self.transport)
+        self.assertNotIn(('legacy-agent','github','list_repositories'),legacy.policies)
 
     def test_native_transport_does_not_allow_generic_api_urls(self):
+        self.assertTrue(GitHubHTTPTransport._route_allowed('GET','/user/repos'))
+        self.assertFalse(GitHubHTTPTransport._route_allowed('POST','/user/repos'))
         self.assertTrue(GitHubHTTPTransport._route_allowed('GET','/repos/PilotOwner/tunnel/rules/branches/main'))
         self.assertFalse(GitHubHTTPTransport._route_allowed('PUT','/repos/PilotOwner/tunnel/rules/branches/main'))
         self.assertFalse(GitHubHTTPTransport._route_allowed('GET','/repos/PilotOwner/tunnel/rules/branches/evil'))
