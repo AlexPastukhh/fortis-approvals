@@ -53,6 +53,19 @@ class CredentialTests(unittest.TestCase):
             with self.subTest(service=service):
                 self.assertEqual([x['role'] for x in HELPER.plan(self.fixture(service))['targets']], roles)
 
+    def test_retired_legacy_is_not_restarted_on_sonar_rotation(self):
+        value=self.fixture('sonarcloud')
+        value['containers'][1]['State']['Status']='exited'
+        value['allowStoppedProduction']=True
+        self.assertEqual([x['role'] for x in HELPER.plan(value)['targets']],['review'])
+        value['containers'][1]['State']['Status']='running'
+        with self.assertRaisesRegex(RuntimeError,'UNEXPECTED_TOKEN_CONSUMER'):
+            HELPER.plan(value)
+        value['containers'][1]['State']['Status']='exited'
+        value['stopped']=True
+        value['containers'][0]['State']['Status']='exited'
+        self.assertEqual([x['role'] for x in HELPER.plan(value)['targets']],['review'])
+
     def test_unknown_active_reader_writer_or_bind_alias_is_rejected(self):
         for variant in ('reader', 'writer', 'bind'):
             with self.subTest(variant=variant):

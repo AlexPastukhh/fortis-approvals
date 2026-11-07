@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from ..core import Denied
 
-DEFAULT_ENDPOINT = "https://host.docker.internal:19104"
+DEFAULT_ENDPOINT = "https://host.docker.internal:19204"
 DEFAULT_CERTIFICATE = "/run/fortis-client/server.crt"
 DEFAULT_GRANT = "/run/fortis-client/grant"
 MAX_RESPONSE_BYTES = 65536
@@ -83,7 +83,7 @@ class GatewayTransport:
                            ("127.0.0.1", "localhost", "::1") and parsed.port is not None)
         pinned_https = (parsed.scheme == "https" and
                         parsed.hostname == "host.docker.internal" and
-                        parsed.port == 19104)
+                        parsed.port in (19104, 19204))
         injected_https_test = (allow_test_endpoint and parsed.scheme == "https" and
                                parsed.hostname == "host.docker.internal" and
                                parsed.port is not None)

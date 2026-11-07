@@ -87,7 +87,7 @@ class WorkflowClient:
 
 
 def default_client(endpoint='https://host.docker.internal:19204'):
-    gateway=WorkflowTransport(endpoint=endpoint,allow_test_endpoint=True)
+    gateway=WorkflowTransport(endpoint=endpoint)
     capabilities=gateway.post('/v1/workspace/capabilities',{})
     repo=capabilities['repository']
     worker=Worker(owner=capabilities['owner'],repositories={repo:'/workspace/repo/Repos/'+repo},

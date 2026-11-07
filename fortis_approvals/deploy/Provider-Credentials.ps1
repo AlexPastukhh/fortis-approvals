@@ -46,7 +46,7 @@ function Restore-CredentialContainers {
 }
 function Credential-Readback {
     param([string]$Provider,$Runtime)
-    $Settings=Code64 (ConvertTo-Json -InputObject @{service=$Provider;repository=$Runtime.repository} -Compress)
+    $Settings=Code64 (ConvertTo-Json -InputObject @{service=$Provider;repository=$Runtime.repository;legacyStopped=((Container 'fortis-approvals-gateway').State.Status -ceq 'exited')} -Compress)
     $Code=@'
 import base64,json,uuid
 from fortis_approvals.clients.gateway_transport import GatewayTransport
@@ -62,7 +62,7 @@ if s['service']=='github':
     g.list_workflow_runs(s['repository'],per_page=1)
     checks.append({'role':'review','githubContentsPullRequestsActionsRead':True})
 else:
-    for role,port in [('review',19204),('production',19104)]:
+    for role,port in ([('review',19204)] if s.get('legacyStopped') else [('review',19204),('production',19104)]):
         g=GatewayTransport(endpoint='https://host.docker.internal:'+str(port),allow_test_endpoint=True)
         r=g.post('/v1/reads',{'requestId':str(uuid.uuid4()),'service':'sonarcloud',
             'operation':'get_quality_gate','target':'AlexPastukhh_obs-planning-docs','params':{},
@@ -104,13 +104,14 @@ function Put-ProviderCredential {
     if($script:Image -cne $Runtime.image){throw 'CREDENTIAL_CURRENT_IMAGE_REQUIRED'}
     if((Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -cne $Source.hash){throw 'CREDENTIAL_SOURCE_RECORD_CHANGED'}
     $Review=Container $Runtime.pilotId;Admit $Review $Runtime
-    $ProductionBefore=Production-Baseline
+    $ProductionBefore=Release-Production-Baseline
     $Production=Container 'fortis-approvals-gateway'
+    $LegacyStopped=($Production.State.Status -ceq 'exited')
     $Volume=$Runtime.tokenVolume
     if($Provider -ceq 'sonarcloud'){$Volume='fortis-r7-sonar-token'}
     $Inventory=@(Credential-Inventory)
     $Plan=Credential-Helper @{action='plan';service=$Provider;tokenVolume=$Volume;
-        reviewId=$Review.Id;productionId=$Production.Id;containers=$Inventory}
+        reviewId=$Review.Id;productionId=$Production.Id;allowStoppedProduction=$LegacyStopped;containers=$Inventory}
     foreach($Target in $Plan.targets){
         $C=Container $Target.id
         if($Target.role -ceq 'production' -and $Target.stateVolume -cne 'fortis-r7-state'){throw 'CREDENTIAL_PRODUCTION_STATE_CHANGED'}
@@ -163,7 +164,7 @@ function Put-ProviderCredential {
         Assert-CredentialIdle $Plan.targets $Provider
         Assert-OnlyWriter $Volume
         $null=Credential-Helper @{action='plan';service=$Provider;tokenVolume=$Volume;stopped=$true;
-            reviewId=$Review.Id;productionId=$Production.Id;containers=@(Credential-Inventory)}
+            reviewId=$Review.Id;productionId=$Production.Id;allowStoppedProduction=$LegacyStopped;containers=@(Credential-Inventory)}
         foreach($Target in $Plan.targets){if((Container $Target.id).State.Status -cne 'exited'){throw 'CREDENTIAL_TARGET_NOT_STOPPED'}}
         $Rotation.phase='Replacing';$Rotation.credentialWriteAttempted=$true;Write-Private $RotationPath $Rotation
         $Result=Credential-Helper @{action='replace';service=$Provider;value=$Plain;expectedGeneration=$Before.generation} -TokenVolume $Volume -Writable
@@ -173,7 +174,7 @@ function Put-ProviderCredential {
         Restore-CredentialContainers $Rotation;$RestoreNeeded=$false
         $Rotation.phase='Verifying';Write-Private $RotationPath $Rotation
         $Checks=Credential-Readback $Provider $Runtime
-        if($Provider -ceq 'github' -and (Production-Baseline) -cne $ProductionBefore){throw 'CREDENTIAL_PRODUCTION_CHANGED'}
+        if($Provider -ceq 'github' -and (Release-Production-Baseline) -cne $ProductionBefore){throw 'CREDENTIAL_PRODUCTION_CHANGED'}
         foreach($Target in $Plan.targets){if((Credential-Identity (Container $Target.id)) -cne $Target.signature){throw 'CREDENTIAL_CONTAINER_CHANGED'}}
         $Rotation.checks=@($Checks.checks);$Rotation.phase='Complete';Write-Private $RotationPath $Rotation
     } catch {

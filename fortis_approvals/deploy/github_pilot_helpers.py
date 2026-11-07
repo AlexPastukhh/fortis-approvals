@@ -165,8 +165,11 @@ def admit(container, expected, *, pilot):
     require(host['ReadonlyRootfs'] is True and host['Privileged'] is False and host['AutoRemove'] is False and
             host['Init'] is True and host['CapDrop'] == ['ALL'] and not host.get('CapAdd'), 'PILOT_SECURITY_MISMATCH')
     require(host['SecurityOpt'] in (['no-new-privileges'], ['no-new-privileges:true']), 'PILOT_SECURITY_OPTIONS_MISMATCH')
+    restart = expected.get('restartPolicy', 'no')
+    require(restart == 'no' or (pilot and expected['name'] == 'fortis-gateway' and restart == 'unless-stopped'),
+            'PILOT_RESTART_POLICY_DENIED')
     require(host['NetworkMode'] == 'bridge' and host['PidsLimit'] == 100 and host['Memory'] == 536870912 and
-            host['RestartPolicy'] == {'Name': 'no', 'MaximumRetryCount': 0}, 'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
+            host['RestartPolicy'] == {'Name': restart, 'MaximumRetryCount': 0}, 'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
     require(host['PortBindings'] == {'19103/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '19203'}],
                                    '19104/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '19204'}]}, 'PILOT_PORTS_MISMATCH')
     require(host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,size=16m'} and

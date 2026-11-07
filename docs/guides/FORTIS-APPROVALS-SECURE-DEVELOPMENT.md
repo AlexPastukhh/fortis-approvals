@@ -1,7 +1,8 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Актуализировано 2026-11-06 по исходникам, owner output запуска и результатам
-запросов Repo → Gateway. Этот документ владеет текущим статусом;
+Актуализировано 2026-11-07 по live readback Sonar/GitHub и owner Docker output.
+Миграция Primary подготовлена в source; до owner-run `-Action Promote`
+историческое имя контейнера остаётся прежним. Этот документ владеет текущим статусом;
 [agent guide](../GATEWAY-AGENT-GUIDE.md) — правилами использования,
 [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — матрицей операций,
 [отдельный план](../FOLLOW-UP-PLAN.md) — будущими задачами.
@@ -10,8 +11,8 @@
 
 | Контур | Endpoints | Подтверждённое состояние |
 | --- | --- | --- |
-| Production `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Sonar READ/ASK; image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. GitHub/native обновление сюда не переносилось |
-| Изолированный native review | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native worktree; Native/GitHub/Sonar + общий extension framework; image/record и границы проверки ниже. Analysis profile выключен |
+| Legacy `fortis-approvals-gateway` | Owner `http://localhost:19103`; machine `https://host.docker.internal:19104` | Исторический Sonar-only runtime, image `sha256:e751f6ca0cfe6ce290cf580de2f243071ee1f3e681baa8827c6cea41a16fa402`. До завершённого переключения остаётся работающим; затем — остановленный резерв. |
+| Основной рабочий Gateway (до promotion: `fortis-github-pilot-0a83fd...`) | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Sonar + GitHub/native + extension framework; image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`. Реальные Sonar/GitHub READ 2026-11-07 PASS. Целевое имя `fortis-gateway` только после owner-run promotion. |
 | Fortis Repo | `/workspace/repo/Repos/fortis-approvals`, task worktrees рядом в `Worktrees/fortis-approvals/` | Primary на `main`; перед live-проверкой PR ALLOW сверено `e48e59ae54b456a390a02a63551b8e4f2ea4a4fc`, чистый |
 
 Это два отдельных Gateway runtime, каждый со своим состоянием и общей моделью

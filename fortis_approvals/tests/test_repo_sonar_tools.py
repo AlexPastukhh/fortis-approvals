@@ -60,6 +60,15 @@ class RepoSonarToolsTransportTests(unittest.TestCase):
                 tool, target=target, grant_path=self.grant,
                 certificate_path=self.cert, transport=opener, **kwargs)
 
+    def test_primary_endpoint_is_pinned_without_test_exception(self):
+        from fortis_approvals.clients.gateway_transport import GatewayTransport, DEFAULT_ENDPOINT
+        self.assertEqual(DEFAULT_ENDPOINT,'https://host.docker.internal:19204')
+        self.assertEqual(GatewayTransport().endpoint,DEFAULT_ENDPOINT)
+        self.assertEqual(GatewayTransport(endpoint='https://host.docker.internal:19104').endpoint,
+                         'https://host.docker.internal:19104')
+        with self.assertRaisesRegex(Denied,'FORTIS_GATEWAY_ENDPOINT_DENIED'):
+            GatewayTransport(endpoint='https://host.docker.internal:19205')
+
     def test_non_string_status_is_rejected_without_type_error(self):
         request_id = "00000000-0000-4000-8000-000000000001"
         opener = _Opener(json.dumps({

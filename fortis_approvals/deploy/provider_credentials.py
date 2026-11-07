@@ -71,9 +71,12 @@ def plan(value):
     require(type(volume) is str and (re.fullmatch(r'fortis-github-pilot-token-[0-9a-f]{32}', volume)
             if service == 'github' else volume == 'fortis-r7-sonar-token'), 'VOLUME_INVALID')
     expected = {value['reviewId']}
-    if service == 'sonarcloud':
+    allow_stopped_production = value.get('allowStoppedProduction', False)
+    require(type(allow_stopped_production) is bool, 'TARGETS_INVALID')
+    require(value['reviewId'] != value['productionId'], 'TARGETS_INVALID')
+    if service == 'sonarcloud' and not allow_stopped_production:
         expected.add(value['productionId'])
-    require(len(expected) == (1 if service == 'github' else 2), 'TARGETS_INVALID')
+    require(len(expected) == (1 if service == 'github' or allow_stopped_production else 2), 'TARGETS_INVALID')
     stopped = value.get('stopped', False)
     require(type(stopped) is bool, 'PHASE_INVALID')
     found = set()
@@ -92,8 +95,9 @@ def plan(value):
             continue
         require(all(m.get('RW') is False for m in affected), 'UNEXPECTED_TOKEN_WRITER')
         status = container['State']['Status']
-        if status in ('created', 'exited', 'dead') and container['Id'] not in expected:
-            continue  # Retained containers remain stopped; never start them here.
+        if status in ('created', 'exited', 'dead') and (container['Id'] not in expected or
+                (allow_stopped_production and container['Id'] == value['productionId'])):
+            continue  # Retained/retired containers remain stopped; never start them here.
         require(container['Id'] in expected and status == ('exited' if stopped else 'running'),
                 'UNEXPECTED_TOKEN_CONSUMER')
         require(len(affected) == 1 and affected[0].get('Type') == 'volume' and

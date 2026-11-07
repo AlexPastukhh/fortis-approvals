@@ -1,8 +1,11 @@
 # Fortis deployment artifacts — index
 
 [Current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns
-instance/image/endpoint facts. Production remains on its original Sonar image;
-the isolated native review completed GitHub source/new-task cycles on 2026-11-06.
+instance/image/endpoint facts. The accepted Sonar + GitHub/native runtime on
+19203/19204 is the operational Primary candidate; the older Sonar-only
+instance on 19103/19104 is Legacy. Physical promotion and autostart are
+controlled by [Primary operations](../../docs/PRIMARY-GATEWAY-OPERATIONS.md).
+Do not infer promotion solely from merged source.
 [Live evidence](../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) records owner
 bootstrap, CI/merge/main/cleanup results and verification limits.
 
@@ -68,8 +71,12 @@ Remaining work is in the [follow-up plan](../../docs/FOLLOW-UP-PLAN.md).
 
 ## New operation onboarding
 
-`Manage-Integrations.ps1` is the persistent owner controller for the extension
-framework: Apply/Check/Credential/Return. Inputs, token handling and supported
+`Manage-Integrations.ps1` is the permanent owner controller for the extension
+framework: Apply/Check/Credential/Return and `Backup`/`Promote` for Primary
+(`Primary-Gateway.ps1`). `Backup` makes a verified stopped-state clone;
+`Promote` changes only the active container's name/restart policy and writes a
+separate protected `primary.json`, leaving historical release records intact.
+After future Apply, repeat Backup/Promote to restore the permanent name. Inputs, token handling and supported
 state profile are defined once in the [extension contract](../../docs/INTEGRATION-EXTENSIONS.md).
 The base controller is accepted with an empty catalog; current deployment and
 limits are in [current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
