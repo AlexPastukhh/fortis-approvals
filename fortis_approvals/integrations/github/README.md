@@ -69,6 +69,20 @@ The REST adapter pins `https://api.github.com`. Mark-ready uses a fixed typed
 GraphQL route; native Git uses the fixed repository HTTPS origin. None accepts
 an arbitrary URL, method, refspec, credential or shell body from the client.
 
+## Token-scoped native repository discovery
+
+With the explicit `FORTIS_GITHUB_NATIVE_MULTI_REPO=1` native opt-in,
+`list_repositories` reads the authenticated token's `GET /user/repos` inventory
+for the configured owner. It returns only repositories that are visible to that
+token, owned by the configured account, active, and use `main` as default
+branch. A target repository is independently checked through the fixed
+`GET /repos/{owner}/{repo}` route before native work; there is no second local
+repository allowlist. Token visibility is upstream access, not operation
+authorization: Core ALLOW/ASK/DENY policy still applies, and the local worker
+requires an existing non-symlink directory under `Repos/` and `Worktrees/` with
+the exact HTTPS origin. Enabling this mode does not clone or onboard local
+repositories automatically.
+
 ## Deployment and retained pilots
 
 Default startup keeps GitHub disabled. M1–M3 used explicit trusted pilot scope;

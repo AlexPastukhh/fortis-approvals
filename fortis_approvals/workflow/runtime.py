@@ -15,6 +15,8 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
         backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store)
     register_github_integration(core=core,broker=broker,adapter=adapter)
     reads=LEGACY_READ_OPERATIONS-{('github','list_repositories')}
+    if config.dynamic_repositories:
+        reads=reads|{('github','list_repositories')}
     writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file')}
     for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
     for service,operation in writes:core.policies[(actor,service,operation)]='ASK'
