@@ -131,12 +131,12 @@ class Worker:
 
     def _prepare(self,job,root,run,text):
         repo=job['target'];op=job['operation'];p=job['params'];task=p.get('task')
-        if op in ('edit','check','stage','commit','sync_task','cleanup_task','update_main'):
-            s=self._snapshot(repo,None if op=='update_main' else task,root,run,text)
+        if op in ('edit','check','stage','commit','sync_task','cleanup_task','update_main','update_main_from_pr'):
+            s=self._snapshot(repo,None if op in ('update_main','update_main_from_pr') else task,root,run,text)
             if s['headSha']!=p['expectedHeadSha']:raise Stale('WORKER_HEAD_CHANGED')
             if op in ('stage','edit') and s['treeSha256']!=p['expectedTreeSha256']:raise Stale('WORKER_TREE_CHANGED')
             if op=='commit' and s['indexSha256']!=p['expectedIndexSha256']:raise Stale('WORKER_INDEX_CHANGED')
-            if op in ('sync_task','update_main','cleanup_task') and not s['clean']:raise Stale('WORKER_CLEAN_TREE_REQUIRED')
+            if op in ('sync_task','update_main','update_main_from_pr','cleanup_task') and not s['clean']:raise Stale('WORKER_CLEAN_TREE_REQUIRED')
         if op=='edit':
             target=self._target(repo,task,root,run,text)
             for change in p['changes']:
@@ -147,7 +147,10 @@ class Worker:
                     'WORKER_CUSTOM_MERGE_DRIVER_DENIED')
         if op=='create_task':
             primary=self._snapshot(repo,None,root,run,text)
-            require(primary['clean'],'WORKER_CLEAN_MAIN_REQUIRED')
+            # Dirty canonical main is allowed for independent tasks: no
+            # checkout, stage, commit or reset occurs in primary. Require
+            # exact base commit already present in this canonical Git store.
+            require(primary['branch']=='main','WORKER_PRIMARY_BRANCH_CHANGED')
             target=self._target(repo,task,root,run,text,existing=False)
             sha(p['baseSha'])
             text(['cat-file','-t',p['baseSha']])
@@ -228,7 +231,7 @@ print(len(files))
             self._fetch(repo,root,'main',p['baseSha'],run,text)
             run(['merge','--no-edit',p['baseSha']],target)
             return self._snapshot(repo,task,root,run,text)
-        if op=='update_main':
+        if op in ('update_main','update_main_from_pr'):
             self._fetch(repo,root,'main',job['approvedPreview']['mergeSha'],run,text)
             if text(['rev-parse','HEAD'],root)!=p['expectedHeadSha']:raise Stale('WORKER_MAIN_CHANGED')
             run(['merge','--ff-only',job['approvedPreview']['mergeSha']],root)

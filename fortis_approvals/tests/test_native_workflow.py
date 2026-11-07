@@ -204,6 +204,78 @@ class NativeTLS(unittest.TestCase):
         with self.assertRaises(Denied):
             self.machine.get_app().github.task('sandbox','real-cycle')
 
+    def test_create_task_does_not_touch_uncommitted_primary_changes(self):
+        # Creating a separate branch is not the same as fast-forwarding main.
+        primary=self.fixture.primary
+        (primary/'README.md').write_text('preserve tracked local change\n')
+        (primary/'OWNER-NOTE.txt').write_text('preserve untracked local change\n')
+        before=git(primary,'status','--porcelain=v1','--untracked-files=all')
+        self.create('dirty-primary-isolated')
+        self.assertEqual(git(primary,'status','--porcelain=v1','--untracked-files=all'),before)
+        self.assertEqual((primary/'README.md').read_text(),'preserve tracked local change\n')
+        self.assertEqual((primary/'OWNER-NOTE.txt').read_text(),'preserve untracked local change\n')
+        self.assertEqual(git(primary,'rev-parse','HEAD'),self.fixture.base)
+        self.assertEqual(git(self.fixture.worktrees/'dirty-primary-isolated','rev-parse','HEAD'),self.fixture.base)
+        self.assertEqual((self.fixture.worktrees/'dirty-primary-isolated'/'README.md').read_text(),'base\n')
+        self.assertFalse((self.fixture.worktrees/'dirty-primary-isolated'/'OWNER-NOTE.txt').exists())
+
+    def _owner_ui_merged_pr(self,head,*,login='PilotOwner'):
+        ref='refs/heads/main'
+        original=git(self.fixture.remote,'rev-parse',ref)
+        tree=git(self.fixture.remote,'rev-parse',head+'^{tree}')
+        merged=git(self.fixture.remote,'commit-tree',tree,'-p',original,'-p',head,'-m','Owner GitHub UI merge fixture')
+        git(self.fixture.remote,'update-ref',ref,merged,original)
+        pr=self.api.pulls[1]
+        pr.update(state='closed',merged=True,merged_at='2026-11-07T15:00:00Z',
+                  merged_by={'login':login},merge_commit_sha=merged)
+        return merged
+
+    def test_owner_github_ui_merge_can_fast_forward_clean_main_via_typed_api(self):
+        self.create();state=self.edit_commit();head=state['headSha']
+        self.flow.publish('sandbox','real-cycle',None,head,request_id=str(uuid.uuid4()),reason='Publish for owner GitHub merge')
+        self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Owner reviewed',draft=False,
+            request_id=str(uuid.uuid4()),reason='Owner merge workflow')
+        merged=self._owner_ui_merged_pr(head)
+        ident=str(uuid.uuid4())
+        params=dict(expected_head_sha=self.fixture.base,number=1,
+                    expected_pr_head_sha=head,expected_merge_sha=merged,
+                    request_id=ident,reason='Read-only owner GitHub PR proof and local safe fast-forward')
+        response=self.flow.update_main_from_pr('sandbox',**params)
+        self.assertEqual(response['state'],'EXECUTED',response)
+        self.assertEqual(response['result']['data']['headSha'],merged)
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),merged)
+        self.assertEqual(git(self.fixture.primary,'status','--porcelain'),'')
+        self.assertFalse(self.fixture.helper_marker.exists())
+        self.assertEqual(self.flow.update_main_from_pr('sandbox',**params)['state'],'EXECUTED')
+
+    def test_owner_external_merge_proof_must_be_exact_and_owner_merged(self):
+        self.create();state=self.edit_commit();head=state['headSha']
+        self.flow.publish('sandbox','real-cycle',None,head,request_id=str(uuid.uuid4()),reason='Publish external merge fixture')
+        self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Owner merge preview',draft=False,
+            request_id=str(uuid.uuid4()),reason='Ready for external merge')
+        params=dict(expectedHeadSha=self.fixture.base,number=1,
+                    expectedPrHeadSha=head,expectedMergeSha='a'*40)
+        # An open PR is not a merge: a typed command may not update main.
+        with self.assertRaises(Denied):
+            self.flow.command('update_main_from_pr','sandbox',params,request_id=str(uuid.uuid4()),reason='Must reject open PR')
+        merged=self._owner_ui_merged_pr(head,login='untrusted-actor')
+        params['expectedMergeSha']=merged
+        with self.assertRaises(Denied):
+            self.flow.command('update_main_from_pr','sandbox',params,request_id=str(uuid.uuid4()),reason='Must reject non-owner merge')
+        self.api.pulls[1]['merged_by']={'login':'PilotOwner'}
+        with self.assertRaises(Denied):
+            self.flow.command('update_main_from_pr','sandbox',{**params,'expectedPrHeadSha':'f'*40},request_id=str(uuid.uuid4()),reason='Must reject wrong PR SHA')
+        with self.assertRaises(Denied):
+            self.flow.command('update_main_from_pr','sandbox',{**params,'expectedMergeSha':'f'*40},request_id=str(uuid.uuid4()),reason='Must reject wrong merge SHA')
+        with self.assertRaises(Denied):
+            self.flow.command('update_main_from_pr','sandbox',{**params,'number':0},request_id=str(uuid.uuid4()),reason='Must reject unknown PR')
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),self.fixture.base)
+        (self.fixture.primary/'README.md').write_text('dirty: preserve this!\n')
+        result=self.flow.command('update_main_from_pr','sandbox',params,request_id=str(uuid.uuid4()),reason='Must not change dirty primary')
+        self.assertEqual(result['state'],'STALE',result)
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),self.fixture.base)
+        self.assertEqual((self.fixture.primary/'README.md').read_text(),'dirty: preserve this!\n')
+
     def test_regular_pr_allow_is_exact_actor_repo_without_owner_and_replays_once(self):
         self.create();state=self.edit_commit()
         self.flow.publish('sandbox','real-cycle',None,state['headSha'],request_id=str(uuid.uuid4()),reason='Publish regular PR fixture')

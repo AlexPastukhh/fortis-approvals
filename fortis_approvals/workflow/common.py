@@ -14,7 +14,7 @@ from ..core import Denied, Stale, canonical
 
 MAX_BUNDLE = 24 * 1024 * 1024
 MAX_NEW_COMMITS = 200
-WORKSPACE_OPS = frozenset({'inspect','fetch','create_task','edit','check','stage','commit','sync_task','update_main','cleanup_task'})
+WORKSPACE_OPS = frozenset({'inspect','fetch','create_task','edit','check','stage','commit','sync_task','update_main','update_main_from_pr','cleanup_task'})
 MUTATING_LOCAL = WORKSPACE_OPS - {'inspect','fetch'}
 
 

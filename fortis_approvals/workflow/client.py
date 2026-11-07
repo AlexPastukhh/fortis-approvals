@@ -69,6 +69,14 @@ class WorkflowClient:
             time.sleep(.2)
         return self.result(ident,reconcile=True)
 
+    def update_main_from_pr(self,repository,*,expected_head_sha,number,
+                            expected_pr_head_sha,expected_merge_sha,request_id,reason):
+        """Owner-merged GitHub PR: prove exact remote PR/main, then local ff-only."""
+        return self.command('update_main_from_pr',repository,
+            dict(expectedHeadSha=expected_head_sha,number=number,
+                 expectedPrHeadSha=expected_pr_head_sha,expectedMergeSha=expected_merge_sha),
+            request_id=request_id,reason=reason)
+
     def publish(self,repository,task,expected_old,new_sha,*,request_id,reason):
         # Existing local commit objects are bundled, never reconstructed from file contents.
         data=self.worker.publish_package(repository,task,expected_old,new_sha,request_id,reason)
