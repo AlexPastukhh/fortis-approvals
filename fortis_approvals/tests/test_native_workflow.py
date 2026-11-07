@@ -75,6 +75,9 @@ class FakeAPI:
     def __init__(self,fixture):
         self.fixture=fixture;self.backend=fixture.backend;self.pulls={};self.ci_status='success';self.posts=0
     def request(self,method,path,*,params=None,body=None,expected_statuses=(200,),allow_not_found=False):
+        # Exercise the real closed HTTP catalogue even with the offline upstream.
+        from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
+        if not GitHubHTTPTransport._route_allowed(method,path):raise Denied('GITHUB_HTTP_ROUTE_DENIED')
         base='/repos/PilotOwner/sandbox'
         refs=self.backend.refs('sandbox')
         if method=='GET' and path==base:return dict(name='sandbox',full_name='PilotOwner/sandbox',private=True,

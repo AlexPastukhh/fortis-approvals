@@ -47,6 +47,10 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    [`workflow/client.py`](../../fortis_approvals/workflow/client.py) (typed wrapper).
    При изменении remote GitHub effect дополнительно проверить
    [`workflow/git_backend.py`](../../fortis_approvals/workflow/git_backend.py).
+   Для нового GitHub READ/evidence endpoint также проверить закрытый каталог
+   [`gateway/transport.py`](../../fortis_approvals/integrations/github/gateway/transport.py):
+   adapter fixture не заменяет проверку фактического route/verb. Тестировать
+   разрешённый exact route и отказ для других URL, refs, методов и suffix.
    Определить источник истины: Repo-side Git state или Gateway-only API/token.
 3. **Новый API route/новый клиентский метод:** обновлять client и server **в одном
    исходном PR**, но сохранять поддержку старых вызовов; не удалять существующие

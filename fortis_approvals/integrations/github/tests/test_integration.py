@@ -301,6 +301,30 @@ class TransportTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied, "GITHUB_JSON_BODY_INVALID"):
             transport.request("POST", "/repos/Alex/tunnel/git/blobs",
                               body={"content": float("nan")})
+    def test_cleanup_evidence_uses_exact_sha_get_routes_on_pinned_origin(self):
+        opener=_Opener(b'{"status":"identical"}')
+        transport=GitHubHTTPTransport('github_pat_'+'x'*60,opener=opener)
+        head='a'*40;main='b'*40
+        for suffix in ('compare/'+head+'...'+main,'commits/'+head+'/pulls'):
+            path='/repos/Alex/sandbox/'+suffix
+            self.assertEqual(transport.request('GET',path,params={'per_page':1}),{'status':'identical'})
+            self.assertEqual(opener.request.full_url,'https://api.github.com'+path+'?per_page=1')
+            self.assertEqual(opener.request.get_method(),'GET')
+
+    def test_cleanup_evidence_does_not_open_generic_compare_or_mutation_routes(self):
+        transport=GitHubHTTPTransport('github_pat_'+'x'*60,opener=_Opener())
+        head='a'*40;main='b'*40;base='/repos/Alex/sandbox/'
+        denied=('compare/main...task/name','compare/'+head+'...main',
+                'compare/'+head+'..'+main,'compare/'+head+'...'+main+'/extra',
+                'commits/main/pulls','commits/'+head+'/pulls/extra')
+        for suffix in denied:
+            with self.subTest(suffix=suffix),self.assertRaisesRegex(Denied,'GITHUB_HTTP_ROUTE_DENIED'):
+                transport.request('GET',base+suffix)
+        for method in ('POST','PATCH','PUT','DELETE'):
+            for suffix in ('compare/'+head+'...'+main,'commits/'+head+'/pulls'):
+                with self.subTest(method=method,suffix=suffix),self.assertRaisesRegex(Denied,'GITHUB_HTTP_ROUTE_DENIED'):
+                    transport.request(method,base+suffix)
+
     def test_nonfinite_json_response_is_rejected(self):
         token = "github_pat_" + "z" * 60
         transport = GitHubHTTPTransport(token, opener=_Opener(b'{"value":NaN}'))
