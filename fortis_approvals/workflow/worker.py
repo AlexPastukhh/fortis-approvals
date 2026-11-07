@@ -147,10 +147,10 @@ class Worker:
                     'WORKER_CUSTOM_MERGE_DRIVER_DENIED')
         if op=='create_task':
             primary=self._snapshot(repo,None,root,run,text)
-            # Dirty canonical main is allowed for independent tasks: no
-            # checkout, stage, commit or reset occurs in primary. Require
-            # exact base commit already present in this canonical Git store.
-            require(primary['branch']=='main','WORKER_PRIMARY_BRANCH_CHANGED')
+            # Canonical primary is only a clean main anchor. Reject unresolved
+            # tracked/index/untracked changes rather than silently dropping
+            # them when creating an independent task from an immutable commit.
+            require(primary['clean'],'WORKER_CLEAN_MAIN_REQUIRED')
             target=self._target(repo,task,root,run,text,existing=False)
             sha(p['baseSha'])
             text(['cat-file','-t',p['baseSha']])

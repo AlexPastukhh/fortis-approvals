@@ -176,11 +176,14 @@ branch, actual owner `merged_by`, exact head/merge SHA) and exact remote
 `main`, then only ff-only updates a **clean** local Docker primary. No client
 may spoof Core approval or use this route for arbitrary SHA/branch checkout.
 
-`workspace.create_task` also gets an isolated safety change: allow unrelated
-dirty primary files while preserving `main` and creating an independent task;
-`update_main` and both merge-admission paths **still** require clean primary.
-These are **source-only, not available in the running Gateway** until owner
-reviewed PR, exact source CI and separate Windows image release/live proof.
+`workspace.create_task` retains the **clean canonical `main` requirement**:
+a task is created from a commit and never includes unstaged, staged or
+untracked changes in primary, so fail closed instead of silently omitting
+in-progress work. Existing dirty primary checkouts require an explicit,
+separate owner-reviewed migration of that work; do not stash/reset/clean them.
+Both `update_main` and the external merge route also require clean primary.
+The external owner-merge route remains **source-only** until an owner-managed
+Gateway image release and live evidence; a merged source PR is not deployment.
 The relevant use-case is [UC-GW-003](use-cases/integrations.md#uc-gw-003),
 not a duplicate operational runbook. No new general-purpose HTTP route,
 raw shell API, credential exposure or merged-without-proof fallback is added.

@@ -56,9 +56,11 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    `requestId`. Клиентское имя не даёт новых прав само по себе; сервер без
    deployment не умеет вызывать новый метод.
 4. **Для local `workspace` операций** разграничить `create_task` и
-   `update_main`: первая создаёт/регистрирует *изолированный* worktree и не
-   переносит грязные файлы primary; второе реально меняет `main`, требует clean
-   tree, exact GitHub main/PR evidence и только `--ff-only`. Внешний merge
+   `update_main`: первая создаёт/регистрирует *изолированный* worktree только
+   при **чистом** canonical `main`, иначе незакоммиченные файлы primary
+   незаметно не попадут в новую задачу; отказ не исправлять автоматическим
+   `stash/reset/clean`. Второе реально меняет `main`, требует clean tree,
+   exact GitHub main/PR evidence и только `--ff-only`. Внешний merge
    владельца через GitHub UI не авторизуется фиктивным Gateway mergeRequestId.
    Развитие этого маршрута — отдельный source candidate
    `update_main_from_pr`, не считать его работающим до релиза image.
