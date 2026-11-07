@@ -179,6 +179,21 @@ function Put-Credential {
     }
     Write-Host ('FORTIS_CREDENTIAL_READY '+$Alias)
 }
+function Read-DynamicRepositoriesFlag {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_DYNAMIC_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('dynamicRepositories')){return $false}
+        $Value=$Record['dynamicRepositories']
+    } else {
+        $Property=$Record.PSObject.Properties['dynamicRepositories']
+        if($null -eq $Property){return $false}
+        $Value=$Property.Value
+    }
+    if($Value -isnot [bool]){throw 'RELEASE_DYNAMIC_RECORD_INVALID'}
+    return $Value
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -226,7 +241,7 @@ function Admit {
     $Expected=@{id=$P.pilotId;name=$P.pilotName;image=$P.image;stateVolume=$P.stateVolume;tokenVolume=$P.tokenVolume
         owner=$P.owner;repository=$P.repository;filePrBranch=$P.filePrBranch;ciReads=$P.ciReads
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
-        dynamicRepositories=([bool]$P.dynamicRepositories)
+        dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     if($P.restartPolicy -ceq 'unless-stopped'){
         # The already deployed immutable image still validates the original
@@ -353,6 +368,19 @@ if($Action -eq 'SelfTest'){
     catch {if($_.Exception.Message -cne 'RELEASE_CONFIG_CHANGED'){throw};$Denied=$true}
     if(-not $Denied){throw 'RELEASE_MALFORMED_ENV_SELFTEST_FAILED'}
     $Forwarded=@(Forward-NativeParameters @{SourceSha='a value with spaces';Build=([switch]$true);Pull=([switch]$false)})
+    $OldRecord='{"schema":1}' | ConvertFrom-Json
+    $NewRecord='{"dynamicRepositories":true}' | ConvertFrom-Json
+    $WrongRecord='{"dynamicRepositories":"false"}' | ConvertFrom-Json
+    if((Read-DynamicRepositoriesFlag $OldRecord) -or
+        -not (Read-DynamicRepositoriesFlag $NewRecord) -or
+        (Read-DynamicRepositoriesFlag @{}) -or
+        -not (Read-DynamicRepositoriesFlag @{dynamicRepositories=$true})){
+        throw 'RELEASE_DYNAMIC_RECORD_COMPATIBILITY_SELFTEST_FAILED'
+    }
+    $Rejected=$false
+    try{$null=Read-DynamicRepositoriesFlag $WrongRecord}
+    catch{if($_.Exception.Message -cne 'RELEASE_DYNAMIC_RECORD_INVALID'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_DYNAMIC_RECORD_TYPE_SELFTEST_FAILED'}
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
@@ -475,7 +503,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     stateVolume=('fortis-github-pilot-state-'+$RunId);tokenVolume=$Source.runtime.tokenVolume
     owner=$Source.runtime.owner;repository=$Source.runtime.repository;filePrBranch=$Source.runtime.filePrBranch
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Source.runtime.requiredWorkflows;bootstrapTask=$Source.runtime.bootstrapTask
-    dynamicRepositories=([bool]$Source.runtime.dynamicRepositories -or [bool]$EnableDynamicGitHubRepositories)
+    dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null

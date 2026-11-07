@@ -21,14 +21,18 @@ class ReleaseOptInSourceTests(unittest.TestCase):
         self.assertIn("$Action -cnotin @('Apply','Check')",self.script)
 
     def test_flag_is_derived_from_protected_record_and_not_inherited_unchecked(self):
-        self.assertIn('dynamicRepositories=([bool]$Source.runtime.dynamicRepositories -or [bool]$EnableDynamicGitHubRepositories)',self.script)
-        self.assertIn('dynamicRepositories=([bool]$P.dynamicRepositories)',self.script)
+        self.assertIn('dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)',self.script)
+        self.assertIn('dynamicRepositories=(Read-DynamicRepositoriesFlag $P)',self.script)
         self.assertIn("-not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=')",self.script)
         self.assertIn("if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}",self.script)
         self.assertIn("if multi:required['FORTIS_GITHUB_NATIVE_MULTI_REPO']='1'",self.helper)
 
     def test_selftest_and_primary_promotion_are_separate(self):
         self.assertIn('RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED',self.script)
+        self.assertIn('RELEASE_DYNAMIC_RECORD_COMPATIBILITY_SELFTEST_FAILED',self.script)
+        self.assertIn('RELEASE_DYNAMIC_RECORD_TYPE_SELFTEST_FAILED',self.script)
+        self.assertIn('if($null -eq $Property){return $false}',self.script)
+        self.assertIn("if($Value -isnot [bool]){throw 'RELEASE_DYNAMIC_RECORD_INVALID'}",self.script)
         self.assertIn('$Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories',self.script)
 
 if __name__=='__main__': unittest.main()
