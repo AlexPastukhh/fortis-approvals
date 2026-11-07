@@ -117,8 +117,14 @@ The generated stub stays disabled until implemented and tested. No manual Core,
 Docker COPY or CI registry edits are needed for each provider.
 
 Existing native Git and Sonar/GitHub implementations retain their own operation
-contracts. Source changes do not activate a deployed container; deployment and
-real permission/effect acceptance are separate recorded outcomes.
+contracts. **When extending a native client method, machine route or operation,
+follow the accepted [UC-GW-003](use-cases/integrations.md#uc-gw-003)**:
+contract and policy, ingress, worker/adapter, Repo-side typed client, negative
+and compatibility tests, source manifest, PR CI, one release and live readback.
+Do not scaffold a provider to add `workspace` operations or assume a new client
+method itself grants permission. Source changes do not activate a deployed
+container; deployment and real permission/effect acceptance are separate
+recorded outcomes.
 
 ## Code ownership map
 

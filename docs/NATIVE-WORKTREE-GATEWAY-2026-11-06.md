@@ -164,3 +164,23 @@ Windows Mirror delivery, deeper Sonar operation design, GitHub workflow review,
 UI feedback, code review and deployment follow-ups are tracked only in the
 [follow-up plan](BACKLOG-IMPROVEMENTS.md). Native acceptance does not retire the
 legacy credential helper for other repositories.
+
+## Source candidate: external owner GitHub UI merge acceptance (not deployed)
+
+The current **deployed** `workspace.update_main` remains bound to an executed
+Gateway `github.merge_pull_request` request ID. A new additive candidate
+`workspace.update_main_from_pr` is proposed in an isolated source task:
+`expectedHeadSha`, `number`, `expectedPrHeadSha`, `expectedMergeSha`. It checks
+GitHub's authenticated PR evidence (`closed`, `merged`, exact same-repo task
+branch, actual owner `merged_by`, exact head/merge SHA) and exact remote
+`main`, then only ff-only updates a **clean** local Docker primary. No client
+may spoof Core approval or use this route for arbitrary SHA/branch checkout.
+
+`workspace.create_task` also gets an isolated safety change: allow unrelated
+dirty primary files while preserving `main` and creating an independent task;
+`update_main` and both merge-admission paths **still** require clean primary.
+These are **source-only, not available in the running Gateway** until owner
+reviewed PR, exact source CI and separate Windows image release/live proof.
+The relevant use-case is [UC-GW-003](use-cases/integrations.md#uc-gw-003),
+not a duplicate operational runbook. No new general-purpose HTTP route,
+raw shell API, credential exposure or merged-without-proof fallback is added.

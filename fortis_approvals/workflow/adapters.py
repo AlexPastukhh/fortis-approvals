@@ -257,13 +257,14 @@ class WorkspaceAdapter:
           'stage':{'task','expectedHeadSha','expectedTreeSha256','paths'},
           'commit':{'task','expectedHeadSha','expectedIndexSha256','message'},
           'sync_task':{'task','expectedHeadSha','baseSha'},'update_main':{'expectedHeadSha','mergeRequestId'},
+          'update_main_from_pr':{'expectedHeadSha','number','expectedPrHeadSha','expectedMergeSha'},
           'cleanup_task':{'task','expectedHeadSha','mergeRequestId'}}
         require(set(p)==fields[op],'WORKSPACE_PARAMS_INVALID')
         snapshot=dict(operation=op,repository=repo,params=p)
         if 'task' in p and p['task'] is not None:
             slug(p['task'])
             if op not in ('inspect','create_task'):snapshot['task']=self.github.task(repo,p['task'])
-        elif op not in ('inspect','fetch','update_main'):raise Denied('WORKSPACE_TASK_REQUIRED')
+        elif op not in ('inspect','fetch','update_main','update_main_from_pr'):raise Denied('WORKSPACE_TASK_REQUIRED')
         for key in ('expectedHeadSha','baseSha'):
             if key in p:sha(p[key])
         if op=='fetch':
@@ -275,7 +276,10 @@ class WorkspaceAdapter:
         if op in ('create_task','sync_task'):
             main=self.github._sha(self.github._ref(repo,'main').get('object',{}).get('sha'))
             if main!=p['baseSha']:raise Stale('WORKSPACE_BASE_HEAD_CHANGED')
-        if op=='create_task':sha(p['adoptHeadSha'],optional=True)
+        if op=='create_task':
+            sha(p['adoptHeadSha'],optional=True)
+            # Local safety: the worker checks an immutable head and exact task
+            # path/branch; it does not copy staged/untracked primary files.
         if op=='check':require(p['profile']=='syntax','WORKSPACE_CHECK_PROFILE_DENIED')
         if op=='edit':
             require(type(p['changes']) is list and 0<len(p['changes'])<=20,'WORKSPACE_EDIT_LIMIT')
@@ -297,6 +301,34 @@ class WorkspaceAdapter:
         if op=='cleanup_task':
             require(repo!=self.github.config.repository or p['task']!=self.github.config.bootstrap_task,
                     'WORKSPACE_BOOTSTRAP_SOURCE_RETAINED')
+        if op=='update_main_from_pr':
+            # Alternative to Gateway-side ASK merge: the owner merged in GitHub UI.
+            # Bind to one exact reviewed PR, owner identity, and remote main SHA.
+            require(type(p['number']) is int and 1<=p['number']<=1000000,'WORKSPACE_EXTERNAL_PR_NUMBER_INVALID')
+            sha(p['expectedPrHeadSha']);sha(p['expectedMergeSha'])
+            raw=self.github._api('GET',self.github._path(repo,'pulls/'+str(p['number'])))
+            pr=self.github._project_pull(raw)
+            expected_full_name=self.github.config.owner+'/'+repo
+            require(pr['number']==p['number'] and pr['state']=='closed' and pr['merged'] is True and
+                    pr['draft'] is False and pr['base']['ref']=='main' and
+                    pr['head']['ref'].startswith('task/') and
+                    type(raw.get('head',{}).get('repo')) is dict and
+                    raw['head']['repo'].get('full_name')==expected_full_name and
+                    type(raw.get('base',{}).get('repo')) is dict and
+                    raw['base']['repo'].get('full_name')==expected_full_name,
+                    'WORKSPACE_EXTERNAL_PR_NOT_ADMITTED')
+            branch(pr['head']['ref'])  # Same-repo registered native task branch only.
+            require(pr['head']['sha']==p['expectedPrHeadSha'],'WORKSPACE_EXTERNAL_PR_HEAD_CHANGED')
+            require(type(raw.get('merged_at')) is str and bool(raw['merged_at']) and
+                    type(raw.get('merged_by')) is dict and
+                    raw['merged_by'].get('login')==self.github.config.owner,
+                    'WORKSPACE_EXTERNAL_OWNER_MERGE_REQUIRED')
+            require(raw.get('merge_commit_sha')==p['expectedMergeSha'],
+                    'WORKSPACE_EXTERNAL_MERGE_SHA_CHANGED')
+            actual=self.github._sha(self.github._ref(repo,'main').get('object',{}).get('sha'))
+            if actual!=p['expectedMergeSha']:raise Stale('WORKSPACE_EXTERNAL_MAIN_CHANGED')
+            snapshot['mergeSha']=p['expectedMergeSha']
+            snapshot['externalPullNumber']=p['number']
         if op in ('cleanup_task','update_main'):
             row=self.core._read(p['mergeRequestId'])
             require(row['actor']==self.actor and row['state']=='EXECUTED' and row['decision']=='approve' and
