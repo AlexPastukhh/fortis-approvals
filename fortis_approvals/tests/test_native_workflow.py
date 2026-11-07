@@ -75,6 +75,9 @@ class FakeAPI:
     def __init__(self,fixture):
         self.fixture=fixture;self.backend=fixture.backend;self.pulls={};self.ci_status='success';self.posts=0
     def request(self,method,path,*,params=None,body=None,expected_statuses=(200,),allow_not_found=False):
+        # Exercise the real closed HTTP catalogue even with the offline upstream.
+        from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
+        if not GitHubHTTPTransport._route_allowed(method,path):raise Denied('GITHUB_HTTP_ROUTE_DENIED')
         base='/repos/PilotOwner/sandbox'
         refs=self.backend.refs('sandbox')
         if method=='GET' and path==base:return dict(name='sandbox',full_name='PilotOwner/sandbox',private=True,
@@ -86,6 +89,21 @@ class FakeAPI:
             name=unquote(path.split('/git/ref/heads/')[1])
             if name not in refs and allow_not_found:return {'_httpStatus':404}
             return {'object':{'sha':refs[name]}}
+        if method=='GET' and path.startswith(base+'/compare/'):
+            first,last=path.split('/compare/')[1].split('...')
+            for commit in (first,last):
+                found=subprocess.run(['git','cat-file','-e',commit+'^{commit}'],cwd=self.fixture.remote,capture_output=True)
+                if found.returncode:
+                    assert allow_not_found
+                    return {'_httpStatus':404}
+            common=git(self.fixture.remote,'merge-base',first,last)
+            behind,ahead=map(int,git(self.fixture.remote,'rev-list','--left-right','--count',first+'...'+last).split())
+            status='identical' if first==last else 'ahead' if not behind else 'behind' if not ahead else 'diverged'
+            return dict(status=status,behind_by=behind,ahead_by=ahead,
+                        base_commit={'sha':first},merge_base_commit={'sha':common})
+        if method=='GET' and path.startswith(base+'/commits/') and path.endswith('/pulls'):
+            head=path.split('/commits/')[1].split('/')[0]
+            return [dict(number=pr['number']) for pr in self.pulls.values() if pr['head']['sha']==head]
         if method=='POST' and path==base+'/pulls':
             number=len(self.pulls)+1;self.posts+=1
             self.pulls[number]=dict(number=number,node_id='PR_fixture_'+str(number),title=body['title'],state='open',
@@ -185,24 +203,202 @@ class NativeTLS(unittest.TestCase):
         self.assertEqual(git(self.fixture.primary,'branch','--show-current'),'main')
         self.assertFalse(self.fixture.helper_marker.exists())
         self.assertEqual(git(self.fixture.worktrees/'real-cycle','rev-parse','HEAD'),head)
-        # Cleanup is another strong ASK and is executed by the Repo worker, never the Gateway filesystem.
-        cleanup=str(uuid.uuid4());completed=[]
-        thread=Thread(target=lambda:completed.append(self.flow.command('cleanup_task','sandbox',
+        # Legacy mergeRequestId requests remain supported; merged cleanup is ALLOW.
+        cleanup=str(uuid.uuid4())
+        result=self.flow.command('cleanup_task','sandbox',
             dict(task='real-cycle',expectedHeadSha=head,mergeRequestId=merge),request_id=cleanup,
-            reason='Remove only this merged clean worktree',wait_owner=True)),daemon=True)
-        thread.start()
-        deadline=time.monotonic()+5
-        while time.monotonic()<deadline:
-            try:
-                if self.core._read(cleanup)['state']=='PENDING':break
-            except Denied:pass
-            time.sleep(.02)
-        self.assertEqual(self.decide(cleanup,'approve')[1]['state'],'EXECUTED')
-        thread.join(timeout=10);self.assertFalse(thread.is_alive())
-        self.assertEqual(completed[0]['state'],'EXECUTED')
+            reason='Remove only this merged clean worktree')
+        self.assertEqual(result['state'],'EXECUTED',result)
+        self.assertIsNone(self.core._read(cleanup)['decision'])
         self.assertFalse((self.fixture.worktrees/'real-cycle').exists())
         with self.assertRaises(Denied):
             self.machine.get_app().github.task('sandbox','real-cycle')
+
+    def _cleanup(self,head,*,ident=None,task='real-cycle',wait_owner=False):
+        return self.flow.cleanup_task('sandbox',task,head,request_id=ident or str(uuid.uuid4()),
+                                      reason='Fixture exact task cleanup',wait_owner=wait_owner)
+
+    def _publish_cleanup_fixture(self,*,squash=False):
+        self.create();head=self.edit_commit()['headSha']
+        self.flow.publish('sandbox','real-cycle',None,head,request_id=str(uuid.uuid4()),reason='Fixture publish')
+        self.flow.github.create_pull_request('sandbox','task/real-cycle','main','Cleanup fixture',draft=False,
+            request_id=str(uuid.uuid4()),reason='Owner reviews cleanup fixture')
+        if squash:
+            tree=git(self.fixture.remote,'rev-parse',head+'^{tree}')
+            merged=git(self.fixture.remote,'commit-tree',tree,'-p',self.fixture.base,'-m','Squash fixture')
+            git(self.fixture.remote,'update-ref','refs/heads/main',merged,self.fixture.base)
+            self.api.pulls[1].update(state='closed',merged=True,draft=False,
+                merged_at='2026-11-07T19:00:00Z',merge_commit_sha=merged)
+        else:merged=self._owner_ui_merged_pr(head)
+        return head,merged
+
+    def test_cleanup_merged_ui_pr_is_allow_with_lagging_local_main_and_replay(self):
+        head,merged=self._publish_cleanup_fixture()
+        # Main advanced again since merge; neither an old receipt nor exact local
+        # main equality should keep a completed task forever.
+        tree=git(self.fixture.remote,'rev-parse',merged+'^{tree}')
+        current=git(self.fixture.remote,'commit-tree',tree,'-p',merged,'-m','Later main')
+        git(self.fixture.remote,'update-ref','refs/heads/main',current,merged)
+        ident=str(uuid.uuid4());result=self._cleanup(head,ident=ident)
+        self.assertEqual(result['state'],'EXECUTED',result)
+        row=self.core._read(ident)
+        self.assertIsNone(row['decision']);self.assertIsNone(row['owner'])
+        self.assertEqual(row['preview']['cleanup']['kind'],'ancestor')
+        self.assertEqual(row['preview']['mergeSha'],current)  # Old workers fail closed on stale main.
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),self.fixture.base)
+        self.assertEqual(git(self.fixture.primary,'branch','--show-current'),'main')
+        self.assertEqual(git(self.fixture.primary,'branch','--list','task/real-cycle'),'')
+        self.assertEqual(self.fixture.backend.refs('sandbox')['task/real-cycle'],head)
+        self.assertFalse((self.fixture.worktrees/'real-cycle').exists())
+        self.assertEqual(self._cleanup(head,ident=ident)['state'],'EXECUTED')
+        self.assertFalse(self.fixture.helper_marker.exists())
+        self.assertEqual(self.gateway.post('/v1/workspace/capabilities',{})['cleanupTask'],
+                         {'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'})
+
+    def test_cleanup_squash_pr_is_allow_only_with_exact_merged_pr_and_accepted_merge(self):
+        head,_=self._publish_cleanup_fixture(squash=True)
+        ident=str(uuid.uuid4());result=self._cleanup(head,ident=ident)
+        self.assertEqual(result['state'],'EXECUTED',result)
+        self.assertEqual(self.core._read(ident)['preview']['cleanup']['kind'],'pull_request')
+        self.assertIsNone(self.core._read(ident)['decision'])
+
+    def test_cleanup_unpublished_unmerged_requires_strong_owner_approval(self):
+        self.create();head=self.edit_commit()['headSha']
+        ident=str(uuid.uuid4());completed=[]
+        thread=Thread(target=lambda:completed.append(self._cleanup(head,ident=ident,wait_owner=True)),daemon=True)
+        thread.start();deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            try:
+                if self.core._read(ident)['state']=='PENDING':break
+            except Denied:pass
+            time.sleep(.02)
+        self.assertEqual(self.core._read(ident)['state'],'PENDING')
+        self.assertTrue((self.fixture.worktrees/'real-cycle').exists())
+        self.login();self.assertEqual(self.decide(ident,'approve',uv=False)[0],403)
+        self.assertEqual(self.decide(ident,'approve')[1]['state'],'EXECUTED')
+        thread.join(timeout=10);self.assertFalse(thread.is_alive())
+        self.assertEqual(completed[0]['state'],'EXECUTED')
+        self.assertFalse((self.fixture.worktrees/'real-cycle').exists())
+        self.assertEqual(git(self.fixture.primary,'branch','--list','task/real-cycle'),'')
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),self.fixture.base)
+
+    def test_cleanup_reject_and_policy_race_preserve_unmerged_task(self):
+        self.create();head=self.edit_commit()['headSha'];ident=str(uuid.uuid4())
+        self.assertEqual(self._cleanup(head,ident=ident)['state'],'PENDING')
+        self.login();self.assertEqual(self.decide(ident,'reject')[1]['state'],'REJECTED')
+        self.assertEqual(self._cleanup(head,ident=ident)['state'],'REJECTED')
+        # An ASK cannot quietly turn into a different ALLOW intent after review.
+        ident=str(uuid.uuid4());self.assertEqual(self._cleanup(head,ident=ident)['state'],'PENDING')
+        self.flow.publish('sandbox','real-cycle',None,head,request_id=str(uuid.uuid4()),reason='Publish race fixture')
+        git(self.fixture.remote,'update-ref','refs/heads/main',head,self.fixture.base)
+        code,_,_=self.owner_call('/v1/owner/decision/begin',{'requestId':ident,'decision':'approve'})
+        self.assertEqual(code,403)
+        self.assertEqual(self.decide(ident,'reject')[1]['state'],'REJECTED')
+        self.assertTrue((self.fixture.worktrees/'real-cycle').exists())
+
+    def test_cleanup_never_removes_dirty_staged_untracked_or_ignored_files(self):
+        self.create();target=self.fixture.worktrees/'real-cycle'
+        # HEAD is already in main: these would be ALLOW without the local guards.
+        actions=(('tracked',lambda:(target/'README.md').write_text('keep tracked')),
+                 ('staged',lambda:((target/'README.md').write_text('keep index'),git(target,'add','README.md'))),
+                 ('untracked',lambda:(target/'private.txt').write_text('keep untracked')),
+                 ('ignored',lambda:((self.fixture.primary/'.git/info/exclude').write_text('private.txt\n'),
+                                    (target/'private.txt').write_text('keep ignored'))))
+        for name,change in actions:
+            with self.subTest(name=name):
+                change();result=self._cleanup(self.fixture.base)
+                self.assertEqual(result['state'],'STALE',result)
+                self.assertTrue(target.exists())
+                self.assertEqual(git(target,'rev-parse','HEAD'),self.fixture.base)
+                # Reset is only for this disposable test fixture.
+                git(target,'reset','--hard',self.fixture.base)
+                (target/'private.txt').unlink(missing_ok=True)
+        self.assertEqual(git(self.fixture.primary,'rev-parse','HEAD'),self.fixture.base)
+
+    def test_cleanup_wrong_head_locked_worktree_and_bootstrap_are_retained(self):
+        self.create();target=self.fixture.worktrees/'real-cycle'
+        self.assertEqual(self._cleanup('f'*40)['state'],'PENDING')
+        # A changed head is never deleted, including after explicit approval.
+        job=dict(operation='cleanup_task',target='sandbox',params={'task':'real-cycle','expectedHeadSha':'f'*40})
+        root,_,run,text=self.worker._open('sandbox')
+        from fortis_approvals.core import Stale
+        with self.assertRaises(Stale):self.worker._prepare(job,root,run,text)
+        git(self.fixture.primary,'worktree','lock',str(target))
+        self.assertEqual(self._cleanup(self.fixture.base)['state'],'STALE')
+        self.assertTrue(target.exists())
+        from dataclasses import replace
+        github=self.machine.get_app().github;bootstrap='protected-source'
+        self.create(bootstrap)
+        with patch.object(github,'config',replace(github.config,bootstrap_task=bootstrap)):
+            with self.assertRaises(Denied):self._cleanup(self.fixture.base,task=bootstrap)
+        with self.assertRaises(Denied):self._cleanup(self.fixture.base,task='missing')
+
+    def test_cleanup_unconfirmed_or_mismatched_squash_proof_stays_ask(self):
+        head,merged=self._publish_cleanup_fixture(squash=True);pr=self.api.pulls[1]
+        variants=[{'merged':False},{'merge_commit_sha':head},
+                  {'head':{**pr['head'],'sha':self.fixture.base}},
+                  {'head':{**pr['head'],'ref':'task/other'}},
+                  {'base':{**pr['base'],'repo':{'full_name':'OtherOwner/sandbox'}}}]
+        for fields in variants:
+            with self.subTest(fields=fields),patch.dict(pr,fields):
+                ident=str(uuid.uuid4());self.assertEqual(self._cleanup(head,ident=ident)['state'],'PENDING')
+                self.assertEqual(self.core._read(ident)['preview']['cleanup']['kind'],'unmerged')
+        self.assertTrue((self.fixture.worktrees/'real-cycle').exists())
+
+    def test_cleanup_rechecks_remote_main_before_any_local_removal(self):
+        self.create();original=self.worker._prepare
+        def race(job,root,run,text):
+            if job['operation']=='cleanup_task':
+                tree=git(self.fixture.remote,'rev-parse',self.fixture.base+'^{tree}')
+                newer=git(self.fixture.remote,'commit-tree',tree,'-p',self.fixture.base,'-m','Race remote main')
+                git(self.fixture.remote,'update-ref','refs/heads/main',newer,self.fixture.base)
+            return original(job,root,run,text)
+        with patch.object(self.worker,'_prepare',side_effect=race):
+            self.assertEqual(self._cleanup(self.fixture.base)['state'],'STALE')
+        self.assertTrue((self.fixture.worktrees/'real-cycle').exists())
+
+    def test_cleanup_rechecks_ignored_files_after_fetch_and_before_removal(self):
+        self.create();target=self.fixture.worktrees/'real-cycle';original=self.worker._execute
+        (self.fixture.primary/'.git/info/exclude').write_text('late-private.txt\n')
+        def race(job,root,run,text):
+            if job['operation']=='cleanup_task':(target/'late-private.txt').write_text('preserve late ignored file')
+            return original(job,root,run,text)
+        ident=str(uuid.uuid4())
+        with patch.object(self.worker,'_execute',side_effect=race):
+            result=self._cleanup(self.fixture.base,ident=ident)
+        self.assertEqual(result['state'],'UNCERTAIN',result)
+        self.assertEqual((target/'late-private.txt').read_text(),'preserve late ignored file')
+        self.assertEqual(self.flow.result(ident,reconcile=True)['state'],'UNCERTAIN')
+        self.assertEqual(git(target,'rev-parse','HEAD'),self.fixture.base)
+
+    def test_new_worker_preserves_old_gateway_cleanup_job_contract(self):
+        self.create();head=self.edit_commit()['headSha']
+        # Disposable local fixture emulates an admitted old server job.
+        git(self.fixture.primary,'merge','--ff-only',head)
+        ident=str(uuid.uuid4());params=dict(task='real-cycle',expectedHeadSha=head,mergeRequestId=str(uuid.uuid4()))
+        preview=dict(operation='cleanup_task',repository='sandbox',params=params,mergeSha=head)
+        payload=dict(requestId=ident,operation='cleanup_task',target='sandbox',params=params,approvedPreview=preview)
+        result,error=self.worker.execute({'payload':payload})
+        self.assertIsNone(error);self.assertTrue(result['data']['removed'])
+        self.assertEqual(self.worker.execute({'payload':payload}),(result,None))
+
+    def test_cleanup_scope_unknown_fields_and_invalid_compare_never_allow(self):
+        self.create();workspace=self.machine.get_app().workspace
+        payload=dict(service='workspace',operation='cleanup_task',target='sandbox',
+                     params=dict(task='real-cycle',expectedHeadSha=self.fixture.base))
+        self.assertEqual(workspace.cleanup_policy('other-actor',payload),'DENY')
+        for extra in ({'merged':True},{'force':True}):
+            with self.assertRaises(Denied):
+                self.flow.command('cleanup_task','sandbox',{**payload['params'],**extra},
+                    request_id=str(uuid.uuid4()),reason='Reject caller authorization')
+        original=self.api.request
+        def invalid(method,path,**kwargs):
+            if '/compare/' in path:return dict(status='ahead',behind_by=0,base_commit={'sha':'f'*40},
+                                              merge_base_commit={'sha':self.fixture.base})
+            return original(method,path,**kwargs)
+        with patch.object(self.api,'request',side_effect=invalid),self.assertRaises(Denied):
+            self._cleanup(self.fixture.base)
+        self.assertTrue((self.fixture.worktrees/'real-cycle').exists())
 
     def test_create_task_refuses_dirty_primary_without_losing_user_changes(self):
         # A task based on committed main would silently omit these files.

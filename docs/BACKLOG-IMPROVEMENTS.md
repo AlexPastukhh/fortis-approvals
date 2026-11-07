@@ -26,10 +26,15 @@
 
 ## Согласование нормального UI-merge с последующими операциями
 
-- Добавить проверяемый cleanup proof для owner GitHub UI merge: текущий
-  `workspace.cleanup_task` требует исполненный Gateway `mergeRequestId`, тогда
-  как обычная доставка использует `update_main_from_pr`. Не создавать merge ASK
-  только ради cleanup и не удалять source worktrees/records без проверки ссылок.
+- **Cleanup policy — source реализован, deployment/live acceptance ещё нужны.**
+  [Контракт](NATIVE-WORKTREE-GATEWAY-2026-11-06.md#task-worktree-cleanup): ALLOW
+  для exact task HEAD, принятого в текущий GitHub main (включая проверенный
+  squash/rebase PR), ASK для неслитого/неподтверждённого; local guards сохраняются.
+  Доставить source через PR/CI и owner GitHub UI merge; затем один owner-managed
+  Gateway image release по UC-GW-005. Проверить live capability `cleanupTask`
+  и оба маршрута на одноразовых задачах с сохранением защищённого bootstrap,
+  remote branches и чужой работы. Не создавать merge ASK только ради cleanup.
+  Действующий старый image нельзя считать обновлённым по наличию source/client.
 - Gateway Mirror provider находится в отдельном `task/mirror-provider-20261107`,
   а не в принятом `main`. Его перенос/activation, scoped credentials и acceptance
   принадлежат этому repo. Кандидат Pull привязан к Gateway merge request; перед

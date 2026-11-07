@@ -77,6 +77,12 @@ class WorkflowClient:
                  expectedPrHeadSha=expected_pr_head_sha,expectedMergeSha=expected_merge_sha),
             request_id=request_id,reason=reason)
 
+    def cleanup_task(self,repository,task,expected_head_sha,*,request_id,reason,wait_owner=False):
+        """Merged clean task: ALLOW; otherwise owner ASK. No remote deletion."""
+        return self.command('cleanup_task',repository,
+            dict(task=task,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason,wait_owner=wait_owner)
+
     def publish(self,repository,task,expected_old,new_sha,*,request_id,reason):
         # Existing local commit objects are bundled, never reconstructed from file contents.
         data=self.worker.publish_package(repository,task,expected_old,new_sha,request_id,reason)
