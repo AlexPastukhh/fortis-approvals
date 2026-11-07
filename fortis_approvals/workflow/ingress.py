@@ -42,17 +42,18 @@ class NativeIngress:
         if path=='/v1/workspace/capabilities':
             require(not body,'WORKFLOW_PARAMS_INVALID')
             pr_policy=core._policy(actor,dict(service='github',operation='create_pull_request',target=self.github.config.repository))
-            return dict(owner=self.github.config.owner,repository=self.github.config.repository,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
+            return dict(owner=self.github.config.owner,repository=self.github.config.repository,
+                dynamicRepositories=self.github.config.dynamic_repositories,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
                 sensitivePush='ASK',gitHubCredentialInRepo=False)
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
-            self.github._repo(body['repository']);sha(body['expectedSha'],optional=True)
+            self.github._access(body['repository']);sha(body['expectedSha'],optional=True)
             return self.github.backend.fetch_bundle(body['repository'],body['ref'],body['expectedSha'])
         if path=='/v1/git/artifact':
             require(set(body)=={'repository','task','expectedHeadSha','newSha','bundle'},'WORKFLOW_PARAMS_INVALID')
-            repo=self.github._repo(body['repository']);task=self.github.task(repo,body['task'])
+            repo=self.github._access(body['repository']);task=self.github.task(repo,body['task'])
             sha(body['expectedHeadSha'],optional=True);sha(body['newSha'])
             require(type(body['bundle']) is str and len(body['bundle'])<=MAX_BUNDLE*4//3+4,'GIT_BUNDLE_LIMIT')
             try:data=base64.b64decode(body['bundle'],validate=True)

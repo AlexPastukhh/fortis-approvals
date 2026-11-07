@@ -19,6 +19,7 @@ _ROUTES = (
     ("GET", re.compile(_BASE + r"$")),
     ("GET", re.compile(_BASE + r"/(branches|commits|pulls|actions/runs)$")),
     ("GET", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/rules/branches/main$")),
     ("GET", re.compile(_BASE + r"/pulls/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/actions/workflows/[A-Za-z0-9_.-]+$")),
     ("GET", re.compile(_BASE + r"/commits/[A-Za-z0-9_.%~-]+/(check-runs|status)$")),

@@ -22,12 +22,16 @@ from .common import Git, MAX_BUNDLE, MAX_NEW_COMMITS, branch, file_path, require
 
 class GitHubGitBackend:
     def __init__(self, root, *, owner, repositories, token_path='/run/github-token/token'):
-        self.root=secure_dir(root);self.owner=owner;self.repositories=frozenset(repositories);self.token_path=token_path
+        self.root=secure_dir(root);self.owner=owner
+        self.repositories=None if repositories is None else frozenset(repositories)
+        self.token_path=token_path
         self.git=Git(self.root/'runner',protocols='https');self.lock=RLock()
 
     def url(self,repo):
-        require(repo in self.repositories,'GIT_REPOSITORY_DENIED')
-        require(re.fullmatch('[A-Za-z0-9_.-]{1,100}',self.owner) and re.fullmatch('[A-Za-z0-9_.-]{1,100}',repo),'GIT_REPOSITORY_DENIED')
+        require((self.repositories is None or repo in self.repositories) and
+            type(self.owner) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',self.owner) and
+            type(repo) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',repo) and
+            repo not in ('.','..'),'GIT_REPOSITORY_DENIED')
         return 'https://github.com/'+self.owner+'/'+repo+'.git'
 
     @contextmanager
