@@ -20,7 +20,7 @@ if ($runtime.pilotName -cne 'fortis-gateway' -or
     $runtime.stateVolume -cnotmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$') {
     throw 'OWNER_INVITE_PRIMARY_IDENTITY_INVALID'
 }
-$raw = @(& docker container inspect --type container $runtime.pilotId --format '{{json .}}')
+$raw = @(& docker inspect --type container $runtime.pilotId --format '{{json .}}')
 if ($LASTEXITCODE -ne 0 -or $raw.Count -ne 1) { throw 'OWNER_INVITE_DOCKER_INSPECT_FAILED' }
 $c = $raw[0] | ConvertFrom-Json
 if ($c.Id -cne $runtime.pilotId -or $c.Image -cne $runtime.image -or
