@@ -1,16 +1,13 @@
 # Fortis deployment artifacts — index
 
-[Current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns
-instance/image/endpoint facts. The accepted Sonar + GitHub/native runtime on
-19203/19204 is the active **`fortis-gateway` Primary**, promoted in place,
-healthy and `unless-stopped` after owner-confirmed Docker Desktop restart.
-The Sonar-only `fortis-approvals-gateway` on former 19103/19104 is stopped
-(`restart=no`) and retained, not deleted. Physical promotion and autostart are
-controlled by [Primary operations](../../docs/PRIMARY-GATEWAY-OPERATIONS.md)
-and supported by [live evidence](../evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
-Do not infer any *future* promotion solely from merged source.
-[Live evidence](../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md) records owner
-bootstrap, CI/merge/main/cleanup results and verification limits.
+[Current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) owns the
+latest confirmed image/source/endpoint facts. Normal work uses the active
+`fortis-gateway` Primary on 19203/19204; retained Sonar-only Legacy is not its
+fallback. Routine releases use `Manage-Integrations.ps1` and
+[Primary operations](../../docs/PRIMARY-GATEWAY-OPERATIONS.md), not a replay of
+M1–M3 provisioning. Source merge does not deploy an image. Initial cutover and
+reboot evidence is dated; exact runtime IDs always come from protected records
+and live owner readback.
 
 ## Accepted pilot entrypoints
 
@@ -28,13 +25,15 @@ source worktree/SHA. Preserve it, retained M3 and all dependent volumes. New
 source commits do not change the image or that record. Client/worker commands,
 policy and bootstrap/return conditions are in the [native contract](../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md).
 
-The isolated instance has a separate GitHub credential, RO mounted at
+The Primary uses a separate Gateway-held GitHub credential, RO mounted at
 `/run/github-token/token`; exact run-specific volume identity is in the protected
 record. The retained Legacy Sonar-only container is not GitHub-enabled; the active
 Primary is. Never replace the Primary token with the legacy Repo helper credential or add mounts to a historical Compose file incidentally.
 [Provider boundary](../integrations/github/README.md).
 
-## Production references and deferred release
+<a id="production-references-and-deferred-release"></a>
+
+## Historical deployment references
 
 - `compose-r7-p2-20261103.yaml` is a dated configuration reference. The owner
   renamed the same running container to `fortis-approvals-gateway`; Compose
@@ -43,10 +42,9 @@ Primary is. Never replace the Primary token with the legacy Repo helper credenti
 - `Dockerfile-R7-Unified-Read-Ask-Candidate` is the hash-pinned build recipe used
   by `Build-R7-Windows-ImageOnly-p2-20261103.ps1`. The top-level `Dockerfile`
   is an older server/port recipe, not the deployed-artifact recipe.
-- [Production release contract](../../docs/MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md)
-  remains a deferred proposal. Its earlier pinned image/profile is not the
-  accepted native review or a current release GO. Exact inputs, executable
-  rollout/backup/rollback and owner decision must be reviewed separately.
+- [Historical Production release proposal](../../docs/MODULARIZED-RELEASE-EXECUTION-CONTRACT-2026-11-05.md)
+  is superseded for routine releases by the permanent controller. Its old
+  pinned image/profile is not a current release input or an additional backlog.
 - `compose-fortis-approvals-dryrun.yaml` is a superseded migration proposal.
   It must not be used with `up`, `create`, `start` or `down`.
 
@@ -86,4 +84,4 @@ limits are in [current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPM
 For existing GitHub/Sonar token replacement use the same entrypoint with
 `-Action Credential -Service github|sonarcloud -Rotate`; the
 [rotation runbook](../../docs/CREDENTIAL-ROTATION.md) owns steps, shared Sonar
-effects, recovery and the pending Windows acceptance.
+effects and recovery; pending acceptance is tracked only in the backlog.

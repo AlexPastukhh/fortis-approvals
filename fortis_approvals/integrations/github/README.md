@@ -1,13 +1,10 @@
 # GitHub integration
 
-**Current runtime:** the accepted GitHub/native worktree profile is **live in
-Primary `fortis-gateway`** (`19204`), not in the stopped Sonar-only Legacy. On
-2026-11-06 this was accepted in isolated review; source PR №10 and new-task PR
-№11 completed through Gateway. The 2026-11-07 promotion kept the same
-container/image and stopped Legacy without reprovisioning. [Current state](../../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
-owns runtime details; [2026-11-06 live evidence](../../evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md)
-records the original acceptance and [cutover evidence](../../evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)
-records the promotion and post-retirement reads.
+**Current runtime:** GitHub/native worktree operations are live in Primary
+`fortis-gateway` on 19204 with token-scoped multi-repo access. The original
+2026-11-06 isolated review and initial 2026-11-07 promotion are dated evidence;
+later releases changed the runtime image. [Current state](../../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+owns accepted source/image and deployed scope; do not copy old container IDs.
 
 ## Source map
 
@@ -26,8 +23,8 @@ records the promotion and post-retirement reads.
 The [native contract](../../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) is the
 single source operation/policy table; deployed scope is in current state. Source implementation is broader than
 admitted operations. Native includes `push_commits` and `mark_pr_ready`; ordinary
-registered task push is ALLOW. This source also permits PR creation for the exact
-installed actor/configured repo; deployment of that change is tracked separately. Never infer access from a client method or the
+registered task push is ALLOW. PR creation is ALLOW for the installed actor and repositories admitted by the
+active single-repo or dynamic mode, as described in that contract. Never infer access from a client method or the
 provider token alone. Reads use closed public projections, not arbitrary provider
 responses or raw file contents; `get_file` reports verified hashes/size.
 

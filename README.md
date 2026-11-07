@@ -2,7 +2,7 @@
 
 **Required first read for every new Fortis Repo chat:** open the active container
 use-case registry through `/workspace/repo/README.md` (its first section links
-straight to the registry); **scan all case titles**, then **read UC-CONT-002**
+straight to the registry); **read only the short registry introduction**, without scanning the whole table, then **read UC-CONT-002**
 (Docker → GitHub → CI → Windows/Mirror) and **UC-CONT-003** (GitHub only through
 the supported typed client + Fortis Gateway) **in full**. Other cases are
 selected as needed. These shared rules are owned by the container registry,

@@ -1,16 +1,14 @@
 # Primary Fortis Gateway — operator procedure
 
-Status: **host-applied 2026-11-07**, owner-confirmed Backup → Promote →
-Docker Desktop restart → Legacy stop; Repo post-retirement checks PASS.
-[Live acceptance and rollback evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)
-records verified results and the checks that were **not** exercised.
-Keep historical release records, all provider token volumes, Owner WebAuthn and
-retained M3/bootstrap artifacts. The promoted Primary is the pre-existing container
-`043d3497b2d1`, image `sha256:238ea3a43225eec4b714a0cf23c70559434c56a8b03f44b865ede40c70ca8242`.
-Ports remain 127.0.0.1:19203/19204 and Owner Origin remains `http://localhost:19203`.
-The Sonar-only Legacy container `fortis-approvals-gateway` (ID `0852c39c9e5d…`)
-is now **exited**, `restart=no`, retained with its image and volumes; its old
-19103/19104 bindings are no longer the normal endpoint.
+The initial Backup/Promote, Docker Desktop restart and Legacy retirement were
+owner-confirmed on 2026-11-07 in
+[dated cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+Later image releases replaced that initial Primary; its container/image IDs are
+not today's deployment pins. [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+owns the latest confirmed runtime/source record. Before any operation, resolve
+exact IDs, configuration and state through protected controller records and
+live readback. Keep provider credentials, owner state and referenced rollback
+artifacts. Normal ports remain 19203/19204; retained Legacy is not a fallback.
 
 ## Architecture and roles
 
@@ -25,6 +23,10 @@ is now **exited**, `restart=no`, retained with its image and volumes; its old
   fallback to legacy `19104` and no bypass through provider tokens/helpers.
 
 ## One-time operator adoption (Windows PowerShell 5.1)
+
+**Historical completed adoption.** The sequence below explains the original
+promotion and its contract; do not rerun it merely to update documentation or
+copy its old runtime pins. Normal image releases use the next section.
 
 1. Accept source changes through Gateway PR/CI/owner-approved merge and get the
    approved merged `main` into the clean Windows clone by the Mirror procedure.
@@ -89,8 +91,9 @@ must continue using the original attempt record, not fabricated identifiers.
    `fortis-gateway` becomes healthy and Repo readbacks pass without manual start.
    Docker Desktop must itself start with the user session; engine-level service
    before Windows logon is a different deployment goal.
-5. Record verified host output, final release pointer, retained recovery volume,
-   and recovery limits in the [2026-11-07 live evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+5. Record verified host output, final release pointer, retained recovery volume
+   and limits for the new release. Do not overwrite the initial cutover evidence
+   or present an old acceptance result as a fresh check.
    The reported owner host output and Repo readback confirm deployment; a fresh
    full ALLOW/ASK/DENY policy acceptance cycle is still outstanding.
 
