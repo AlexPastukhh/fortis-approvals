@@ -2,7 +2,7 @@
 
 **Required first read for every new Fortis Repo chat:** open the active container
 use-case registry through `/workspace/repo/README.md` (its first section links
-straight to the registry); **scan all case titles**, then **read UC-CONT-002**
+straight to the registry); **read only the short registry introduction** (do not scan its entire table), then **read UC-CONT-002**
 (Docker → GitHub → CI → Windows/Mirror) and **UC-CONT-003** (GitHub only through
 the supported typed client + Fortis Gateway) **in full**. Other cases are
 selected as needed. These shared rules are owned by the container registry,
@@ -19,6 +19,10 @@ CI and Windows/Mirror goals; this repo owns technical contracts, deployed state
 and evidence. Do not create a second shared registry. New application-specific
 scenarios belong to their application repository. See [AGENTS.md](AGENTS.md)
 for the agent entrypoint and scoped ASK-proposal authorization.
+
+## Gateway Use Cases
+
+[Локальный реестр Gateway](docs/use-cases/README.md) — Sonar, typed providers, credentials, releases, recovery и Primary. Общие Docker/GitHub правила остаются в реестре Fortis Container, а технические контракты — у соответствующих owners.
 
 ## Start here
 
