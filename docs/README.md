@@ -9,6 +9,9 @@ not a second container registry.
 Each active topic has one owner document; entry points link to it rather than
 repeat runtime snapshots or policy tables.
 
+[Local Gateway Use Case index](use-cases/README.md) lists only accepted
+application-specific scenarios; central cross-project rules stay in Fortis Container.
+
 | Topic | Source of truth |
 | --- | --- |
 | Deployed instances, verified scope and limits | [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
