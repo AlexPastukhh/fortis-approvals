@@ -1,6 +1,6 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Датированный срез 2026-11-07: последний owner-provided Windows release output
+Датированный срез 2026-11-08: последний owner-provided Windows release output
 и последующие Repo machine readback. Это не свежий Docker inspect с Windows:
 перед runtime-операцией сверить protected records и реальную identity.
 Этот документ владеет deployment status; [agent guide](../GATEWAY-AGENT-GUIDE.md)
@@ -19,17 +19,29 @@
 
 | Поле | Значение из owner output |
 | --- | --- |
-| Source SHA образа | `217dbcc05a735052e2531d6839c9d808e433792e` |
-| Image ID | `sha256:5c5fc58ed80a4ea4fa2b39d78195395d08b8b9d4278c337fdd8fa2ba6339a109` |
-| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\fe0c906431e84f5287f764accb9f0df8\record.json` |
-| Verified controller backup | `fortis-gateway-backup-eb084fe7ee9c4b078e80a19ca4050ade` |
-| Host result | Apply activated, Backup PASS, Promote PASS, `FORTIS_GATEWAY_POST_PROMOTE_PASS` |
+| Source SHA образа | `7cae534f8617482511bf486a6133563e8bcd2ae8` |
+| Image ID | `sha256:877c93ef1d4ff970bd8e6ebfad961ef9dc2345fbc71f767b6528a0aa20b585e4` |
+| Container ID | `241c00cfb1becc62d152d26806034f4643b22877fe9839c80a326721191618f9` |
+| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\96349e7910dd4f89a334af9a4459f3cb\record.json` |
+| Verified controller backup | `fortis-gateway-backup-5b51f6566d764e13905a45e4675c6e2e` |
+| Host result | Apply activated, live merged-task cleanup PASS, Backup PASS, Promote PASS, `FORTIS_CLEANUP_POLICY_DEPLOYED_AND_PRIMARY_HEALTHY` |
 
 Последующие documentation/source merges меняют Git `main`, а не этот image.
-Container ID нового Primary в предоставленном финальном выводе не записан:
-не подставлять ID `043d3497…` от первоначального cutover. Факты reboot/autostart
-initial runtime сохранены в [cutover evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md);
-они не являются новым reboot-тестом каждого последующего image.
+Owner read-only аудит после перезагрузки 2026-11-08 подтвердил Repo, прежний
+Primary, `unless-stopped`, HTTP Owner Portal и целостность пяти БД; затем был
+установлен указанный выше image. Его финальные identity/health/restart проверены
+после Promote, но этот результат не является новым reboot-тестом нового image.
+История первоначального cutover — в [dated evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+
+Четыре согласованные старые `UNCERTAIN` были разово удалены после проверенной
+холодной копии; сохранены native `FAILED` tombstones против повторного исполнения.
+Rescue volume: `fortis-gateway-rescue-four-03e0c29d99df4cd09e2a0d46175da319`;
+owner maintenance record:
+`%LOCALAPPDATA%\Fortis\GatewayReleases\owner-retire-four-7cae534f-20261108\record.json`.
+Повторный запуск старого recovery остановлен на `PRIMARY_SOURCE_POINTER_CHANGED`
+до изменений: Primary уже перешёл на новый release record. Это завершённая
+операторская exception-процедура, не общий способ закрывать заявки; расследование
+и штатный lifecycle принадлежат [backlog](../BACKLOG-IMPROVEMENTS.md).
 
 <a id="что-завершено"></a>
 
@@ -37,6 +49,11 @@ initial runtime сохранены в [cutover evidence](../../fortis_approvals/
 
 - Live capabilities: `dynamicRepositories=true`, присутствует
   `workspace.update_main_from_pr`, ordinary task push и PR creation — ALLOW.
+- Live `cleanupTask` соответствует [native cleanup contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md#task-worktree-cleanup).
+  Одноразовый пустой task создан и удалён без owner ASK; `fetch/create/cleanup`
+  имеют `EXECUTED`, task path отсутствует. Четыре retired request ID возвращают
+  `NOT_FOUND`; GitHub READ после Promote работает. Это live-проверка merged
+  ALLOW, не полный новый цикл всех deny/ASK/owner решений.
 - Реальные task commit/push/PR и owner UI merge с обновлением Docker main
   проверены для Gateway, Container, Mirror, Tunnel, Script Center и Tab Notifier.
   Это не обещание прав записи для всех обнаруженных GitHub repos.
