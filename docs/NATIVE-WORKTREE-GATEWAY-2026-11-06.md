@@ -7,8 +7,9 @@ Status: native source and new-task live cycles accepted on 2026-11-06 in isolate
 This is the source contract. Before cleanup, check live capabilities:
 `cleanupTask = {merged: ALLOW, unmerged: ASK, proof: github-main-v1}` identifies
 this policy. A runtime without that marker retains the previous receipt-only
-ASK contract; do not send it the new request shape. Deployment/acceptance work
-is tracked only in the [backlog](BACKLOG-IMPROVEMENTS.md).
+ASK contract; do not send it the new request shape. Installed release and dated
+live verification belong to [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
+remaining acceptance belongs only to the [backlog](BACKLOG-IMPROVEMENTS.md).
 
 All grants are restricted to the configured owner, admitted repository mode and authenticated Repo actor. An operation missing from this profile is denied.
 

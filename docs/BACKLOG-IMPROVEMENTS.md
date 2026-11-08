@@ -15,9 +15,13 @@
   для `tunnel`, task `docs-dry-audit-20261107`, request
   `b32222b5-4a84-4816-bd39-625ab6c9995d` вернул
   `UNCERTAIN / REMOTE_OUTCOME_UNCONFIRMED`. Read-only reconcile не изменил статус;
-  соответствующие worktree и ветка не найдены. Это не установленная первопричина
-  и не разрешение повторить/удалить запрос. Сохранять этот случай вместе со stage
-  incident при разработке диагностики; исходный запрос повторно не отправлялся.
+  соответствующие worktree и ветка не найдены. 2026-11-08 этот UUID вместе со
+  старыми Tab Notifier `inspect`/`commit` и Mirror `sync_task` разово retired
+  после отдельного owner approval, verified cold copy и проверки отсутствия
+  активного исполнения. Native tombstones сохранены; подробности завершения и
+  protected record — в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+  Первопричина не установлена: сохранить этот случай для расследования, а не
+  повторять исходный запрос или считать его успешно исполненным.
 - Исследовать точную первопричину с безопасными снимками ошибок: worker journaling между `DISPATCHED` / `git add` / receipt, исключения после частичного эффекта, timeout, stale precondition, отсутствие error detail. Не полагаться на `job.result IS NOT NULL`: это может быть JSON-строка `null`, не receipt.
 - Сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
 - Разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
@@ -26,15 +30,14 @@
 
 ## Согласование нормального UI-merge с последующими операциями
 
-- **Cleanup policy — source реализован, deployment/live acceptance ещё нужны.**
-  [Контракт](NATIVE-WORKTREE-GATEWAY-2026-11-06.md#task-worktree-cleanup): ALLOW
-  для exact task HEAD, принятого в текущий GitHub main (включая проверенный
-  squash/rebase PR), ASK для неслитого/неподтверждённого; local guards сохраняются.
-  Доставить source через PR/CI и owner GitHub UI merge; затем один owner-managed
-  Gateway image release по UC-GW-005. Проверить live capability `cleanupTask`
-  и оба маршрута на одноразовых задачах с сохранением защищённого bootstrap,
-  remote branches и чужой работы. Не создавать merge ASK только ради cleanup.
-  Действующий старый image нельзя считать обновлённым по наличию source/client.
+- Завершить **live acceptance cleanup ASK для неслитой задачи**: отдельный
+  disposable task, фактический PENDING без удаления до WebAuthn, owner decision,
+  exact HEAD/dirty/ignored/lock и replay guards. Установленный cleanup profile
+  и merged ALLOW уже подтверждены в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
+  отрицательные/ASK сценарии покрыты offline TLS/Core/worker тестами. Не выдавать
+  их за новый live owner цикл и не повторять image release ради этой проверки.
+- При следующем согласованном reboot проверить новый установленный image;
+  pre-release reboot-аудит старого Primary не является его reboot acceptance.
 - Gateway Mirror provider находится в отдельном `task/mirror-provider-20261107`,
   а не в принятом `main`. Его перенос/activation, scoped credentials и acceptance
   принадлежат этому repo. Кандидат Pull привязан к Gateway merge request; перед
@@ -45,6 +48,12 @@
 ## Улучшение детерминированного релиза (2026-11-07)
 
 - Подготовить единый Windows PowerShell 5.1 operator entrypoint: `SelfTest → Check/Build exact SHA → Apply → live READ/Owner Portal → Backup → Promote → readback`, с учётом фазы protected release, кратких PASS-маркеров и остановки без повторного Apply при ambiguity.
+- Устранить caller-scope side effects dot-sourced operator helpers: подтверждён
+  конфликт типизированного `[string]$Record` с ad-hoc build metadata dictionary.
+  Сохранять metadata отдельной переменной, проверять JSON-object round-trip и
+  обязательные поля до PASS; повторный запуск выбирать по protected phase/identity,
+  а не повторять законченный Apply. Разовая запись уже исправлена, образ повторно
+  не собирался; reusable source entrypoint остаётся задачей этого раздела.
 - При Docker/PowerShell ошибках сохранять и безопасно редактировать **весь ограниченный stderr** и exit status; не обрывать traceback на первой `NativeCommandError`. Отделить owner-preflight, immutable image build, offline smoke и live acceptance, чтобы не дублировать длинные команды вручную.
 - Формализовать условие `FORTIS_PRIMARY_ALREADY_ACTIVE`: считать успехом только при совпадении protected `primary.json`, точного image/container ID, `healthy`, `unless-stopped`, multi-repo capability и реальных Gateway READ.
 - Для нового GitHub repo не заводить второй allowlist. Проверять доступность токену, owner/`main`, canonical worktree, origin и действующие API policies; чтение не является доказательством Contents write. Отсутствующие required status rules не обходить при merge.
