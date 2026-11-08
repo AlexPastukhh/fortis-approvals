@@ -9,6 +9,7 @@ import uuid
 
 from fortis_approvals.core import Denied
 from fortis_approvals.owner_portal import OwnerPortal
+from fortis_approvals.owner_shell_portal import OwnerShellPortal
 from fortis_approvals.owner_shell import OwnerShellClient, ShellTransportUnavailable
 
 
@@ -43,7 +44,7 @@ class OwnerShellPortalRouteTests(unittest.TestCase):
     def setUp(self):
         self.auth=FakeOwner()
         self.runner=FakeExecutor()
-        self.portal=OwnerPortal(FakeCore(self.auth),self.auth,owner_shell=self.runner)
+        self.portal=OwnerShellPortal(FakeCore(self.auth),self.auth,owner_shell=self.runner)
         self.rid=str(uuid.uuid4())
 
     def call(self,method,path,body=None,*,cookie='',csrf='',origin=None,host=None):
@@ -57,6 +58,23 @@ class OwnerShellPortalRouteTests(unittest.TestCase):
         outgoing=[]
         data=b''.join(self.portal(env,lambda status,headers:outgoing.append((status,headers))))
         return int(outgoing[0][0][:3]), json.loads(data)
+
+    def test_baseline_owner_portal_does_not_gain_shell_routes(self):
+        baseline = OwnerPortal(FakeCore(self.auth), self.auth)
+        old = self.portal
+        self.portal = baseline
+        try:
+            code, result = self.call('GET', '/v1/owner/powershell/capabilities', cookie='owner-session')
+            self.assertEqual(404, code)
+            self.assertEqual('ROUTE_NOT_FOUND', result['error'])
+            code, result = self.call('POST', '/v1/owner/powershell/execute',
+                {'command':'Get-Date','requestId':self.rid}, cookie='owner-session',
+                csrf='owner-csrf',origin=self.auth.origin)
+            self.assertEqual(404, code)
+            self.assertEqual('ROUTE_NOT_FOUND', result['error'])
+            self.assertEqual([],self.runner.calls)
+        finally:
+            self.portal = old
 
     def test_login_required_for_capabilities_and_receipts(self):
         caps='/v1/owner/powershell/capabilities'
@@ -99,7 +117,7 @@ class OwnerShellPortalRouteTests(unittest.TestCase):
         self.assertEqual([],self.runner.calls)
         self.portal.read_only_banner=True
         self.assertEqual(403,self.call('POST',path,good,cookie='owner-session',csrf='owner-csrf',origin=self.auth.origin)[0])
-        self.portal=OwnerPortal(self.portal.core,self.auth,owner_shell=None)
+        self.portal=OwnerShellPortal(self.portal.core,self.auth,owner_shell=None)
         code,caps=self.call('GET','/v1/owner/powershell/capabilities',cookie='owner-session')
         self.assertEqual(200,code)
         self.assertFalse(caps['configured'])

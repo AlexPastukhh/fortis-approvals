@@ -16,7 +16,10 @@ PowerShell execution in this version has **no automatic security verdict**.
 
 ## Trust boundaries
 
-The Owner Portal only accepts `POST /v1/owner/powershell/execute` from an
+The optional `OwnerShellPortal` wrapper intercepts PowerShell routes while the
+release-pinned `owner_portal.py` and `runtime.py` remain byte-identical to
+storage/WebAuthn baseline. The Owner Portal accepts
+`POST /v1/owner/powershell/execute` only from an
 existing WebAuthn owner session, with matching Host, exact Origin and CSRF.
 Schema is exactly `{command,requestId}`. The browser cannot choose the Windows
 host, network endpoint, credentials, PowerShell arguments or process identity.

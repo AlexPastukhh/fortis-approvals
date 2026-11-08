@@ -6,7 +6,6 @@ from http.cookies import SimpleCookie
 import json
 from pathlib import Path
 import re
-from .owner_shell import ShellTransportUnavailable
 from urllib.parse import urlsplit
 
 from .core import ApprovalError, Denied, loads_strict
@@ -16,7 +15,7 @@ STATIC = Path(__file__).resolve().parent / 'static'
 
 class OwnerPortal:
     def __init__(self, core, authenticator, *, strong_operations=(), blocked_approvals=(),
-                 read_only_banner=False, owner_shell=None):
+                 read_only_banner=False):
         if core.owner_verifier is not authenticator:
             raise ValueError('OWNER_VERIFIER_MUST_MATCH')
         self.core, self.auth = core, authenticator
@@ -25,8 +24,6 @@ class OwnerPortal:
         self.strong_operations = frozenset(strong_operations)
         self.blocked_approvals = frozenset(blocked_approvals)
         self.read_only_banner = bool(read_only_banner)
-        # Owner-local only: never expose this transport to machine ingress.
-        self.owner_shell = owner_shell
 
     def _approval_policy_current(self, row):
         return (row.get('policyVersion') == self.core.policy_version and
@@ -48,8 +45,7 @@ class OwnerPortal:
         elif isinstance(content, str):
             content = content.encode()
         titles = {200:'OK', 400:'Bad Request', 401:'Unauthorized', 403:'Forbidden',
-                  404:'Not Found', 409:'Conflict', 413:'Payload Too Large',
-                  500:'Internal Server Error', 503:'Service Unavailable'}
+                  404:'Not Found', 409:'Conflict', 413:'Payload Too Large', 500:'Internal Server Error'}
         headers=[('Content-Type',mime),('Content-Length',str(len(content))),
                  ('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),
                  ('X-Content-Type-Options','nosniff'),('X-Frame-Options','DENY'),
@@ -113,17 +109,6 @@ class OwnerPortal:
             if method == 'GET' and path == '/v1/owner/session':
                 row = self.auth.session(self._cookie(env))
                 return self._reply(start,200,{'owner':row['owner'],'csrf':row['csrf']})
-            if method == 'GET' and path == '/v1/owner/powershell/capabilities':
-                self.auth.session(self._cookie(env))
-                return self._reply(start,200,{'configured': self.owner_shell is not None and not self.read_only_banner,
-                                               'mode':'owner_one_shot',
-                                               'analysisAvailable':False,
-                                               'otherAIAvailable':False})
-            if method == 'GET' and re.fullmatch('/v1/owner/powershell/results/[0-9a-f-]{36}',path):
-                self.auth.session(self._cookie(env))
-                if self.owner_shell is None:
-                    raise Denied('OWNER_SHELL_NOT_CONFIGURED')
-                return self._reply(start,200,self.owner_shell.status(path.rsplit('/',1)[-1]))
             if method == 'GET' and path in ('/v1/owner/pending','/v1/owner/history'):
                 self.auth.session(self._cookie(env))
                 return self._reply(start,200,[self._owner_view(r) for r in self.core.owner_list(pending=path.endswith('pending'))])
@@ -153,19 +138,6 @@ class OwnerPortal:
             if not csrf:
                 raise Denied('CSRF_REQUIRED')
             self.auth.session(token, csrf)
-            if path == '/v1/owner/powershell/execute':
-                if self.owner_shell is None or self.read_only_banner:
-                    raise Denied('OWNER_SHELL_NOT_CONFIGURED')
-                if (set(body) != {'command','requestId'} or
-                        type(body['command']) is not str or
-                        not body['command'].strip() or '\x00' in body['command'] or
-                        len(body['command'].encode('utf-8')) > 8192 or
-                        type(body['requestId']) is not str or
-                        not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',body['requestId'])):
-                    raise Denied('OWNER_SHELL_COMMAND_INVALID')
-                # Only a session-authenticated owner's exact command is forwarded.
-                # No Analyzer/AI auto-approve, no arbitrary target/port/path.
-                return self._reply(start,200,self.owner_shell.execute(body['command'], body['requestId']))
             if path == '/v1/owner/decision/session' and set(body)=={'requestId','decision','fingerprint'}:
                 row = self.core._read(body['requestId'])
                 if row['state'] != 'PENDING' or row['fingerprint'] != body['fingerprint']:
@@ -194,7 +166,5 @@ class OwnerPortal:
             return self._reply(start,403,{'error':str(e)})
         except (ApprovalError, ValueError, TypeError, KeyError, UnicodeError):
             return self._reply(start,400,{'error':'REQUEST_INVALID'})
-        except ShellTransportUnavailable:
-            return self._reply(start,503,{'error':'OWNER_SHELL_OUTCOME_UNCONFIRMED'})
         except (OSError, RuntimeError):
             return self._reply(start,500,{'error':'OUTCOME_UNCONFIRMED'})
