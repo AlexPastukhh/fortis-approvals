@@ -10,7 +10,7 @@ RUN python -m pip install --disable-pip-version-check --no-cache-dir -r /opt/req
     groupadd -g 10001 fortis && \
     useradd --no-log-init -u 10001 -g 10001 -M -s /usr/sbin/nologin fortis
 RUN mkdir -p /opt/fortis/fortis_approvals/static /opt/fortis/fortis_approvals/integrations/sonarcloud/gateway /opt/fortis/fortis_approvals/integrations/github/gateway /state /run/r7-identity /run/r7-grant /run/r7-sonar-token
-COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/owner_auth.py fortis_approvals/owner_portal.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py fortis_approvals/r5_read_candidate.py fortis_approvals/r5_read_server.py fortis_approvals/r7_unified_candidate.py fortis_approvals/r7_unified_server.py fortis_approvals/a3_server.py fortis_approvals/server.py /opt/fortis/fortis_approvals/
+COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/owner_auth.py fortis_approvals/owner_portal.py fortis_approvals/owner_shell.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py fortis_approvals/r5_read_candidate.py fortis_approvals/r5_read_server.py fortis_approvals/r7_unified_candidate.py fortis_approvals/r7_unified_server.py fortis_approvals/a3_server.py fortis_approvals/server.py /opt/fortis/fortis_approvals/
 # All reviewed provider packages and the extension runtime are packaged once.
 COPY fortis_approvals/integrations/ /opt/fortis/fortis_approvals/integrations/
 COPY fortis_approvals/extensions/ /opt/fortis/fortis_approvals/extensions/
