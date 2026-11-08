@@ -126,8 +126,10 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     core = Core(root/'approvals.sqlite',adapters={'sonarcloud':writer},
                 policies=policies,authenticator=auth,owner_verifier=owner,
                 policy_version='r7-p1-sonar-accept-issue-write-v1')
+    from .owner_shell import OwnerShellClient
     portal = OwnerPortal(core,owner,strong_operations={G4_OPERATION},
-                         read_only_banner=False)
+                         read_only_banner=False,
+                         owner_shell=OwnerShellClient.from_environment())
     broker = RepoIntentBroker(
         core,actor_operations={actor:{G4_OPERATION} for actor in actors},
         actor_read_operations={actor: SONAR_READ_OPERATIONS for actor in actors},

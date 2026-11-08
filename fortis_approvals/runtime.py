@@ -43,4 +43,5 @@ def build_portal():
     core,owner,_,port = build_runtime()
     # Operator-controlled high-risk operation list may grow on G4/D phases.
     # For the G2 synthetic-only runtime no operations require a second key prompt.
-    return OwnerPortal(core,owner),port
+    from .owner_shell import OwnerShellClient
+    return OwnerPortal(core,owner,owner_shell=OwnerShellClient.from_environment()),port

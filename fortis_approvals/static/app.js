@@ -1,6 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
 let csrf=null,selected=null,tab='pending',pendingIds=null,pollBusy=false,decisionBusy=false;
+let shellConfigured=false,shellBusy=false;
 const pollingIntervalMs=5000;
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error);}
 async function api(path,body=null,secured=false){
@@ -42,6 +43,8 @@ async function ceremony(begin,registration=false){
 function signedOut(message){
  csrf=null;pendingIds=null;selected=null;document.title='Fortis Approvals';
  $('workspace').hidden=true;$('signin').hidden=false;$('detail').replaceChildren();
+ $('powershell-command').value='';$('powershell-result').textContent='Команды ещё не выполнялись.';
+ shellConfigured=false;$('powershell-execute').disabled=true;
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
@@ -84,8 +87,8 @@ async function refresh(){
   // Always check pending, including while the History tab is selected.
   const pending=await api('/v1/owner/pending');
   notifyOnNewPending(pending);
-  const rows=tab==='pending'?pending:await api('/v1/owner/history');
-  render(rows);
+  const rows=tab==='pending'?pending:tab==='history'?await api('/v1/owner/history'):null;
+  if(rows!==null)render(rows);
  }catch(err){if(err.httpStatus===403){signedOut('Сессия истекла — войдите снова.');}
   else status('Нет связи с сервисом: '+err.message,true);
  }finally{pollBusy=false;}
@@ -143,8 +146,52 @@ $('show-enroll').onclick=()=>{$('registration').hidden=!$('registration').hidden
 $('enroll').onsubmit=action(async()=>{const begin=await api('/v1/enroll/begin',{invitation:$('invitation').value});
  const response=await ceremony(begin,true);await api('/v1/enroll/finish',{ceremonyId:begin.ceremonyId,response});
  $('invitation').value='';$('registration').hidden=true;status('Ключ зарегистрирован. Теперь войдите.');});
-$('pending-tab').onclick=action(async()=>{tab='pending';selected=null;$('detail').replaceChildren();await refresh();});
-$('history-tab').onclick=action(async()=>{tab='history';selected=null;$('detail').replaceChildren();await refresh();});
+function switchWorkspaceTab(which){
+ tab=which;
+ $('approval-view').hidden=which==='powershell';
+ $('powershell-view').hidden=which!=='powershell';
+ for(const id of ['pending','history','powershell']){
+  $(''+id+'-tab').setAttribute('aria-pressed',String(which===id));
+ }
+}
+async function loadOwnerShell(){
+ const caps=await api('/v1/owner/powershell/capabilities');
+ shellConfigured=caps.configured===true;
+ $('powershell-availability').textContent=shellConfigured ?
+  'Исполнитель сконфигурирован. Команды выполняются на Windows без Analyzer.' :
+  'Windows Executor пока не подключён. Выполнение команд недоступно.';
+ $('powershell-execute').disabled=!shellConfigured||shellBusy;
+}
+async function ownerPowerShellExecute(){
+ if(!csrf||shellBusy||!shellConfigured)return;
+ const command=$('powershell-command').value;
+ if(!command.trim())throw Error('Вставьте команду PowerShell.');
+ if(new TextEncoder().encode(command).length>8192)throw Error('Команда превышает ограничение 8 КиБ.');
+ const requestId=crypto.randomUUID();
+ shellBusy=true;$('powershell-execute').disabled=true;
+ $('powershell-result').textContent='Выполнение на Windows…\nRequest ID: '+requestId;
+ try{
+  const result=await api('/v1/owner/powershell/execute',{command,requestId},true);
+  $('powershell-result').textContent=[
+   'Request ID: '+requestId,
+   'Состояние: '+result.state,
+   'SHA256 команды: '+(result.commandSha256||'—'),
+   'Exit code: '+(result.exitCode??'—'),
+   '', 'STDOUT:', result.stdout??'—', '', 'STDERR:', result.stderr??'—',
+   result.stdoutTruncated||result.stderrTruncated ? 'ВЫВОД ОБРЕЗАН' : ''
+  ].join('\n');
+  status(result.state==='EXECUTED'?'Команда выполнена.':'Команда: '+result.state,
+   result.state!=='EXECUTED');
+ }catch(err){
+  $('powershell-result').textContent='Результат неизвестен. Не повторяйте запрос автоматически.\n'+
+   'Request ID: '+requestId+'\n'+err.message;
+  throw err;
+ }finally{shellBusy=false;$('powershell-execute').disabled=!shellConfigured;}
+}
+$('pending-tab').onclick=action(async()=>{switchWorkspaceTab('pending');selected=null;$('detail').replaceChildren();await refresh();});
+$('history-tab').onclick=action(async()=>{switchWorkspaceTab('history');selected=null;$('detail').replaceChildren();await refresh();});
+$('powershell-tab').onclick=action(async()=>{switchWorkspaceTab('powershell');await loadOwnerShell();});
+$('powershell-execute').onclick=action(ownerPowerShellExecute);
 $('refresh').onclick=action(refresh);
 $('notifications').onclick=action(allowNotifications);
 setInterval(()=>{if(csrf)refresh();},pollingIntervalMs);

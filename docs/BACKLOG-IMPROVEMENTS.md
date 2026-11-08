@@ -8,6 +8,18 @@
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Owner Portal PowerShell — source candidate (2026-11-08)
+
+- Вкладка PowerShell с однократным исполнением вставленного скрипта через отдельный
+  mTLS Windows Executor реализована в исходниках, но ещё **не развёрнута**.
+  Ручная активация Windows worker, сертификаты, отдельный low-privilege Windows
+  identity, сетевые правила, Gateway release/CI и Windows acceptance — отдельно.
+- Кнопки Analyzer и «Мнение ИИ» пока отключены. Универсальный Analyzer для
+  скриптов и других заявок должен быть отдельным этапом, не путать с существующим
+  Sonar/GitHub `analysis_review`. Нет обещания безопасного выполнения произвольного
+  PowerShell: команды от владельца сейчас не сканируются.
+- Источник/API границы и эксплуатация: [OWNER-POWERSHELL](OWNER-POWERSHELL.md).
+
 ## Новый приоритет: UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
 
 - Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; однократный read-only `reconcile` не смог подтвердить результат. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.

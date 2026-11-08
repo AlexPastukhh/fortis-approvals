@@ -1,3 +1,12 @@
 :root{color-scheme:light dark;font:16px system-ui}body{max-width:1150px;margin:0 auto;padding:20px;line-height:1.5}header{border-bottom:1px solid #8885;margin-bottom:20px}main{max-width:1100px}nav{display:flex;gap:8px;margin-bottom:16px}.layout{display:grid;grid-template-columns:minmax(210px,300px) 1fr;gap:16px}#requests{display:grid;gap:6px;align-content:start}button{font:inherit;padding:8px 12px;cursor:pointer}#requests button{text-align:left}article{border:1px solid #8887;border-radius:8px;padding:15px;min-width:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:color-mix(in srgb,Canvas 88%,CanvasText 12%);border-radius:6px}label{display:block}input{padding:8px}h1{margin-bottom:0}#status{font-weight:600}#status.error{color:#c33}@media(max-width:680px){.layout{grid-template-columns:1fr}}
 
 .small{font-size:.875rem;opacity:.8}nav{flex-wrap:wrap}
+
+#powershell-view{border:1px solid #8887;border-radius:8px;padding:16px;max-width:1080px}
+#powershell-view[hidden]{display:none}
+#powershell-command{display:block;width:100%;min-height:140px;margin:8px 0 12px;resize:vertical;font:14px/1.45 Consolas,"Cascadia Mono",monospace;background:Canvas;color:CanvasText;padding:12px;border:1px solid #888;border-radius:6px}
+.powershell-actions{display:flex;gap:8px;flex-wrap:wrap}
+#powershell-view button:disabled{opacity:.6;cursor:not-allowed}
+#powershell-result{max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+#powershell-availability{font-weight:600}
+#approval-view[hidden]{display:none}
