@@ -47,3 +47,12 @@ and [manifest policy](docs/SOURCE-MANIFESTS.md) preserve provenance.
 Source changes do not deploy a Gateway image or update a Windows clone.
 Never commit credentials, private keys, machine grants or runtime databases.
 Historical provisioning/cutover scripts are not routine development commands.
+
+## Optional Owner Portal PowerShell
+
+The Owner Portal source now includes a **PowerShell** tab. Single-shot script
+execution is available only after a separately reviewed **mTLS Windows
+Executor** is provisioned and explicitly opted into the trusted Gateway
+runtime. Without it, Apply is disabled; Analyzer and second-AI buttons are
+always disabled placeholders. **No production deploy or Windows execution**
+is implied by source/CI. See [Owner PowerShell contract](docs/OWNER-POWERSHELL.md).

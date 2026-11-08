@@ -39,6 +39,10 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
         self.assertIn("COPY fortis_approvals/integrations/ /opt/fortis/fortis_approvals/integrations/", src)
         self.assertIn("COPY fortis_approvals/extensions/ /opt/fortis/fortis_approvals/extensions/", src)
         self.assertIn("COPY fortis_approvals/clients/ /opt/fortis/fortis_approvals/clients/", src)
+        # Owner Portal imports the opt-in shell client during module load. The
+        # curated image must include it even when shell execution is disabled.
+        self.assertIn("fortis_approvals/owner_shell.py ", src)
+        self.assertIn("fortis_approvals/owner_shell_portal.py ", src)
         self.assertNotIn("COPY . ", src)
         ignored=(ROOT/'.dockerignore').read_text().splitlines()
         for entry in ('**/tests','**/.env','**/*.key','**/*.pem','**/*.sqlite','**/private'):

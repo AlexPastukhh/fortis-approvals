@@ -17,6 +17,7 @@ tests=(
   test_gateway.py
   test_owner_portal.py
   test_owner_portal_input.py
+  test_owner_shell_portal.py
   test_runtime.py
   test_repo_action_contract.py
   test_repo_ingress.py
