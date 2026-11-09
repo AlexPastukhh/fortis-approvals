@@ -75,8 +75,7 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         [] if preserve_uncertain_ids is None else preserve_uncertain_ids)
     claimed_permitted = validate_uncertain_ids(
         [] if preserve_claimed_ids is None else preserve_claimed_ids)
-    require(len(claimed_permitted)<=3 and claimed_permitted <= permitted,
-            'PILOT_CLAIMED_SCOPE_NOT_UNCERTAIN')
+    require(len(claimed_permitted)<=3,'PILOT_CLAIMED_SCOPE_INVALID')
     require(type(require_exact_uncertain) is bool and type(require_exact_claimed) is bool,
             'PILOT_UNCERTAIN_SCOPE_INVALID')
     require(native or not claimed_permitted,'PILOT_CLAIMED_REQUIRES_NATIVE')
@@ -173,8 +172,31 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                     approval=a.execute(
                         'SELECT actor,state,payload FROM requests WHERE id=?',
                         (job_id,)).fetchone()
-                    require(approval is not None and approval[1]=='UNCERTAIN',
+                    require(approval is not None and approval[1] in
+                            ('UNCERTAIN','CLOSED_UNCONFIRMED'),
                             'PILOT_CLAIMED_APPROVAL_NOT_UNCERTAIN')
+                    if approval[1]=='UNCERTAIN':
+                        require(job_id in permitted,
+                                'PILOT_CLAIMED_SCOPE_NOT_UNCERTAIN')
+                    else:
+                        # A user may administratively close an unknown-outcome
+                        # request without rewriting its worker job. Such a
+                        # claimed job must remain explicitly scoped and have
+                        # a durable closure event before byte-for-byte carryover.
+                        audit=a.execute(
+                            "SELECT detail FROM events WHERE request_id=? "
+                            "AND state='CLOSED_UNCONFIRMED' ORDER BY seq DESC LIMIT 1",
+                            (job_id,)).fetchone()
+                        require(audit is not None,
+                                'PILOT_CLAIMED_CLOSURE_AUDIT_MISSING')
+                        try:closure=json.loads(audit[0])
+                        except (TypeError,ValueError):
+                            raise RuntimeError('PILOT_CLAIMED_CLOSURE_AUDIT_INVALID') from None
+                        require(type(closure) is dict and
+                                type(closure.get('owner')) is str and
+                                bool(closure['owner']) and
+                                closure.get('remoteEffectVerified') is False,
+                                'PILOT_CLAIMED_CLOSURE_AUDIT_INVALID')
                     try:
                         request=json.loads(approval[2])
                     except (TypeError,ValueError):

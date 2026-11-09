@@ -536,8 +536,11 @@ if($PreserveUncertainRequests){
 }
 if($PreserveClaimedJobs){
     $ClaimIds=@(Parse-PreservedUncertainRequests $PreserveClaimedJobs)
-    $KnownIds=@(Parse-PreservedUncertainRequests $PreserveUncertainRequests)
-    if($ClaimIds.Count -gt 3 -or @($ClaimIds|Where-Object{$KnownIds -cnotcontains $_}).Count -or
+    # Eligibility is validated by the read-only state helper: an UNCERTAIN
+    # claim must be in the current reviewed uncertainty scope, while a
+    # CLOSED_UNCONFIRMED claim requires an independently audited closure.
+    # Do not strand already-closed claims during the next Backup/release.
+    if($ClaimIds.Count -gt 3 -or
         $Action -cnotin @('Apply','Check') -or -not $Build -or
         $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
         -not $ConfirmWorkerQuiescent){throw 'RELEASE_CLAIMED_REQUIRES_OWNER_REVIEW_AND_QUIESCENCE'}

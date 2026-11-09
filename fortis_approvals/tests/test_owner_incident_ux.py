@@ -32,12 +32,13 @@ class OwnerIncidentUXSourceTests(unittest.TestCase):
         self.assertIn("try{\n   const exact=await api('/v1/owner/requests/'+row.requestId)",APP)
         self.assertIn('Не отправляйте решение повторно',APP)
 
-    def test_closure_requires_backup_attestation_web_authn_and_unknown_warning(self):
+    def test_one_click_owner_close_requires_only_session_csrf_and_known_fingerprint(self):
         self.assertIn("row.state==='UNCERTAIN'",APP)
-        self.assertIn("acknowledgeUnknown:true",APP)
-        self.assertIn("api('/v1/owner/incidents/close/begin'",APP)
-        self.assertIn("api('/v1/owner/incidents/close/finish'",APP)
-        self.assertIn('const response=await ceremony(begin)',APP)
-        self.assertIn('НЕ подтверждает выполнение операции',APP)
-        self.assertIn('fortis-gateway-backup-[0-9a-f]{32}',APP)
+        self.assertIn("close.textContent='Закрыть заявку'",APP)
+        self.assertIn("api('/v1/owner/incidents/close/simple'",APP)
+        self.assertIn('{requestId:row.requestId,fingerprint:row.fingerprint},true',APP)
+        self.assertIn('Результат операции не подтверждён',APP)
+        self.assertNotIn('fortis-gateway-backup-[0-9a-f]{32}',APP)
+        self.assertNotIn('/v1/owner/incidents/close/begin',APP)
+        self.assertNotIn('/v1/owner/incidents/close/finish',APP)
         self.assertNotIn('innerHTML',APP)

@@ -70,6 +70,21 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
+## AI incident details and simple owner close — source candidate
+
+Authenticated machine `WorkflowClient.details(UUID)` returns the
+actor-owned full Core request/preview, paginated audit, worker status
+(no claim token), and a durable receipt if present. This is read-only,
+not reconciliation or execution. Git/GitHub effect investigation uses
+separate authorized read operations.
+
+`Закрыть заявку` in Owner Portal uses the existing owner WebAuthn login
+session + CSRF and writes `CLOSED_UNCONFIRMED` with immutable owner audit.
+No second WebAuthn ceremony, cold-backup name, explanation, or `FAILED`
+worker requirement. It does **not** claim success/failure of the original
+operation or change the worker job. Exact scoped `CLAIMED` carryover
+survives closure with verified audit.
+
 ## Explicit historical claimed worker quarantine — source candidate
 
 Only an exact owner-pinned `-PreserveClaimedJobs` UUID that also belongs to

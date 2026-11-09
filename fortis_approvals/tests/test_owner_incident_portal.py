@@ -1,10 +1,12 @@
 """Owner-only incident protocol extensions without altering the pinned Core/Portal."""
 from pathlib import Path
+from types import SimpleNamespace
 import json
 from unittest.mock import patch
 
 from fortis_approvals.core import Denied
 from fortis_approvals.incidents import IncidentCore, IncidentOwnerPortal, IncidentOwnerWebAuthn
+from fortis_approvals.workflow.ingress import NativeIngress, NATIVE_PATHS
 from test_owner_portal import G2WebAuthnTest
 from test_owner_portal_input import OwnerPortalInputTests
 
@@ -19,6 +21,84 @@ class IncidentOwnerInputTests(OwnerPortalInputTests):
             policies={('synthetic','set_ask'):'ASK'},
             authenticator=self.auth,owner_verifier=self.owner)
         self.portal=IncidentOwnerPortal(self.core,self.owner)
+
+    def test_machine_full_details_read_is_actor_scoped_and_nonmutating(self):
+        row=self.submit()
+        rid=row['requestId']
+        assert '/v1/workspace/details' in NATIVE_PATHS
+        native=NativeIngress(SimpleNamespace(
+            broker=SimpleNamespace(core=self.core)),
+            github=None,workspace=None,store=None,actor='agent-1')
+        payload={'requestId':rid,'eventOffset':0,'eventLimit':100}
+        details=native._dispatch('/v1/workspace/details',payload,'agent-secret','agent-1')
+        self.assertEqual(details['request']['requestId'],rid)
+        self.assertEqual(details['request']['request'],row['request'])
+        self.assertEqual(details['request']['preview'],row['preview'])
+        self.assertEqual(details['request']['actor'],'agent-1')
+        self.assertEqual(details['eventTotal'],1)
+        self.assertEqual(details['events'][0]['state'],'PENDING')
+        self.assertIsNone(details['worker'])
+        self.assertIsNone(details['receipt'])
+        self.assertEqual(details['eventsTruncated'],False)
+        self.assertEqual(self.core.events(rid)[0]['state'],'PENDING')
+        self.assertEqual(native._dispatch('/v1/workspace/details',
+            {**payload,'eventLimit':1},'agent-secret','agent-1')['eventTotal'],1)
+        with self.assertRaises(Denied):
+            native._dispatch('/v1/workspace/details',payload,'wrong-secret','agent-1')
+        with self.assertRaises(Denied):
+            native._dispatch('/v1/workspace/details',
+                             {**payload,'operation':'execute'},'agent-secret','agent-1')
+        with self.assertRaises(Denied):
+            self.core.machine_request_details('agent-secret',rid,event_limit=100000)
+        self.assertEqual(self.core._read(rid)['state'],'PENDING')
+
+    def test_machine_details_hide_worker_claim_and_return_worker_metadata(self):
+        row=self.submit()
+        rid=row['requestId']
+        class FakeStore:
+            def job(self,request_id):
+                assert request_id==rid
+                return dict(id=rid,actor='agent-1',state='CLAIMED',
+                            claim='DO_NOT_EXPOSE_SECRET_CLAIM',
+                            error=None,result=None)
+        self.adapter.store=FakeStore()
+        details=self.core.machine_request_details('agent-secret',rid)
+        self.assertEqual(details['worker'],{'state':'CLAIMED','actor':'agent-1',
+            'error':None,'hasClaim':True,'result':None})
+        self.assertNotIn('DO_NOT_EXPOSE_SECRET_CLAIM',json.dumps(details))
+        self.assertEqual(details['request']['state'],'PENDING')
+
+    def test_simple_close_session_csrf_audit_and_no_reexecution(self):
+        row=self.submit()
+        rid=row['requestId']
+        with patch.object(self.adapter,'apply',side_effect=RuntimeError('UNKNOWN')):
+            code,unknown,_=self.call('/v1/owner/decision/session',self.decision_body(row))
+        self.assertEqual((code,unknown['state']),(200,'UNCERTAIN'))
+        body={'requestId':rid,'fingerprint':unknown['fingerprint']}
+        encoded=json.dumps(body).encode()
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',encoded,cookie='')[0],403)
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',encoded,csrf=None)[0],403)
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',
+            json.dumps({**body,'fingerprint':'a'*64}).encode())[0],403)
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',
+            json.dumps({'requestId':rid}).encode())[0],404)
+        self.assertEqual(self.core._read(rid)['state'],'UNCERTAIN')
+        self.portal.read_only_banner=True
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',encoded)[0],403)
+        self.portal.read_only_banner=False
+        code,closed,_=self.call('/v1/owner/incidents/close/simple',encoded)
+        self.assertEqual((code,closed['state']),(200,'CLOSED_UNCONFIRMED'))
+        self.assertIsNone(closed['result'])
+        self.assertEqual(closed['failure'],'REMOTE_OUTCOME_UNCONFIRMED')
+        self.assertEqual(closed['incidentClosure']['owner'],'test-owner')
+        self.assertEqual(closed['incidentClosure']['closeMethod'],'authenticated_owner_session')
+        self.assertEqual(closed['incidentClosure']['outcome'],'UNCONFIRMED')
+        self.assertEqual(self.adapter.get('R3')['version'],0)
+        self.assertEqual(self.core.owner_unresolved()['total'],0)
+        self.assertEqual(self.core.events(rid)[-1]['state'],'CLOSED_UNCONFIRMED')
+        self.assertEqual(self.core.machine_request_details('agent-secret',rid)['incidentClosure'],
+                         closed['incidentClosure'])
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',encoded)[0],403)
 
     def test_unresolved_owner_listing_is_auth_bound_and_not_pending(self):
         pending=self.submit()
@@ -103,6 +183,32 @@ class IncidentWebAuthnTests(G2WebAuthnTest):
             authenticator=self.auth,owner_verifier=self.owner)
         self.portal=IncidentOwnerPortal(self.core,self.owner)
         self.invite=self.owner.issue_invitation()
+
+    def test_one_click_close_with_real_webauthn_login_needs_no_second_ceremony(self):
+        row=self.core.client('agent-secret','submit',self.action())
+        self.enroll();cookie,csrf=self.login()
+        with patch.object(self.adapter,'apply',side_effect=RuntimeError('ambiguous effect')):
+            code,unknown,_=self.call('/v1/owner/decision/session',{
+                'requestId':row['requestId'],'fingerprint':row['fingerprint'],
+                'decision':'approve'},cookie=cookie,csrf=csrf)
+        self.assertEqual((code,unknown['state']),(200,'UNCERTAIN'))
+        body={'requestId':row['requestId'],'fingerprint':row['fingerprint']}
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',body,
+                                   cookie=cookie,csrf='wrong')[0],403)
+        code,closed,_=self.call('/v1/owner/incidents/close/simple',body,
+                                cookie=cookie,csrf=csrf)
+        self.assertEqual((code,closed['state']),(200,'CLOSED_UNCONFIRMED'))
+        self.assertIsNone(closed['result'])
+        self.assertEqual(closed['failure'],'REMOTE_OUTCOME_UNCONFIRMED')
+        self.assertEqual(closed['incidentClosure']['owner'],self.owner.owner)
+        self.assertEqual(closed['incidentClosure']['closeMethod'],
+                         'authenticated_owner_session')
+        self.assertEqual(closed['incidentClosure']['originalFingerprint'],
+                         row['fingerprint'])
+        self.assertEqual(self.adapter.get('R3')['version'],0)
+        self.assertEqual(self.core.events(row['requestId'])[-1]['state'],'CLOSED_UNCONFIRMED')
+        self.assertEqual(self.call('/v1/owner/incidents/close/simple',body,
+                                   cookie=cookie,csrf=csrf)[0],403)
 
     def test_uncertain_owner_web_authn_closure_is_not_success(self):
         row=self.core.client('agent-secret','submit',self.action())

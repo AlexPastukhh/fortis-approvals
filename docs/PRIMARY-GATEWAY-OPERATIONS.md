@@ -1,5 +1,46 @@
 # Primary Fortis Gateway — operator procedure
 
+## AI full incident read + one-click owner closure (SOURCE CANDIDATE)
+
+The installed Primary does NOT include this until owner merge, green
+Source CI, pinned Windows source, Check, Apply, Backup and Promote.
+
+After release the authenticated Repo machine TLS client can call:
+
+```python
+from fortis_approvals.workflow.client import default_client
+client=default_client()
+full=client.details('2df32a24-efb1-4dac-97f6-3b66147d8944')
+# full['request'], full['events'], full['worker'], full['receipt']
+# For paginated events: client.details(uuid, event_offset=100, event_limit=100)
+```
+
+This is `POST /v1/workspace/details` with a UUID and event pagination.
+It uses the existing machine grant and permits only requests **initiated
+by that authenticated actor**. Returns the complete Core owner-equivalent
+request including payload, preview, fingerprint, decision, owner, timestamps,
+result and failure; plus audit events, worker state/result/error and durable
+receipts if present. A worker claim token and owner session are never included.
+This is **read only**: it never submits, replays, finishes or reconciles.
+
+AI investigation must separately compare upstream GitHub branches/SHA,
+local Git worktrees and the Repo worker journal. Absence of a receipt
+does not prove absence of a remote effect.
+
+In the Owner Portal incident tab, `Закрыть заявку` now directly records
+`UNCERTAIN -> CLOSED_UNCONFIRMED` after the normal owner WebAuthn login
+and CSRF check. There is no second WebAuthn ceremony, backup name,
+explanation or terminal-FAILED worker prerequisite. It is an
+administrative dismissal: it **does not assert EXECUTED or NOT_EXECUTED**,
+does not retry, and preserves original request, result, failure, worker
+job and immutable audit. The owner and closure mode are recorded.
+
+If a `CLAIMED` worker job survives administrative closure, subsequent
+backup and release still preserve it by the explicitly approved UUID
+and a verified closure audit; no silent state change. Existing operator
+quiescence attestation for claim carryover remains necessary.
+
+
 ## Исторический CLAIMED — owner-reviewed карантин (SOURCE CANDIDATE 2026-11-09)
 
 После PR #37 Windows Check показал шесть `UNCERTAIN` и один

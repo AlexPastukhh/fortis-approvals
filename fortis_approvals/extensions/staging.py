@@ -62,7 +62,7 @@ class StagedMachine:
             method, path = env.get('REQUEST_METHOD'), env.get('PATH_INFO', '')
             if method == 'GET': return self.delegate(env, start)  # actor-owned status or ordinary 404
             credential, actor = self.base._credential(env)
-            allowed = path in ('/v1/reads', '/v1/integrations/catalog', '/v1/workspace/capabilities')
+            allowed = path in ('/v1/reads', '/v1/integrations/catalog', '/v1/workspace/capabilities', '/v1/workspace/details')
             if path in ('/v1/integrations/call', '/v1/integrations/result'):
                 length = env.get('CONTENT_LENGTH', '')
                 check(type(length) is str and length.isdecimal() and not length.startswith('0') and
