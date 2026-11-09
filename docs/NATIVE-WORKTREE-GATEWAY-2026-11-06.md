@@ -16,6 +16,10 @@ All grants are restricted to the configured owner, admitted repository mode and 
 | Operation | Policy | Conditions |
 | --- | --- | --- |
 | get_repository, list_branches, list_commits, get_file, list_pull_requests, get_pull_request, list_workflow_runs, list_check_runs, get_commit_status | ALLOW | Selected repository, closed projected read contracts |
+| get_workflow_run, list_workflow_jobs, get_job_log | ALLOW (new source, awaiting release) | Exact GitHub repo/run/attempt/SHA and job membership, bounded/redacted logs, no Sonar project required |
+| get_check_run, list_check_annotations, list_run_artifacts | ALLOW (new source, awaiting release) | Same owner/token scope; Checks endpoints may require unavailable provider token permission |
+| get_analysis_manifest | ALLOW (new source, awaiting release) | GitHub CI artifact metadata is CI_RECORDED_NOT_SONAR_VERIFIED; unpinned project key proves nothing about Sonar |
+| rerun_failed_jobs, rerun_job, cancel_analysis_run, dispatch_analysis_workflow | DENY by default; per-repository ASK opt-in (new source) | Exact approved repositories, run/attempt/SHA/fork checks, owner WebAuthn; no silent CI mutations |
 | workspace.inspect | ALLOW | Canonical main or registered linked task worktree; HEAD/status/diff/index/tree digest and worktree inventory |
 | workspace.fetch | ALLOW | main or task/<slug>; Gateway provides verified Git bundle |
 | workspace.create_task | ALLOW | Clean canonical main; upstream main SHA; canonical linked worktree path; optional explicit adoption of an existing clean task at an exact SHA |
@@ -41,6 +45,38 @@ All grants are restricted to the configured owner, admitted repository mode and 
 | Sonar reads / accept_issue | Existing ALLOW / ASK | Existing Sonar integration unchanged |
 
 GitHub token permissions already used by the accepted pilot cover Contents read/write, Pull requests read/write and Actions read. Checks and commit-status reads need their corresponding read permissions if used. Workflow-file publication additionally needs GitHub workflow write permission. No token belongs in Repo or chat.
+
+## Ordinary native GitHub CI diagnosis — source candidate (2026-11-09)
+
+The native Gateway profile reuses the typed GitHub analysis adapter for
+**seven** GitHub READ operations and **four** CI control operations independently
+of SonarCloud. `get_workflow_run` → `list_workflow_jobs` → `get_job_log` permits
+diagnosing an exact failed run without a GitHub connector. Read grants are
+restricted to the authenticated Repo actor and GitHub owner/token scope.
+Workflow ID/path and run/job/SHA/attempt are checked using GitHub responses.
+
+`get_job_log` downloads only the selected job via narrowly scoped redirect,
+with no bearer on the second hop, a 2 MiB download limit, 500 lines/64 KiB per
+response and best-effort secret redaction. Arbitrary CI logs may still contain
+secrets. GitHub Checks reads require provider permissions independent of Actions
+Read. `get_analysis_manifest` returns only a CI-recorded claim, not proof of
+Sonar analysis; Sonar reports remain a separate optional profile.
+
+CI controls are DENY until an owner-reviewed release sets
+`FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=repo1,repo2` using Windows controller
+`-CiControlRepositories` with `-Build -SourceSha`. Each selected owner-scoped
+repo then receives ASK; every mutation requires the owner's WebAuthn decision.
+The protected release record and admission checks bind this opt-in; it cannot
+come from AI params or an unreviewed environment edit. After deployment,
+`/v1/workspace/capabilities` advertises `githubCiReads` and the exact trusted
+`githubCiControls` opt-in, allowing Repo to distinguish source availability
+from live activation.
+
+**Rollout boundary:** these are source changes, not live Primary capabilities.
+Owner merges the PR, verifies exact SHA and CI, performs controlled release,
+then confirms jobs and logs for a real failed CI run. Never edit the running
+Gateway env or protected records manually. See
+[analysis-review contract](ANALYSIS-REVIEW-CONTRACT.md) for Sonar-only opt-in.
 
 ## Dynamic token-scoped repositories — activated 2026-11-07
 

@@ -72,6 +72,17 @@
 - При будущих релизах distinguish snapshot-копию state от controller-managed `Backup` (последний требуется для `Promote`); не создавать rescue volume без необходимости, но не удалять защищённую rollback-копию автоматически.
 
 
+## GitHub Actions в обычном профиле — ожидает релиза и live-приёмки
+
+Source-кандидат 2026-11-09 переносит семь GitHub READ и четыре CI-control
+операции из optional analysis-review в native профиль, без SonarCloud binding.
+CI-control выключен по умолчанию и при opt-in остаётся ASK.
+До нового образа и owner-managed релиза — SOURCE CANDIDATE, не LIVE VERIFIED.
+После merge проверить PowerShell 5.1 parser, SelfTest, точный image/record,
+Backup/Promote. На настоящем `rd-graphs` run `42542630753` проверить
+jobs/logs и SHA, а также запрет чужого репозитория. Успешный Actions READ
+не доказывает доступ GitHub Checks текущим токеном.
+
 ## Следующие задачи
 
 | Порядок | Задача | Что должно получиться |

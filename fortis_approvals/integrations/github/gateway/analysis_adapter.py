@@ -22,6 +22,12 @@ class AnalysisGitHubAdapter(GitHubAdapter):
         require(type(ident) is int and str(ident) in workflows and workflows[str(ident)] == path,
                 'GITHUB_ANALYSIS_WORKFLOW_DENIED')
 
+    def _manifest_project_key(self, repo):
+        return self.bindings[repo]['projectKey']
+
+    def _ci_control_allowed(self, repo):
+        return self.bindings[repo]['allowCiControl']
+
     def _run(self, repo, ident, attempt):
         raw = self._api('GET', self._path(repo, 'actions/runs/' + str(ident) + '/attempts/' + str(attempt)))
         require(type(raw) is dict and raw.get('id') == ident and raw.get('run_attempt') == attempt)
@@ -141,9 +147,11 @@ class AnalysisGitHubAdapter(GitHubAdapter):
                     require(item['digest'] == 'sha256:' + hashlib.sha256(content).hexdigest(),
                             'GITHUB_ARTIFACT_DIGEST_MISMATCH')
                 MANIFEST(manifest)
+                project_key = self._manifest_project_key(repo)
                 require(manifest['repository'] == run['repository'] and manifest['workflowId'] == run['workflowId'] and
                     manifest['workflowPath'] == run['workflowPath'] and manifest['runId'] == run['id'] and
-                    manifest['attempt'] == run['attempt'] and manifest['projectKey'] == self.bindings[repo]['projectKey'],
+                    manifest['attempt'] == run['attempt'] and
+                    (project_key is None or manifest['projectKey'] == project_key),
                     'GITHUB_MANIFEST_BINDING_MISMATCH')
                 if 'pullRequest' in manifest['context']:
                     require(run['event'] == 'pull_request' and any(
@@ -162,7 +170,7 @@ class AnalysisGitHubAdapter(GitHubAdapter):
 
     def prepare(self, request):
         op, repo, p = request['operation'], self._repo(request['target']), request['params']
-        require(op in ACTION_NAMES and self.bindings[repo]['allowCiControl'], 'GITHUB_CI_CONTROL_DISABLED')
+        require(op in ACTION_NAMES and self._ci_control_allowed(repo), 'GITHUB_CI_CONTROL_DISABLED')
         validate_action(op, p)
         if op == 'dispatch_analysis_workflow':
             workflow = self._api('GET', self._path(repo, 'actions/workflows/' + str(p['workflowId'])))
