@@ -2,11 +2,14 @@
 
 **Required first read for every new Fortis Repo chat:** open the active container
 use-case registry through `/workspace/repo/README.md` (its first section links
-straight to the registry); **read only the short registry introduction**, without scanning the whole table, then **read UC-CONT-002**
-(Docker → GitHub → CI → Windows/Mirror) and **UC-CONT-003** (GitHub only through
-the supported typed client + Fortis Gateway) **in full**. Other cases are
-selected as needed. These shared rules are owned by the container registry,
-not copied here.
+straight to the registry); **read only the short registry introduction**,
+without scanning the whole table, then **read these three UCs in full**:
+**UC-CONT-002** (Docker → GitHub → CI → Windows/Mirror),
+**UC-CONT-003** (GitHub only through the supported typed client + Fortis Gateway)
+and **[UC-GW-009](docs/use-cases/incidents.md#uc-gw-009)**
+(UNCERTAIN: full read-only investigation and owner-only close).
+Other cases are selected as needed. The shared mandatory-reading rule
+is owned by the container registry, not copied here.
 
 Canonical source for the Fortis Approvals Gateway: typed service operations,
 ALLOW/ASK/DENY policy, owner WebAuthn decisions and durable execution receipts.
