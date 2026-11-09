@@ -1,6 +1,11 @@
 # Analysis review — source operation contract
 
-Status: **SOURCE PRESENT; optional profile disabled, no live-provider acceptance**.
+Status: **SOURCE PRESENT; optional Sonar-composed profile disabled, no live-provider acceptance**.
+The separate [native GitHub CI route](NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
+reuses GitHub analysis operations in the ordinary Gateway without requiring
+a SonarCloud project for each GitHub repository. Sonar issue operations and
+composed Sonar reports remain opt-in to this optional profile. Source changes
+do not activate the Gateway image or prove live API access.
 This document owns the optional Sonar/GitHub analysis profile, schemas and
 correlation limits. The [current-state document](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
 owns deployed scope. The [native contract](NATIVE-WORKTREE-GATEWAY-2026-11-06.md)

@@ -17,7 +17,7 @@ ACTION = ('github', 'create_branch')
 FILE_PR_READS = frozenset({('github', 'get_file'), ('github', 'list_pull_requests'), ('github', 'get_pull_request')})
 FILE_PR_ACTIONS = frozenset({('github', 'push_files'), ('github', 'create_pull_request')})
 CI_READS = frozenset({('github', 'list_workflow_runs')})
-CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS', 'FORTIS_GITHUB_NATIVE_WORKTREE', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS', 'FORTIS_GITHUB_BOOTSTRAP_TASK', 'FORTIS_GITHUB_NATIVE_MULTI_REPO')
+CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS', 'FORTIS_GITHUB_NATIVE_WORKTREE', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS', 'FORTIS_GITHUB_BOOTSTRAP_TASK', 'FORTIS_GITHUB_NATIVE_MULTI_REPO', 'FORTIS_GITHUB_CI_CONTROL_REPOSITORIES')
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class GitHubPilotConfig:
     required_workflows: tuple = ()
     bootstrap_task: str = ''
     dynamic_repositories: bool = False  # Trusted opt-in, not part of legacy review profiles.
+    ci_control_repositories: tuple = ()  # Exact owner-scoped ASK allowlist; default disabled.
 
     def __post_init__(self):
         if type(self.owner) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.owner):
@@ -72,6 +73,16 @@ class GitHubPilotConfig:
         if type(self.dynamic_repositories) is not bool or (self.dynamic_repositories and not self.native_worktree):
             raise ValueError('GITHUB_DYNAMIC_REPOS_REQUIRES_NATIVE')
 
+        ci_repos=self.ci_control_repositories
+        if (type(ci_repos) is not tuple or len(ci_repos)>20 or
+                len(ci_repos)!=len(set(ci_repos)) or
+                any(type(repo) is not str or not re.fullmatch(
+                    r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',repo) or repo in ('.','..')
+                    for repo in ci_repos) or
+                (ci_repos and (not self.native_worktree or
+                    (not self.dynamic_repositories and ci_repos != (self.repository,))))):
+            raise ValueError('GITHUB_CI_CONTROL_SCOPE_INVALID')
+
         if (type(self.bootstrap_task) is not str or
                 (self.bootstrap_task and (not self.native_worktree or not re.fullmatch('[a-z0-9][a-z0-9-]{0,99}',self.bootstrap_task)))):
             raise ValueError('GITHUB_BOOTSTRAP_TASK_INVALID')
@@ -103,13 +114,18 @@ def config_from_environment(environment):
     required = environment.get(CONFIG_KEYS[6], '')
     if required and not re.fullmatch('[1-9][0-9]*(?:,[1-9][0-9]*){0,9}',required):
         raise ValueError('GITHUB_NATIVE_REQUIRED_CI_INVALID')
+    control=environment.get('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES','')
+    if type(control) is not str or (control and
+            not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}',control)):
+        raise ValueError('GITHUB_CI_CONTROL_SCOPE_INVALID')
     return GitHubPilotConfig(
         owner=environment.get(CONFIG_KEYS[0], ''),
         repository=environment.get(CONFIG_KEYS[1], ''),
         branch_prefix=environment.get(CONFIG_KEYS[2], 'fortis-e2e/'),
         file_pr_branch=environment.get(CONFIG_KEYS[3], ''), ci_reads=ci == '1',
         native_worktree=native == '1', required_workflows=tuple(map(int,required.split(','))) if required else (),
-        bootstrap_task=environment.get(CONFIG_KEYS[7],''),dynamic_repositories=multi == '1')
+        bootstrap_task=environment.get(CONFIG_KEYS[7],''),dynamic_repositories=multi == '1',
+        ci_control_repositories=tuple(control.split(',')) if control else ())
 
 
 class GitHubPilotAdapter(GitHubAdapter):

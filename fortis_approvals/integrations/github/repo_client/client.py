@@ -112,6 +112,63 @@ class GitHubClient:
     def get_commit_status(self, repo, ref):
         return self.read("get_commit_status", repo, {"ref": ref})
 
+    # GitHub Actions analysis reads. Not dependent on SonarCloud.
+    def get_workflow_run(self, repo, run_id, attempt):
+        return self.read('get_workflow_run',repo,dict(runId=run_id,attempt=attempt))
+
+    def list_workflow_jobs(self, repo, run_id, attempt, *, page=1, per_page=100):
+        return self.read('list_workflow_jobs',repo,dict(
+            runId=run_id,attempt=attempt,page=page,perPage=per_page))
+
+    def get_job_log(self, repo, run_id, attempt, job_id, *, offset_lines=0, max_lines=200):
+        return self.read('get_job_log',repo,dict(
+            runId=run_id,attempt=attempt,jobId=job_id,
+            offsetLines=offset_lines,maxLines=max_lines))
+
+    def get_check_run(self, repo, check_run_id, expected_head_sha):
+        return self.read('get_check_run',repo,dict(
+            checkRunId=check_run_id,expectedHeadSha=expected_head_sha))
+
+    def list_check_annotations(self, repo, check_run_id, expected_head_sha,
+                               *, page=1, per_page=100):
+        return self.read('list_check_annotations',repo,dict(
+            checkRunId=check_run_id,expectedHeadSha=expected_head_sha,
+            page=page,perPage=per_page))
+
+    def list_run_artifacts(self, repo, run_id, attempt, *, page=1, per_page=100):
+        return self.read('list_run_artifacts',repo,dict(
+            runId=run_id,attempt=attempt,page=page,perPage=per_page))
+
+    def get_analysis_manifest(self, repo, run_id, attempt, artifact_id):
+        # CI-recorded Sonar metadata, never proof that Sonar analysed this SHA.
+        return self.read('get_analysis_manifest',repo,dict(
+            runId=run_id,attempt=attempt,artifactId=artifact_id))
+
+    # CI changes require explicit trusted repo opt-in and owner ASK approval.
+    def rerun_failed_jobs(self, repo, run_id, attempt, expected_head_sha, *,
+                          request_id, reason):
+        return self.action('rerun_failed_jobs',repo,dict(
+            runId=run_id,attempt=attempt,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason)
+
+    def rerun_job(self, repo, run_id, attempt, job_id, expected_head_sha, *,
+                  request_id, reason):
+        return self.action('rerun_job',repo,dict(
+            runId=run_id,attempt=attempt,jobId=job_id,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason)
+
+    def cancel_analysis_run(self, repo, run_id, attempt, expected_head_sha, *,
+                            request_id, reason):
+        return self.action('cancel_analysis_run',repo,dict(
+            runId=run_id,attempt=attempt,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason)
+
+    def dispatch_analysis_workflow(self, repo, workflow_id, ref, expected_head_sha, *,
+                                   request_id, reason):
+        return self.action('dispatch_analysis_workflow',repo,dict(
+            workflowId=workflow_id,ref=ref,expectedHeadSha=expected_head_sha),
+            request_id=request_id,reason=reason)
+
     def create_branch(self, repo, branch, source_sha, *, request_id, reason):
         return self.action("create_branch", repo,
                            {"branch": branch, "sourceSha": source_sha},

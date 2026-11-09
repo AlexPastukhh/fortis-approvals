@@ -10,6 +10,7 @@ from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
+from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
     '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
@@ -49,7 +50,10 @@ class NativeIngress:
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
                 sensitivePush='ASK',gitHubCredentialInRepo=False,
-                cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'})
+                cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'},
+                githubCiReads=sorted(CI_READ_NAMES),
+                githubCiControls={'default':'DENY','optIn':'ASK',
+                    'repositories':list(getattr(self.github.config,'ci_control_repositories',()))})
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)

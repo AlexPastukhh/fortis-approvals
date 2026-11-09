@@ -70,6 +70,18 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
+## Native GitHub Actions analysis source candidate
+
+GitHub CI analysis READ operations join the normal native profile on the next
+reviewed image release; they do not require `FORTIS_ANALYSIS_REVIEW_CONFIG` or
+a Sonar project. The default CI controls remain DENY. Only an owner-reviewed
+release may pass `-CiControlRepositories 'rd-graphs'` together with
+`-Build -SourceSha <exact-accepted-main-SHA> -Action Apply` to enable ASK for
+the exact selected repository. The protected record binds the flag to public
+container environment and all admission/recovery checks. No manual `docker -e`
+or protected record editing. Normal UC-GW-005 Check/Apply/Backup/Promote and
+live readback are required; source merge is not deployment.
+
 ## New operation onboarding
 
 `Manage-Integrations.ps1` is the permanent owner controller for the extension

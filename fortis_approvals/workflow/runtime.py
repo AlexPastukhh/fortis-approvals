@@ -5,6 +5,7 @@ from .git_backend import GitHubGitBackend
 from .ingress import NativeIngress
 from .store import Store
 from ..integrations.github.contract import LEGACY_READ_OPERATIONS
+from ..integrations.github.analysis_contract import READS as CI_READS, ACTIONS as CI_ACTIONS
 from ..integrations.github.gateway.transport import GitHubHTTPTransport
 from ..integrations.github.registration import register_github_integration
 
@@ -14,7 +15,7 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
         backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store)
     register_github_integration(core=core,broker=broker,adapter=adapter)
-    reads=LEGACY_READ_OPERATIONS-{('github','list_repositories')}
+    reads=(LEGACY_READ_OPERATIONS|CI_READS)-{('github','list_repositories')}
     if config.dynamic_repositories:
         reads=reads|{('github','list_repositories')}
     writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file')}
@@ -27,6 +28,12 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
         core.policies[(actor,'github','create_pull_request')]='ALLOW'
     else:
         core.policies[(actor,'github','create_pull_request',config.repository)]='ALLOW'
+    # CI control stays DENY until the operator explicitly pins repositories.
+    if config.ci_control_repositories:
+        writes=writes|CI_ACTIONS
+        for service,operation in CI_ACTIONS:
+            for ci_repo in config.ci_control_repositories:
+                core.policies[(actor,service,operation,ci_repo)]='ASK'
     broker.actor_read_operations[actor]=broker.actor_read_operations.get(actor,frozenset())|reads
     broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
     workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)

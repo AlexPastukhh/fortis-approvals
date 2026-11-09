@@ -38,6 +38,7 @@ tests=(
   test_github_ci_read.py
   test_native_workflow.py
   test_dynamic_github_repos.py
+  test_native_github_ci.py
   test_dynamic_github_release_source.py
   test_analysis_review.py
   test_extensions.py

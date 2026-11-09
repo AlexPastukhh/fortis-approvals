@@ -27,6 +27,16 @@ class ReleaseOptInSourceTests(unittest.TestCase):
         self.assertIn("if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}",self.script)
         self.assertIn("if multi:required['FORTIS_GITHUB_NATIVE_MULTI_REPO']='1'",self.helper)
 
+    def test_ci_controls_are_optional_and_release_record_pinned(self):
+        self.assertIn("[string]$CiControlRepositories=''",self.script)
+        self.assertIn('RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD',self.script)
+        self.assertIn('ciControlRepositories=(Read-CiControlRepositories $P)',self.script)
+        self.assertIn('ciControlRepositories=$(if($CiControlRepositories)',self.script)
+        self.assertIn('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=',self.script)
+        self.assertIn('PILOT_CI_CONTROL_CONFIG_INVALID',self.helper)
+        self.assertIn('PILOT_CI_CONTROL_REQUIRES_NATIVE',self.helper)
+        self.assertIn('RELEASE_CI_CONTROL_FLAG_FORWARDING_SELFTEST_FAILED',self.script)
+
     def test_selftest_and_primary_promotion_are_separate(self):
         self.assertIn('RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED',self.script)
         self.assertIn('RELEASE_DYNAMIC_RECORD_COMPATIBILITY_SELFTEST_FAILED',self.script)

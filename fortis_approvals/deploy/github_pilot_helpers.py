@@ -222,6 +222,15 @@ def admit(container, expected, *, pilot):
     require(type(multi) is bool and (not multi or pilot and expected.get('nativeWorktree') is True),
             'PILOT_DYNAMIC_REPOSITORIES_CONFIGURATION_INVALID')
     if multi:required['FORTIS_GITHUB_NATIVE_MULTI_REPO']='1'
+    ci_repos=expected.get('ciControlRepositories','')
+    require(type(ci_repos) is str and (not ci_repos or bool(re.fullmatch(
+        r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}',ci_repos))) and
+        (not ci_repos or len(ci_repos.split(','))==len(set(ci_repos.split(',')))),
+        'PILOT_CI_CONTROL_CONFIG_INVALID')
+    if ci_repos:
+        require(pilot and expected.get('nativeWorktree') is True,
+                'PILOT_CI_CONTROL_REQUIRES_NATIVE')
+        required['FORTIS_GITHUB_CI_CONTROL_REPOSITORIES']=ci_repos
     require(env == required, 'PILOT_PUBLIC_CONFIGURATION_MISMATCH')
     require(container['State']['Status'] == expected['status'], 'PILOT_CONTAINER_STATUS_MISMATCH')
     if expected['status'] == 'running' and expected.get('requireHealthy', True):

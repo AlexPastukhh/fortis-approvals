@@ -6,18 +6,36 @@ import re
 import time
 from ..core import Denied, Stale, canonical
 from ..integrations.github.gateway.adapter import GitHubAdapter
+from ..integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
+from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..integrations.github.contract import validate_github_read, validate_github_read_projection
 from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
 
-class NativeGitHubAdapter(GitHubAdapter):
+class NativeGitHubAdapter(AnalysisGitHubAdapter):
     def __init__(self,transport,*,config,root,actor,backend,store):
         self.config=config;self.actor=actor;self.backend=backend;self.workflow=store
-        super().__init__(transport,owner=config.owner,repositories=(config.repository,),receipt_store=Path(root)/'github-receipts.sqlite')
+        super().__init__(transport,owner=config.owner,repositories=(config.repository,),
+            receipt_store=Path(root)/'github-receipts.sqlite',bindings={})
         if config.dynamic_repositories:
             # No second repository allowlist: upstream token determines access.
             # Legacy single-repository mode remains the default until owner rollout.
             self.repositories=None
+
+    def _workflow(self, repo, ident, path):
+        # Unlike the Sonar review profile, native GitHub CI is not pinned
+        # to a Sonar project. The run, workflow path and ID come from GitHub.
+        require(type(ident) is int and 0 < ident < 2**63 and
+            type(path) is str and
+            re.fullmatch(r'\.github/workflows/[A-Za-z0-9_-]+\.ya?ml', path),
+            'GITHUB_NATIVE_WORKFLOW_INVALID')
+
+    def _manifest_project_key(self, repo):
+        # CI-recorded claim only: not independently Sonar-verified.
+        return None
+
+    def _ci_control_allowed(self, repo):
+        return repo in self.config.ci_control_repositories
 
     def _repo(self,target):
         if not self.config.dynamic_repositories:return super()._repo(target)
@@ -40,10 +58,13 @@ class NativeGitHubAdapter(GitHubAdapter):
         return repo
 
     def read(self,request):
+        if type(request) is dict and request.get('operation') in CI_READ_NAMES:
+            self._access(request.get('target'))
+            return AnalysisGitHubAdapter.read(self,request)
         if not self.config.dynamic_repositories:
-            return super().read(request)
+            return GitHubAdapter.read(self,request)
         if type(request) is not dict or request.get('service')!='github':
-            return super().read(request)
+            return GitHubAdapter.read(self,request)
         operation=request.get('operation');target=request.get('target');params=request.get('params')
         validate_github_read(operation,target,params)
         if operation=='list_repositories':
@@ -79,7 +100,7 @@ class NativeGitHubAdapter(GitHubAdapter):
             validate_github_read_projection(operation,result)
             return result
         self._access(target)
-        return super().read(request)
+        return GitHubAdapter.read(self,request)
 
     def _dynamic_ci_gate(self,repo,head):
         """Exact required check names from active GitHub branch rules, no local repo list.
@@ -187,6 +208,8 @@ class NativeGitHubAdapter(GitHubAdapter):
 
     def prepare(self,request):
         operation=request['operation'];repo=self._access(request['target']);p=request['params']
+        if operation in CI_ACTION_NAMES:
+            return AnalysisGitHubAdapter.prepare(self,request)
         if operation=='push_commits':
             row=self.artifact(request);task=self.task(repo,p['task'])
             actual=self._ref(repo,task['branch'],allow_not_found=True)
@@ -216,14 +239,18 @@ class NativeGitHubAdapter(GitHubAdapter):
             ci=(self._dynamic_ci_gate(repo,p['expectedHeadSha'])
                 if self.config.dynamic_repositories and repo!=self.config.repository
                 else self._ci_gate(repo,p['expectedHeadSha'],pr['head']['ref']))
-            return {**super().prepare(request),'requiredCI':ci}
-        return super().prepare(request)
+            return {**GitHubAdapter.prepare(self,request),'requiredCI':ci}
+        return GitHubAdapter.prepare(self,request)
 
     def apply(self,request):
         prior=self.receipt(request['requestId'])
         if prior is not None:return prior
         operation=request['operation']
-        if operation not in ('push_commits','mark_pr_ready'):return super().apply(request)
+        if operation in CI_ACTION_NAMES:
+            self._access(request['target'])
+            return AnalysisGitHubAdapter.apply(self,request)
+        if operation not in ('push_commits','mark_pr_ready'):
+            return GitHubAdapter.apply(self,request)
         snapshot=self.prepare(request);repo=request['target'];p=request['params']
         if operation=='push_commits':
             row=self.artifact(request);path=self.workflow.artifacts/(p['artifactSha256']+'.bundle')

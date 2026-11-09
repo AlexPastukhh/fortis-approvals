@@ -6,6 +6,7 @@ param(
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories,
+    [string]$CiControlRepositories='',
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
 $ForwardParameters=@{}+ $PSBoundParameters
@@ -194,6 +195,23 @@ function Read-DynamicRepositoriesFlag {
     return $Value
 }
 
+function Read-CiControlRepositories {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_CI_CONTROL_RECORD_INVALID'}
+    $Value=''
+    if($Record -is [Collections.IDictionary]){
+        if($Record.Contains('ciControlRepositories')){$Value=$Record['ciControlRepositories']}
+    } else {
+        $Prop=$Record.PSObject.Properties['ciControlRepositories']
+        if($null -ne $Prop){$Value=$Prop.Value}
+    }
+    if($Value -isnot [string]){throw 'RELEASE_CI_CONTROL_RECORD_INVALID'}
+    if($Value -and ($Value -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
+        @($Value.Split(',')|Select-Object -Unique).Count -ne @($Value.Split(',')).Count)){
+        throw 'RELEASE_CI_CONTROL_RECORD_INVALID'
+    }
+    return $Value
+}
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -242,6 +260,7 @@ function Admit {
         owner=$P.owner;repository=$P.repository;filePrBranch=$P.filePrBranch;ciReads=$P.ciReads
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
+        ciControlRepositories=(Read-CiControlRepositories $P)
         vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     if($P.restartPolicy -ceq 'unless-stopped'){
         # The already deployed immutable image still validates the original
@@ -381,6 +400,22 @@ if($Action -eq 'SelfTest'){
     try{$null=Read-DynamicRepositoriesFlag $WrongRecord}
     catch{if($_.Exception.Message -cne 'RELEASE_DYNAMIC_RECORD_INVALID'){throw};$Rejected=$true}
     if(-not $Rejected){throw 'RELEASE_DYNAMIC_RECORD_TYPE_SELFTEST_FAILED'}
+    $CiOldRecord='{"schema":1}' | ConvertFrom-Json
+    $CiNewRecord='{"ciControlRepositories":"rd-graphs"}' | ConvertFrom-Json
+    $CiBadRecord='{"ciControlRepositories":"rd-graphs,rd-graphs"}' | ConvertFrom-Json
+    if((Read-CiControlRepositories $CiOldRecord) -cne '' -or
+       (Read-CiControlRepositories $CiNewRecord) -cne 'rd-graphs'){
+        throw 'RELEASE_CI_CONTROL_RECORD_COMPATIBILITY_SELFTEST_FAILED'
+    }
+    $CiRejected=$false
+    try{$null=Read-CiControlRepositories $CiBadRecord}
+    catch{if($_.Exception.Message -cne 'RELEASE_CI_CONTROL_RECORD_INVALID'){throw};$CiRejected=$true}
+    if(-not $CiRejected){throw 'RELEASE_CI_CONTROL_RECORD_VALIDATION_SELFTEST_FAILED'}
+    $CiForward=@(Forward-NativeParameters @{CiControlRepositories='rd-graphs'})
+    if($CiForward.Count -ne 2 -or $CiForward -cnotcontains '-CiControlRepositories' -or
+        $CiForward[1] -cne 'rd-graphs'){
+        throw 'RELEASE_CI_CONTROL_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
@@ -394,8 +429,16 @@ if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
 }
+if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
+    throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
+}
+if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
+    @($CiControlRepositories.Split(',')|Select-Object -Unique).Count -ne @($CiControlRepositories.Split(',')).Count)){
+    throw 'RELEASE_CI_CONTROL_REPOSITORIES_INVALID'
+}
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $CiControlRepositories)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -504,6 +547,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     owner=$Source.runtime.owner;repository=$Source.runtime.repository;filePrBranch=$Source.runtime.filePrBranch
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Source.runtime.requiredWorkflows;bootstrapTask=$Source.runtime.bootstrapTask
     dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)
+    ciControlRepositories=$(if($CiControlRepositories){$CiControlRepositories}else{Read-CiControlRepositories $Source.runtime})
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
@@ -515,8 +559,10 @@ try {
     $EnvLines=@($Old.Config.Env|Where-Object{$_.StartsWith('FORTIS_') -and
         -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and
         -not $_.StartsWith('FORTIS_RELEASE_NONCE=') -and
-        -not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=')})
+        -not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=') -and
+        -not $_.StartsWith('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=')})
     if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}
+    if($Runtime.ciControlRepositories){$EnvLines+='FORTIS_GITHUB_CI_CONTROL_REPOSITORIES='+$Runtime.ciControlRepositories}
     $EnvLines+=@(Extension-EnvLines $CompactConfig $Nonce)
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
