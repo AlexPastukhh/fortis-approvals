@@ -8,6 +8,34 @@
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Осиротевший native worker claim — отдельная задача 2026-11-09
+
+После PR #37 live Windows preflight обнаружил шесть `UNCERTAIN`
+(четыре исторических плюс `workspace.create_task` и `workspace.commit`
+для `feed_and_search_and_bank_and_brain`), один worker job
+`CLAIMED` (`2df32a24-efb1-4dac-97f6-3b66147d8944`).
+Docker Repo worker journal не содержит UUID этого `create_task`,
+но отсутствие записи НЕ подтверждает отсутствие локального эффекта.
+Вторая заявка `ee9c5e73-5d5a-4ea1-8133-d79d59511f32` —
+worker journal `FAILED/UNCERTAIN`.
+
+Owner-reviewed `-PreserveClaimedJobs` и `-ConfirmWorkerQuiescent`
+в новом source-кандидате позволяют *побайтово сохранить*
+единственную явно названную связанную запись `CLAIMED`
+при image release — только с точным SHA и списком UNCERTAIN,
+без исполнения, повторного запуска или подмены статуса.
+`QUEUED`, другие операции, активные approvals и новые UUID
+по-прежнему запрещены. Quiescence пока только owner-attested:
+внешнего worker-процесса helper сам не контролирует.
+
+Обязательный следующий этап: отдельный Owner Portal workflow
+для разбора зависшего `CLAIMED` с точным локальным journal
+и Git-worktree evidence, машинной проверкой отсутствия
+исполнения и подтверждённой backup, WebAuthn и неизменным
+аудитом. Сейчас `owner_close_uncertain` намеренно требует
+worker `FAILED`: перенос не заменяет terminalization.
+Не выполнять UPDATE SQLite или подделывать receipt для удобства.
+
 ## Новый цикл UNCERTAIN и Owner Portal UX — SOURCE CANDIDATE, 2026-11-09
 
 Во время владельческого `Manage-Integrations.ps1 -Action Apply` для CI image

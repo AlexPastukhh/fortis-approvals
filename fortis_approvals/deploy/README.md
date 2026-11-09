@@ -70,6 +70,20 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
+## Explicit historical claimed worker quarantine — source candidate
+
+Only an exact owner-pinned `-PreserveClaimedJobs` UUID that also belongs to
+`-PreserveUncertainRequests` can cross image release, together with
+`-Build -SourceSha <approved sha> -ConfirmWorkerQuiescent`.
+The worker record must be `CLAIMED`, Core `UNCERTAIN`, with identical actor,
+request params and `workspace.create_task`. `QUEUED` and all other unmatched
+jobs are denied. The original SQLite bytes and claim stay unchanged, with
+no fabricated receipt or terminal outcome. This mode only permits migration,
+not incident closure. Operator must independently establish idle Repo worker;
+the switch is an **owner attestation**, not proof of quiescence.
+Backup/Promote inherit protected scope but require a fresh
+`-ConfirmWorkerQuiescent`. See primary operator runbook.
+
 ## Owner-reviewed UNCERTAIN carryover and incident review — source candidate
 
 Four new historical `UNCERTAIN` requests block the installed Gateway state

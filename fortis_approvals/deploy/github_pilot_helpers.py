@@ -69,10 +69,17 @@ def validate_uncertain_ids(value):
 
 
 def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
-                  preserve_uncertain_ids=None, require_exact_uncertain=False):
+                  preserve_uncertain_ids=None, require_exact_uncertain=False,
+                  preserve_claimed_ids=None, require_exact_claimed=False):
     permitted = validate_uncertain_ids(
         [] if preserve_uncertain_ids is None else preserve_uncertain_ids)
-    require(type(require_exact_uncertain) is bool,'PILOT_UNCERTAIN_SCOPE_INVALID')
+    claimed_permitted = validate_uncertain_ids(
+        [] if preserve_claimed_ids is None else preserve_claimed_ids)
+    require(len(claimed_permitted)<=3 and claimed_permitted <= permitted,
+            'PILOT_CLAIMED_SCOPE_NOT_UNCERTAIN')
+    require(type(require_exact_uncertain) is bool and type(require_exact_claimed) is bool,
+            'PILOT_UNCERTAIN_SCOPE_INVALID')
+    require(native or not claimed_permitted,'PILOT_CLAIMED_REQUIRES_NATIVE')
     files = FILES | ({'github-receipts.sqlite'} if github else set())
     require(not native or github, 'PILOT_NATIVE_REQUIRES_GITHUB_STATE')
     databases = DBS + (('github-receipts.sqlite',) if github else ())
@@ -144,13 +151,60 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
             require({r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")} ==
                     {'artifacts', 'tasks', 'jobs'}, 'PILOT_NATIVE_SCHEMA_UNKNOWN')
             states = dict(db.execute('SELECT state,COUNT(*) FROM jobs GROUP BY state'))
-            require(set(states) <= {'DONE', 'FAILED'}, 'PILOT_NATIVE_HAS_UNFINISHED_JOBS')
+            require(set(states) <= {'DONE', 'FAILED', 'CLAIMED'},
+                    'PILOT_NATIVE_HAS_UNFINISHED_JOBS')
+            claim_count=states.get('CLAIMED',0)
+            if claim_count:
+                columns={row[1] for row in db.execute('PRAGMA table_info(jobs)')}
+                require({'id','actor','payload','state','claim','result','error'} <= columns,
+                        'PILOT_CLAIMED_JOB_SCHEMA_INVALID')
+                claims=list(db.execute(
+                    "SELECT id,actor,payload,claim,result,error FROM jobs WHERE state='CLAIMED'"))
+                claimed_ids={row[0] for row in claims}
+                require(len(claims)==len(claimed_ids)==claim_count,
+                        'PILOT_CLAIMED_JOB_IDS_INVALID')
+                require(claimed_ids <= claimed_permitted,
+                        'PILOT_NATIVE_HAS_UNREVIEWED_CLAIMED_JOBS')
+                for job_id,job_actor,raw,claim,result,error in claims:
+                    try:
+                        job_payload=json.loads(raw)
+                    except (TypeError,ValueError):
+                        raise RuntimeError('PILOT_CLAIMED_JOB_RECORD_INVALID') from None
+                    approval=a.execute(
+                        'SELECT actor,state,payload FROM requests WHERE id=?',
+                        (job_id,)).fetchone()
+                    require(approval is not None and approval[1]=='UNCERTAIN',
+                            'PILOT_CLAIMED_APPROVAL_NOT_UNCERTAIN')
+                    try:
+                        request=json.loads(approval[2])
+                    except (TypeError,ValueError):
+                        raise RuntimeError('PILOT_CLAIMED_JOB_RECORD_INVALID') from None
+                    require(
+                        type(job_actor) is str and job_actor == approval[0] and
+                        type(job_payload) is dict and type(request) is dict and
+                        job_payload.get('requestId')==job_id and
+                        job_payload.get('service')=='workspace' and
+                        job_payload.get('operation')=='create_task' and
+                        request.get('service')=='workspace' and
+                        request.get('operation')=='create_task' and
+                        type(job_payload.get('target')) is str and
+                        job_payload.get('target')==request.get('target') and
+                        job_payload.get('params')==request.get('params') and
+                        type(claim) is str and bool(re.fullmatch(
+                            r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',claim)) and
+                        result is None and error is None,
+                        'PILOT_CLAIMED_JOB_RECORD_INVALID')
+            else:
+                claimed_ids=set()
+            if require_exact_claimed:
+                require(claimed_ids==claimed_permitted,
+                        'PILOT_CLAIMED_JOB_SET_CHANGED')
             for (digest,) in db.execute('SELECT digest FROM artifacts'):
                 require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) and
                         'native-git/artifacts/' + digest + '.bundle' in files, 'PILOT_NATIVE_ARTIFACT_UNAVAILABLE')
             summary['native'] = {'tasks': db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0],
                 'artifacts': db.execute('SELECT COUNT(*) FROM artifacts').fetchone()[0],
-                'jobStates': states}
+                'jobStates': states, 'preservedClaimedIds':sorted(claimed_ids)}
         if github: summary['githubReceipts'] = connections['github-receipts.sqlite'].execute('SELECT COUNT(*) FROM receipts').fetchone()[0]
     finally:
         for db in connections.values(): db.close()
@@ -158,12 +212,13 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
 
 
 def clone_state(source, target, *, uid=10001, gid=10001, github=False,
-                native=False, preserve_uncertain_ids=None):
+                native=False, preserve_uncertain_ids=None, preserve_claimed_ids=None):
     source, target = Path(source), Path(target)
     require(not source.is_symlink() and not target.is_symlink() and source.is_dir() and target.is_dir(), 'PILOT_VOLUME_ROOT_INVALID')
     require(source.resolve() != target.resolve() and not any(target.iterdir()), 'PILOT_CLONE_TARGET_NOT_EMPTY')
     before = inspect_state(source, uid=uid, gid=gid, github=github, native=native,
-                           preserve_uncertain_ids=preserve_uncertain_ids)
+                           preserve_uncertain_ids=preserve_uncertain_ids,
+                           preserve_claimed_ids=preserve_claimed_ids)
     files = set(before['sha256'])
     private = target / 'private'
     private.mkdir(mode=0o700)
@@ -179,10 +234,12 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
     for directory in ([private] + [private / name for name in NATIVE_DIRS] if native else [private]):
         os.chmod(directory, 0o700); os.chown(directory, uid, gid)
     require(inspect_state(target, uid=uid, gid=gid, github=github, native=native,
-                           preserve_uncertain_ids=preserve_uncertain_ids) == before,
+                           preserve_uncertain_ids=preserve_uncertain_ids,
+                           preserve_claimed_ids=preserve_claimed_ids) == before,
             'PILOT_CLONE_VERIFICATION_FAILED')
     require(inspect_state(source, uid=uid, gid=gid, github=github, native=native,
-                          preserve_uncertain_ids=preserve_uncertain_ids) == before,
+                          preserve_uncertain_ids=preserve_uncertain_ids,
+                          preserve_claimed_ids=preserve_claimed_ids) == before,
             'PILOT_SOURCE_CHANGED_DURING_CLONE')
     return before
 
@@ -344,11 +401,14 @@ def main():
     if action == 'provision': result = provision_token(value['token'])
     elif action == 'clone': result = clone_state(
         '/source','/target',github=value.get('github',False),native=value.get('native',False),
-        preserve_uncertain_ids=value.get('preserveUncertainIds',[]))
+        preserve_uncertain_ids=value.get('preserveUncertainIds',[]),
+        preserve_claimed_ids=value.get('preserveClaimedIds',[]))
     elif action == 'inspect': result = inspect_state(
         '/source',github=value.get('github',False),native=value.get('native',False),
         preserve_uncertain_ids=value.get('preserveUncertainIds',[]),
-        require_exact_uncertain=value.get('requireExactUncertain',False))
+        require_exact_uncertain=value.get('requireExactUncertain',False),
+        preserve_claimed_ids=value.get('preserveClaimedIds',[]),
+        require_exact_claimed=value.get('requireExactClaimed',False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])
     elif action == 'file_pr_receipts': result = verify_file_pr_receipts(value['scenario'])
