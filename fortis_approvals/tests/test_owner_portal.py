@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 from cryptography.hazmat.primitives.asymmetric import ec
