@@ -1,5 +1,63 @@
 # Primary Fortis Gateway — operator procedure
 
+## Исторический CLAIMED — owner-reviewed карантин (SOURCE CANDIDATE 2026-11-09)
+
+После PR #37 Windows Check показал шесть `UNCERTAIN` и один
+не-терминальный worker job `CLAIMED` с UUID
+`2df32a24-efb1-4dac-97f6-3b66147d8944`
+(`workspace.create_task feed_and_search_and_bank_and_brain`).
+В Repo worker journal для данного UUID нет записи; это НЕ
+доказательство отсутствия Git-эффекта. `ee9c5e73-5d5a-4ea1-8133-d79d59511f32`
+(`workspace.commit`) имеет worker journal `FAILED/UNCERTAIN`.
+Живые данные Primary не изменены.
+
+Новый параметр `-PreserveClaimedJobs` с `-ConfirmWorkerQuiescent`
+допускает перенос **только конкретного UUID** в сочетании с
+`-PreserveUncertainRequests`, `-Build` и `-SourceSha`.
+Помимо статуса Core `UNCERTAIN` helper требует совпадения actor,
+payload и `workspace.create_task`; любая `QUEUED`, другие
+CLAIMED, несовпадение UUID или активная Core-заявка запрещены.
+Базы (включая worker job) сохраняются побайтово: статус
+`CLAIMED` НЕ меняется на `FAILED` либо `EXECUTED`.
+
+**ВНИМАНИЕ:** `-ConfirmWorkerQuiescent` — *аттестация владельца*,
+не автоматическое доказательство, что внешний Fortis Repo worker
+остановил исполнение. До Check/Apply/Backup/Promote нужно
+независимо убедиться в отсутствии активного executor, исследовать
+точный task name и git worktree/journal и исключить новые операции
+на период cold cutover. Не использовать флаг формально.
+
+Только после отдельного owner-merged PR, зелёного Source CI,
+нового SHA и Windows PowerShell 5.1 SelfTest:
+
+```powershell
+$claimedId = '2df32a24-efb1-4dac-97f6-3b66147d8944'
+$incidentIds = @(
+ '18af495b-f84c-4fd3-b613-ebd5fdfa0165'
+ '35ac68df-8be5-4dae-bf20-11f75555eecc'
+ '31e8f60b-f396-4e5f-8a46-7772faf95fa4'
+ '7b2ea090-4408-4d9c-b1b6-be5a97eb7b36'
+ '2df32a24-efb1-4dac-97f6-3b66147d8944'
+ 'ee9c5e73-5d5a-4ea1-8133-d79d59511f32'
+) -join ','
+# existing $manager, $config and $approvedSha; worker idle verified by owner
+& $manager -Action Check -Build -SourceSha $approvedSha -Config $config `
+  -PreserveUncertainRequests $incidentIds -PreserveClaimedJobs $claimedId `
+  -ConfirmWorkerQuiescent
+# Apply только после READY и отдельного owner GO:
+& $manager -Action Apply -Build -SourceSha $approvedSha -Config $config `
+  -PreserveUncertainRequests $incidentIds -PreserveClaimedJobs $claimedId `
+  -ConfirmWorkerQuiescent
+```
+
+После успешного Apply команда `Backup`/`Promote` наследует scope из
+защищённого record, но для каждой операции заново требует
+`-ConfirmWorkerQuiescent`. Не передавайте `-PreserveClaimedJobs`
+при Backup/Promote. Исходный `CLAIMED` останется в новой базе.
+В текущем Owner Portal закрытие `UNCERTAIN` с worker job != `FAILED`
+по-прежнему отвергается; требуется отдельный защищённый workflow
+расследования и terminalization. Не редактируйте рабочую SQLite.
+
 ## Сохранение исторических UNCERTAIN при следующем image release (SOURCE CANDIDATE 2026-11-09)
 
 Эта процедура существует **только в новой source-ветке**, не в установленном
