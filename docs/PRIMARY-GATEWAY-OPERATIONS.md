@@ -1,5 +1,64 @@
 # Primary Fortis Gateway — operator procedure
 
+## Сохранение исторических UNCERTAIN при следующем image release (SOURCE CANDIDATE 2026-11-09)
+
+Эта процедура существует **только в новой source-ветке**, не в установленном
+Primary. Incident lifecycle подключается версионным модулем
+`fortis_approvals/incidents.py`, а исходные хеши Core/WebAuthn/Owner Portal
+сохраняются неизменными. Сначала необходимы owner-merged PR, зелёный CI на точном HEAD,
+Windows guarded pull, `SelfTest` и корректная публичная конфигурация.
+Нельзя использовать прежний `main` SHA
+`d343ac00a30bfbc3de33b5184fcca9b5b4254c27`: он не содержит нового
+владельческого параметра.
+
+Из ранее показанного владельцем read-only inventory известно четыре UUID.
+Перед релизом нужно повторно подтвердить их состояние и отсутствие
+других новых инцидентов:
+
+```powershell
+$incidentIds = @(
+    '18af495b-f84c-4fd3-b613-ebd5fdfa0165'
+    '35ac68df-8be5-4dae-bf20-11f75555eecc'
+    '31e8f60b-f396-4e5f-8a46-7772faf95fa4'
+    '7b2ea090-4408-4d9c-b1b6-be5a97eb7b36'
+) -join ','
+# $approvedSha = exact owner-merged and CI-green NEW source HEAD SHA
+# $config = existing public extensions configuration path
+& $manager -Action Check -Build -SourceSha $approvedSha -Config $config `
+    -PreserveUncertainRequests $incidentIds
+# Только после READY и отдельного owner GO:
+& $manager -Action Apply -Build -SourceSha $approvedSha -Config $config `
+    -PreserveUncertainRequests $incidentIds
+```
+
+`Check` с новым параметром выполняет read-only inspection старого state;
+`Apply` после owner approval выполняет штатный staged release.
+Проверки списка требуют точного совпадения всех `UNCERTAIN`, запрещают
+`PENDING/APPROVED/DISPATCHED`, проверяют отсутствие активных worker jobs.
+Контроллер записывает scope в protected release record; состояние
+переносится байт-в-байт, без подмены исходов. При будущих релизах/Backup/
+Promote будет допустимо лишь *подмножество* исходных UUID (если случаи
+закрыты), но не новые неизвестные запросы **без нового явного решения
+владельца**. При новом UNCERTAIN нужен owner-reviewed список всех текущих
+UUID и повторный `Check -Build -SourceSha` с новым source SHA.
+
+После Apply зайти в Owner Portal → `Требуют разбора`. Для каждого запроса
+сначала выполнить `Проверить подтверждение (receipt)`. Если receipt не
+найден и расследование действительно закончено, выполнить штатную
+`-Action Backup` и подтвердить `FORTIS_PRIMARY_BACKUP_PASS` плюс
+protected backup record/volume identity, проверить фактический GitHub/Git
+effect и только затем закрывать в UI через WebAuthn с объяснением
+`CLOSED_UNCONFIRMED`. В UI имя backup является **owner attestation**,
+а не независимой проверкой Docker volume; backup нужно отдельно
+верифицировать оператору. Закрытие расследования не утверждает успех
+операции и не разрешает повторное выполнение исходного UUID.
+
+При несовпадении UUID/состояния, неправильном source/image SHA,
+непроверенном backup, несовпадении protected record/volume либо
+ошибке на любом preflight — STOP. Не отключать guard, не править SQLite
+и не делать повторный `Apply` до выяснения точного состояния.
+
+
 The initial Backup/Promote, Docker Desktop restart and Legacy retirement were
 owner-confirmed on 2026-11-07 in
 [dated cutover evidence](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).

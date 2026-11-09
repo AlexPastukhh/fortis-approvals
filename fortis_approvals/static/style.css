@@ -10,3 +10,19 @@
 #powershell-result{max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
 #powershell-availability{font-weight:600}
 #approval-view[hidden]{display:none}
+
+/* Put approval controls first and keep them reachable above long previews. */
+.detail-actions{position:sticky;top:0;z-index:2;display:flex;gap:8px;flex-wrap:wrap;
+  padding:10px 0;background:Canvas;border-bottom:1px solid #8885}
+.detail-actions:empty{display:none}
+.detail-actions button:disabled{opacity:.6;cursor:not-allowed}
+#detail-feedback{min-height:1.2em;font-weight:600}
+#detail-feedback.error{color:#c33}
+#detail pre{max-height:55vh;overflow:auto;white-space:pre-wrap}
+
+.incident-close{width:100%;border:1px solid #8887;border-radius:6px;padding:10px}
+.incident-close summary{cursor:pointer;font-weight:600}
+.incident-close label{display:block;margin:8px 0;font-size:.9rem}
+.incident-close input[type=text],.incident-close textarea{display:block;width:100%;box-sizing:border-box;
+ margin-top:4px;padding:6px;background:Canvas;color:CanvasText;border:1px solid #888;border-radius:4px}
+.incident-close input[type=checkbox]{margin-right:6px}

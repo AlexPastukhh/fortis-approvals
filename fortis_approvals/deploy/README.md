@@ -70,6 +70,27 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
+## Owner-reviewed UNCERTAIN carryover and incident review — source candidate
+
+Four new historical `UNCERTAIN` requests block the installed Gateway state
+preflight. Do not rewrite request rows, invent receipts or disable admission.
+This source uses a versioned `fortis_approvals/incidents.py` extension;
+the protected Core/WebAuthn/OwnerPortal storage source is unchanged.
+It adds `-PreserveUncertainRequests 'uuid1,uuid2,…'` for exact
+owner-reviewed `Check -Build -SourceSha <approvedSHA>` / `Apply`.
+The protected record stores the exact list; state copy preserves all DB bytes,
+receipts and events. New IDs and in-flight operations remain denied.
+`Backup` and `Promote` inherit the protected scope (subset after closure).
+
+After deployment Owner Portal lists unresolved requests separately, reconciles
+existing receipts without re-dispatch and can record a
+`CLOSED_UNCONFIRMED` owner decision with separate WebAuthn, mandatory
+operator-attested verified cold backup name and audit explanation.
+`CLOSED_UNCONFIRMED` never means `EXECUTED`. The UI cannot independently
+verify Docker backup provenance; run and verify the owner controller
+`Backup` before closure. See `docs/PRIMARY-GATEWAY-OPERATIONS.md` for
+the scoped rollout procedure. This source edit does not touch production.
+
 ## Native GitHub Actions analysis source candidate
 
 GitHub CI analysis READ operations join the normal native profile on the next

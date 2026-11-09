@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from .core import Authenticator, Core, Denied
 from .owner_auth import OwnerWebAuthn
 from .owner_portal import OwnerPortal
+from .incidents import IncidentCore, IncidentOwnerWebAuthn, IncidentOwnerPortal
 from .repo_action_contract import RepoIntentBroker
 from .integrations.sonarcloud.contract import LEGACY_READ_OPERATIONS as SONAR_READ_OPERATIONS
 from .repo_ingress import RepoIngress
@@ -116,19 +117,18 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         project_keys=() if project_keys is None else tuple(project_keys),
         organization_keys=tuple(organizations) if project_keys is None else (),
         receipt_store=root/'sonar-receipts.sqlite',region=region)
-    owner = OwnerWebAuthn(root/'owner.sqlite',origin=owner_origin)
+    owner = IncidentOwnerWebAuthn(root/'owner.sqlite',origin=owner_origin)
     auth = Authenticator(grants)
     actors = tuple(grants.values())
     policies = {(actor, service, operation): 'ALLOW'
                 for actor in actors
                 for service, operation in SONAR_READ_OPERATIONS}
     policies.update({(actor, *G4_OPERATION): 'ASK' for actor in actors})
-    core = Core(root/'approvals.sqlite',adapters={'sonarcloud':writer},
+    core = IncidentCore(root/'approvals.sqlite',adapters={'sonarcloud':writer},
                 policies=policies,authenticator=auth,owner_verifier=owner,
                 policy_version='r7-p1-sonar-accept-issue-write-v1')
     from .owner_shell import OwnerShellClient
-    from .owner_shell_portal import OwnerShellPortal
-    portal = OwnerShellPortal(core,owner,strong_operations={G4_OPERATION},
+    portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
                              read_only_banner=False,
                              owner_shell=OwnerShellClient.from_environment())
     broker = RepoIntentBroker(

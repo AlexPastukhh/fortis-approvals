@@ -43,6 +43,9 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
         # curated image must include it even when shell execution is disabled.
         self.assertIn("fortis_approvals/owner_shell.py ", src)
         self.assertIn("fortis_approvals/owner_shell_portal.py ", src)
+        self.assertIn("fortis_approvals/incidents.py ", src)
+        self.assertIn("IMAGE_OWNER_INCIDENT_IMPORT_PASS",
+                      (ROOT/'fortis_approvals/deploy/image_offline_smoke.py').read_text())
         self.assertNotIn("COPY . ", src)
         ignored=(ROOT/'.dockerignore').read_text().splitlines()
         for entry in ('**/tests','**/.env','**/*.key','**/*.pem','**/*.sqlite','**/private'):

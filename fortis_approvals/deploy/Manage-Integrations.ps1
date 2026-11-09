@@ -6,7 +6,7 @@ param(
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories,
-    [string]$CiControlRepositories='',
+    [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
 $ForwardParameters=@{}+ $PSBoundParameters
@@ -17,6 +17,8 @@ $Pointer=Join-Path $ReleaseBase 'current.json'
 $AttemptPointer=Join-Path $ReleaseBase 'attempt.json'
 $PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
 $script:Step='PREFLIGHT';$script:Image=$Image
+$script:PreserveUncertainRequests=$PreserveUncertainRequests
+$script:PreserveUncertainExact=[bool]$PreserveUncertainRequests
 
 function Json-Items { param([string]$Text) $Parsed=ConvertFrom-Json -InputObject $Text; foreach($Item in $Parsed){Write-Output $Item} }
 function Docker-Json { param([string[]]$Arguments) Json-Items (Docker-Text $Arguments) }
@@ -212,6 +214,34 @@ function Read-CiControlRepositories {
     }
     return $Value
 }
+function Parse-PreservedUncertainRequests {
+    param([string]$Value)
+    if(-not $Value){return}
+    $Ids=@($Value.Split(','))
+    if($Ids.Count -gt 20 -or @($Ids|Select-Object -Unique).Count -ne $Ids.Count){
+        throw 'RELEASE_UNCERTAIN_SCOPE_INVALID'
+    }
+    foreach($Id in $Ids){
+        if($Id -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'){
+            throw 'RELEASE_UNCERTAIN_SCOPE_INVALID'
+        }
+        Write-Output $Id
+    }
+}
+function Read-PreservedUncertainRequests {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_UNCERTAIN_RECORD_INVALID'}
+    $Value=''
+    if($Record -is [Collections.IDictionary]){
+        if($Record.Contains('preserveUncertainRequests')){$Value=$Record['preserveUncertainRequests']}
+    } else {
+        $Prop=$Record.PSObject.Properties['preserveUncertainRequests']
+        if($null -ne $Prop){$Value=$Prop.Value}
+    }
+    if($Value -isnot [string]){throw 'RELEASE_UNCERTAIN_RECORD_INVALID'}
+    if($Value){$null=@(Parse-PreservedUncertainRequests $Value)}
+    return $Value
+}
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -241,6 +271,16 @@ function Get-SourceRecord {
                 throw 'PRIMARY_POINTER_SOURCE_MISMATCH'
             }
             $P=$Primary.runtime
+        }
+    }
+    $Preserved=Read-PreservedUncertainRequests $P
+    if(-not $script:PreserveUncertainRequests){$script:PreserveUncertainRequests=$Preserved}
+    elseif($Preserved -and $Preserved -cne $script:PreserveUncertainRequests){
+        # Never silently expand a previous release allowlist. An owner may
+        # explicitly replace it using a newly built, SHA-pinned source image
+        # and an exact match to all current UNCERTAIN IDs.
+        if(-not $script:PreserveUncertainExact){
+            throw 'RELEASE_UNCERTAIN_RECORD_SCOPE_CHANGED'
         }
     }
     return @{path=$Path;hash=$Hash;runtime=$P}
@@ -301,8 +341,11 @@ function Admit-ReturnCandidate {
     Write-Host 'FORTIS_INTEGRATIONS_RETURN_NEVER_STARTED_ENV_BUG'
 }
 function Receipt {
-    param([string]$Volume)
-    State-Helper @{action='inspect';github=$true;native=$true} @('--mount',('type=volume,source='+$Volume+',target=/source,readonly'))
+    param([string]$Volume,[switch]$Exact)
+    $Ids=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)
+    State-Helper @{action='inspect';github=$true;native=$true;
+        preserveUncertainIds=$Ids;requireExactUncertain=([bool]$Exact)} @('--mount',
+        ('type=volume,source='+$Volume+',target=/source,readonly'))
 }
 function Same-Json {param($A,$B) (ConvertTo-Json -InputObject $A -Compress -Depth 25) -ceq (ConvertTo-Json -InputObject $B -Compress -Depth 25)}
 function Assert-SourceUnchanged {
@@ -416,6 +459,16 @@ if($Action -eq 'SelfTest'){
         $CiForward[1] -cne 'rd-graphs'){
         throw 'RELEASE_CI_CONTROL_FLAG_FORWARDING_SELFTEST_FAILED'
     }
+    $OldUnknown='{"schema":1}' | ConvertFrom-Json
+    $NewUnknown='{"preserveUncertainRequests":"11111111-1111-4111-8111-111111111111"}' | ConvertFrom-Json
+    if((Read-PreservedUncertainRequests $OldUnknown) -cne '' -or
+        (Read-PreservedUncertainRequests $NewUnknown) -cne '11111111-1111-4111-8111-111111111111'){
+        throw 'RELEASE_UNCERTAIN_RECORD_SELFTEST_FAILED'
+    }
+    $BadScope=$false
+    try {$null=@(Parse-PreservedUncertainRequests 'a,b')}
+    catch {if($_.Exception.Message -cne 'RELEASE_UNCERTAIN_SCOPE_INVALID'){throw};$BadScope=$true}
+    if(-not $BadScope){throw 'RELEASE_UNCERTAIN_SCOPE_SELFTEST_FAILED'}
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
@@ -437,8 +490,15 @@ if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][
     @($CiControlRepositories.Split(',')|Select-Object -Unique).Count -ne @($CiControlRepositories.Split(',')).Count)){
     throw 'RELEASE_CI_CONTROL_REPOSITORIES_INVALID'
 }
+if($PreserveUncertainRequests){
+    $ScopeIds=@(Parse-PreservedUncertainRequests $PreserveUncertainRequests)
+    if($Action -cnotin @('Apply','Check') -or -not $Build -or
+       $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord){
+        throw 'RELEASE_UNCERTAIN_REQUIRES_APPROVED_SOURCE_BUILD'
+    }
+}
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $CiControlRepositories)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $CiControlRepositories -or $PreserveUncertainRequests)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -474,6 +534,12 @@ if($Action -eq 'Return' -or $AttemptRecord){
     if($script:R.schema -cne 'fortis-extension-release-v1'){throw 'RELEASE_ATTEMPT_SCHEMA_INVALID'}
     if($script:Image -and $script:Image -cne $script:R.runtime.image){throw 'RELEASE_ATTEMPT_IDENTITY_MISMATCH'}
     $script:Image=$script:R.runtime.image;$VaultVolume=$script:R.runtime.vaultVolume
+    $Stored=Read-PreservedUncertainRequests $script:R.runtime
+    if($script:PreserveUncertainRequests -and $script:PreserveUncertainRequests -cne $Stored){
+        throw 'RELEASE_UNCERTAIN_RECORD_SCOPE_CHANGED'
+    }
+    $script:PreserveUncertainRequests=$Stored
+    $script:PreserveUncertainExact=$false
 }
 if(-not $script:Image){
     $Source=Get-SourceRecord;$script:Image=$Source.runtime.image
@@ -507,7 +573,13 @@ if($Action -eq 'Apply'){
     $Report=Image-CLI @('check') $ConfigText
 }
 if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
-if($Action -eq 'Check'){$Report|ConvertTo-Json -Depth 12;return}
+if($Action -eq 'Check'){
+    if($script:PreserveUncertainRequests){
+        $Source=Get-SourceRecord
+        $null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact
+    }
+    $Report|ConvertTo-Json -Depth 12;return
+}
 if(Test-Path -LiteralPath $AttemptPointer){
     $Last=Read-Private (Read-Private $AttemptPointer).record
     if($Last.phase -cnotin @('Complete','Returned')){throw 'RELEASE_PRIOR_ATTEMPT_REQUIRES_RESUME_OR_RETURN'}
@@ -517,7 +589,7 @@ $Smoke=Private-Process @('run','--rm','--pull=never','--network','none','--read-
     '--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
     '--tmpfs','/tmp:rw,noexec,nosuid,size=32m','--entrypoint','python',$script:Image,'-I','-B',
     '/opt/fortis/operator/image_smoke.py') ''
-foreach($Marker in @('IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_PASS','IMAGE_GITHUB_NOT_REGISTERED_PASS','IMAGE_EXTENSIONS_OFFLINE_PASS')){
+foreach($Marker in @('IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_PASS','IMAGE_GITHUB_NOT_REGISTERED_PASS','IMAGE_EXTENSIONS_OFFLINE_PASS','IMAGE_OWNER_INCIDENT_IMPORT_PASS')){
     if($Smoke -notmatch $Marker){throw 'RELEASE_IMAGE_SMOKE_INCOMPLETE'}
 }
 Step 'REPO_CLIENT_PREFLIGHT'
@@ -534,7 +606,7 @@ Step 'SOURCE_ADMISSION'
 $Source=Get-SourceRecord;$Old=Container $Source.runtime.pilotId;Admit $Old $Source.runtime
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
-Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume
+Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact
 $Baseline=Release-Production-Baseline
 $RunId=[Guid]::NewGuid().ToString('N');$Directory=Join-Path $ReleaseBase $RunId;Protect-Directory $Directory
 $script:RecordPath=Join-Path $Directory 'record.json'
@@ -548,6 +620,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Source.runtime.requiredWorkflows;bootstrapTask=$Source.runtime.bootstrapTask
     dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)
     ciControlRepositories=$(if($CiControlRepositories){$CiControlRepositories}else{Read-CiControlRepositories $Source.runtime})
+    preserveUncertainRequests=$script:PreserveUncertainRequests
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
@@ -571,12 +644,13 @@ try {
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
-    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume;Save
+    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact;Save
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
     if(@(Docker-Json @('volume','inspect',$Runtime.stateVolume))[0].Labels.'io.fortis.release' -cne $RunId){throw 'RELEASE_STATE_VOLUME_PROVENANCE_INVALID'}
-    $Clone=State-Helper @{action='clone';github=$true;native=$true} @('--mount',
+    $Clone=State-Helper @{action='clone';github=$true;native=$true;
+        preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)} @('--mount',
         ('type=volume,source='+$Source.runtime.stateVolume+',target=/source,readonly'),'--mount',
         ('type=volume,source='+$Runtime.stateVolume+',target=/target')) -Root
     if(-not (Same-Json $Clone $script:R.sourceReceipt)){throw 'RELEASE_STATE_CLONE_MISMATCH'}

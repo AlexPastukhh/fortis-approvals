@@ -10,6 +10,7 @@ import tempfile
 import uuid
 
 from fortis_approvals.r7_unified_candidate import build_r7_unified_candidate
+from fortis_approvals.incidents import IncidentCore, IncidentOwnerWebAuthn, IncidentOwnerPortal
 from fortis_approvals.integrations.github.registration import register_github_integration
 from fortis_approvals.integrations.github.pilot import GitHubPilotConfig, config_from_environment
 from fortis_approvals.integrations.github.gateway.adapter import GitHubAdapter
@@ -45,6 +46,9 @@ def smoke():
             ingress_host='host.docker.internal:19204', ingress_grant=grant,
             sonar_transport=remote, organizations=('offline_org',),
             project_keys=('offline_project',))
+        assert isinstance(core, IncidentCore)
+        assert IncidentOwnerWebAuthn and IncidentOwnerPortal
+        print('IMAGE_OWNER_INCIDENT_IMPORT_PASS')
         result = ingress.broker.read(grant, {
             'requestId': str(uuid.uuid4()), 'service': 'sonarcloud',
             'operation': 'get_quality_gate', 'target': 'offline_project',
