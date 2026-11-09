@@ -1,40 +1,51 @@
 # Backlog улучшений — Fortis Approvals Gateway
 
-План согласован 2026-11-06 после завершения native Git/worktree live цикла.
-Текущее внедрение описано в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
-Перечень ниже фиксирует будущие задачи; эта документационная работа их не реализует.
+Исходный план согласован 2026-11-06 после native Git/worktree live цикла;
+статусы актуализированы 2026-11-09 по установленному Primary, Repo machine
+readback и принятому source. [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+фиксирует подтверждённый релиз и ограничения; этот backlog хранит
+**открытые улучшения и явно помеченный исторический контекст**, не разрешает
+новых runtime операций.
 Общий Fortis backlog принадлежит `fortis-container`; вход — через
 реестр юзкейсов в `/workspace/repo/README.md`. Наличие GitHub remote в этом repo
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
-## UNCERTAIN: оставшиеся задачи после принятого релиза 2026-11-09
+## UNCERTAIN: административно закрыты; расследование и worker остаются (2026-11-09)
 
-**Реализовано и развёрнуто:** PR #37/#38/#39, owner-reported
-`FORTIS_PRIMARY_VERIFIED` на source
-`a200137775eb6c6b8dcec81f31206b0d481d9003`. Машинный
-`WorkflowClient.details(UUID)` проверен на всех шести живых
-`UNCERTAIN` и даёт read-only request/preview/audit/worker/receipt.
-Owner Portal получил `Закрыть заявку`: одна авторизованная кнопка,
-`CLOSED_UNCONFIRMED` без повторного WebAuthn/имени backup/объяснения,
-без подмены worker job. Код и WebAuthn тесты прошли; отдельный ручной
-browser-click acceptance нового интерфейса пока не зафиксирован.
-Для использования — [UC-GW-009](use-cases/incidents.md#uc-gw-009);
-для image/volume provenance — [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
-Старые описания `SOURCE CANDIDATE` и требование `worker=FAILED`
-для owner-dismissal из PR #37 **не являются текущим контрактом**.
+**Установлено:** после PR #37/#38/#39, на owner-confirmed Primary с image
+source `a200137775eb6c6b8dcec81f31206b0d481d9003`,
+`WorkflowClient.details(UUID)` возвращает actor-owned полную заявку,
+preview/audit/worker/receipt только для чтения. Owner Portal получил
+`Закрыть заявку` через действующую owner-сессию и CSRF без второй
+WebAuthn-проверки, backup ID, пояснения или требования `worker=FAILED`.
+Это административное `UNCERTAIN → CLOSED_UNCONFIRMED`, **не** утверждение,
+что исходная Git/GitHub-операция была или не была исполнена. См.
+[UC-GW-009](use-cases/incidents.md#uc-gw-009) и
+[текущее состояние](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
 
-**Осталось расследовать и улучшить:** причины пропажи/неопределённости
-acknowledgement от Repo worker/GitHub, точную атрибуцию отдельных
-исторических эффектов, безопасную независимую регистрацию доказательств,
-обнаружение действительно активного executor (нынешний
-`-ConfirmWorkerQuiescent` — только owner attestation), UI acceptance.
-Особенно `2df32a24-efb1-4dac-97f6-3b66147d8944` остаётся
-`CLAIMED` без локального receipt: простое закрытие Core **не**
-выполняет, не отменяет и не переводит в terminal это worker job.
-Перенос требует exact allowlist/closure audit и quiescence; SQL
-или фальшивые receipts запрещены. Шесть исторических инцидентов
-не считать автоматически `EXECUTED` или `NOT_EXECUTED`.
+**Live readback 2026-11-09:** все шесть исторических UUID теперь
+`CLOSED_UNCONFIRMED` — `18af495b…`, `35ac68df…`, `31e8f60b…`,
+`7b2ea090…`, `2df32a24…`, `ee9c5e73…`. Оригинальный
+`REMOTE_OUTCOME_UNCONFIRMED` остался в failure; три native jobs `FAILED`,
+у двух GitHub push нет native job. Отдельно критично: у
+`2df32a24-efb1-4dac-97f6-3b66147d8944` (`workspace.create_task`)
+native worker job **всё ещё `CLAIMED`** без локального receipt.
+Закрытие Core **не** завершает, не отменяет и не повторяет worker job.
+При последующих release/backup сохранять exact protected scope,
+owner-attested worker quiescence и проверенный closure audit.
+Не удалять claim, не переписывать SQLite и не подделывать receipt.
+
+**Открытые задачи:** определить причины потери acknowledgement и появления
+`UNCERTAIN` между Gateway/worker/provider; связать каждый исторический
+эффект с доказательствами его конкретного UUID (позднее похожее действие
+не доказывает первоначальное); улучшить безопасные worker receipts/journals
+и диагностику ошибок; отдельно оценить обнаружение активного executor
+вместо одного `-ConfirmWorkerQuiescent` (это owner attestation),
+обработку осиротевшего `CLAIMED` и UI acceptance.
+`CLOSED_UNCONFIRMED` не означает завершённого технического расследования.
+Код и WebAuthn тесты для кнопки пройдены; переходы в Core прочитаны live,
+но **ручная проверка конкретного browser click** отдельно не документирована.
 
 ## Owner Portal PowerShell — source candidate (2026-11-08)
 
@@ -48,13 +59,19 @@ acknowledgement от Repo worker/GitHub, точную атрибуцию отд�
   PowerShell: команды от владельца сейчас не сканируются.
 - Источник/API границы и эксплуатация: [OWNER-POWERSHELL](OWNER-POWERSHELL.md).
 
-## Исторический разбор UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
+## Исторические инциденты 2026-11-07 — не список текущих UNCERTAIN
 
-- Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; однократный read-only `reconcile` не смог подтвердить результат. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.
+Здесь сохраняется evidence о прежних сбоях; не использовать его как
+актуальное правило owner dismissal. Текущий безопасный маршрут —
+[UC-GW-009](use-cases/incidents.md#uc-gw-009). `details()` — read-only,
+`reconcile` может зафиксировать receipt и **изменить Core state**,
+поэтому не является обязательным шагом просмотра.
+
+- Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; тогдашний `reconcile` не смог подтвердить результат и не изменил state. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.
 - Повторное наблюдение 2026-11-07 при аудите документации: `workspace.create_task`
   для `tunnel`, task `docs-dry-audit-20261107`, request
   `b32222b5-4a84-4816-bd39-625ab6c9995d` вернул
-  `UNCERTAIN / REMOTE_OUTCOME_UNCONFIRMED`. Read-only reconcile не изменил статус;
+  `UNCERTAIN / REMOTE_OUTCOME_UNCONFIRMED`. В том наблюдении `reconcile` не изменил статус;
   соответствующие worktree и ветка не найдены. 2026-11-08 этот UUID вместе со
   старыми Tab Notifier `inspect`/`commit` и Mirror `sync_task` разово retired
   после отдельного owner approval, verified cold copy и проверки отсутствия
@@ -63,8 +80,11 @@ acknowledgement от Repo worker/GitHub, точную атрибуцию отд�
   Первопричина не установлена: сохранить этот случай для расследования, а не
   повторять исходный запрос или считать его успешно исполненным.
 - Исследовать точную первопричину с безопасными снимками ошибок: worker journaling между `DISPATCHED` / `git add` / receipt, исключения после частичного эффекта, timeout, stale precondition, отсутствие error detail. Не полагаться на `job.result IS NOT NULL`: это может быть JSON-строка `null`, не receipt.
-- Исторически требовалось сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
-- Исторически требовалось разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
+- Исторические требования вывести `UNCERTAIN` в раздел «Требуют разбора» и
+  дать владельцу административное завершение без фиктивного `EXECUTED` теперь
+  **реализованы** (PR #37/#38/#39, [UC-GW-009](use-cases/incidents.md#uc-gw-009)).
+  Не планировать повторную реализацию прежних сложных gates с обязательным
+  backup или `worker=FAILED`; оставшийся пункт — owner-browser UI acceptance.
 - Разделить `Backup` admission на проверку **активных** запросов и управление **историческими неразрешёнными** эффектами. Холодная копия volume защищает байты, но не является проверкой логического состояния; нельзя ослаблять весь release guard для одной ошибки.
 - Исторический инцидент был разово закрыт после owner-requested холодной verified копии; Production сейчас здоров. Не восстанавливать удалённую заявку из старой копии при штатном релизе. Это *исследовательская задача*, не срочная новая миграция.
 
@@ -100,16 +120,25 @@ acknowledgement от Repo worker/GitHub, точную атрибуцию отд�
 - При будущих релизах distinguish snapshot-копию state от controller-managed `Backup` (последний требуется для `Promote`); не создавать rescue volume без необходимости, но не удалять защищённую rollback-копию автоматически.
 
 
-## GitHub Actions в обычном профиле — ожидает релиза и live-приёмки
+## GitHub Actions в native профиле — частично проверено live (2026-11-09)
 
-Source-кандидат 2026-11-09 переносит семь GitHub READ и четыре CI-control
-операции из optional analysis-review в native профиль, без SonarCloud binding.
-CI-control выключен по умолчанию и при opt-in остаётся ASK.
-До нового образа и owner-managed релиза — SOURCE CANDIDATE, не LIVE VERIFIED.
-После merge проверить PowerShell 5.1 parser, SelfTest, точный image/record,
-Backup/Promote. На настоящем `rd-graphs` run `42542630753` проверить
-jobs/logs и SHA, а также запрет чужого репозитория. Успешный Actions READ
-не доказывает доступ GitHub Checks текущим токеном.
+Принятый в `main` source (коммит `9e5a72b6`, вошёл в последний
+owner-confirmed image `a200137775eb6c6b8dcec81f31206b0d481d9003`)
+содержит семь GitHub Actions READ и четыре CI-control операции
+без обязательного SonarCloud binding. CI-control выключен по умолчанию;
+при явном opt-in — `ASK`. В отличие от исторического source candidate,
+**`get_workflow_run` действительно проверен на установленном Gateway**:
+авторизованный machine READ вернул реальный `rd-graphs` run
+`42542630753`, attempt 1, `completed/failure`, head SHA
+`3c22ecb45fc5ad32f3caac0f1c9be5f2e1f2af87`.
+
+**Не считать весь профиль LIVE VERIFIED:** остальные GitHub Actions READ
+(особенно jobs/logs, artifacts, Checks), repo-denial boundaries,
+четыре CI-control операции, opt-in/ASK и provider effects требуют
+отдельных адресных live-проверок по policy/scope. Успешный
+`get_workflow_run` **не** доказывает доступ GitHub Checks или
+полномочия на CI-control. Не запускать новый Gateway image release
+лишь ради изменения статуса этой документации.
 
 ## Следующие задачи
 
@@ -130,10 +159,12 @@ Source-кандидат первого пункта описан в [analysis-re
 
 ## Незавершённое сопровождение принятого native этапа
 
-- Довести подготовленное исправление `WorkflowClient.result` для HTTP 202 и
-  его регрессионный тест из `task/native-client-pending-status-20261106` до
-  проверенного source commit/PR. При сверке документации это локальные изменения,
-  не часть `main`; новый Gateway image для изменения только Repo client не требуется.
+- **Открыто:** `WorkflowClient.result(UUID)` в `main` по-прежнему не
+  передаёт `accept_202=True` в transport. В
+  `task/native-client-pending-status-20261106` есть **незакоммиченный**
+  diff и регрессионный тест. Не объявлять исправление принятым: сначала
+  проверить task/source/CI, затем отдельный PR и совместимость.
+  Обновление только Repo-side client не требует Gateway image release.
 - Bootstrap worktree пока сохраняется: owner-run record ссылается на его точный
   source path/SHA. Перенести источник будущего пакета на принятый merged source
   отдельно, затем решить вопрос очистки. Старые M1–M3 methods сохраняются для
