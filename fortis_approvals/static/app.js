@@ -76,7 +76,6 @@ function render(rows){
   btn.onclick=()=>show(row);$('requests').append(btn);}
  if(selected){const matching=rows.find(r=>r.requestId===selected.requestId);
   if(matching && !decisionBusy && (matching.state!==selected.state || matching.fingerprint!==selected.fingerprint))show(matching);
-  else if(!matching && !decisionBusy){selected=null;$('detail').replaceChildren();}
  }
  if(!selected && !$('detail').childElementCount){const p=document.createElement('p');p.textContent='Выберите заявку.';$('detail').append(p);}
 }
@@ -87,48 +86,215 @@ async function refresh(){
   // Always check pending, including while the History tab is selected.
   const pending=await api('/v1/owner/pending');
   notifyOnNewPending(pending);
-  const rows=tab==='pending'?pending:tab==='history'?await api('/v1/owner/history'):null;
+  let unresolved={items:[],total:0,truncated:false};
+  try{
+   unresolved=await api('/v1/owner/unresolved');
+   $('unresolved-tab').disabled=false;
+  }catch(err){
+   if(err.httpStatus!==404)throw err;
+   // The immutable legacy OwnerPortal may still serve the same static UI.
+   // Keep Pending/History usable, but do not misreport an empty incident list.
+   $('unresolved-tab').disabled=true;
+   if(tab==='unresolved')status('Разбор инцидентов не поддерживается этой версией Portal.',true);
+  }
+  $('unresolved-count').textContent=unresolved.total?' · '+unresolved.total:'';
+  const rows=tab==='pending'?pending:tab==='history'?await api('/v1/owner/history'):
+    tab==='unresolved'?unresolved.items:null;
   if(rows!==null)render(rows);
+  if(unresolved.truncated && tab==='unresolved')status(
+    'Список ограничен 100 записями. Есть ещё блокирующие заявки.',true);
+  if(selected&&!decisionBusy){
+   const id=selected.requestId;
+   const current=await api('/v1/owner/requests/'+id);
+   if(selected&&selected.requestId===id&&
+     (selected.state!==current.state||selected.fingerprint!==current.fingerprint))show(current);
+  }
  }catch(err){if(err.httpStatus===403){signedOut('Сессия истекла — войдите снова.');}
   else status('Нет связи с сервисом: '+err.message,true);
  }finally{pollBusy=false;}
 }
 function line(label,value){const p=document.createElement('p');const b=document.createElement('strong');b.textContent=label+': ';
  p.append(b,document.createTextNode(String(value??'—')));return p;}
-function show(row){selected=row;const area=$('detail');area.replaceChildren();
- const h=document.createElement('h2');h.textContent=`${row.request.service} · ${row.request.operation}`;area.append(h,
- line('Состояние',row.state),line('Инициатор',row.actor||'проверенный клиент'),
- line('Объект',row.request.target),line('Причина',row.request.reason),line('ID',row.requestId));
- const label=document.createElement('h3');label.textContent='Точное изменение и состояние';area.append(label);
- const preview=document.createElement('pre');preview.textContent=JSON.stringify({request:row.request,preview:row.preview},null,2);area.append(preview);
- if(row.result){const p=document.createElement('pre');p.textContent='Результат: '+JSON.stringify(row.result,null,2);area.append(p);}
- if(row.failure)area.append(line('Причина остановки',row.failure));
+function detailFeedback(message,error=false){
+ const element=$('detail-feedback');
+ if(element){element.textContent=message;element.classList.toggle('error',error);}
+}
+function lockDetailActions(locked){
+ for(const button of $('detail').querySelectorAll('.detail-actions button')){
+  button.disabled=locked||button.dataset.policyDenied==='true';
+ }
+}
+function show(row){
+ selected=row;const area=$('detail');area.replaceChildren();
+ const h=document.createElement('h2');h.textContent=row.request.service+' · '+row.request.operation;
+ area.append(h,line('Состояние',row.state));
+ const controls=document.createElement('div');controls.className='detail-actions';
+ const feedback=document.createElement('p');feedback.id='detail-feedback';
+ feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
  if(row.state==='PENDING'){
-  if(row.approvalAllowed===false)area.append(line('Запись','Для этой операции пока отключена. Можно только отклонить заявку.'));
-  else if(row.requiresStrongProof)area.append(line('Проверка','Для этой операции требуется дополнительное подтверждение ключом.'));
   for(const [decision,title] of [['approve','Подтвердить'],['reject','Отклонить']]){
    const btn=document.createElement('button');btn.type='button';btn.textContent=title;
-   if(decision==='approve'&&row.approvalAllowed===false){btn.disabled=true;btn.title='Запись для этой операции отключена';}
-   else btn.onclick=action(()=>decide(row,decision));
-   area.append(btn);
+   if(decision==='approve'&&row.approvalAllowed===false){
+    btn.disabled=true;btn.dataset.policyDenied='true';
+    btn.title='Подтверждение этой операции отключено';
+   }else btn.onclick=action(()=>decide(row,decision));
+   controls.append(btn);
   }
  }
+ if(['UNCERTAIN','DISPATCHED'].includes(row.state)){
+  const btn=document.createElement('button');btn.type='button';
+  btn.textContent='Проверить подтверждение (receipt)';
+  btn.onclick=action(()=>reconcileUncertain(row));controls.append(btn);
+ }
+ if(row.state==='UNCERTAIN'){
+  const closure=document.createElement('details');closure.className='incident-close';
+  const heading=document.createElement('summary');
+  heading.textContent='Закрыть расследование без подтверждения выполнения';
+  closure.append(heading);
+  const description=document.createElement('p');description.textContent=
+   'Это НЕ означает, что операция завершилась успешно или не выполнялась. '+
+   'Сначала проверьте последствия и создайте проверенную резервную копию штатным контроллером.';
+  closure.append(description);
+  const backupLabel=document.createElement('label');
+  backupLabel.textContent='Точный ID проверенной резервной копии';
+  const backup=document.createElement('input');backup.type='text';
+  backup.placeholder='fortis-gateway-backup-…';
+  backup.autocomplete='off';backup.spellcheck=false;
+  backup.pattern='fortis-gateway-backup-[0-9a-f]{32}';
+  backupLabel.append(backup);closure.append(backupLabel);
+  const reasonLabel=document.createElement('label');
+  reasonLabel.textContent='Что проверено и почему расследование закрывается';
+  const explanation=document.createElement('textarea');explanation.rows=3;
+  explanation.minLength=20;explanation.maxLength=1000;
+  explanation.placeholder='Опишите проверку фактического эффекта и сохранённые доказательства.';
+  reasonLabel.append(explanation);closure.append(reasonLabel);
+  const acknowledgeLabel=document.createElement('label');
+  const acknowledge=document.createElement('input');acknowledge.type='checkbox';
+  acknowledgeLabel.append(acknowledge,document.createTextNode(
+   ' Я понимаю: результат остаётся неизвестным; новый запуск этой операции может быть опасен.'));
+  closure.append(acknowledgeLabel);
+  const close=document.createElement('button');close.type='button';
+  close.textContent='Закрыть как CLOSED_UNCONFIRMED (WebAuthn)';
+  close.onclick=action(()=>closeIncident(row,backup.value,explanation.value,acknowledge.checked));
+  closure.append(close);
+  controls.append(closure);
+ }
+ // Controls first; long payload and preview come after.
+ area.append(controls,feedback);
+ if(row.state==='UNCERTAIN')detailFeedback(
+  'Результат неизвестен: действие могло выполниться. Не повторяйте его. Проверка receipt ничего не запускает.',true);
+ else if(row.state==='DISPATCHED')detailFeedback(
+  'Операция передана исполнителю. Её не следует повторять.');
+ else if(row.state==='APPROVED')detailFeedback(
+  'Решение принято, выполнение ещё не подтверждено.');
+ else if(row.state==='PENDING'){
+  if(row.approvalAllowed===false)detailFeedback('Подтверждение недоступно; можно только отклонить.',true);
+  else if(row.requiresStrongProof)detailFeedback('Для подтверждения потребуется ключ безопасности.');
+ }
+ else if(row.state==='CLOSED_UNCONFIRMED')detailFeedback(
+  'Расследование закрыто владельцем. Итог исходной операции НЕ доказан; не повторяйте её вслепую.',true);
+ if(row.incidentClosure){
+  area.append(line('Резервная копия (подтверждена владельцем)',
+     row.incidentClosure.backupVolumeOwnerAttested),
+   line('Обоснование закрытия',row.incidentClosure.explanation));
+ }
+ area.append(line('Инициатор',row.actor||'проверенный клиент'),
+  line('Объект',row.request.target),line('Причина',row.request.reason),line('ID',row.requestId));
+ const label=document.createElement('h3');label.textContent='Точное изменение и состояние';area.append(label);
+ const preview=document.createElement('pre');preview.textContent=
+   JSON.stringify({request:row.request,preview:row.preview},null,2);area.append(preview);
+ if(row.result){const p=document.createElement('pre');p.textContent=
+  'Результат: '+JSON.stringify(row.result,null,2);area.append(p);}
+ if(row.failure)area.append(line('Причина остановки',row.failure));
+}
+function decisionMessage(result){
+ const id=result.requestId;
+ if(result.state==='EXECUTED')return 'Заявка '+id+': выполнение подтверждено.';
+ if(result.state==='REJECTED')return 'Заявка '+id+': отклонена. Действие не отправлялось.';
+ if(result.state==='UNCERTAIN')return 'Заявка '+id+': результат неизвестен. Не повторяйте действие.';
+ if(['APPROVED','DISPATCHED'].includes(result.state))return
+  'Решение по '+id+' принято; выполнение ещё не подтверждено ('+result.state+').';
+ return 'Заявка '+id+': состояние '+result.state+'.';
 }
 async function decide(row,decision){
  if(decisionBusy)return;
- decisionBusy=true;
+ decisionBusy=true;lockDetailActions(true);
+ detailFeedback(decision==='approve'?'Подтверждение в процессе. Не нажимайте повторно.':
+  'Отклонение в процессе. Не нажимайте повторно.');
  try{
   let result;
   if(row.requiresStrongProof){
    const begin=await api('/v1/owner/decision/begin',{requestId:row.requestId,decision},true);
+   detailFeedback('Ожидается подтверждение ключом безопасности…');
    const response=await ceremony(begin);
+   detailFeedback('Решение отправлено. Проверяю результат…');
    result=await api('/v1/owner/decision/finish',{requestId:row.requestId,decision,
       ceremonyId:begin.ceremonyId,response},true);
   }else{
+   detailFeedback('Отправляю решение и ожидаю ответ…');
    result=await api('/v1/owner/decision/session',{
      requestId:row.requestId,fingerprint:row.fingerprint,decision},true);
   }
-  selected=null;$('detail').replaceChildren();status(`Результат: ${result.state}`);
+  show(result);const message=decisionMessage(result);
+  detailFeedback(message,result.state==='UNCERTAIN');
+  status(message,result.state==='UNCERTAIN');
+ }catch(err){
+  detailFeedback('Ответ не подтверждён. Проверяю заявку '+row.requestId+
+    '. Не отправляйте решение повторно.',true);
+  try{
+   const exact=await api('/v1/owner/requests/'+row.requestId);
+   show(exact);detailFeedback('Текущее состояние '+row.requestId+': '+exact.state,
+      exact.state==='UNCERTAIN');
+  }catch(_readError){lockDetailActions(true);}
+  throw err;
+ }finally{decisionBusy=false;await refresh();}
+}
+async function reconcileUncertain(row){
+ if(decisionBusy)return;
+ decisionBusy=true;lockDetailActions(true);
+ detailFeedback('Проверяю сохранённый receipt. Повторного выполнения не будет.');
+ try{
+  const result=await api('/v1/owner/reconcile',{requestId:row.requestId},true);
+  show(result);
+  const message=result.state==='EXECUTED'?
+   'Сохранённый receipt подтверждён. Операция помечена выполненной.':
+   'Подтверждённый receipt не найден. Заявка остаётся '+result.state+
+     '; нельзя объявить её успешной или повторять.';
+  detailFeedback(message,result.state!=='EXECUTED');
+  status(message,result.state!=='EXECUTED');
+ }catch(err){
+  detailFeedback('Сверка не завершилась: '+err.message+'. Не повторяйте исходную операцию.',true);
+  throw err;
+ }finally{decisionBusy=false;await refresh();}
+}
+async function closeIncident(row,backupVolume,explanation,acknowledgeUnknown){
+ if(decisionBusy)return;
+ if(!acknowledgeUnknown)throw Error('Сначала подтвердите, что результат операции неизвестен.');
+ if(!/^fortis-gateway-backup-[0-9a-f]{32}$/.test(backupVolume)||
+   explanation.trim().length<20||explanation.trim().length>1000){
+  throw Error('Укажите точный ID проверенной резервной копии и обоснование длиной 20–1000 символов.');
+ }
+ if(!window.confirm('Закрыть расследование? Это НЕ подтверждает выполнение операции.'))return;
+ decisionBusy=true;lockDetailActions(true);
+ detailFeedback('Проверка ключа владельца для закрытия расследования…');
+ const body={requestId:row.requestId,backupVolume,explanation,acknowledgeUnknown:true};
+ try{
+  const begin=await api('/v1/owner/incidents/close/begin',body,true);
+  const response=await ceremony(begin);
+  detailFeedback('Подписанное решение отправлено. Проверяю состояние заявки…');
+  const result=await api('/v1/owner/incidents/close/finish',
+     {...body,ceremonyId:begin.ceremonyId,response},true);
+  show(result);
+  status('Инцидент '+row.requestId+' закрыт без доказательства исхода. Не повторяйте операцию.');
+  detailFeedback('CLOSED_UNCONFIRMED: состояние операции неизвестно, исполнение не повторялось.');
+ }catch(err){
+  try{
+   const actual=await api('/v1/owner/requests/'+row.requestId);
+   show(actual);
+   detailFeedback('После ошибки текущее состояние заявки: '+actual.state+
+    '. Если оно неизвестно, не повторяйте закрытие вслепую.',true);
+  }catch(_lookup){lockDetailActions(true);}
+  throw err;
  }finally{decisionBusy=false;await refresh();}
 }
 async function allowNotifications(){
@@ -150,7 +316,7 @@ function switchWorkspaceTab(which){
  tab=which;
  $('approval-view').hidden=which==='powershell';
  $('powershell-view').hidden=which!=='powershell';
- for(const id of ['pending','history','powershell']){
+ for(const id of ['pending','unresolved','history','powershell']){
   $(''+id+'-tab').setAttribute('aria-pressed',String(which===id));
  }
 }
@@ -190,6 +356,7 @@ async function ownerPowerShellExecute(){
 }
 $('pending-tab').onclick=action(async()=>{switchWorkspaceTab('pending');selected=null;$('detail').replaceChildren();await refresh();});
 $('history-tab').onclick=action(async()=>{switchWorkspaceTab('history');selected=null;$('detail').replaceChildren();await refresh();});
+$('unresolved-tab').onclick=action(async()=>{switchWorkspaceTab('unresolved');selected=null;$('detail').replaceChildren();await refresh();});
 $('powershell-tab').onclick=action(async()=>{switchWorkspaceTab('powershell');await loadOwnerShell();});
 $('powershell-execute').onclick=action(ownerPowerShellExecute);
 $('refresh').onclick=action(refresh);

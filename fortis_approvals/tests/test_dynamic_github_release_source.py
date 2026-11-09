@@ -37,6 +37,29 @@ class ReleaseOptInSourceTests(unittest.TestCase):
         self.assertIn('PILOT_CI_CONTROL_REQUIRES_NATIVE',self.helper)
         self.assertIn('RELEASE_CI_CONTROL_FLAG_FORWARDING_SELFTEST_FAILED',self.script)
 
+    def test_uncertain_recovery_scope_is_explicit_retained_and_only_subset_later(self):
+        script=self.script
+        primary=(ROOT/'fortis_approvals/deploy/Primary-Gateway.ps1').read_text()
+        self.assertIn("[string]$PreserveUncertainRequests=''",script)
+        self.assertIn('RELEASE_UNCERTAIN_REQUIRES_APPROVED_SOURCE_BUILD',script)
+        self.assertIn('RELEASE_UNCERTAIN_RECORD_SCOPE_CHANGED',script)
+        self.assertIn('RELEASE_UNCERTAIN_SCOPE_INVALID',script)
+        self.assertIn('RELEASE_UNCERTAIN_RECORD_SELFTEST_FAILED',script)
+        self.assertIn('preserveUncertainRequests=$script:PreserveUncertainRequests',script)
+        self.assertIn('preserveUncertainIds=$Ids;requireExactUncertain=([bool]$Exact)',script)
+        self.assertIn('Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact',script)
+        self.assertIn('Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact;Save',script)
+        self.assertIn('preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)',script)
+        self.assertIn('preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)',primary)
+        self.assertIn('$script:PreserveUncertainRequests=$Stored',script)
+        self.assertIn('$script:PreserveUncertainExact=$false',script)
+        self.assertIn('if(-not $script:PreserveUncertainExact){',script)
+        self.assertIn("-or $CiControlRepositories -or $PreserveUncertainRequests)",script)
+        self.assertIn('PILOT_REVIEW_HAS_UNREVIEWED_UNCERTAIN',self.helper)
+        self.assertIn('PILOT_REVIEW_UNCERTAIN_SET_CHANGED',self.helper)
+        self.assertIn('PILOT_REVIEW_HAS_UNFINISHED_REQUESTS',self.helper)
+        self.assertNotIn('UPDATE requests SET state',self.helper)
+
     def test_selftest_and_primary_promotion_are_separate(self):
         self.assertIn('RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED',self.script)
         self.assertIn('RELEASE_DYNAMIC_RECORD_COMPATIBILITY_SELFTEST_FAILED',self.script)

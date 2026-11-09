@@ -8,6 +8,63 @@
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Новый цикл UNCERTAIN и Owner Portal UX — SOURCE CANDIDATE, 2026-11-09
+
+Во время владельческого `Manage-Integrations.ps1 -Action Apply` для CI image
+обнаружены четыре новые блокирующие `UNCERTAIN`:
+`18af495b-f84c-4fd3-b613-ebd5fdfa0165` и
+`35ac68df-8be5-4dae-bf20-11f75555eecc`
+(оба `github.push_commits rd-graphs`),
+`31e8f60b-f396-4e5f-8a46-7772faf95fa4`
+(`workspace.commit meat-proxy-track`) и
+`7b2ea090-4408-4d9c-b1b6-be5a97eb7b36` (`workspace.fetch rd-graphs`).
+Все четыре возвращают `REMOTE_OUTCOME_UNCONFIRMED`, то есть отсутствие
+достоверного подтверждения, а НЕ доказательство провала или успеха.
+Работающий Primary не менялся.
+
+Новый source-кандидат оформлен отдельным `fortis_approvals/incidents.py`,
+переиспользует Core/OwnerWebAuthn/OwnerShellPortal через наследование;
+immutable storage source hashes остаются неизменными
+(`scripts/check-release-storage-source.py` → PASS).
+
+Новый source-кандидат:
+- Owner Portal: отдельный список `Требуют разбора` для `APPROVED`,
+  `DISPATCHED` и `UNCERTAIN`; точный readback и отдельная безопасная
+  `receipt`-сверка, не запускающая GitHub/worker effect заново.
+- `UNCERTAIN → CLOSED_UNCONFIRMED` только по отдельному решению владельца
+  с WebAuthn, после оператора проверенной холодной backup, ввода её точного
+  имени и объяснения; без `EXECUTED`, без удаления UUID и аудита, без
+  возможности повторно исполнить тот же ID. Если durable receipt есть —
+  только `reconcile`; если worker job не `FAILED` — отказ от закрытия.
+  Owner Portal принимает имя backup как **заявление владельца**, но
+  **не проверяет backup volume автоматически**.
+- Approve/Reject до длинного preview, sticky на маленьком экране;
+  мгновенная блокировка кнопок при клике, понятный прогресс, отдельные
+  состояния owner decision / worker completion и readback после ошибок.
+- Точный владельческий параметр `-PreserveUncertainRequests` в Windows
+  release controller: при первой миграции UUID должны совпасть с
+  множеством реально незавершённых UNCERTAIN в источнике; сохраняется
+  неизменная копия всей базы, audit и receipts. Дальнейшие `Backup` и
+  `Promote` допускают только **подмножество** ранее зафиксированных
+  UUID после закрытий, но не новые `UNCERTAIN` без нового явного
+  разрешения владельца. При новом инциденте нужен новый точный список
+  с `-Build -SourceSha` и повторная проверка текущих UNCERTAIN.
+  Все `PENDING`, `APPROVED` и `DISPATCHED` по-прежнему запрещены.
+
+**Ещё не LIVE:** принятие PR, зелёный CI для точного SHA, Windows guarded
+pull, owner-approved image release, Backup/Promote и живые браузерные
+WebAuthn/UX проверки необходимы отдельно. Старый установленный
+контроллер не знает `-PreserveUncertainRequests`.
+
+Backlog далее: по каждому из 4 UUID проверить upstream/worker receipt,
+фактический SHA/коммит и audit attribution; локализовать причины worker
+timeout/failed acknowledgement, сделать полноформатный incident evidence
+чеклист по `push_commits`/`commit`/`fetch`, добавить **независимую**
+проверку backup provenance перед owner-close (в source сейчас лишь
+owner-attested name), live browser validation длинных заявок и offline
+recovery/rollback. Исходящие эффекты неизвестны и после перехода
+`CLOSED_UNCONFIRMED`, их нельзя считать исполненными.
+
 ## Owner Portal PowerShell — source candidate (2026-11-08)
 
 - Вкладка PowerShell с однократным исполнением вставленного скрипта через отдельный

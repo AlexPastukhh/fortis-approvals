@@ -11,6 +11,7 @@ import re
 import sqlite3
 import stat
 import sys
+import uuid
 
 DBS = ('approvals.sqlite', 'owner.sqlite', 'sonar-receipts.sqlite')
 MARKER = '.fortis-r7-unified-v1'
@@ -55,7 +56,23 @@ def native_files(root, *, uid, gid):
     return files
 
 
-def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False):
+def validate_uncertain_ids(value):
+    # A reviewed release can preserve *only* explicitly pinned, terminally
+    # non-dispatched unknown outcomes. No global skip or implicit wildcard.
+    require(type(value) is list and len(value) <= 20 and
+            len(value) == len(set(value)) and all(
+                type(x) is str and bool(re.fullmatch(
+                    r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',x))
+                and str(uuid.UUID(x)) == x for x in value),
+            'PILOT_UNCERTAIN_SCOPE_INVALID')
+    return frozenset(value)
+
+
+def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
+                  preserve_uncertain_ids=None, require_exact_uncertain=False):
+    permitted = validate_uncertain_ids(
+        [] if preserve_uncertain_ids is None else preserve_uncertain_ids)
+    require(type(require_exact_uncertain) is bool,'PILOT_UNCERTAIN_SCOPE_INVALID')
     files = FILES | ({'github-receipts.sqlite'} if github else set())
     require(not native or github, 'PILOT_NATIVE_REQUIRES_GITHUB_STATE')
     databases = DBS + (('github-receipts.sqlite',) if github else ())
@@ -94,9 +111,30 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False):
                 'PILOT_REVIEW_OWNER_BINDING_INVALID')
         active = o.execute('SELECT COUNT(*) FROM credentials WHERE active=1').fetchone()[0]
         require(active >= 1, 'PILOT_EXISTING_OWNER_CREDENTIAL_REQUIRED')
-        require(a.execute("SELECT COUNT(*) FROM requests WHERE state IN ('PENDING','APPROVED','DISPATCHED','UNCERTAIN')").fetchone()[0] == 0,
-                'PILOT_REVIEW_HAS_UNFINISHED_REQUESTS')
+        # In-flight actions and unreviewed unknowns can never be carried into
+        # an image. A scoped owner-reviewed opt-in preserves uncertain rows and
+        # their immutable IDs/receipts verbatim; never rewrites their outcome.
+        require(a.execute(
+            "SELECT COUNT(*) FROM requests WHERE state IN ('PENDING','APPROVED','DISPATCHED')"
+        ).fetchone()[0] == 0,'PILOT_REVIEW_HAS_UNFINISHED_REQUESTS')
+        unknown_count=a.execute(
+            "SELECT COUNT(*) FROM requests WHERE state='UNCERTAIN'").fetchone()[0]
+        # Historic offline fixtures contain only a state column. An actual
+        # uncertain entry must have an exact immutable request ID to preserve.
+        if unknown_count:
+            require('id' in {r[1] for r in a.execute('PRAGMA table_info(requests)')},
+                    'PILOT_UNCERTAIN_REQUEST_ID_REQUIRED')
+            unresolved = frozenset(row[0] for row in a.execute(
+                "SELECT id FROM requests WHERE state='UNCERTAIN'"))
+            require(len(unresolved)==unknown_count,
+                    'PILOT_UNCERTAIN_REQUEST_IDS_INVALID')
+        else:
+            unresolved=frozenset()
+        require(unresolved <= permitted,'PILOT_REVIEW_HAS_UNREVIEWED_UNCERTAIN')
+        if require_exact_uncertain:
+            require(unresolved == permitted,'PILOT_REVIEW_UNCERTAIN_SET_CHANGED')
         summary = {'requests': a.execute('SELECT COUNT(*) FROM requests').fetchone()[0],
+                   'uncertainRequestIds':sorted(unresolved),
             'requestStates': dict(a.execute('SELECT state,COUNT(*) FROM requests GROUP BY state')),
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
@@ -119,11 +157,13 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False):
     return {'sha256': {name: file_hash(root / name) for name in sorted(files)}, 'summary': summary}
 
 
-def clone_state(source, target, *, uid=10001, gid=10001, github=False, native=False):
+def clone_state(source, target, *, uid=10001, gid=10001, github=False,
+                native=False, preserve_uncertain_ids=None):
     source, target = Path(source), Path(target)
     require(not source.is_symlink() and not target.is_symlink() and source.is_dir() and target.is_dir(), 'PILOT_VOLUME_ROOT_INVALID')
     require(source.resolve() != target.resolve() and not any(target.iterdir()), 'PILOT_CLONE_TARGET_NOT_EMPTY')
-    before = inspect_state(source, uid=uid, gid=gid, github=github, native=native)
+    before = inspect_state(source, uid=uid, gid=gid, github=github, native=native,
+                           preserve_uncertain_ids=preserve_uncertain_ids)
     files = set(before['sha256'])
     private = target / 'private'
     private.mkdir(mode=0o700)
@@ -138,8 +178,12 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False, native=Fa
         os.chown(private / name, uid, gid)
     for directory in ([private] + [private / name for name in NATIVE_DIRS] if native else [private]):
         os.chmod(directory, 0o700); os.chown(directory, uid, gid)
-    require(inspect_state(target, uid=uid, gid=gid, github=github, native=native) == before, 'PILOT_CLONE_VERIFICATION_FAILED')
-    require(inspect_state(source, uid=uid, gid=gid, github=github, native=native) == before, 'PILOT_SOURCE_CHANGED_DURING_CLONE')
+    require(inspect_state(target, uid=uid, gid=gid, github=github, native=native,
+                           preserve_uncertain_ids=preserve_uncertain_ids) == before,
+            'PILOT_CLONE_VERIFICATION_FAILED')
+    require(inspect_state(source, uid=uid, gid=gid, github=github, native=native,
+                          preserve_uncertain_ids=preserve_uncertain_ids) == before,
+            'PILOT_SOURCE_CHANGED_DURING_CLONE')
     return before
 
 
@@ -298,8 +342,13 @@ def main():
     value = json.load(sys.stdin)
     action = value['action']
     if action == 'provision': result = provision_token(value['token'])
-    elif action == 'clone': result = clone_state('/source', '/target', github=value.get('github', False), native=value.get('native', False))
-    elif action == 'inspect': result = inspect_state('/source', github=value.get('github', False), native=value.get('native', False))
+    elif action == 'clone': result = clone_state(
+        '/source','/target',github=value.get('github',False),native=value.get('native',False),
+        preserve_uncertain_ids=value.get('preserveUncertainIds',[]))
+    elif action == 'inspect': result = inspect_state(
+        '/source',github=value.get('github',False),native=value.get('native',False),
+        preserve_uncertain_ids=value.get('preserveUncertainIds',[]),
+        require_exact_uncertain=value.get('requireExactUncertain',False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])
     elif action == 'file_pr_receipts': result = verify_file_pr_receipts(value['scenario'])

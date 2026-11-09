@@ -45,7 +45,7 @@ class StateTests(unittest.TestCase):
         private.mkdir(mode=0o700)
         (private / HELPERS.MARKER).write_bytes(b'fortis-r7-unified-v1\n')
         with sqlite3.connect(private / 'approvals.sqlite') as db:
-            db.executescript("CREATE TABLE requests(state TEXT); CREATE TABLE events(value TEXT); INSERT INTO requests VALUES ('REJECTED'); INSERT INTO events VALUES ('preserved');")
+            db.executescript("CREATE TABLE requests(id TEXT PRIMARY KEY,state TEXT); CREATE TABLE events(value TEXT); INSERT INTO requests VALUES ('11111111-1111-4111-8111-111111111111','REJECTED'); INSERT INTO events VALUES ('preserved');")
         with sqlite3.connect(private / 'owner.sqlite') as db:
             db.executescript('CREATE TABLE config(setting TEXT,value TEXT); CREATE TABLE credentials(active INTEGER,data BLOB); CREATE TABLE invitations(data BLOB);')
             db.executemany('INSERT INTO config VALUES (?,?)', [('origin','http://localhost:19203'),('rpId','localhost'),('owner','owner')])
@@ -92,10 +92,50 @@ class StateTests(unittest.TestCase):
         self.assertEqual(list(self.target.iterdir()), [])
         journal.unlink()
         with sqlite3.connect(self.source/'private'/'approvals.sqlite') as db:
-            db.execute("INSERT INTO requests VALUES ('DISPATCHED')")
+            db.execute("INSERT INTO requests VALUES (?,?)",('22222222-2222-4222-8222-222222222222','DISPATCHED'))
         with self.assertRaisesRegex(RuntimeError, 'UNFINISHED_REQUESTS'):
             HELPERS.clone_state(self.source, self.target, **self.identity)
         self.assertEqual(list(self.target.iterdir()), [])
+
+    def test_uncertain_requires_exact_owner_scope_and_copies_only_same_bytes(self):
+        unknown='55555555-5555-4555-8555-555555555555'
+        another='66666666-6666-4666-8666-666666666666'
+        with sqlite3.connect(self.source/'private'/'approvals.sqlite') as db:
+            db.execute('INSERT INTO requests VALUES (?,?)',(unknown,'UNCERTAIN'))
+        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
+            HELPERS.inspect_state(self.source,**self.identity)
+        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
+            HELPERS.inspect_state(self.source,preserve_uncertain_ids=[another],**self.identity)
+        with self.assertRaisesRegex(RuntimeError,'UNCERTAIN_SET_CHANGED'):
+            HELPERS.inspect_state(self.source,preserve_uncertain_ids=[unknown,another],
+                                  require_exact_uncertain=True,**self.identity)
+        self.assertEqual(HELPERS.inspect_state(
+            self.source,preserve_uncertain_ids=[unknown],require_exact_uncertain=True,
+            **self.identity)['summary']['uncertainRequestIds'],[unknown])
+        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
+            HELPERS.clone_state(self.source,self.target,**self.identity)
+        self.assertEqual(list(self.target.iterdir()),[])
+        copied=HELPERS.clone_state(self.source,self.target,
+                                  preserve_uncertain_ids=[unknown],**self.identity)
+        self.assertEqual(copied['summary']['uncertainRequestIds'],[unknown])
+        self.assertEqual(
+            (self.source/'private'/'approvals.sqlite').read_bytes(),
+            (self.target/'private'/'approvals.sqlite').read_bytes())
+        with sqlite3.connect(self.target/'private'/'approvals.sqlite') as db:
+            self.assertEqual(db.execute('SELECT state FROM requests WHERE id=?',
+                                        (unknown,)).fetchone()[0],'UNCERTAIN')
+
+    def test_uncertain_opt_in_rejects_active_execution_and_invalid_ids(self):
+        unknown='55555555-5555-4555-8555-555555555555'
+        with sqlite3.connect(self.source/'private'/'approvals.sqlite') as db:
+            db.executemany('INSERT INTO requests VALUES (?,?)',[(unknown,'UNCERTAIN'),
+                ('77777777-7777-4777-8777-777777777777','PENDING')])
+        with self.assertRaisesRegex(RuntimeError,'UNFINISHED_REQUESTS'):
+            HELPERS.inspect_state(self.source,preserve_uncertain_ids=[unknown],**self.identity)
+        for bad in ([unknown,unknown],['not-a-uuid'],[],['11111111-1111-4111-8111-111111111111',5]):
+            if not bad:continue
+            with self.assertRaisesRegex(RuntimeError,'UNCERTAIN_SCOPE_INVALID'):
+                HELPERS.inspect_state(self.source,preserve_uncertain_ids=bad,**self.identity)
 
     def test_private_credential_is_not_echoed_and_existing_volume_is_not_adopted(self):
         volume=self.root/'credential'; volume.mkdir()
