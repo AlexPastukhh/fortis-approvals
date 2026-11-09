@@ -53,7 +53,7 @@ class NativeIngress:
                 cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'},
                 githubCiReads=sorted(CI_READ_NAMES),
                 githubCiControls={'default':'DENY','optIn':'ASK',
-                    'repositories':list(self.github.config.ci_control_repositories)})
+                    'repositories':list(getattr(self.github.config,'ci_control_repositories',()))})
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)
