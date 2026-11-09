@@ -67,7 +67,8 @@ class WorkflowClient:
     def resume(self,ident):
         row=self.result(ident)
         if row['state']=='UNCERTAIN':return self.result(ident,reconcile=True)
-        if row['state'] in ('EXECUTED','REJECTED','STALE','EXPIRED','REVOKED'):return row
+        if row['state'] in ('EXECUTED','REJECTED','STALE','EXPIRED','REVOKED',
+                            'CLOSED_UNCONFIRMED'):return row
         deadline=time.monotonic()+100
         while time.monotonic()<deadline:
             job=self.gateway.post('/v1/workspace/claim',dict(requestId=ident))['job']

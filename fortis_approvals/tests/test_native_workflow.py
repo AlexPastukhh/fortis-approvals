@@ -169,6 +169,22 @@ class NativeTLS(unittest.TestCase):
         state=self.command('stage',dict(task=task,expectedHeadSha=state['headSha'],expectedTreeSha256=state['treeSha256'],paths=[x['path'] for x in changes]))
         return self.command('commit',dict(task=task,expectedHeadSha=state['headSha'],expectedIndexSha256=state['indexSha256'],message='Offline real Git commit'))
 
+    def test_closed_incident_is_terminal_for_resume_no_claim_or_retry(self):
+        ident=str(uuid.uuid4())
+        finished=self.flow.command('inspect','sandbox',dict(task=None),
+            request_id=ident,reason='Offline closed request resume regression')
+        self.assertEqual(finished['state'],'EXECUTED')
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='CLOSED_UNCONFIRMED' WHERE id=?",(ident,))
+        original_post=self.gateway.post
+        def no_claim(path,body,**kw):
+            if path=='/v1/workspace/claim':
+                raise AssertionError('A closed incident must never be claimed')
+            return original_post(path,body,**kw)
+        with patch.object(self.gateway,'post',side_effect=no_claim):
+            row=self.flow.resume(ident)
+        self.assertEqual(row['state'],'CLOSED_UNCONFIRMED')
+
     def test_ai_full_details_reuses_authenticated_tls_and_does_not_replay(self):
         ident=str(uuid.uuid4())
         response=self.flow.command('inspect','sandbox',dict(task=None),
