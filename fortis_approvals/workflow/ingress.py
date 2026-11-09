@@ -13,7 +13,7 @@ from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
 
 
 class NativeIngress:
@@ -102,6 +102,14 @@ class NativeIngress:
                     r.get('operation')==row['request']['operation'] and r.get('repository')==row['request']['target'],'WORKFLOW_RESULT_BINDING_INVALID')
             self.store.finish(actor,body['requestId'],body['claim'],body['result'],body['error'])
             return dict(recorded=True)
+        if path=='/v1/workspace/details':
+            require(set(body)=={'requestId','eventOffset','eventLimit'},
+                    'WORKFLOW_PARAMS_INVALID')
+            require(callable(getattr(core,'machine_request_details',None)),
+                    'INCIDENT_DETAIL_NOT_SUPPORTED')
+            return core.machine_request_details(
+                credential,body['requestId'],
+                event_offset=body['eventOffset'],event_limit=body['eventLimit'])
         if path in ('/v1/workspace/result','/v1/workspace/reconcile'):
             require(set(body)=={'requestId'},'WORKFLOW_PARAMS_INVALID')
             try:row=self._row(credential,body['requestId'])

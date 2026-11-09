@@ -89,9 +89,9 @@ class OrphanedClaimStateTests(unittest.TestCase):
                                         (IDENT,)).fetchone(),('CLAIMED',None,None))
 
     def test_no_implicit_claimed_allowlist_and_bad_scope_denied(self):
-        with self.assertRaisesRegex(RuntimeError,'CLAIMED_SCOPE_NOT_UNCERTAIN'):
+        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
             self.inspect(preserve_uncertain_ids=[])
-        with self.assertRaisesRegex(RuntimeError,'CLAIMED_SCOPE_NOT_UNCERTAIN'):
+        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_CLAIMED_JOBS'):
             self.inspect(preserve_claimed_ids=['11111111-1111-4111-8111-111111111111'])
         with self.assertRaisesRegex(RuntimeError,'UNCERTAIN_SCOPE_INVALID'):
             self.inspect(preserve_claimed_ids=[IDENT,IDENT])
@@ -101,6 +101,34 @@ class OrphanedClaimStateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'CLAIMED_JOB_SET_CHANGED'):
             self.inspect(require_exact_claimed=True)
         self.assertEqual(self.inspect()['summary']['native']['preservedClaimedIds'],[])
+
+    def test_closed_claimed_job_survives_future_backups_without_reopening_request(self):
+        with sqlite3.connect(self.source/'private/approvals.sqlite') as db:
+            db.execute('DROP TABLE events')
+            db.execute('CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,request_id TEXT,state TEXT,detail TEXT)')
+            db.execute("UPDATE requests SET state='CLOSED_UNCONFIRMED' WHERE id=?",(IDENT,))
+            db.execute('INSERT INTO events(request_id,state,detail) VALUES(?,?,?)',(IDENT,'CLOSED_UNCONFIRMED',
+                json.dumps({'owner':'owner','remoteEffectVerified':False,
+                            'closeMethod':'authenticated_owner_session'})))
+        # After closure the exact active UNCERTAIN set is empty, while the
+        # previously approved worker claim is still present and byte-preserved.
+        args={**self.kw,'preserve_uncertain_ids':[],
+              'preserve_claimed_ids':[IDENT],'require_exact_uncertain':True,
+              'require_exact_claimed':True}
+        state=H.inspect_state(self.source,**args)
+        self.assertEqual(state['summary']['uncertainRequestIds'],[])
+        self.assertEqual(state['summary']['native']['preservedClaimedIds'],[IDENT])
+        before=(self.source/'private/native-git/workflow.sqlite').read_bytes()
+        result=H.clone_state(self.source,self.target,**{
+            k:v for k,v in args.items() if not k.startswith('require_exact_')})
+        self.assertEqual(result['sha256'],state['sha256'])
+        self.assertEqual(before,(self.target/'private/native-git/workflow.sqlite').read_bytes())
+        with sqlite3.connect(self.target/'private/approvals.sqlite') as db:
+            self.assertEqual(db.execute('SELECT state FROM requests WHERE id=?',
+                                        (IDENT,)).fetchone(),('CLOSED_UNCONFIRMED',))
+        self.update('DELETE FROM events WHERE request_id=?',(IDENT,),table='approvals.sqlite')
+        with self.assertRaisesRegex(RuntimeError,'CLAIMED_CLOSURE_AUDIT_MISSING'):
+            H.inspect_state(self.source,**args)
 
     def test_worker_queued_and_wrong_operation_never_allowed(self):
         self.update("UPDATE jobs SET state='QUEUED' WHERE id=?",(IDENT,))

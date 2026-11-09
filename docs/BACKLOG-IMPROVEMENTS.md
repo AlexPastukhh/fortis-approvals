@@ -8,6 +8,26 @@
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## AI просмотр заявок и простое закрытие — SOURCE CANDIDATE 2026-11-09
+
+Источник теперь добавляет `POST /v1/workspace/details` для чтения ИИ
+полной карточки actor-owned заявки Core, preview, аудита, worker
+status/error/result и receipts (без claim-токена и owner-cookie).
+Это НЕ применяет действие и НЕ запускает reconcile. Фактический
+Git/GitHub эффект ИИ расследует независимыми read-only проверками:
+SHA/refs, worktree, journal. Отсутствие receipt — не доказательство
+отсутствия эффекта.
+
+Owner Portal содержит одну кнопку `Закрыть заявку` для `UNCERTAIN`,
+которая записывает `CLOSED_UNCONFIRMED` через текущую owner-сессию
+и CSRF: без второго WebAuthn, backup ID, объяснения, требования
+worker `FAILED`. Статус, результат и worker job не подменяются;
+audit содержит кто закрыл. Сохранённый `CLAIMED` не мешает следующей
+backup/release при точном защищённом scope и closure audit.
+
+Остаются owner merge/CI, развёртывание нового source, Windows SelfTest,
+browser acceptance и расследование всех шести UUID после активации.
+
 ## Осиротевший native worker claim — отдельная задача 2026-11-09
 
 После PR #37 live Windows preflight обнаружил шесть `UNCERTAIN`

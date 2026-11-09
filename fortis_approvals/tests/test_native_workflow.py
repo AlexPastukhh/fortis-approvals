@@ -169,6 +169,26 @@ class NativeTLS(unittest.TestCase):
         state=self.command('stage',dict(task=task,expectedHeadSha=state['headSha'],expectedTreeSha256=state['treeSha256'],paths=[x['path'] for x in changes]))
         return self.command('commit',dict(task=task,expectedHeadSha=state['headSha'],expectedIndexSha256=state['indexSha256'],message='Offline real Git commit'))
 
+    def test_ai_full_details_reuses_authenticated_tls_and_does_not_replay(self):
+        ident=str(uuid.uuid4())
+        response=self.flow.command('inspect','sandbox',dict(task=None),
+            request_id=ident,reason='Offline machine read-only incident details regression')
+        self.assertEqual(response['state'],'EXECUTED')
+        before=self.core.events(ident)
+        details=self.flow.details(ident,event_offset=0,event_limit=100)
+        self.assertEqual(details['request']['requestId'],ident)
+        self.assertEqual(details['request']['actor'],self.core._read(ident)['actor'])
+        self.assertEqual(details['request']['preview'],self.core._read(ident)['preview'])
+        self.assertEqual(details['request']['request']['operation'],'inspect')
+        self.assertEqual(details['request']['state'],'EXECUTED')
+        self.assertEqual(details['eventTotal'],len(before))
+        self.assertEqual(details['worker']['state'],'DONE')
+        self.assertIsNotNone(details['receipt'])
+        self.assertEqual(details['receipt']['source'],'native-worker-job')
+        self.assertNotIn('claim',details['worker'])
+        self.assertEqual(self.flow.details(ident,event_offset=1,event_limit=1)['eventOffset'],1)
+        self.assertEqual(self.core.events(ident),before)
+
     def test_full_actual_worktree_commit_push_pr_ci_merge_update_main(self):
         self.command('fetch',dict(ref='main',expectedSha=self.fixture.base))
         self.create();state=self.edit_commit()

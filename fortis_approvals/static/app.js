@@ -147,38 +147,13 @@ function show(row){
   btn.onclick=action(()=>reconcileUncertain(row));controls.append(btn);
  }
  if(row.state==='UNCERTAIN'){
-  const closure=document.createElement('details');closure.className='incident-close';
-  const heading=document.createElement('summary');
-  heading.textContent='Закрыть расследование без подтверждения выполнения';
-  closure.append(heading);
-  const description=document.createElement('p');description.textContent=
-   'Это НЕ означает, что операция завершилась успешно или не выполнялась. '+
-   'Сначала проверьте последствия и создайте проверенную резервную копию штатным контроллером.';
-  closure.append(description);
-  const backupLabel=document.createElement('label');
-  backupLabel.textContent='Точный ID проверенной резервной копии';
-  const backup=document.createElement('input');backup.type='text';
-  backup.placeholder='fortis-gateway-backup-…';
-  backup.autocomplete='off';backup.spellcheck=false;
-  backup.pattern='fortis-gateway-backup-[0-9a-f]{32}';
-  backupLabel.append(backup);closure.append(backupLabel);
-  const reasonLabel=document.createElement('label');
-  reasonLabel.textContent='Что проверено и почему расследование закрывается';
-  const explanation=document.createElement('textarea');explanation.rows=3;
-  explanation.minLength=20;explanation.maxLength=1000;
-  explanation.placeholder='Опишите проверку фактического эффекта и сохранённые доказательства.';
-  reasonLabel.append(explanation);closure.append(reasonLabel);
-  const acknowledgeLabel=document.createElement('label');
-  const acknowledge=document.createElement('input');acknowledge.type='checkbox';
-  acknowledgeLabel.append(acknowledge,document.createTextNode(
-   ' Я понимаю: результат остаётся неизвестным; новый запуск этой операции может быть опасен.'));
-  closure.append(acknowledgeLabel);
   const close=document.createElement('button');close.type='button';
-  close.textContent='Закрыть как CLOSED_UNCONFIRMED (WebAuthn)';
-  close.onclick=action(()=>closeIncident(row,backup.value,explanation.value,acknowledge.checked));
-  closure.append(close);
-  controls.append(closure);
+  close.textContent='Закрыть заявку';
+  close.title='Закрыть как CLOSED_UNCONFIRMED. Итог операции не подтверждён.';
+  close.onclick=action(()=>closeIncident(row));
+  controls.append(close);
  }
+
  // Controls first; long payload and preview come after.
  area.append(controls,feedback);
  if(row.state==='UNCERTAIN')detailFeedback(
@@ -194,10 +169,14 @@ function show(row){
  else if(row.state==='CLOSED_UNCONFIRMED')detailFeedback(
   'Расследование закрыто владельцем. Итог исходной операции НЕ доказан; не повторяйте её вслепую.',true);
  if(row.incidentClosure){
-  area.append(line('Резервная копия (подтверждена владельцем)',
-     row.incidentClosure.backupVolumeOwnerAttested),
-   line('Обоснование закрытия',row.incidentClosure.explanation));
+  const evidence=row.incidentClosure;
+  if(evidence.backupVolumeOwnerAttested)area.append(
+    line('Резервная копия (указана владельцем)',evidence.backupVolumeOwnerAttested));
+  if(evidence.explanation)area.append(line('Обоснование закрытия',evidence.explanation));
+  if(evidence.closeMethod==='authenticated_owner_session')area.append(
+    line('Закрыто','Владельцем без подтверждения результата операции'));
  }
+
  area.append(line('Инициатор',row.actor||'проверенный клиент'),
   line('Объект',row.request.target),line('Причина',row.request.reason),line('ID',row.requestId));
  const label=document.createElement('h3');label.textContent='Точное изменение и состояние';area.append(label);
@@ -267,32 +246,21 @@ async function reconcileUncertain(row){
   throw err;
  }finally{decisionBusy=false;await refresh();}
 }
-async function closeIncident(row,backupVolume,explanation,acknowledgeUnknown){
+async function closeIncident(row){
  if(decisionBusy)return;
- if(!acknowledgeUnknown)throw Error('Сначала подтвердите, что результат операции неизвестен.');
- if(!/^fortis-gateway-backup-[0-9a-f]{32}$/.test(backupVolume)||
-   explanation.trim().length<20||explanation.trim().length>1000){
-  throw Error('Укажите точный ID проверенной резервной копии и обоснование длиной 20–1000 символов.');
- }
- if(!window.confirm('Закрыть расследование? Это НЕ подтверждает выполнение операции.'))return;
  decisionBusy=true;lockDetailActions(true);
- detailFeedback('Проверка ключа владельца для закрытия расследования…');
- const body={requestId:row.requestId,backupVolume,explanation,acknowledgeUnknown:true};
+ detailFeedback('Закрываю заявку. Итог исходной операции останется неизвестным…');
  try{
-  const begin=await api('/v1/owner/incidents/close/begin',body,true);
-  const response=await ceremony(begin);
-  detailFeedback('Подписанное решение отправлено. Проверяю состояние заявки…');
-  const result=await api('/v1/owner/incidents/close/finish',
-     {...body,ceremonyId:begin.ceremonyId,response},true);
+  const result=await api('/v1/owner/incidents/close/simple',
+   {requestId:row.requestId,fingerprint:row.fingerprint},true);
   show(result);
-  status('Инцидент '+row.requestId+' закрыт без доказательства исхода. Не повторяйте операцию.');
-  detailFeedback('CLOSED_UNCONFIRMED: состояние операции неизвестно, исполнение не повторялось.');
+  status('Заявка '+row.requestId+' закрыта. Результат операции не подтверждён.');
+  detailFeedback('CLOSED_UNCONFIRMED: повторного исполнения не было.');
  }catch(err){
   try{
    const actual=await api('/v1/owner/requests/'+row.requestId);
    show(actual);
-   detailFeedback('После ошибки текущее состояние заявки: '+actual.state+
-    '. Если оно неизвестно, не повторяйте закрытие вслепую.',true);
+   detailFeedback('Текущее состояние после ошибки: '+actual.state+'.',true);
   }catch(_lookup){lockDetailActions(true);}
   throw err;
  }finally{decisionBusy=false;await refresh();}

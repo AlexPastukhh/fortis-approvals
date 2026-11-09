@@ -31,6 +31,15 @@ class WorkflowClient:
     def result(self,ident,reconcile=False):
         return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident))
 
+    def details(self,ident,*,event_offset=0,event_limit=100):
+        """Full owner-equivalent request + audit and worker evidence, read-only.
+
+        Scoped by the existing Repo machine grant to requests initiated by
+        that actor. No owner cookie, credentials, claim token or retry.
+        """
+        return self.gateway.post('/v1/workspace/details',
+            dict(requestId=ident,eventOffset=event_offset,eventLimit=event_limit))
+
     def command(self,operation,repository,params,*,request_id,reason,wait_owner=False):
         response={};failure=[]
         def submit():
@@ -128,6 +137,10 @@ def main():
         result=client.publish(args.repository,body['task'],body['expectedHeadSha'],body['newSha'],
             request_id=args.request_id,reason=args.reason)
     elif args.operation=='result':result=client.result(args.request_id)
+    elif args.operation=='details':
+        result=client.details(args.request_id,
+            event_offset=body.get('eventOffset',0),
+            event_limit=body.get('eventLimit',100))
     else:
         result=client.command(args.operation,args.repository,body,request_id=args.request_id,reason=args.reason)
     print(json.dumps(result,sort_keys=True))

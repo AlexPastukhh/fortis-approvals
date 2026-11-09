@@ -78,7 +78,8 @@ class GitHubClient:
                 set(result) != {"requestId", "state"} or result["requestId"] != ident or
                 result["state"] not in ("PENDING", "APPROVED", "DISPATCHED",
                                         "EXECUTED", "REJECTED", "DENIED",
-                                        "EXPIRED", "STALE", "UNCERTAIN")):
+                                        "EXPIRED", "STALE", "UNCERTAIN",
+                                        "CLOSED_UNCONFIRMED")):
             raise Denied("GITHUB_GATEWAY_STATUS_RESPONSE_INVALID")
         return result
 

@@ -50,6 +50,84 @@ class IncidentCore(Core):
             return {'items':[self._view(row) for row in rows],
                     'total':total,'truncated':total>len(rows)}
 
+    def machine_request_details(self, credential, request_id, *, event_offset=0, event_limit=100):
+        """Read-only full owner-equivalent request for its initiating machine actor.
+
+        Never expose the worker claim token, a session, or a machine secret.
+        Unlike WorkspaceAdapter.receipt(), this never performs post-dispatch
+        task registration or any other state-changing operation.
+        """
+        if (type(event_offset) is not int or event_offset < 0 or event_offset > 1000000 or
+            type(event_limit) is not int or not 1 <= event_limit <= 100):
+            raise Denied('INCIDENT_READ_PAGINATION_DENIED')
+        row=self.client(credential,'status',request_id)
+        with self._db() as db:
+            count=db.execute('SELECT COUNT(*) FROM events WHERE request_id=?',
+                             (request_id,)).fetchone()[0]
+            events=[dict(seq=r['seq'],at=r['at'],state=r['state'],
+                        detail=json.loads(r['detail'])) for r in db.execute(
+                'SELECT seq,at,state,detail FROM events WHERE request_id=? '
+                'ORDER BY seq LIMIT ? OFFSET ?', (request_id,event_limit,event_offset))]
+        adapter=self.adapters.get(row['request']['service'])
+        job=None
+        evidence=None
+        if adapter is not None:
+            store=getattr(adapter,'store',None)
+            if callable(getattr(store,'job',None)):
+                saved=store.job(request_id)
+                if saved is not None:
+                    if saved['actor']!=row['actor']:
+                        raise Denied('INCIDENT_WORKER_ACTOR_MISMATCH')
+                    job=dict(state=saved['state'],actor=saved['actor'],
+                             error=saved['error'],hasClaim=bool(saved['claim']),
+                             result=json.loads(saved['result']) if saved['result'] else None)
+                    if job['state']=='DONE' and type(job['result']) is dict:
+                        evidence={'source':'native-worker-job','result':job['result']}
+            elif row['request']['service']=='github':
+                # GitHub receipt lookup is a local read; no upstream dispatch.
+                receipt=adapter.receipt(request_id)
+                if receipt is not None:
+                    evidence={'source':'github-receipts','result':receipt}
+        return {'schemaVersion':1,'request':row,'events':events,
+                'eventOffset':event_offset,'eventTotal':count,
+                'eventsTruncated':event_offset+len(events)<count,
+                'worker':job,'receipt':evidence,
+                'incidentClosure':self.owner_incident_closure(request_id)
+                    if row['state']=='CLOSED_UNCONFIRMED' else None}
+
+    def owner_close_simple(self, request_id, expected_fingerprint, owner):
+        """Owner-authenticated administrative dismissal; not a result assertion.
+
+        One click after existing WebAuthn login + CSRF. Never calls any
+        adapter, never writes worker jobs/receipts, and never redispatches.
+        """
+        if (type(request_id) is not str or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',request_id) or
+            type(expected_fingerprint) is not str or not re.fullmatch(
+                r'[0-9a-f]{64}',expected_fingerprint) or
+            type(owner) is not str or not owner):
+            raise Denied('INCIDENT_SIMPLE_CLOSE_INPUT_INVALID')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            record=db.execute('SELECT * FROM requests WHERE id=?',(request_id,)).fetchone()
+            if record is None or record['state']!='UNCERTAIN' or (
+                    record['fingerprint']!=expected_fingerprint):
+                raise Denied('INCIDENT_NOT_UNCERTAIN_OR_CHANGED')
+            row=self._view(record)
+            changed=db.execute(
+                "UPDATE requests SET state='CLOSED_UNCONFIRMED' "
+                "WHERE id=? AND state='UNCERTAIN' AND fingerprint=?",
+                (request_id,expected_fingerprint)).rowcount
+            if changed!=1:raise Denied('INCIDENT_CONCURRENT_CHANGE')
+            self._event(db,request_id,'CLOSED_UNCONFIRMED',{
+                'owner':owner,'closeMethod':'authenticated_owner_session',
+                'originalFailure':row['failure'],
+                'originalFingerprint':row['fingerprint'],
+                'outcome':'UNCONFIRMED',
+                'remoteEffectVerified':False,'workerStateUnchanged':True})
+            return self._view(db.execute(
+                'SELECT * FROM requests WHERE id=?',(request_id,)).fetchone())
+
     @staticmethod
     def _closure_fingerprint(row, backup_volume, explanation):
         # Owner attestation of an operator-verified backup, NOT a backup
@@ -162,6 +240,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
+            '/v1/owner/incidents/close/simple',
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
         if not (get_unresolved or post_incident):
@@ -186,6 +265,12 @@ class IncidentOwnerPortal(OwnerShellPortal):
             self.auth.session(token,csrf)
             if self.read_only_banner:
                 raise Denied('INCIDENT_OWNER_WRITE_NOT_ENABLED')
+            if path=='/v1/owner/incidents/close/simple' and set(body)=={
+                    'requestId','fingerprint'}:
+                owner_session=self.auth.session(token,csrf)
+                return self._reply(start,200,self._owner_view(
+                    self.core.owner_close_simple(
+                        body['requestId'],body['fingerprint'],owner_session['owner'])))
             if path=='/v1/owner/reconcile' and set(body)=={'requestId'}:
                 if (type(body['requestId']) is not str or not
                         re.fullmatch(
