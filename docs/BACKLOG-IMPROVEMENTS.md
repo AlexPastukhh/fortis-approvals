@@ -8,110 +8,33 @@
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
-## AI просмотр заявок и простое закрытие — SOURCE CANDIDATE 2026-11-09
+## UNCERTAIN: оставшиеся задачи после принятого релиза 2026-11-09
 
-Источник теперь добавляет `POST /v1/workspace/details` для чтения ИИ
-полной карточки actor-owned заявки Core, preview, аудита, worker
-status/error/result и receipts (без claim-токена и owner-cookie).
-Это НЕ применяет действие и НЕ запускает reconcile. Фактический
-Git/GitHub эффект ИИ расследует независимыми read-only проверками:
-SHA/refs, worktree, journal. Отсутствие receipt — не доказательство
-отсутствия эффекта.
+**Реализовано и развёрнуто:** PR #37/#38/#39, owner-reported
+`FORTIS_PRIMARY_VERIFIED` на source
+`a200137775eb6c6b8dcec81f31206b0d481d9003`. Машинный
+`WorkflowClient.details(UUID)` проверен на всех шести живых
+`UNCERTAIN` и даёт read-only request/preview/audit/worker/receipt.
+Owner Portal получил `Закрыть заявку`: одна авторизованная кнопка,
+`CLOSED_UNCONFIRMED` без повторного WebAuthn/имени backup/объяснения,
+без подмены worker job. Код и WebAuthn тесты прошли; отдельный ручной
+browser-click acceptance нового интерфейса пока не зафиксирован.
+Для использования — [UC-GW-009](use-cases/incidents.md#uc-gw-009);
+для image/volume provenance — [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+Старые описания `SOURCE CANDIDATE` и требование `worker=FAILED`
+для owner-dismissal из PR #37 **не являются текущим контрактом**.
 
-Owner Portal содержит одну кнопку `Закрыть заявку` для `UNCERTAIN`,
-которая записывает `CLOSED_UNCONFIRMED` через текущую owner-сессию
-и CSRF: без второго WebAuthn, backup ID, объяснения, требования
-worker `FAILED`. Статус, результат и worker job не подменяются;
-audit содержит кто закрыл. Сохранённый `CLAIMED` не мешает следующей
-backup/release при точном защищённом scope и closure audit.
-
-Остаются owner merge/CI, развёртывание нового source, Windows SelfTest,
-browser acceptance и расследование всех шести UUID после активации.
-
-## Осиротевший native worker claim — отдельная задача 2026-11-09
-
-После PR #37 live Windows preflight обнаружил шесть `UNCERTAIN`
-(четыре исторических плюс `workspace.create_task` и `workspace.commit`
-для `feed_and_search_and_bank_and_brain`), один worker job
-`CLAIMED` (`2df32a24-efb1-4dac-97f6-3b66147d8944`).
-Docker Repo worker journal не содержит UUID этого `create_task`,
-но отсутствие записи НЕ подтверждает отсутствие локального эффекта.
-Вторая заявка `ee9c5e73-5d5a-4ea1-8133-d79d59511f32` —
-worker journal `FAILED/UNCERTAIN`.
-
-Owner-reviewed `-PreserveClaimedJobs` и `-ConfirmWorkerQuiescent`
-в новом source-кандидате позволяют *побайтово сохранить*
-единственную явно названную связанную запись `CLAIMED`
-при image release — только с точным SHA и списком UNCERTAIN,
-без исполнения, повторного запуска или подмены статуса.
-`QUEUED`, другие операции, активные approvals и новые UUID
-по-прежнему запрещены. Quiescence пока только owner-attested:
-внешнего worker-процесса helper сам не контролирует.
-
-Обязательный следующий этап: отдельный Owner Portal workflow
-для разбора зависшего `CLAIMED` с точным локальным journal
-и Git-worktree evidence, машинной проверкой отсутствия
-исполнения и подтверждённой backup, WebAuthn и неизменным
-аудитом. Сейчас `owner_close_uncertain` намеренно требует
-worker `FAILED`: перенос не заменяет terminalization.
-Не выполнять UPDATE SQLite или подделывать receipt для удобства.
-
-## Новый цикл UNCERTAIN и Owner Portal UX — SOURCE CANDIDATE, 2026-11-09
-
-Во время владельческого `Manage-Integrations.ps1 -Action Apply` для CI image
-обнаружены четыре новые блокирующие `UNCERTAIN`:
-`18af495b-f84c-4fd3-b613-ebd5fdfa0165` и
-`35ac68df-8be5-4dae-bf20-11f75555eecc`
-(оба `github.push_commits rd-graphs`),
-`31e8f60b-f396-4e5f-8a46-7772faf95fa4`
-(`workspace.commit meat-proxy-track`) и
-`7b2ea090-4408-4d9c-b1b6-be5a97eb7b36` (`workspace.fetch rd-graphs`).
-Все четыре возвращают `REMOTE_OUTCOME_UNCONFIRMED`, то есть отсутствие
-достоверного подтверждения, а НЕ доказательство провала или успеха.
-Работающий Primary не менялся.
-
-Новый source-кандидат оформлен отдельным `fortis_approvals/incidents.py`,
-переиспользует Core/OwnerWebAuthn/OwnerShellPortal через наследование;
-immutable storage source hashes остаются неизменными
-(`scripts/check-release-storage-source.py` → PASS).
-
-Новый source-кандидат:
-- Owner Portal: отдельный список `Требуют разбора` для `APPROVED`,
-  `DISPATCHED` и `UNCERTAIN`; точный readback и отдельная безопасная
-  `receipt`-сверка, не запускающая GitHub/worker effect заново.
-- `UNCERTAIN → CLOSED_UNCONFIRMED` только по отдельному решению владельца
-  с WebAuthn, после оператора проверенной холодной backup, ввода её точного
-  имени и объяснения; без `EXECUTED`, без удаления UUID и аудита, без
-  возможности повторно исполнить тот же ID. Если durable receipt есть —
-  только `reconcile`; если worker job не `FAILED` — отказ от закрытия.
-  Owner Portal принимает имя backup как **заявление владельца**, но
-  **не проверяет backup volume автоматически**.
-- Approve/Reject до длинного preview, sticky на маленьком экране;
-  мгновенная блокировка кнопок при клике, понятный прогресс, отдельные
-  состояния owner decision / worker completion и readback после ошибок.
-- Точный владельческий параметр `-PreserveUncertainRequests` в Windows
-  release controller: при первой миграции UUID должны совпасть с
-  множеством реально незавершённых UNCERTAIN в источнике; сохраняется
-  неизменная копия всей базы, audit и receipts. Дальнейшие `Backup` и
-  `Promote` допускают только **подмножество** ранее зафиксированных
-  UUID после закрытий, но не новые `UNCERTAIN` без нового явного
-  разрешения владельца. При новом инциденте нужен новый точный список
-  с `-Build -SourceSha` и повторная проверка текущих UNCERTAIN.
-  Все `PENDING`, `APPROVED` и `DISPATCHED` по-прежнему запрещены.
-
-**Ещё не LIVE:** принятие PR, зелёный CI для точного SHA, Windows guarded
-pull, owner-approved image release, Backup/Promote и живые браузерные
-WebAuthn/UX проверки необходимы отдельно. Старый установленный
-контроллер не знает `-PreserveUncertainRequests`.
-
-Backlog далее: по каждому из 4 UUID проверить upstream/worker receipt,
-фактический SHA/коммит и audit attribution; локализовать причины worker
-timeout/failed acknowledgement, сделать полноформатный incident evidence
-чеклист по `push_commits`/`commit`/`fetch`, добавить **независимую**
-проверку backup provenance перед owner-close (в source сейчас лишь
-owner-attested name), live browser validation длинных заявок и offline
-recovery/rollback. Исходящие эффекты неизвестны и после перехода
-`CLOSED_UNCONFIRMED`, их нельзя считать исполненными.
+**Осталось расследовать и улучшить:** причины пропажи/неопределённости
+acknowledgement от Repo worker/GitHub, точную атрибуцию отдельных
+исторических эффектов, безопасную независимую регистрацию доказательств,
+обнаружение действительно активного executor (нынешний
+`-ConfirmWorkerQuiescent` — только owner attestation), UI acceptance.
+Особенно `2df32a24-efb1-4dac-97f6-3b66147d8944` остаётся
+`CLAIMED` без локального receipt: простое закрытие Core **не**
+выполняет, не отменяет и не переводит в terminal это worker job.
+Перенос требует exact allowlist/closure audit и quiescence; SQL
+или фальшивые receipts запрещены. Шесть исторических инцидентов
+не считать автоматически `EXECUTED` или `NOT_EXECUTED`.
 
 ## Owner Portal PowerShell — source candidate (2026-11-08)
 
@@ -125,7 +48,7 @@ recovery/rollback. Исходящие эффекты неизвестны и п�
   PowerShell: команды от владельца сейчас не сканируются.
 - Источник/API границы и эксплуатация: [OWNER-POWERSHELL](OWNER-POWERSHELL.md).
 
-## Новый приоритет: UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
+## Исторический разбор UNCERTAIN / отказавшаяся локальная операция (2026-11-07)
 
 - Разобрать заявку `5f8db475-c503-4a32-8d5f-118f32370f1c` (`workspace.stage` в `fortis-approvals`, task `local-use-case-registry-20261107`). Core стал `UNCERTAIN`, Gateway job `FAILED / UNCERTAIN`, worker receipt был `NULL`; однократный read-only `reconcile` не смог подтвердить результат. Позднее worktree имел чистый Git HEAD, но это **не доказывает** исходный stage effect.
 - Повторное наблюдение 2026-11-07 при аудите документации: `workspace.create_task`
@@ -140,8 +63,8 @@ recovery/rollback. Исходящие эффекты неизвестны и п�
   Первопричина не установлена: сохранить этот случай для расследования, а не
   повторять исходный запрос или считать его успешно исполненным.
 - Исследовать точную первопричину с безопасными снимками ошибок: worker journaling между `DISPATCHED` / `git add` / receipt, исключения после частичного эффекта, timeout, stale precondition, отсутствие error detail. Не полагаться на `job.result IS NOT NULL`: это может быть JSON-строка `null`, не receipt.
-- Сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
-- Разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
+- Исторически требовалось сделать `UNCERTAIN` и `DISPATCHED` видимыми в Owner Portal **отдельно от очереди на подтверждение**: список «Требуют разбора», request ID, service/operation, worker/receipt status и ограничения. `History` и пустой `Pending` не должны маскировать блокирующее состояние.
+- Исторически требовалось разработать **штатное owner-authorized завершение без подтверждённого эффекта**, с привязкой к точному UUID, проверкой нет повторного исполнения, проверенным backup/evidence, терминальным статусом вроде `CLOSED_UNCONFIRMED`, неизменяемым событием и защитой от повторного replay. Не использовать фиктивное `EXECUTED` и не превращать исторический `UNCERTAIN` в `REJECTED/REVOKED` без определения семантики. Реализовать позитивные/отрицательные/конкурентные тесты и UI acceptance.
 - Разделить `Backup` admission на проверку **активных** запросов и управление **историческими неразрешёнными** эффектами. Холодная копия volume защищает байты, но не является проверкой логического состояния; нельзя ослаблять весь release guard для одной ошибки.
 - Исторический инцидент был разово закрыт после owner-requested холодной verified копии; Production сейчас здоров. Не восстанавливать удалённую заявку из старой копии при штатном релизе. Это *исследовательская задача*, не срочная новая миграция.
 

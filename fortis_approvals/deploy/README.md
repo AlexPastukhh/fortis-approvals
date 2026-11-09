@@ -70,55 +70,42 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
-## AI incident details and simple owner close — source candidate
+## AI incident details and simple owner close — installed 2026-11-09
 
-Authenticated machine `WorkflowClient.details(UUID)` returns the
-actor-owned full Core request/preview, paginated audit, worker status
-(no claim token), and a durable receipt if present. This is read-only,
-not reconciliation or execution. Git/GitHub effect investigation uses
-separate authorized read operations.
+Owner-reported installed Primary is source
+`a200137775eb6c6b8dcec81f31206b0d481d9003`, with exact image
+`sha256:69be667a654882f6b073eb89827a4be28e2f28b355838cc9325d2c66cc14bec8`.
+Authenticated Repo `WorkflowClient.details(UUID)` provides actor-owned
+Core request, params/reason/preview, paginated audit, worker summary
+(no claim token) and durable receipt if present. Live machine read was
+confirmed for six historical `UNCERTAIN`. Investigation of actual Git
+and GitHub effect still requires independent authorized read-only evidence.
 
-`Закрыть заявку` in Owner Portal uses the existing owner WebAuthn login
-session + CSRF and writes `CLOSED_UNCONFIRMED` with immutable owner audit.
-No second WebAuthn ceremony, cold-backup name, explanation, or `FAILED`
-worker requirement. It does **not** claim success/failure of the original
-operation or change the worker job. Exact scoped `CLAIMED` carryover
-survives closure with verified audit.
+Owner Portal `Закрыть заявку` uses the existing WebAuthn **login** session
+and CSRF and records `CLOSED_UNCONFIRMED` with owner audit only.
+It does **not** require a second WebAuthn ceremony, backup ID, explanation,
+or `worker=FAILED`, and does not assert execution/nonexecution or modify
+the original worker job. Browser click acceptance was not independently
+established by the machine read. Current use case:
+[UC-GW-009](../../docs/use-cases/incidents.md#uc-gw-009).
 
-## Explicit historical claimed worker quarantine — source candidate
+## Historical UNCERTAIN / CLAIMED protected migration — installed guard
 
-Only an exact owner-pinned `-PreserveClaimedJobs` UUID that also belongs to
-`-PreserveUncertainRequests` can cross image release, together with
-`-Build -SourceSha <approved sha> -ConfirmWorkerQuiescent`.
-The worker record must be `CLAIMED`, Core `UNCERTAIN`, with identical actor,
-request params and `workspace.create_task`. `QUEUED` and all other unmatched
-jobs are denied. The original SQLite bytes and claim stay unchanged, with
-no fabricated receipt or terminal outcome. This mode only permits migration,
-not incident closure. Operator must independently establish idle Repo worker;
-the switch is an **owner attestation**, not proof of quiescence.
-Backup/Promote inherit protected scope but require a fresh
-`-ConfirmWorkerQuiescent`. See primary operator runbook.
+For a new source/image release the controller still requires owner-scoped
+`-PreserveUncertainRequests` with the current exact set of `UNCERTAIN`.
+Orphaned native `CLAIMED` jobs can be byte-preserved only under an explicit
+`-PreserveClaimedJobs` UUID with `-Build -SourceSha <approved SHA>` and
+`-ConfirmWorkerQuiescent`; the switch is an owner attestation, not a
+proof of worker inactivity. After owner administrative closure,
+`CLOSED_UNCONFIRMED` + immutable closure audit permits preserving the
+same explicitly scoped `CLAIMED` UUID without reopening its Core request.
+No claim, receipt or provider effect is fabricated or executed.
 
-## Owner-reviewed UNCERTAIN carryover and incident review — source candidate
-
-Four new historical `UNCERTAIN` requests block the installed Gateway state
-preflight. Do not rewrite request rows, invent receipts or disable admission.
-This source uses a versioned `fortis_approvals/incidents.py` extension;
-the protected Core/WebAuthn/OwnerPortal storage source is unchanged.
-It adds `-PreserveUncertainRequests 'uuid1,uuid2,…'` for exact
-owner-reviewed `Check -Build -SourceSha <approvedSHA>` / `Apply`.
-The protected record stores the exact list; state copy preserves all DB bytes,
-receipts and events. New IDs and in-flight operations remain denied.
-`Backup` and `Promote` inherit the protected scope (subset after closure).
-
-After deployment Owner Portal lists unresolved requests separately, reconciles
-existing receipts without re-dispatch and can record a
-`CLOSED_UNCONFIRMED` owner decision with separate WebAuthn, mandatory
-operator-attested verified cold backup name and audit explanation.
-`CLOSED_UNCONFIRMED` never means `EXECUTED`. The UI cannot independently
-verify Docker backup provenance; run and verify the owner controller
-`Backup` before closure. See `docs/PRIMARY-GATEWAY-OPERATIONS.md` for
-the scoped rollout procedure. This source edit does not touch production.
+`Backup` and `Promote` inherit the protected scope and need fresh worker-idle
+attestation where a claim survives. This is a release guard, **not** a
+requirement to launch backup when clicking `Закрыть заявку`.
+Protected Primary release/rollback/worker procedures:
+[owner runbook](../../docs/PRIMARY-GATEWAY-OPERATIONS.md).
 
 ## Native GitHub Actions analysis source candidate
 

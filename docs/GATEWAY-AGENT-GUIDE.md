@@ -87,8 +87,14 @@ Keep stable request IDs. `PENDING` means wait for the owner, not an error or a
 reason to submit another request. Follow the native contract's HTTP 202 caveat
 when using the client version currently in main. For local ASK operations,
 keep a worker available or resume the same request after the owner decision;
-verify `EXECUTED` plus effect/receipt, not just approval. Reconcile `UNCERTAIN`
-without blindly repeating a mutation. The AI never invokes owner routes.
+verify `EXECUTED` plus effect/receipt, not just approval. On `UNCERTAIN`,
+use [UC-GW-009](use-cases/incidents.md#uc-gw-009):
+`default_client().details(uuid)` reads the full actor-owned request, audit,
+worker and receipt without retry/reconcile. Independently inspect upstream
+GitHub and local Git evidence before attributing the effect. An absent receipt
+does not prove the action failed. `reconcile` is a separate operation
+with its own contract, not a mandatory read-only viewing step.
+The AI never invokes owner routes or administratively closes requests.
 Unsupported services or operations stop at the integration boundary.
 
 ## One owner approval per ASK effect
