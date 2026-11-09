@@ -12,10 +12,11 @@
 | [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
 | [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
+| [UC-GW-009](incidents.md#uc-gw-009) | ИИ расследует UNCERTAIN и читает полную заявку; владелец закрывает её в Owner Portal | Read-only details + независимая проверка Git/GitHub, owner-local CLOSED_UNCONFIRMED без повтора |
 
 Каждый новый чат читает короткий вход главного реестра и полностью
 UC-CONT-002/003; просматривать весь каталог не нужно. Выбор контекста — по
 исходному запросу, локальные сценарии — по задаче. Принятые UC имеют одного
 владельца; при расширении обновлять этот индекс, не создавать второй реестр.
 
-Будущая разработка и расследование `UNCERTAIN`: [единый backlog](../BACKLOG-IMPROVEMENTS.md). Исторические результаты — [разбор multi-repo rollout](../MULTI-REPO-WORKFLOW-REVIEW-20261107.md).
+Обычный разбор `UNCERTAIN`: [UC-GW-009](incidents.md#uc-gw-009); будущие улучшения: [единый backlog](../BACKLOG-IMPROVEMENTS.md). Исторические результаты — [разбор multi-repo rollout](../MULTI-REPO-WORKFLOW-REVIEW-20261107.md).

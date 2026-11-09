@@ -1,9 +1,13 @@
 # Primary Fortis Gateway — operator procedure
 
-## AI full incident read + one-click owner closure (SOURCE CANDIDATE)
+## AI full incident read + one-click owner closure (installed 2026-11-09)
 
-The installed Primary does NOT include this until owner merge, green
-Source CI, pinned Windows source, Check, Apply, Backup and Promote.
+Owner-reported `FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED`
+confirm source `a200137775eb6c6b8dcec81f31206b0d481d9003` as the
+current Primary; Repo machine `details()` for all six historical UUIDs was
+verified over the live authenticated endpoint. The single-click owner
+closure has source/TLS/WebAuthn tests, but this dated readback is not a
+separate owner-browser click acceptance.
 
 After release the authenticated Repo machine TLS client can call:
 
@@ -41,121 +45,36 @@ and a verified closure audit; no silent state change. Existing operator
 quiescence attestation for claim carryover remains necessary.
 
 
-## Исторический CLAIMED — owner-reviewed карантин (SOURCE CANDIDATE 2026-11-09)
+## Исторические UNCERTAIN / CLAIMED — защищённый перенос (действующий механизм)
 
-После PR #37 Windows Check показал шесть `UNCERTAIN` и один
-не-терминальный worker job `CLAIMED` с UUID
-`2df32a24-efb1-4dac-97f6-3b66147d8944`
-(`workspace.create_task feed_and_search_and_bank_and_brain`).
-В Repo worker journal для данного UUID нет записи; это НЕ
-доказательство отсутствия Git-эффекта. `ee9c5e73-5d5a-4ea1-8133-d79d59511f32`
-(`workspace.commit`) имеет worker journal `FAILED/UNCERTAIN`.
-Живые данные Primary не изменены.
+Установленный контроллер умеет переносить точный владелец-подтверждённый
+список `UNCERTAIN` через `-PreserveUncertainRequests`. Единственная
+сохранённая историческая `CLAIMED`-операция
+`2df32a24-efb1-4dac-97f6-3b66147d8944` относится к
+`workspace.create_task feed_and_search_and_bank_and_brain`. Её worker
+record остаётся `CLAIMED`, а отсутствие Repo receipt не означает доказанного
+отсутствия эффекта. Не закрывать её автоматически и не переписывать SQLite.
 
-Новый параметр `-PreserveClaimedJobs` с `-ConfirmWorkerQuiescent`
-допускает перенос **только конкретного UUID** в сочетании с
-`-PreserveUncertainRequests`, `-Build` и `-SourceSha`.
-Помимо статуса Core `UNCERTAIN` helper требует совпадения actor,
-payload и `workspace.create_task`; любая `QUEUED`, другие
-CLAIMED, несовпадение UUID или активная Core-заявка запрещены.
-Базы (включая worker job) сохраняются побайтово: статус
-`CLAIMED` НЕ меняется на `FAILED` либо `EXECUTED`.
+Для **нового image release**, при его явной необходимости, использовать
+штатный `Manage-Integrations.ps1`: Windows SelfTest, `Check -Build` с принятым
+source SHA и полным точным списком текущих `UNCERTAIN`, `Apply` после owner GO,
+затем отдельные `Backup` и `Promote`. Для наследуемого `CLAIMED` указывать
+`-PreserveClaimedJobs <exact-UUID> -ConfirmWorkerQuiescent` на
+`Check`/`Apply`. Заявление об отсутствии активных внешних Repo worker
+процессов необходимо подтвердить независимо: сам switch это **не проверяет**.
+`Backup` и `Promote` наследуют protected scope и требуют новой аттестации
+`-ConfirmWorkerQuiescent`. Не запускать повторный `Apply` или чистку worker
+после неоднозначного результата.
 
-**ВНИМАНИЕ:** `-ConfirmWorkerQuiescent` — *аттестация владельца*,
-не автоматическое доказательство, что внешний Fortis Repo worker
-остановил исполнение. До Check/Apply/Backup/Promote нужно
-независимо убедиться в отсутствии активного executor, исследовать
-точный task name и git worktree/journal и исключить новые операции
-на период cold cutover. Не использовать флаг формально.
-
-Только после отдельного owner-merged PR, зелёного Source CI,
-нового SHA и Windows PowerShell 5.1 SelfTest:
-
-```powershell
-$claimedId = '2df32a24-efb1-4dac-97f6-3b66147d8944'
-$incidentIds = @(
- '18af495b-f84c-4fd3-b613-ebd5fdfa0165'
- '35ac68df-8be5-4dae-bf20-11f75555eecc'
- '31e8f60b-f396-4e5f-8a46-7772faf95fa4'
- '7b2ea090-4408-4d9c-b1b6-be5a97eb7b36'
- '2df32a24-efb1-4dac-97f6-3b66147d8944'
- 'ee9c5e73-5d5a-4ea1-8133-d79d59511f32'
-) -join ','
-# existing $manager, $config and $approvedSha; worker idle verified by owner
-& $manager -Action Check -Build -SourceSha $approvedSha -Config $config `
-  -PreserveUncertainRequests $incidentIds -PreserveClaimedJobs $claimedId `
-  -ConfirmWorkerQuiescent
-# Apply только после READY и отдельного owner GO:
-& $manager -Action Apply -Build -SourceSha $approvedSha -Config $config `
-  -PreserveUncertainRequests $incidentIds -PreserveClaimedJobs $claimedId `
-  -ConfirmWorkerQuiescent
-```
-
-После успешного Apply команда `Backup`/`Promote` наследует scope из
-защищённого record, но для каждой операции заново требует
-`-ConfirmWorkerQuiescent`. Не передавайте `-PreserveClaimedJobs`
-при Backup/Promote. Исходный `CLAIMED` останется в новой базе.
-В текущем Owner Portal закрытие `UNCERTAIN` с worker job != `FAILED`
-по-прежнему отвергается; требуется отдельный защищённый workflow
-расследования и terminalization. Не редактируйте рабочую SQLite.
-
-## Сохранение исторических UNCERTAIN при следующем image release (SOURCE CANDIDATE 2026-11-09)
-
-Эта процедура существует **только в новой source-ветке**, не в установленном
-Primary. Incident lifecycle подключается версионным модулем
-`fortis_approvals/incidents.py`, а исходные хеши Core/WebAuthn/Owner Portal
-сохраняются неизменными. Сначала необходимы owner-merged PR, зелёный CI на точном HEAD,
-Windows guarded pull, `SelfTest` и корректная публичная конфигурация.
-Нельзя использовать прежний `main` SHA
-`d343ac00a30bfbc3de33b5184fcca9b5b4254c27`: он не содержит нового
-владельческого параметра.
-
-Из ранее показанного владельцем read-only inventory известно четыре UUID.
-Перед релизом нужно повторно подтвердить их состояние и отсутствие
-других новых инцидентов:
-
-```powershell
-$incidentIds = @(
-    '18af495b-f84c-4fd3-b613-ebd5fdfa0165'
-    '35ac68df-8be5-4dae-bf20-11f75555eecc'
-    '31e8f60b-f396-4e5f-8a46-7772faf95fa4'
-    '7b2ea090-4408-4d9c-b1b6-be5a97eb7b36'
-) -join ','
-# $approvedSha = exact owner-merged and CI-green NEW source HEAD SHA
-# $config = existing public extensions configuration path
-& $manager -Action Check -Build -SourceSha $approvedSha -Config $config `
-    -PreserveUncertainRequests $incidentIds
-# Только после READY и отдельного owner GO:
-& $manager -Action Apply -Build -SourceSha $approvedSha -Config $config `
-    -PreserveUncertainRequests $incidentIds
-```
-
-`Check` с новым параметром выполняет read-only inspection старого state;
-`Apply` после owner approval выполняет штатный staged release.
-Проверки списка требуют точного совпадения всех `UNCERTAIN`, запрещают
-`PENDING/APPROVED/DISPATCHED`, проверяют отсутствие активных worker jobs.
-Контроллер записывает scope в protected release record; состояние
-переносится байт-в-байт, без подмены исходов. При будущих релизах/Backup/
-Promote будет допустимо лишь *подмножество* исходных UUID (если случаи
-закрыты), но не новые неизвестные запросы **без нового явного решения
-владельца**. При новом UNCERTAIN нужен owner-reviewed список всех текущих
-UUID и повторный `Check -Build -SourceSha` с новым source SHA.
-
-После Apply зайти в Owner Portal → `Требуют разбора`. Для каждого запроса
-сначала выполнить `Проверить подтверждение (receipt)`. Если receipt не
-найден и расследование действительно закончено, выполнить штатную
-`-Action Backup` и подтвердить `FORTIS_PRIMARY_BACKUP_PASS` плюс
-protected backup record/volume identity, проверить фактический GitHub/Git
-effect и только затем закрывать в UI через WebAuthn с объяснением
-`CLOSED_UNCONFIRMED`. В UI имя backup является **owner attestation**,
-а не независимой проверкой Docker volume; backup нужно отдельно
-верифицировать оператору. Закрытие расследования не утверждает успех
-операции и не разрешает повторное выполнение исходного UUID.
-
-При несовпадении UUID/состояния, неправильном source/image SHA,
-непроверенном backup, несовпадении protected record/volume либо
-ошибке на любом preflight — STOP. Не отключать guard, не править SQLite
-и не делать повторный `Apply` до выяснения точного состояния.
+После административного `UNCERTAIN → CLOSED_UNCONFIRMED` активный список
+`UNCERTAIN` для нового релиза может уменьшиться; сохранённый `CLAIMED`
+разрешается переносить **только с прежним точным UUID и проверенным
+аудитом закрытия**. Это не исполнение и не terminalization worker job.
+`Закрыть заявку` не требует ни backup-имени, ни повторного WebAuthn,
+ни terminal `FAILED`; по-прежнему запрещено имитировать receipt.
+Для обычного расследования, чтения и действий владельца выбирать
+[UC-GW-009](use-cases/incidents.md#uc-gw-009), а не повторять
+исторический release.
 
 
 The initial Backup/Promote, Docker Desktop restart and Legacy retirement were

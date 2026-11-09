@@ -1,7 +1,7 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Датированный срез 2026-11-08: последний owner-provided Windows release output
-и последующие Repo machine readback. Это не свежий Docker inspect с Windows:
+Датированный срез 2026-11-09: последний owner-provided Windows release output
+и последующие Repo machine readback. Это не независимый Docker inspect с Windows:
 перед runtime-операцией сверить protected records и реальную identity.
 Этот документ владеет deployment status; [agent guide](../GATEWAY-AGENT-GUIDE.md)
 — применением, [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
@@ -15,23 +15,31 @@
 | Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
 | Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
-Последний подтверждённый owner image release:
+Последний owner-confirmed image release (PR #39, 2026-11-09):
 
 | Поле | Значение из owner output |
 | --- | --- |
-| Source SHA образа | `7cae534f8617482511bf486a6133563e8bcd2ae8` |
-| Image ID | `sha256:877c93ef1d4ff970bd8e6ebfad961ef9dc2345fbc71f767b6528a0aa20b585e4` |
-| Container ID | `241c00cfb1becc62d152d26806034f4643b22877fe9839c80a326721191618f9` |
-| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\96349e7910dd4f89a334af9a4459f3cb\record.json` |
-| Verified controller backup | `fortis-gateway-backup-5b51f6566d764e13905a45e4675c6e2e` |
-| Host result | Apply activated, live merged-task cleanup PASS, Backup PASS, Promote PASS, `FORTIS_CLEANUP_POLICY_DEPLOYED_AND_PRIMARY_HEALTHY` |
+| Source SHA образа | `a200137775eb6c6b8dcec81f31206b0d481d9003` |
+| Image ID | `sha256:69be667a654882f6b073eb89827a4be28e2f28b355838cc9325d2c66cc14bec8` |
+| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\8412e8edec904cbdb0c4154bf6128632\record.json` |
+| State volume | `fortis-github-pilot-state-8412e8edec904cbdb0c4154bf6128632` |
+| Verified controller backup | `fortis-gateway-backup-8ee58a9644fe4288b6de40d16a694ea4` |
+| Host result | `FORTIS_PRIMARY_PROMOTED`; `FORTIS_PRIMARY_VERIFIED`; `fortis-gateway` healthy, restart `unless-stopped`, pinned image/volume/record checks PASS |
 
-Последующие documentation/source merges меняют Git `main`, а не этот image.
-Owner read-only аудит после перезагрузки 2026-11-08 подтвердил Repo, прежний
-Primary, `unless-stopped`, HTTP Owner Portal и целостность пяти БД; затем был
-установлен указанный выше image. Его финальные identity/health/restart проверены
-после Promote, но этот результат не является новым reboot-тестом нового image.
-История первоначального cutover — в [dated evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
+Repo machine live confirmed `WorkflowClient.details(uuid)` for all six
+historical `UNCERTAIN` requests including worker state and audit.
+One worker job remained `CLAIMED`. Owner Portal `Закрыть заявку` is
+included in installed source and covered by UI and WebAuthn tests;
+no separate real owner click acceptance was provided in this snapshot.
+See [UC-GW-009](../use-cases/incidents.md#uc-gw-009).
+
+The previous owner-confirmed releases, including
+`7cae534f8617482511bf486a6133563e8bcd2ae8` and
+`e74576903adcc355f3c0447c4a6b0baaf8bded68`, are historical,
+not current image pins. Owner-only reboot acceptance of the new image
+was not established; do not infer it from `healthy` or restart policy.
+История первоначального cutover — в
+[dated evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 
 Четыре согласованные старые `UNCERTAIN` были разово удалены после проверенной
 холодной копии; сохранены native `FAILED` tombstones против повторного исполнения.
