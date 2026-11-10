@@ -107,18 +107,23 @@ journal evidence. Report original-request evidence separately from any later
 successful request. Do **not** ask the owner to manually open incident cards
 just to copy IDs or inspect technical diagnostics that the Repo tools can read.
 
-**Do not overstate coverage:** the present machine API has no actor-scoped
-`list_uncertain`; `details(UUID)` reads only requests initiated by the
-machine actor, and local tool-call history is finite/incomplete. The
-`/v1/owner/unresolved` inventory is owner-only, not a permitted machine
-endpoint. If a *complete* current uncertainty inventory is required (for
-example a Windows release preservation scope), report the known verified IDs
-and any remaining completeness gap; request the minimum owner-supplied
-inventory only if the authorized tools cannot resolve it. `result()` and
-`details()` do not replace a true inventory. Never call `claim`, `resume`,
-`finish`, `reconcile` or owner routes as part of routine incident review;
-`reconcile` may mutate Core state. Owner Portal is for decisions and
-administrative closure, not a mandatory technical investigation step.
+**Version-gated machine inventory.** New Gateway source has
+default_client().list_uncertain(offset=0,limit=100), limited to
+the initiating TLS machine actor. Use it only when live capabilities
+advertise incidentInventory.readOnly == true: source code does not
+mean the installed endpoint is active. Follow nextOffset through
+all pages, then use details(UUID) for each candidate. The diagnostic
+field classifies observed stages, **not** the actual exception or effect.
+Pages are independently consistent, not one atomic snapshot; verify
+the exact scope during worker quiescence before release.
+
+Without that installed marker, available tool history is finite and
+incomplete: recover known UUIDs through available tools first, then ask
+the owner only for a missing inventory if truly needed.
+The owner-only /v1/owner/unresolved route is not a permitted machine API.
+Never use claim, resume, finish, reconcile or owner routes during
+routine incident investigation; reconcile may change Core state.
+Owner Portal is for decisions, not mandatory technical investigation.
 See [UC-GW-009](use-cases/incidents.md#uc-gw-009) for the complete sequence.
 
 ## One owner approval per ASK effect

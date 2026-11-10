@@ -40,6 +40,15 @@ class WorkflowClient:
         return self.gateway.post('/v1/workspace/details',
             dict(requestId=ident,eventOffset=event_offset,eventLimit=event_limit))
 
+    def list_uncertain(self, *, offset=0, limit=100):
+        """List this machine actor's current UNCERTAIN UUIDs without owner routes.
+
+        The result is paginated. Recheck across concurrent request transitions
+        before asserting an exact inventory for a controlled release.
+        """
+        return self.gateway.post('/v1/workspace/list_uncertain',
+            dict(offset=offset,limit=limit))
+
     def _finish_claim(self, ident, job):
         # A worker exception can happen before its local journal is created, or
         # after an unknown partial effect. Never infer NOT_EXECUTED or replay.

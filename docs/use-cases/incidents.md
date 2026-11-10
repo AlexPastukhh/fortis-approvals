@@ -95,16 +95,57 @@ Owner Portal — интерфейс решений владельца, а не �
    фиктивного receipt при обычном расследовании. `reconcile` может изменить
    Core state, поэтому не является read-only эквивалентом `details()`.
 
-**Честная граница инвентаризации:** действующий machine API умеет
-`details(UUID)`, но **не имеет actor-scoped `list_uncertain`** или иного
-маршрута для получения полного множества неизвестных UUID. Owner-only
-`GET /v1/owner/unresolved` запрещён machine client. История инструментов —
-полезный, но не полный индекс. Если требуются *все* текущие `UNCERTAIN`
-(например, точный `-PreserveUncertainRequests` для release), ИИ сначала
-восстанавливает и проверяет доступные ID, затем явно сообщает, что полнота
-не доказана; при необходимости запрашивает **только недостающую инвентаризацию**
-у владельца, без перекладывания на него технического расследования.
-Административное закрытие, WebAuthn и выпуск Primary остаются owner-only.
+**Версия API важна.** Новый source-контракт добавляет machine endpoint
+POST /v1/workspace/list_uncertain: список текущих UNCERTAIN только для
+инициировавшего запросы machine actor, по действующему TLS grant.
+Owner Portal, WebAuthn и machine claim здесь не используются.
+
+Этот метод доступен **только после отдельного owner-reviewed image release**.
+Прежде чем пользоваться им, получить live capabilities и убедиться, что
+incidentInventory.readOnly == true. Старый Primary без marker всё ещё
+предоставляет только details(UUID); тогда искать ID в имеющихся результатах
+и ограниченном журнале Fortis Repo, не выдавая его за полный индекс.
+Owner endpoint GET /v1/owner/unresolved не разрешён machine client.
+
+Использование после установки новой версии:
+
+    from fortis_approvals.workflow.client import default_client
+    client = default_client()
+    cap = client.gateway.post('/v1/workspace/capabilities', {})
+    assert cap.get('incidentInventory', {}).get('readOnly') is True
+    offset, ids = 0, []
+    while True:
+        page = client.list_uncertain(offset=offset, limit=100)
+        ids.extend(item['requestId'] for item in page['items'])
+        if page['nextOffset'] is None:
+            break
+        offset = page['nextOffset']
+    for request_id in ids:
+        details = client.details(request_id)
+        print(request_id, details['diagnostic'])
+
+Ответ включает actor-owned UUID, service/operation/target, state,
+createdAt, failure, а также total, truncated и nextOffset. Он не
+содержит полные params, owner session или worker claim token.
+Каждая страница читается согласованно в одной SQLite-транзакции, но
+**все страницы вместе не являются одним атомарным snapshot**. При
+выпуске нужна независимая worker quiescence и повторная сверка
+полноты на отсутствие параллельных переходов state.
+
+Новое поле details()['diagnostic'] различает только наблюдаемые
+стадии: worker job отсутствует, FAILED, CLAIMED, DONE или отсутствует
+GitHub receipt. rootCause=UNDETERMINED всегда означает, что точную
+причину/результат исходного эффекта не доказали. Core в старых
+инцидентах сохраняет общий REMOTE_OUTCOME_UNCONFIRMED, а worker часто
+только UNCERTAIN: потерянный traceback восстановить нельзя.
+Датированный read-only разбор см. в
+[исследовании](../../fortis_approvals/evidence/UNCERTAIN-DIAGNOSTIC-INVESTIGATION-20261110.md).
+
+Если установленный API не умеет list_uncertain либо полнота по
+нескольким страницам не доказана, ИИ сообщает точный scope и gap;
+у владельца запрашивает только объективно недоступную инвентаризацию.
+Ни список, ни diagnosis не запускают reconcile, replay или finish.
+Закрытие, WebAuthn и Primary deployment остаются owner-only.
 
 **Готово:** ИИ собрал read-only карточку и внешние доказательства (или явно
 `UNKNOWN`); владелец при желании закрыл заявку, Owner Portal показывает
