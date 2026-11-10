@@ -101,3 +101,26 @@ references are deliberately replaced.
 Owner token replacement uses the existing controller: see the
 [credential rotation runbook](../../../docs/CREDENTIAL-ROTATION.md). No provider
 secret belongs in Repo/chat; source availability is separate from live rotation.
+
+## Visual review (PNG MVP)
+
+`WorkflowClient.github.publish_visual_review(repository="visual-workspace", run_id=...,
+ title=..., description=..., media=[{"path": "/workspace/repo/Workfiles/.../<run_id>/preview.png",
+ "name": "Preview"}], qa_summary=..., duration_seconds=..., request_id=..., reason=...)`
+
+is a single typed GitHub action. `media` contains 1–5 PNG files (up to 10 MiB
+each), each a regular non-symlink file inside `/workspace/repo/Workfiles`
+under a directory named for `run_id`. The client stages bytes using a pinned
+machine-authenticated TLS route, then submits `github.publish_visual_review`
+for **ASK** owner approval. Only `visual-workspace` is authorized. A fresh
+run ID is used for each distinct published result; the Gateway reserves each
+repository/run pair and refuses conflicting requests.
+
+After owner approval, the Gateway creates one private Issue, uploads bounded
+PNG user attachments to the pinned GitHub upload host, updates the Issue and
+reads it back. The final URL is returned through the existing
+`WorkflowClient.result(request_id)`. An unknown remote outcome stays
+`UNCERTAIN` rather than automatically retrying. Actor-scoped
+`WorkflowClient.details(request_id)` includes the durable `visualReview`
+progress (issue number and uploaded count) for investigation. The running
+Gateway must be separately released; a source-only client cannot enable it.

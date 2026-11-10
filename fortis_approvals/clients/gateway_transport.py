@@ -23,7 +23,7 @@ MAX_RESPONSE_BYTES = 65536
 _STATUS_PATH = re.compile(
     r"/v1/requests/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
-_POST_PATHS = frozenset({"/v1/reads", "/v1/actions"})
+_POST_PATHS = frozenset({"/v1/reads", "/v1/actions", "/v1/github/visual-review/stage"})
 class _NoRedirectHandler(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None

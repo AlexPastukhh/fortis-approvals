@@ -1,5 +1,10 @@
 """Typed Repo-side GitHub client. Never contains or reads the GitHub token."""
 import uuid
+import base64
+import hashlib
+import os
+import stat
+from pathlib import Path
 
 from ....core import Denied
 from ....clients.gateway_transport import GatewayTransport
@@ -7,6 +12,9 @@ from ..contract import (
     validate_github_action, validate_github_read, validate_github_read_projection,
 )
 from ....repo_action_contract import validate_intent, validate_read_query
+
+
+WORKFILES_ROOT = Path('/workspace/repo/Workfiles')
 
 
 class GitHubClient:
@@ -82,6 +90,72 @@ class GitHubClient:
                                         "CLOSED_UNCONFIRMED")):
             raise Denied("GITHUB_GATEWAY_STATUS_RESPONSE_INVALID")
         return result
+
+    def publish_visual_review(self, *, repository, run_id, title, description, media,
+                              qa_summary, duration_seconds, request_id, reason):
+        """Stage trusted PNG bytes via machine TLS, then submit one typed ASK action."""
+        if request_id is None:
+            raise Denied('GITHUB_STABLE_REQUEST_ID_REQUIRED')
+        ident=self._request_id(request_id)
+        if repository!='visual-workspace' or type(media) is not list or not 1<=len(media)<=5:
+            raise Denied('GITHUB_VISUAL_REVIEW_MEDIA_INVALID')
+        root=WORKFILES_ROOT
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+            raise Denied('GITHUB_VISUAL_REVIEW_ROOT_DENIED')
+        root=root.resolve(strict=True)
+        staged=[]
+        for index,item in enumerate(media):
+            if type(item) is not dict or set(item)!={'path','name'} or type(item['path']) is not str:
+                raise Denied('GITHUB_VISUAL_REVIEW_MEDIA_INVALID')
+            file=Path(item['path'])
+            if not file.is_absolute() or file.suffix.lower()!='.png':
+                raise Denied('GITHUB_VISUAL_REVIEW_PATH_DENIED')
+            try:
+                relative=file.relative_to(root)
+                if run_id not in relative.parts[:-1] or any(part in ('', '.', '..') for part in relative.parts):
+                    raise ValueError('scope')
+                # Pin every directory and the final regular file with O_NOFOLLOW.
+                # A symlink swap between a Path check and open must never read secrets.
+                flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC
+                fd=os.open(root,flags|os.O_DIRECTORY)
+                try:
+                    for part in relative.parts[:-1]:
+                        next_fd=os.open(part,flags|os.O_DIRECTORY,dir_fd=fd)
+                        os.close(fd);fd=next_fd
+                    leaf=os.open(relative.parts[-1],flags,dir_fd=fd)
+                    try:
+                        info=os.fstat(leaf)
+                        if not stat.S_ISREG(info.st_mode) or not 24<=info.st_size<=10*1024*1024:
+                            raise ValueError('file')
+                        with os.fdopen(leaf,'rb',closefd=False) as stream:
+                            data=stream.read(10*1024*1024+1)
+                        if len(data)!=info.st_size or len(data)>10*1024*1024:
+                            raise ValueError('changed')
+                    finally:os.close(leaf)
+                finally:os.close(fd)
+            except (OSError,ValueError):
+                raise Denied('GITHUB_VISUAL_REVIEW_PATH_DENIED') from None
+            if not data.startswith(b'\x89PNG\r\n\x1a\n') or data[12:16]!=b'IHDR':
+                raise Denied('GITHUB_VISUAL_REVIEW_NOT_PNG')
+            digest=hashlib.sha256(data).hexdigest()
+            staged.append((dict(index=index,name=item['name'],sha256=digest,size=len(data)),data))
+        params=dict(runId=run_id,title=title,description=description,
+                    qaSummary=qa_summary,durationSeconds=duration_seconds,
+                    media=[row for row,_ in staged])
+        validate_github_action('publish_visual_review',repository,params)
+        validate_intent(dict(requestId=ident,service='github',operation='publish_visual_review',
+                             target=repository,params=params,reason=reason))
+        # Do not stage bytes when the same UUID is already a Core request.
+        # Caller can query the original status/result instead.
+        for row,data in staged:
+            reply=self.gateway.post('/v1/github/visual-review/stage',dict(
+                requestId=ident,repository=repository,runId=run_id,
+                index=row['index'],name=row['name'],sha256=row['sha256'],
+                data=base64.b64encode(data).decode('ascii')))
+            if reply != row:
+                raise Denied('GITHUB_VISUAL_REVIEW_STAGE_RESPONSE_INVALID')
+        return self.action('publish_visual_review',repository,params,
+                           request_id=ident,reason=reason)
 
     def list_repositories(self, owner):
         return self.read("list_repositories", owner)

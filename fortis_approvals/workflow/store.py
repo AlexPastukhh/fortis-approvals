@@ -13,7 +13,7 @@ from .common import secure_dir, require
 
 class Store:
     def __init__(self, root):
-        self.root=secure_dir(root);self.artifacts=secure_dir(self.root/'artifacts')
+        self.root=secure_dir(root);self.artifacts=secure_dir(self.root/'artifacts');self.visual_media=secure_dir(self.root/'visual-media')
         self.path=self.root/'workflow.sqlite'
         if not self.path.exists():
             fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
@@ -22,6 +22,7 @@ class Store:
         with self.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS artifacts(actor TEXT,digest TEXT,metadata TEXT,PRIMARY KEY(actor,digest));
+                CREATE TABLE IF NOT EXISTS visual_media(request_id TEXT,actor TEXT,repo TEXT,run_id TEXT,idx INTEGER,sha TEXT,size INTEGER,name TEXT,PRIMARY KEY(request_id,idx));
                 CREATE TABLE IF NOT EXISTS tasks(actor TEXT,repo TEXT,task TEXT,data TEXT,PRIMARY KEY(actor,repo,task));
                 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,actor TEXT,payload TEXT,state TEXT,claim TEXT,result TEXT,error TEXT);
             """)
@@ -58,6 +59,47 @@ class Store:
             require(row is not None,'WORKFLOW_TASK_NOT_REGISTERED')
             value=json.loads(row[0]);value['closed']=True
             db.execute('UPDATE tasks SET data=? WHERE actor=? AND repo=? AND task=?',(canonical(value),actor,repo,task))
+
+    def stage_visual_png(self,actor,request_id,repo,run_id,index,name,digest,data):
+        import hashlib
+        import re
+        from ..core import Denied
+        require(repo=='visual-workspace' and type(run_id) is str and
+                re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}',run_id) and
+                type(request_id) is str and str(uuid.UUID(request_id))==request_id and
+                type(index) is int and 0<=index<5 and
+                type(name) is str and 1<=len(name)<=120 and
+                type(digest) is str and re.fullmatch(r'[0-9a-f]{64}',digest) and
+                type(data) is bytes and 24<=len(data)<=10*1024*1024 and
+                data.startswith(b'\x89PNG\r\n\x1a\n') and data[12:16]==b'IHDR' and
+                hashlib.sha256(data).hexdigest()==digest,'VISUAL_MEDIA_INVALID')
+        file=self.visual_media/(request_id+'-'+str(index)+'-'+digest+'.png')
+        meta=(request_id,actor,repo,run_id,index,digest,len(data),name)
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT request_id,actor,repo,run_id,idx,sha,size,name FROM visual_media WHERE request_id=? AND idx=?',(request_id,index)).fetchone()
+            require(row is None or tuple(row)==meta,'VISUAL_MEDIA_CONFLICT')
+            if file.exists():
+                require(not file.is_symlink() and hashlib.sha256(file.read_bytes()).hexdigest()==digest,'VISUAL_MEDIA_CHANGED')
+            else:
+                fd=os.open(file,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+                with os.fdopen(fd,'wb') as out:out.write(data);out.flush();os.fsync(out.fileno())
+            db.execute('INSERT OR IGNORE INTO visual_media VALUES(?,?,?,?,?,?,?,?)',meta)
+        return dict(index=index,sha256=digest,size=len(data),name=name)
+
+    def visual_png(self,actor,request_id,repo,run_id,item):
+        import hashlib
+        with self.db() as db:
+            row=db.execute('SELECT actor,repo,run_id,sha,size,name FROM visual_media WHERE request_id=? AND idx=?',
+                           (request_id,item['index'])).fetchone()
+        require(row is not None and tuple(row)==(actor,repo,run_id,item['sha256'],item['size'],item['name']),
+                'VISUAL_MEDIA_BINDING_INVALID')
+        file=self.visual_media/(request_id+'-'+str(item['index'])+'-'+item['sha256']+'.png')
+        require(file.is_file() and not file.is_symlink() and file.stat().st_size==item['size'],
+                'VISUAL_MEDIA_MISSING')
+        data=file.read_bytes()
+        require(hashlib.sha256(data).hexdigest()==item['sha256'],'VISUAL_MEDIA_CHANGED')
+        return data
 
     def artifact(self,actor,ident):
         with self.db() as db:row=db.execute('SELECT metadata FROM artifacts WHERE actor=? AND digest=?',(actor,ident)).fetchone()

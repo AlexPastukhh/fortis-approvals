@@ -23,6 +23,7 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "merge_pull_request"), ("github", "update_workflow_file"),
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
+    ("github", "publish_visual_review"),
 })
 LEGACY_READ_OPERATIONS = GITHUB_READ_OPERATIONS
 GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS
@@ -119,7 +120,34 @@ def validate_github_action(operation, target, params):
     _repo(target)
     if operation in ANALYSIS_ACTION_NAMES:
         return validate_analysis_action(operation, params)
-    if operation == "create_branch":
+    if operation == "publish_visual_review":
+        if target != "visual-workspace" or set(params) != {"runId", "title", "description", "qaSummary", "durationSeconds", "media"}:
+            raise Denied("GITHUB_VISUAL_REVIEW_SCOPE_DENIED")
+        if (type(params["runId"]) is not str or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}", params["runId"]) or
+                type(params["title"]) is not str or not 1 <= len(params["title"].strip()) <= 200 or
+                type(params["description"]) is not str or len(params["description"]) > 12000 or
+                type(params["qaSummary"]) is not str or len(params["qaSummary"]) > 2000 or
+                type(params["durationSeconds"]) is not int or not 0 <= params["durationSeconds"] <= 604800):
+            raise Denied("GITHUB_VISUAL_REVIEW_FIELDS_INVALID")
+        for key in ("title", "description", "qaSummary"):
+            _utf8_size(params[key], "GITHUB_VISUAL_REVIEW_FIELDS_INVALID")
+        media = params["media"]
+        if type(media) is not list or not 1 <= len(media) <= 5:
+            raise Denied("GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+        indices = set()
+        for item in media:
+            if type(item) is not dict or set(item) != {"index", "name", "sha256", "size"}:
+                raise Denied("GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+            if (type(item["index"]) is not int or not 0 <= item["index"] < 5 or item["index"] in indices or
+                    type(item["name"]) is not str or not 1 <= len(item["name"]) <= 120 or
+                    type(item["sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) or
+                    type(item["size"]) is not int or not 24 <= item["size"] <= 10 * 1024 * 1024):
+                raise Denied("GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+            _utf8_size(item["name"], "GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+            indices.add(item["index"])
+        if indices != set(range(len(media))):
+            raise Denied("GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+    elif operation == "create_branch":
         if set(params) != {"branch", "sourceSha"}:
             raise Denied("GITHUB_CREATE_BRANCH_PARAMS_DENIED")
         _branch(params["branch"])
