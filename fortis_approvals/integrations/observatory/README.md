@@ -19,6 +19,8 @@ Two **read-only** operations are available to trusted policy configuration:
 | `observatory.health` | `service` | `{}` | Exactly `ok`, `service`, `mode` |
 | `observatory.list_sessions` | `registry` | `{}` | `ok`; authorized session identifiers only |
 
+The upstream field `reporting_session_id` is projected as `session_id`
+in the typed provider result; `conversation_id` is preserved.
 Response projection excludes titles, messages, raw event bodies, debug fields and
 unknown keys. All other operation names fail closed.
 

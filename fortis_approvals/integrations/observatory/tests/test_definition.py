@@ -54,7 +54,9 @@ class Tests(unittest.TestCase):
     def test_sessions_are_minimally_projected(self):
         ctx = Context('registry', {'ok': True, 'sessions': [
             {'conversation_id': '12345678-1234-1234-1234-123456789abc',
-             'session_id': 'rs_'+'a'*32, 'title': 'private title', 'messages': ['sensitive']},
+             'reporting_session_id': 'rs_'+'a'*32, 'title': 'private title',
+             'route': 'direct', 'state': 'active', 'events_count': 0,
+             'last_task_id': None, 'last_signal_at': None, 'messages': ['sensitive']},
         ]})
         result = _list_sessions(ctx)
         self.assertEqual(ctx.route, 'sessions')
