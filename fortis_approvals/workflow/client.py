@@ -29,7 +29,7 @@ class WorkflowClient:
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
 
     def result(self,ident,reconcile=False):
-        return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident))
+        return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident),accept_202=True)
 
     def details(self,ident,*,event_offset=0,event_limit=100):
         """Full owner-equivalent request + audit and worker evidence, read-only.
