@@ -91,12 +91,31 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(self._push_after_validation(),
                          ('readback', 'GIT_PUSH_READBACK_UNCONFIRMED'))
 
-    def test_push_audit_records_only_known_safe_identifiers(self):
+    def test_core_persistence_remains_unchanged_and_uncertain(self):
         row, detail = self._core_result(GitPushFailure('push', 'GIT_OUTCOME_TIMEOUT'))
         self.assertEqual((row['state'], row['failure']),
                          ('UNCERTAIN', 'REMOTE_OUTCOME_UNCONFIRMED'))
-        self.assertEqual(detail, {'gitPhase': 'push', 'gitCode': 'GIT_OUTCOME_TIMEOUT'})
+        self.assertEqual(detail, {})
         self.assertIsNone(row['result'])
+
+    def test_bounded_operator_log_uses_only_allowlisted_identifiers(self):
+        ref = 'c' * 40
+        with patch('fortis_approvals.workflow.git_backend._log.error') as log:
+            with self.assertRaises(GitPushFailure):
+                with push_phase('fetch_main', ref):
+                    raise RuntimeError('GIT_OUTCOME_TIMEOUT')
+        log.assert_called_once_with(
+            'GIT_PUSH_DIAGNOSTIC phase=%s code=%s newSha=%s',
+            'fetch_main', 'GIT_OUTCOME_TIMEOUT', ref)
+
+    def test_untrusted_message_and_invalid_sha_not_logged(self):
+        with patch('fortis_approvals.workflow.git_backend._log.error') as log:
+            with self.assertRaises(GitPushFailure):
+                with push_phase('readback', 'provider-secret'):
+                    raise RuntimeError('untrusted-secret-from-provider')
+        log.assert_called_once_with(
+            'GIT_PUSH_DIAGNOSTIC phase=%s code=%s newSha=%s',
+            'readback', 'GIT_PUSH_STEP_UNCONFIRMED', 'unavailable')
 
     def test_arbitrary_exception_is_not_stored(self):
         row, detail = self._core_result(RuntimeError('PRIVATE-MARKER-DO-NOT-STORE'))
