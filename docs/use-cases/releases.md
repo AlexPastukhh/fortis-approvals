@@ -41,10 +41,15 @@ Owner выполняет `SelfTest → Check -Build → Apply -Build` по **о�
 Исходный Gateway и backup сохраняются для контролируемого возврата.
 
 **Несколько чатов:** если работы совместимы и PR приняты, можно включить
-их в **один** source `main` и один build/image. Сводить Docker
-image или SQLite разных чатов нельзя. Общая Git/CI-доставка —
-UC-CONT-002; автоматический межчатовый coordinator пока
-**не внедрён**, это отдельная задача.
+их в **один** проверенный source `main` SHA и **один логический релиз**
+Gateway вместо релиза на каждый PR. Сводить Docker images или SQLite
+разных чатов нельзя. **Важно:** действующий контроллер при
+`Check -Build` и `Apply -Build` запускает Docker build **дважды**;
+повторное использование кэша не является гарантией «build once».
+Для настоящей однократной сборки нужен отдельный контракт
+immutable image digest, связывающий Check, Apply и owner approval,
+без отключения защищённого state admission. Общая Git/CI-доставка —
+UC-CONT-002; межчатовый release coordinator ещё **не внедрён**.
 
 **Готово:** exact source SHA/image digest и protected Complete record;
 owner `FORTIS_INTEGRATIONS_ACTIVATED`, отдельные успешные Backup/Promote,

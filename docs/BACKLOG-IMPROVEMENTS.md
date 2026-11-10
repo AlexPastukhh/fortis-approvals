@@ -249,6 +249,15 @@ Mirror-specific исходники, UI/Windows acceptance и их дальней
 
 ## Улучшение детерминированного релиза (2026-11-07)
 
+- **Build-once (OPEN):** текущие `Check -Build` и `Apply -Build` вызывают
+  Docker build по отдельности; они используют один исходный SHA, но
+  не доказывают проверку **одних и тех же immutable байтов** без
+  повторной сборки. Нужны однократный source build, pinned image digest,
+  отдельные Check/Apply по этому digest, проверка исходного SHA/owner scope
+  и неизменные fail-closed state admission/backup/rollback guards.
+  Не пропускать `Check` ради экономии времени. Группировка PR нескольких
+  чатов — общее направление центрального UC-CONT, не дублировать здесь
+  multi-repo coordinator.
 - Подготовить единый Windows PowerShell 5.1 operator entrypoint: `SelfTest → Check/Build exact SHA → Apply → live READ/Owner Portal → Backup → Promote → readback`, с учётом фазы protected release, кратких PASS-маркеров и остановки без повторного Apply при ambiguity.
 - Устранить caller-scope side effects dot-sourced operator helpers: подтверждён
   конфликт типизированного `[string]$Record` с ad-hoc build metadata dictionary.
