@@ -31,6 +31,9 @@ _ROUTES = (
     ("GET", re.compile(_BASE + r"/contents/[A-Za-z0-9_.%~/-]+$")),
     ("POST", re.compile(_BASE + r"/git/(blobs|trees|commits|refs)$")),
     ("POST", re.compile(_BASE + r"/pulls$")),
+    ("POST", re.compile(_BASE + r"/issues$")),
+    ("PATCH", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
     ("POST", re.compile(_BASE + r"/actions/workflows/[A-Za-z0-9_.-]+/dispatches$")),
     ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/(rerun|cancel|approve)$")),
     ("PATCH", re.compile(_BASE + r"/git/refs/heads/[A-Za-z0-9_.%~-]+$")),
@@ -231,6 +234,38 @@ class GitHubHTTPTransport:
         except (error.URLError, TimeoutError, OSError, UnicodeError,
                 ValueError, RecursionError):
             raise GitHubTransportError("GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID") from None
+
+    def upload_visual_png(self, repository_id, name, data):
+        """Dedicated fixed upload destination; no arbitrary caller URL or redirects."""
+        if (type(repository_id) is not int or not 0<repository_id<2**63 or
+                type(name) is not str or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,100}\.png',name) or
+                type(data) is not bytes or not 24<=len(data)<=10*1024*1024 or
+                not data.startswith(b'\x89PNG\r\n\x1a\n') or data[12:16]!=b'IHDR'):
+            raise Denied('GITHUB_VISUAL_UPLOAD_INVALID')
+        url='https://uploads.github.com/user-attachments/assets?'+urlencode({
+            'name':name,'content_type':'image/png','repository_id':repository_id})
+        outgoing=request.Request(url,data=data,method='POST',headers={
+            'Authorization':'token '+self._token,'Accept':'application/vnd.github+json',
+            'Content-Type':'application/octet-stream'})
+        opener=self._opener or request.build_opener(request.ProxyHandler({}),
+            request.HTTPSHandler(context=ssl.create_default_context()),_NoRedirect())
+        try:
+            with opener.open(outgoing,timeout=self._timeout) as response:
+                if response.status!=201:raise GitHubTransportError('GITHUB_VISUAL_UPLOAD_STATUS_INVALID')
+                raw=response.read(4097)
+                if len(raw)>4096:raise GitHubTransportError('GITHUB_VISUAL_UPLOAD_RESPONSE_INVALID')
+                item=json.loads(raw,object_pairs_hook=_unique_pairs,parse_constant=_reject_constant)
+                url=item.get('url') if type(item) is dict else None
+                if (type(url) is not str or not re.fullmatch(
+                    r'https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200}',url)):
+                    raise GitHubTransportError('GITHUB_VISUAL_UPLOAD_URL_INVALID')
+                return url
+        except error.HTTPError as exc:
+            status=exc.code;exc.close()
+            raise GitHubTransportError('GITHUB_VISUAL_UPLOAD_HTTP_'+str(status)) from None
+        except GitHubTransportError:raise
+        except (error.URLError,TimeoutError,OSError,UnicodeError,ValueError,TypeError):
+            raise GitHubTransportError('GITHUB_VISUAL_UPLOAD_UNCONFIRMED') from None
 
     def redact(self, value):
         value = value.replace(self._token, '[REDACTED]')

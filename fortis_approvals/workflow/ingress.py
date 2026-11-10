@@ -14,7 +14,7 @@ from .incident_read import list_uncertain, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
 
 
 class NativeIngress:
@@ -29,7 +29,8 @@ class NativeIngress:
         require(env.get('CONTENT_TYPE')=='application/json','WORKFLOW_JSON_REQUIRED')
         value=env.get('CONTENT_LENGTH','')
         require(type(value) is str and value.isdecimal() and not value.startswith('0'),'WORKFLOW_LENGTH_INVALID')
-        size=int(value);limit=MAX_BUNDLE*4//3+8192 if path=='/v1/git/artifact' else 524288
+        size=int(value);limit=(MAX_BUNDLE*4//3+8192 if path=='/v1/git/artifact' else
+            10*1024*1024*4//3+8192 if path=='/v1/github/visual-review/stage' else 524288)
         require(0<size<=limit,'WORKFLOW_BODY_LIMIT')
         raw=env['wsgi.input'].read(size);require(len(raw)==size,'WORKFLOW_LENGTH_INVALID')
         body=loads_strict(raw);require(type(body) is dict,'WORKFLOW_OBJECT_REQUIRED')
@@ -60,6 +61,17 @@ class NativeIngress:
                 workerActivity={'readOnly':True,'actorScoped':True,'maxPageSize':100,
                                 'signal':'heartbeat-observation-v1','quiescenceProof':False},
                 workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False})
+        if path=='/v1/github/visual-review/stage':
+            require(set(body)=={'requestId','repository','runId','index','name','sha256','data'},
+                    'VISUAL_MEDIA_PARAMS_INVALID')
+            require(type(body['data']) is str and len(body['data'])<=10*1024*1024*4//3+4,
+                    'VISUAL_MEDIA_LIMIT')
+            self.github._access(body['repository'])
+            try:data=base64.b64decode(body['data'],validate=True)
+            except (ValueError,TypeError):raise Denied('VISUAL_MEDIA_INVALID') from None
+            # Fail closed on unknown Core request IDs with pending/unconfirmed effects.
+            return self.store.stage_visual_png(actor,body['requestId'],body['repository'],
+                body['runId'],body['index'],body['name'],body['sha256'],data)
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)
@@ -133,6 +145,9 @@ class NativeIngress:
                 credential,body['requestId'],
                 event_offset=body['eventOffset'],event_limit=body['eventLimit'])
             details['diagnostic']=diagnose(details)
+            if (details.get('request',{}).get('service')=='github' and
+                    details['request'].get('operation')=='publish_visual_review'):
+                details['visualReview']=self.github.visual_evidence(body['requestId'])
             return details
         if path in ('/v1/workspace/result','/v1/workspace/reconcile'):
             require(set(body)=={'requestId'},'WORKFLOW_PARAMS_INVALID')
@@ -155,7 +170,7 @@ class NativeIngress:
             require(self.base._environment(env) and env.get('REQUEST_METHOD')=='POST','WORKFLOW_ROUTE_DENIED')
             credential,actor=self.base._credential(env);require(actor==self.actor,'WORKFLOW_ACTOR_DENIED')
             if not self.limiter.take(actor):return RepoIngress._reply(start,429,dict(error='WORKFLOW_RATE_LIMIT'))
-            if path=='/v1/git/artifact' and not self.upload_limiter.take(actor):
+            if path in ('/v1/git/artifact','/v1/github/visual-review/stage') and not self.upload_limiter.take(actor):
                 return RepoIngress._reply(start,429,dict(error='WORKFLOW_UPLOAD_RATE_LIMIT'))
             if path.startswith('/v1/git/'):
                 acquired=self.git_slot.acquire(blocking=False)

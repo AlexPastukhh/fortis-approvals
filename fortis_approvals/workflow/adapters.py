@@ -24,6 +24,89 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             # Legacy single-repository mode remains the default until owner rollout.
             self.repositories=None
 
+    def _visual_prepare(self,request):
+        p=request['params'];repo=request['target'];ident=request['requestId']
+        from ..integrations.github.contract import validate_github_action
+        validate_github_action('publish_visual_review',repo,p)
+        require(repo=='visual-workspace','VISUAL_REVIEW_REPOSITORY_DENIED')
+        raw=self._api('GET',self._path(repo))
+        require(type(raw) is dict and raw.get('full_name')==self.owner+'/'+repo and
+                raw.get('private') is True and raw.get('has_issues') is True and
+                type(raw.get('id')) is int and 0<raw['id']<2**63,
+                'VISUAL_REVIEW_REPO_INVALID')
+        for row in p['media']:
+            self.workflow.visual_png(self.actor,ident,repo,p['runId'],row)
+        return dict(operation='publish_visual_review',repository=repo,runId=p['runId'],
+                    repositoryId=raw['id'],media=p['media'],
+                    contentSha256=hashlib.sha256(canonical({k:v for k,v in p.items() if k!='media'}).encode()).hexdigest())
+
+    def visual_evidence(self,ident):
+        """Read-only durable evidence for actor-scoped existing details endpoint."""
+        with self._db() as db:
+            table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_reviews'").fetchone()
+            if table is None:return None
+            row=db.execute('SELECT repository,run_id,issue_number,uploads FROM visual_reviews WHERE id=?',(ident,)).fetchone()
+        if row is None:return None
+        return dict(repository=row[0],runId=row[1],issueNumber=row[2],
+                    uploadedFiles=len(json.loads(row[3])))
+
+    def _visual_apply(self,request):
+        """Single Core action; partial GitHub effects are never blindly replayed."""
+        ident=request['requestId'];p=request['params'];repo=request['target']
+        preview=self._visual_prepare(request)
+        # Reserve the run before the first GitHub effect. An unresolved run blocks
+        # new request IDs, even if the original HTTP response was lost.
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('CREATE TABLE IF NOT EXISTS visual_reviews ('
+                'id TEXT PRIMARY KEY, repository TEXT, run_id TEXT, issue_number INTEGER, '
+                'uploads TEXT NOT NULL, UNIQUE(repository,run_id))')
+            row=db.execute('SELECT id FROM visual_reviews WHERE repository=? AND run_id=?',
+                           (repo,p['runId'])).fetchone()
+            require(row is None,'VISUAL_REVIEW_RUN_ALREADY_RESERVED')
+            # Persist the one-shot boundary before *any* GitHub mutation.
+            db.execute('INSERT INTO visual_reviews VALUES(?,?,?,NULL,?)',
+                       (ident,repo,p['runId'],'{}'))
+        # The reservation is durable; unexpected exceptions leave an incident.
+        marker='<!-- fortis-visual-review:'+p['runId']+' -->'
+        intro=(marker+'\n\n'+p['description']+'\n\n**QA:** '+p['qaSummary']+
+               '\n\n**Duration:** '+str(p['durationSeconds'])+' seconds')
+        created=self._api('POST',self._path(repo,'issues'),body={
+            'title':p['title'],'body':intro},expected=(201,))
+        require(type(created) is dict and type(created.get('number')) is int and
+                0<created['number']<=1000000 and
+                created.get('html_url')=='https://github.com/'+self.owner+'/'+repo+'/issues/'+str(created['number']),
+                'VISUAL_REVIEW_CREATE_UNCONFIRMED')
+        number=created['number']
+        with self._db() as db:
+            db.execute('UPDATE visual_reviews SET issue_number=? WHERE id=?',(number,ident))
+        attachments=[]
+        for item in p['media']:
+            data=self.workflow.visual_png(self.actor,ident,repo,p['runId'],item)
+            filename='fortis-'+str(item['index'])+'-'+item['sha256'][:16]+'.png'
+            url=self.transport.upload_visual_png(preview['repositoryId'],filename,data)
+            attachments.append((item,url))
+            with self._db() as db:
+                db.execute('UPDATE visual_reviews SET uploads=? WHERE id=?',
+                           (canonical({str(row['index']):link for row,link in attachments}),ident))
+        def alt(value):
+            return value.replace('\\','\\\\').replace('[','\\[').replace(']','\\]').replace('\r',' ').replace('\n',' ')
+        body=intro+'\n\n## Preview\n\n'+'\n\n'.join(
+            '!['+alt(item['name'])+']('+url+')' for item,url in attachments)
+        updated=self._api('PATCH',self._path(repo,'issues/'+str(number)),body={'body':body})
+        require(type(updated) is dict and updated.get('number')==number,
+                'VISUAL_REVIEW_UPDATE_UNCONFIRMED')
+        saved=self._api('GET',self._path(repo,'issues/'+str(number)))
+        url='https://github.com/'+self.owner+'/'+repo+'/issues/'+str(number)
+        require(type(saved) is dict and saved.get('number')==number and
+                saved.get('html_url')==url and saved.get('body')==body and
+                saved.get('state')=='open' and 'pull_request' not in saved,
+                'VISUAL_REVIEW_READBACK_UNCONFIRMED')
+        result=dict(requestId=ident,operation='publish_visual_review',repository=repo,
+                    runId=p['runId'],issueNumber=number,url=url,uploadedFiles=len(attachments))
+        self._save_receipt(ident,result)
+        return result
+
     def _workflow(self, repo, ident, path):
         # Unlike the Sonar review profile, native GitHub CI is not pinned
         # to a Sonar project. The run, workflow path and ID come from GitHub.
@@ -210,6 +293,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
 
     def prepare(self,request):
         operation=request['operation'];repo=self._access(request['target']);p=request['params']
+        if operation=='publish_visual_review':return self._visual_prepare(request)
         if operation in CI_ACTION_NAMES:
             return AnalysisGitHubAdapter.prepare(self,request)
         if operation=='push_commits':
@@ -252,6 +336,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         if operation in CI_ACTION_NAMES:
             self._access(request['target'])
             return AnalysisGitHubAdapter.apply(self,request)
+        if operation=='publish_visual_review':return self._visual_apply(request)
         if operation not in ('push_commits','mark_pr_ready'):
             return GitHubAdapter.apply(self,request)
         snapshot=self.prepare(request);repo=request['target'];p=request['params']
