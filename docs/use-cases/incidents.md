@@ -48,6 +48,8 @@
    При сохранённом `CLAIMED` соблюдать отдельную quiescence и точный
    preservation scope при будущих backup/release.
 
+Глобальный реестр AI (source candidate): WorkflowClient.list_requests() читает по всем инициаторам только метаданные PENDING/APPROVED/DISPATCHED/UNCERTAIN. При unresolved_only=False включает историю. Доступ требует действующую machine TLS/grant аутентификацию, но не Owner WebAuthn; сырые params, payload, secret, owner proof и cross-actor details() не раскрываются. Доступен только после отдельно подтверждённого Windows release.
+
 ## APPROVED в «Требуют разбора»: безопасная отмена и быстрая автопроверка
 
 `APPROVED` — разрешение записано, но `DISPATCHED` ещё не зафиксирован.

@@ -44,6 +44,46 @@ def list_uncertain(core, credential, *, offset=0, limit=100):
                 nextOffset=next_offset)
 
 
+
+def list_requests(core, credential, *, offset=0, limit=100, unresolved_only=True):
+    """Global minimal incident inventory for *any authenticated machine actor*.
+
+    The authenticated actor is the caller, not a SQL filter. This is metadata
+    only: unlike actor-owned details(), it never exposes payload, parameters,
+    preview, receipts, owner approval proof, token or raw audit fields.
+    """
+    if (type(offset) is not int or not 0 <= offset <= 1000000 or
+            type(limit) is not int or not 1 <= limit <= 100 or
+            type(unresolved_only) is not bool):
+        raise Denied('GLOBAL_INVENTORY_PAGINATION_INVALID')
+    core.auth.authenticate(credential)
+    state_filter = (" WHERE state IN ('PENDING','APPROVED','DISPATCHED','UNCERTAIN')"
+                    if unresolved_only else '')
+    with core._db() as db:
+        db.execute('BEGIN')
+        total = db.execute('SELECT COUNT(*) FROM requests'+state_filter).fetchone()[0]
+        counts = dict(db.execute('SELECT state,COUNT(*) FROM requests'+
+                                 state_filter+' GROUP BY state'))
+        rows = db.execute(
+            'SELECT id,actor,state,payload,created_at FROM requests'+
+            state_filter+' ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',
+            (limit, offset)).fetchall()
+    items = []
+    for row in rows:
+        request = json.loads(row['payload'])
+        items.append({
+            'requestId':row['id'], 'actor':row['actor'],
+            'state':row['state'], 'service':request['service'],
+            'operation':request['operation'], 'target':request['target'],
+            'createdAt':row['created_at'],
+        })
+    next_offset = offset+len(items) if offset+len(items) < total else None
+    return dict(schemaVersion=1, readOnly=True, actorScoped=False,
+                unresolvedOnly=unresolved_only, stateCounts=counts,
+                items=items, total=total, offset=offset, limit=limit,
+                truncated=next_offset is not None, nextOffset=next_offset)
+
+
 def diagnose(details):
     """Classify observable stages only, never claim the root cause/effect.
 

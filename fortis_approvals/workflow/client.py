@@ -53,6 +53,17 @@ class WorkflowClient:
         return self.gateway.post('/v1/workspace/list_uncertain',
             dict(offset=offset,limit=limit))
 
+    def list_requests(self, *, offset=0, limit=100, unresolved_only=True):
+        """All actors' request metadata through the authenticated machine Gateway.
+
+        Includes PENDING/APPROVED/DISPATCHED/UNCERTAIN by default;
+        unresolved_only=False also includes history. No payload/credentials,
+        owner permissions, cross-actor execution, or effect readback.
+        Requires an installed Gateway advertising globalRequestInventory.
+        """
+        return self.gateway.post('/v1/workspace/list_requests',
+            dict(offset=offset,limit=limit,unresolvedOnly=unresolved_only))
+
     def activity(self, *, offset=0, limit=100):
         """Read-only actor-owned active job inventory; not quiescence proof."""
         if not self.worker_observability:

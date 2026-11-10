@@ -7,6 +7,7 @@ import unittest
 from test_orphaned_worker_claim_release import OrphanedClaimStateTests, H, IDENT
 
 APPROVED = 'ba299f4f-f49c-4ef7-80cf-e1f31a232024'
+APPROVED_OTHER = '49bcd340-8d21-4a7c-906a-ea5ea56ba748'
 TARGET = 'fortis-approvals'
 TASK = 'mirror-read-provider-20261110'
 PAYLOAD = {'service': 'workspace', 'operation': 'edit',
@@ -64,8 +65,9 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
         wrong=['11111111-1111-4111-8111-111111111111']
         with self.assertRaisesRegex(RuntimeError,'EXPECTED_REQUEST_MISMATCH'):
             self.read(preserve_approved_ids=wrong)
-        with self.assertRaisesRegex(RuntimeError,'MUST_BE_SINGLE'):
-            self.read(preserve_approved_ids=[APPROVED,*wrong])
+        with self.assertRaisesRegex(RuntimeError,'APPROVED_SET_CHANGED'):
+            self.read(preserve_approved_ids=[APPROVED,*wrong],
+                      require_exact_approved=True)
         with self.assertRaisesRegex(RuntimeError,'UNCERTAIN_SCOPE_INVALID'):
             self.read(preserve_approved_ids=[APPROVED,APPROVED])
         with self.assertRaisesRegex(RuntimeError,'APPROVED_SET_CHANGED'):
@@ -84,8 +86,39 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
             self.read()
         # Never fix a second APPROVED by silently expanding the bootstrap
         # allowlist; that can only be a separate owner-reviewed design.
-        with self.assertRaisesRegex(RuntimeError,'MUST_BE_SINGLE'):
-            self.read(preserve_approved_ids=[APPROVED,extra])
+        with self.assertRaisesRegex(RuntimeError,'WAS_DISPATCHED_OR_REWRITTEN'):
+            self.read(preserve_approved_ids=[APPROVED,extra],
+                      require_exact_approved=True)
+
+    def test_two_different_approved_targets_are_preserved_byte_identically(self):
+        second = dict(PAYLOAD, target='feed_and_search_and_bank_and_brain',
+                      params={'task':'external-ai-run-registration-20261110'})
+        self.sql('approvals.sqlite',
+            'INSERT INTO requests(id,actor,state,payload) VALUES(?,?,?,?)',
+            (APPROVED_OTHER,'other-ai','APPROVED',json.dumps(second)))
+        self.sql('approvals.sqlite',
+            'INSERT INTO events(request_id,state,detail) VALUES(?,?,?)',
+            (APPROVED_OTHER,'APPROVED','{}'))
+        ids=[APPROVED,APPROVED_OTHER]
+        with self.assertRaisesRegex(RuntimeError,'ADDITIONAL_REQUESTS_PRESENT'):
+            self.read(**self.review)
+        state=self.read(preserve_approved_ids=ids,require_exact_approved=True)
+        self.assertEqual(state['summary']['approvedRequestIds'],sorted(ids))
+        before={n:(self.root/n).read_bytes() for n in state['sha256']}
+        clone=H.clone_state(self.source,self.target,**self.kw,
+                            preserve_approved_ids=ids,
+                            require_exact_approved=True)
+        self.assertEqual(clone,state)
+        self.assertEqual(before,{n:(self.target/'private'/n).read_bytes()
+                                 for n in state['sha256']})
+        self.assertEqual(self.sql('approvals.sqlite',
+            'SELECT id,state FROM requests WHERE state=? ORDER BY id',
+            ('APPROVED',)),[(x,'APPROVED') for x in sorted(ids)])
+
+    def test_scope_rejects_21_approved_ids(self):
+        extras=['00000000-0000-4000-8000-%012x'%i for i in range(20)]
+        with self.assertRaisesRegex(RuntimeError,'UNCERTAIN_SCOPE_INVALID'):
+            self.read(preserve_approved_ids=[APPROVED,*extras])
 
     def test_dispatch_history_and_active_states_fail_closed(self):
         self.sql('approvals.sqlite',
@@ -123,13 +156,15 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'RECORD_INVALID'):
             self.read(**self.review)
 
-    def test_allowlisted_but_wrong_payload_rejected(self):
-        for key,value in [('target','another-repo'),('operation','create_task')]:
-            with self.subTest(key=key):
-                payload={**PAYLOAD,key:value}
+    def test_approved_payload_must_still_be_well_formed(self):
+        for payload in [{'operation':'edit','target':'repo'},
+                        {**PAYLOAD,'target':''},
+                        {**PAYLOAD,'service':''},
+                        {**PAYLOAD,'params':'malformed'}]:
+            with self.subTest(payload=payload):
                 self.sql('approvals.sqlite','UPDATE requests SET payload=? WHERE id=?',
                          (json.dumps(payload),APPROVED))
-                with self.assertRaisesRegex(RuntimeError,'NOT_BOOTSTRAP_EDIT'):
+                with self.assertRaisesRegex(RuntimeError,'PAYLOAD_INVALID'):
                     self.read(**self.review)
         self.sql('approvals.sqlite','UPDATE requests SET payload=? WHERE id=?',
                  (json.dumps(PAYLOAD),APPROVED))
@@ -150,6 +185,7 @@ class WindowsReleaseScopeStaticTests(unittest.TestCase):
             'RELEASE_APPROVED_BACKUP_PROMOTE_REQUIRES_QUIESCENCE',
             'RELEASE_APPROVED_FLAG_FORWARD_SELFTEST_FAILED',
             'RELEASE_APPROVED_SCOPE_FORWARD_SELFTEST_FAILED',
+            'RELEASE_APPROVED_MULTI_SCOPE_SELFTEST_FAILED',
             'RELEASE_APPROVED_SCOPE_NOT_FORWARDED',
             'SOURCE_STATE_PREFLIGHT_READ_ONLY',
             'Assert-ApprovedScopeForwarded $Payload'):

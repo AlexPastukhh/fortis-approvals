@@ -12,7 +12,7 @@ from fortis_approvals.incidents import IncidentCore
 from fortis_approvals.synthetic import SyntheticAdapter
 from fortis_approvals.workflow.client import WorkflowClient
 from fortis_approvals.workflow.ingress import NativeIngress, NATIVE_PATHS
-from fortis_approvals.workflow.incident_read import diagnose, list_uncertain
+from fortis_approvals.workflow.incident_read import diagnose, list_uncertain, list_requests
 
 
 class InventoryTests(unittest.TestCase):
@@ -77,6 +77,61 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(self.core._read(own[0])['state'],'UNCERTAIN')
         self.assertEqual(self.core._read(other)['state'],'UNCERTAIN')
         self.assertEqual(self.core._read(closed)['state'],'CLOSED_UNCONFIRMED')
+
+    def test_global_readonly_inventory_sees_every_actor_and_archived_history(self):
+        a=self.submit('agent-a')['requestId']
+        b=self.submit('agent-b')['requestId']
+        closed=self.uncertain('agent-b')
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='APPROVED' WHERE id=?",(b,))
+            db.execute("UPDATE requests SET state='CLOSED_UNCONFIRMED' WHERE id=?",
+                       (closed,))
+        self.assertIn('/v1/workspace/list_requests',NATIVE_PATHS)
+        first=self.native._dispatch('/v1/workspace/list_requests',
+            {'offset':0,'limit':1,'unresolvedOnly':True},'secret-a','agent-a')
+        second=self.native._dispatch('/v1/workspace/list_requests',
+            {'offset':1,'limit':1,'unresolvedOnly':True},'secret-a','agent-a')
+        self.assertEqual(first['total'],2)
+        self.assertTrue(first['readOnly'])
+        self.assertFalse(first['actorScoped'])
+        self.assertEqual(first['stateCounts'],{'PENDING':1,'APPROVED':1})
+        self.assertEqual({x['requestId'] for x in first['items']+second['items']},
+                         {a,b})
+        self.assertEqual({x['actor'] for x in first['items']+second['items']},
+                         {'agent-a','agent-b'})
+        from_other=list_requests(self.core,'secret-b',limit=100,unresolved_only=False)
+        self.assertEqual(from_other['total'],3)
+        self.assertIn(closed,[x['requestId'] for x in from_other['items']])
+        exposed=json.dumps(from_other)
+        for secret in ('private','sensitive-reason-not-in-list','fingerprint',
+                       'snapshot','params','preview','claim','decision','owner'):
+            self.assertNotIn('"'+secret+'"',exposed)
+        self.assertEqual(self.core._read(b)['state'],'APPROVED')
+        self.assertEqual(self.core._read(closed)['state'],'CLOSED_UNCONFIRMED')
+        self.assertEqual(self.core._read(a)['state'],'PENDING')
+
+    def test_global_inventory_cannot_expand_existing_other_actor_details(self):
+        foreign=self.submit('agent-b')['requestId']
+        self.assertIn(foreign,[i['requestId'] for i in
+                      list_requests(self.core,'secret-a')['items']])
+        with self.assertRaises(Denied):
+            self.core.machine_request_details('secret-a',foreign)
+        with self.assertRaises(Denied):
+            list_requests(self.core,'invalid')
+        for opts in ({'offset':-1},{'offset':True},{'limit':101},
+                     {'limit':0},{'unresolved_only':'yes'},
+                     {'unresolved_only':0}):
+            with self.subTest(opts=opts),self.assertRaises(Denied):
+                list_requests(self.core,'secret-a',**opts)
+        for wrong in ({'offset':0,'limit':5},
+                      {'offset':0,'limit':5,'unresolvedOnly':True,'actor':'agent-b'},
+                      {'offset':0,'limit':5,'unresolvedOnly':True,'includePayload':True}):
+            with self.assertRaises(Denied):
+                self.native._dispatch('/v1/workspace/list_requests',
+                                       wrong,'secret-a','agent-a')
+        with self.assertRaises(Denied):
+            self.native._dispatch('/v1/workspace/list_requests',
+                {'offset':0,'limit':5,'unresolvedOnly':True},'secret-b','agent-a')
 
     def test_page_beyond_100_and_complete_quiescent_inventory(self):
         own=[self.uncertain() for _ in range(104)]
@@ -169,6 +224,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(capabilities['incidentInventory'],{
             'readOnly':True,'actorScoped':True,'maxPageSize':100,
             'diagnostic':'evidence-stage-v1'})
+        self.assertEqual(capabilities['globalRequestInventory'],{
+            'readOnly':True,'actorScoped':False,'maxPageSize':100,
+            'metadataOnly':True,'supportsHistory':True})
 
     def test_native_details_adds_read_only_diagnostic(self):
         uid=self.uncertain()
@@ -192,6 +250,10 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(fake.called,('/v1/workspace/list_uncertain',
                                       {'offset':2,'limit':7}))
         self.assertEqual(result['total'],0)
+        global_result=client.list_requests(offset=1,limit=4,unresolved_only=False)
+        self.assertEqual(fake.called,('/v1/workspace/list_requests',
+            {'offset':1,'limit':4,'unresolvedOnly':False}))
+        self.assertEqual(global_result['total'],0)
 
 
 if __name__=='__main__':

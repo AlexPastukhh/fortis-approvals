@@ -10,11 +10,11 @@ from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
-from .incident_read import list_uncertain, diagnose
+from .incident_read import list_uncertain, list_requests, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/list_requests','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
 
 
 class NativeIngress:
@@ -58,6 +58,8 @@ class NativeIngress:
                     'repositories':list(getattr(self.github.config,'ci_control_repositories',()))},
                 incidentInventory={'readOnly':True,'actorScoped':True,
                     'maxPageSize':100,'diagnostic':'evidence-stage-v1'},
+                globalRequestInventory={'readOnly':True,'actorScoped':False,
+                    'maxPageSize':100,'metadataOnly':True,'supportsHistory':True},
                 workerActivity={'readOnly':True,'actorScoped':True,'maxPageSize':100,
                                 'signal':'heartbeat-observation-v1','quiescenceProof':False},
                 workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False})
@@ -136,6 +138,11 @@ class NativeIngress:
         if path=='/v1/workspace/list_uncertain':
             require(set(body)=={'offset','limit'},'WORKFLOW_PARAMS_INVALID')
             return list_uncertain(core,credential,offset=body['offset'],limit=body['limit'])
+        if path=='/v1/workspace/list_requests':
+            require(set(body)=={'offset','limit','unresolvedOnly'},'WORKFLOW_PARAMS_INVALID')
+            require(core.auth.authenticate(credential)==actor,'WORKFLOW_ACTOR_DENIED')
+            return list_requests(core,credential,offset=body['offset'],limit=body['limit'],
+                                 unresolved_only=body['unresolvedOnly'])
         if path=='/v1/workspace/details':
             require(set(body)=={'requestId','eventOffset','eventLimit'},
                     'WORKFLOW_PARAMS_INVALID')
