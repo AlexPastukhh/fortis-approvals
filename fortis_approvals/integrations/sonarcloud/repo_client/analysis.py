@@ -36,6 +36,6 @@ class SonarAnalysisClient:
         result = self.gateway.post('/v1/actions', body, accept_202=True)
         if (type(result) is not dict or set(result) != {'requestId', 'state'} or result['requestId'] != request_id or
                 type(result['state']) is not str or result['state'] not in
-                {'PENDING', 'APPROVED', 'DISPATCHED', 'EXECUTED', 'REJECTED', 'DENIED', 'EXPIRED', 'STALE', 'UNCERTAIN', 'REVOKED'}):
+                {'PENDING', 'APPROVED', 'DISPATCHED', 'EXECUTED', 'REJECTED', 'DENIED', 'EXPIRED', 'STALE', 'UNCERTAIN', 'REVOKED', 'CANCELLED_BEFORE_DISPATCH'}):
             raise Denied('SONAR_ANALYSIS_RESPONSE_INVALID')
         return result

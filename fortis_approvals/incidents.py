@@ -14,7 +14,7 @@ from .owner_shell_portal import OwnerShellPortal
 
 
 class IncidentCore(Core):
-    STATES = Core.STATES | {'CLOSED_UNCONFIRMED'}
+    STATES = Core.STATES | {'CLOSED_UNCONFIRMED', 'CANCELLED_BEFORE_DISPATCH'}
 
     def owner_incident_closure(self, request_id):
         # Owner portal only. Preserve the operator attestation and audit event,
@@ -132,6 +132,123 @@ class IncidentCore(Core):
             return self._view(db.execute(
                 'SELECT * FROM requests WHERE id=?',(request_id,)).fetchone())
 
+    def owner_cancel_approved(self, request_id, expected_fingerprint, owner):
+        """Owner-only, transactionally prevent first dispatch of an APPROVED intent.
+
+        Core.execute() serializes its preflight and DISPATCHED marker with the
+        same approvals database writer lock. This transition wins *only* before
+        the durable DISPATCHED marker, and never rewrites an executed request.
+        """
+        if (type(request_id) is not str or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', request_id) or
+            type(expected_fingerprint) is not str or not re.fullmatch(
+                r'[0-9a-f]{64}', expected_fingerprint) or
+            type(owner) is not str or not owner):
+            raise Denied('INCIDENT_CANCEL_APPROVED_INPUT_INVALID')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            record=db.execute('SELECT * FROM requests WHERE id=?',(request_id,)).fetchone()
+            if (record is None or record['state']!='APPROVED' or
+                    record['fingerprint']!=expected_fingerprint):
+                raise Denied('INCIDENT_NOT_APPROVED_OR_CHANGED')
+            ever_dispatched=db.execute(
+                "SELECT 1 FROM events WHERE request_id=? AND state='DISPATCHED' LIMIT 1",
+                (request_id,)).fetchone()
+            if ever_dispatched or record['result'] is not None:
+                raise Denied('INCIDENT_DISPATCH_ALREADY_POSSIBLE')
+            # Defense in depth against an inconsistent or partly migrated
+            # worker store: do not cancel if a native job already exists.
+            request=json.loads(record['payload'])
+            adapter=self.adapters.get(request['service'])
+            store=getattr(adapter,'store',None)
+            if callable(getattr(store,'job',None)) and store.job(request_id) is not None:
+                raise Denied('INCIDENT_WORKER_JOB_PRESENT')
+            if request['service'] in ('github','sonar') and adapter is not None:
+                if adapter.receipt(request_id) is not None:
+                    raise Denied('INCIDENT_RECEIPT_PRESENT')
+            changed=db.execute(
+                "UPDATE requests SET state='CANCELLED_BEFORE_DISPATCH', "
+                "failure='OWNER_CANCELLED_BEFORE_DISPATCH' "
+                "WHERE id=? AND state='APPROVED' AND fingerprint=?",
+                (request_id,expected_fingerprint)).rowcount
+            if changed!=1:
+                raise Denied('INCIDENT_CONCURRENT_CHANGE')
+            self._event(db,request_id,'CANCELLED_BEFORE_DISPATCH',{
+                'owner':owner,'cancelMethod':'authenticated_owner_session',
+                'originalFingerprint':expected_fingerprint,
+                'dispatchRecorded':False,'effectNotDispatchedByGateway':True,
+                'workerStateUnchanged':True})
+            return self._view(db.execute(
+                'SELECT * FROM requests WHERE id=?',(request_id,)).fetchone())
+
+    def owner_assess(self, request_id):
+        """Passive evidence inventory, not a retry, reconciliation or provider probe.
+
+        A durable local receipt is an automatic signal for owner reconciliation,
+        but absence of a receipt never proves non-execution after DISPATCHED.
+        """
+        if type(request_id) is not str or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',request_id):
+            raise Denied('INCIDENT_ASSESS_REQUEST_INVALID')
+        with self._db() as db:
+            db.execute('BEGIN')
+            record=db.execute('SELECT * FROM requests WHERE id=?',(request_id,)).fetchone()
+            if record is None:
+                raise Denied('REQUEST_NOT_AVAILABLE')
+            state=record['state']
+            dispatched=bool(db.execute(
+                "SELECT 1 FROM events WHERE request_id=? AND state='DISPATCHED' LIMIT 1",
+                (request_id,)).fetchone())
+            cancelled=bool(db.execute(
+                "SELECT 1 FROM events WHERE request_id=? AND state='CANCELLED_BEFORE_DISPATCH' LIMIT 1",
+                (request_id,)).fetchone())
+            payload=json.loads(record['payload'])
+        adapter=self.adapters.get(payload['service'])
+        worker=None
+        receipt=False
+        evidence_unavailable=False
+        # Existing job/receipt stores only: no upstream calls or provider
+        # mutation, no WorkspaceAdapter.receipt (can register a task).
+        try:
+            if adapter is not None:
+                store=getattr(adapter,'store',None)
+                if callable(getattr(store,'job',None)):
+                    saved=store.job(request_id)
+                    if saved is not None:
+                        if saved.get('actor')!=record['actor']:
+                            raise Denied('INCIDENT_WORKER_ACTOR_MISMATCH')
+                        worker=saved['state']
+                        receipt=(worker=='DONE' and saved.get('result') is not None)
+                elif payload['service'] in ('github','sonar'):
+                    receipt=adapter.receipt(request_id) is not None
+        except Exception:
+            # Missing evidence is never a positive non-execution or receipt
+            # proof; do not surface raw provider/storage exception strings.
+            evidence_unavailable=True
+        if evidence_unavailable:
+            verdict='OUTCOME_UNCONFIRMED'
+        elif state=='CANCELLED_BEFORE_DISPATCH' and cancelled and not dispatched and worker is None and not receipt:
+            verdict='VERIFIED_NOT_DISPATCHED'
+        elif state=='APPROVED' and not dispatched and worker is None and not receipt:
+            verdict='CANCELLABLE_IF_STILL_APPROVED'
+        elif state=='EXECUTED':
+            verdict='CORE_EXECUTION_CONFIRMED'
+        elif receipt and state in ('UNCERTAIN','DISPATCHED'):
+            verdict='RECEIPT_PRESENT_RECONCILE_REQUIRED'
+        elif receipt and state=='CLOSED_UNCONFIRMED':
+            verdict='RECEIPT_AFTER_CLOSURE_REVIEW_REQUIRED'
+        else:
+            verdict='OUTCOME_UNCONFIRMED'
+        return {
+            'requestId':request_id,'state':state,'verdict':verdict,
+            'dispatchedRecorded':dispatched,'workerState':worker,
+            'receiptRecorded':receipt,'evidenceUnavailable':evidence_unavailable,
+            'canCancelNow':verdict=='CANCELLABLE_IF_STILL_APPROVED',
+            'freshRequestEligibleAfterPreflight':verdict=='VERIFIED_NOT_DISPATCHED',
+            'readOnly':True,
+            'note':'Only durable Gateway evidence; external effect unknown after dispatch without independent verification.'
+        }
+
     @staticmethod
     def _closure_fingerprint(row, backup_volume, explanation):
         # Owner attestation of an operator-verified backup, NOT a backup
@@ -245,6 +362,8 @@ class IncidentOwnerPortal(OwnerShellPortal):
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
             '/v1/owner/incidents/close/simple',
+            '/v1/owner/incidents/cancel/approved',
+            '/v1/owner/incidents/assess',
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
         if not (get_unresolved or post_incident):
@@ -267,8 +386,16 @@ class IncidentOwnerPortal(OwnerShellPortal):
             csrf=env.get('HTTP_X_FORTIS_CSRF')
             if not csrf:raise Denied('CSRF_REQUIRED')
             self.auth.session(token,csrf)
-            if self.read_only_banner:
+            if self.read_only_banner and path!='/v1/owner/incidents/assess':
                 raise Denied('INCIDENT_OWNER_WRITE_NOT_ENABLED')
+            if path=='/v1/owner/incidents/assess' and set(body)=={'requestId'}:
+                return self._reply(start,200,self.core.owner_assess(body['requestId']))
+            if path=='/v1/owner/incidents/cancel/approved' and set(body)=={
+                    'requestId','fingerprint'}:
+                owner_session=self.auth.session(token,csrf)
+                return self._reply(start,200,self._owner_view(
+                    self.core.owner_cancel_approved(
+                        body['requestId'],body['fingerprint'],owner_session['owner'])))
             if path=='/v1/owner/incidents/close/simple' and set(body)=={
                     'requestId','fingerprint'}:
                 owner_session=self.auth.session(token,csrf)

@@ -94,6 +94,16 @@ worker and receipt without retry/reconcile. Independently inspect upstream
 GitHub and local Git evidence before attributing the effect. An absent receipt
 does not prove the action failed. `reconcile` is a separate operation
 with its own contract, not a mandatory read-only viewing step.
+For a stuck `APPROVED`, the owner can use the guarded Portal
+`Cancel before dispatch` action; only the exact `APPROVED` request may
+transition to `CANCELLED_BEFORE_DISPATCH` under the Core writer lock.
+The owner-only passive `incidents/assess` endpoint classifies existing
+Core events and durable receipts without mutating or retrying effects.
+Neither a missing receipt nor a stale `CLAIMED` heartbeat proves nonexecution.
+A confirmed `CANCELLED_BEFORE_DISPATCH` means this Gateway request never
+reached `DISPATCHED` and can be replaced by a new request under fresh
+preconditions and the normal ALLOW/ASK/DENY policy. Any other unknown
+external outcome still requires independent evidence before a new effect.
 The AI never invokes owner routes or administratively closes requests.
 Unsupported services or operations stop at the integration boundary.
 

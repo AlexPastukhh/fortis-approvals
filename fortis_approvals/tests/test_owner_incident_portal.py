@@ -100,6 +100,129 @@ class IncidentOwnerInputTests(OwnerPortalInputTests):
                          closed['incidentClosure'])
         self.assertEqual(self.call('/v1/owner/incidents/close/simple',encoded)[0],403)
 
+    def test_approved_cancel_session_bound_and_permanently_prevents_dispatch(self):
+        row=self.submit()
+        ident=row['requestId']
+        # Simulate an interrupted owner approval just before Core.execute.
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='APPROVED' WHERE id=?",(ident,))
+            self.core._event(db,ident,'APPROVED',{'policy':'ASK'})
+        body={'requestId':ident,'fingerprint':row['fingerprint']}
+        encoded=json.dumps(body).encode()
+        route='/v1/owner/incidents/cancel/approved'
+        assess='/v1/owner/incidents/assess'
+        self.assertEqual(self.core.owner_unresolved()['total'],1)
+        for cookie,csrf in [('', 'csrf-token'),('owner-session',None),
+                            ('owner-session','wrong')]:
+            self.assertEqual(self.call(route,encoded,cookie=cookie,csrf=csrf)[0],403)
+        self.assertEqual(self.call(route,json.dumps({**body,
+            'fingerprint':'0'*64}).encode())[0],403)
+        self.assertEqual(self.call(route,json.dumps({'requestId':ident}).encode())[0],404)
+        code,assessment,_=self.call(assess,json.dumps({'requestId':ident}).encode())
+        self.assertEqual((code,assessment['verdict']),(200,'CANCELLABLE_IF_STILL_APPROVED'))
+        self.assertTrue(assessment['canCancelNow'])
+        self.assertFalse(assessment['freshRequestEligibleAfterPreflight'])
+        self.assertFalse(assessment['dispatchedRecorded'])
+        self.assertTrue(assessment['readOnly'])
+        self.assertEqual(self.core._read(ident)['state'],'APPROVED')
+        self.portal.read_only_banner=True
+        self.assertEqual(self.call(route,encoded)[0],403)
+        self.assertEqual(self.call(assess,json.dumps({'requestId':ident}).encode())[0],200)
+        self.portal.read_only_banner=False
+        code,cancelled,_=self.call(route,encoded)
+        self.assertEqual((code,cancelled['state']),(200,'CANCELLED_BEFORE_DISPATCH'))
+        self.assertEqual(cancelled['failure'],'OWNER_CANCELLED_BEFORE_DISPATCH')
+        self.assertIsNone(cancelled['result'])
+        self.assertEqual(self.core.owner_unresolved()['total'],0)
+        self.assertEqual(self.adapter.get('R3')['version'],0)
+        self.assertIsNone(self.adapter.receipt(ident))
+        self.assertEqual(self.core.execute(ident)['state'],'CANCELLED_BEFORE_DISPATCH')
+        self.assertEqual(self.core.client('agent-secret','status',ident)['state'],
+                         'CANCELLED_BEFORE_DISPATCH')
+        events=[e['state'] for e in self.core.events(ident)]
+        self.assertEqual(events,['PENDING','APPROVED','CANCELLED_BEFORE_DISPATCH'])
+        self.assertEqual(self.call(route,encoded)[0],403)
+        code,assessment,_=self.call(assess,json.dumps({'requestId':ident}).encode())
+        self.assertEqual((code,assessment['verdict']),(200,'VERIFIED_NOT_DISPATCHED'))
+        self.assertTrue(assessment['freshRequestEligibleAfterPreflight'])
+
+    def test_approved_cancel_rejects_dispatched_history_or_existing_worker(self):
+        row=self.submit()
+        ident=row['requestId']
+        route='/v1/owner/incidents/cancel/approved'
+        encoded=json.dumps({'requestId':ident,'fingerprint':row['fingerprint']}).encode()
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='APPROVED' WHERE id=?",(ident,))
+            self.core._event(db,ident,'APPROVED',{'policy':'ASK'})
+            self.core._event(db,ident,'DISPATCHED',{})
+        # A malformed/stale row cannot be used to erase a past dispatch.
+        self.assertEqual(self.call(route,encoded)[0],403)
+        self.assertEqual(self.core._read(ident)['state'],'APPROVED')
+        with self.core._db() as db:
+            db.execute("DELETE FROM events WHERE request_id=? AND state='DISPATCHED'",(ident,))
+        class FakeStore:
+            def job(self,request_id):
+                assert request_id==ident
+                return {'state':'CLAIMED','claim':'DO_NOT_EXPOSE'}
+        self.adapter.store=FakeStore()
+        self.assertEqual(self.call(route,encoded)[0],403)
+        self.assertEqual(self.core._read(ident)['state'],'APPROVED')
+
+    def test_passive_assess_worker_receipt_and_unavailable_evidence(self):
+        row=self.submit()
+        ident=row['requestId']
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='UNCERTAIN' WHERE id=?",(ident,))
+            self.core._event(db,ident,'DISPATCHED',{})
+            self.core._event(db,ident,'UNCERTAIN',{})
+        class DoneStore:
+            def job(self,rid):
+                assert rid==ident
+                return {'actor':'agent-1','state':'DONE','result':'{"requestId":"recorded"}'}
+        self.adapter.store=DoneStore()
+        route='/v1/owner/incidents/assess'
+        encoded=json.dumps({'requestId':ident}).encode()
+        code,assessment,_=self.call(route,encoded)
+        self.assertEqual((code,assessment['verdict']),
+                         (200,'RECEIPT_PRESENT_RECONCILE_REQUIRED'))
+        self.assertTrue(assessment['receiptRecorded'])
+        self.assertFalse(assessment['freshRequestEligibleAfterPreflight'])
+        self.assertEqual(self.core._read(ident)['state'],'UNCERTAIN')
+        class BrokenStore:
+            def job(self,rid):
+                raise OSError('DO_NOT_LEAK_INTERNAL_PATH')
+        self.adapter.store=BrokenStore()
+        code,assessment,_=self.call(route,encoded)
+        self.assertEqual((code,assessment['verdict']),(200,'OUTCOME_UNCONFIRMED'))
+        self.assertTrue(assessment['evidenceUnavailable'])
+        self.assertFalse(assessment['canCancelNow'])
+        self.assertNotIn('DO_NOT_LEAK_INTERNAL_PATH',json.dumps(assessment))
+        self.assertEqual(self.core._read(ident)['state'],'UNCERTAIN')
+
+    def test_passive_assessment_does_not_mutate_uncertain_or_reconcile(self):
+        row=self.submit()
+        ident=row['requestId']
+        self.adapter.fail_after_commit_once=True
+        code,unknown,_=self.call('/v1/owner/decision/session',self.decision_body(row))
+        self.assertEqual((code,unknown['state']),(200,'UNCERTAIN'))
+        route='/v1/owner/incidents/assess'
+        encoded=json.dumps({'requestId':ident}).encode()
+        self.assertEqual(self.call(route,encoded,cookie='')[0],403)
+        self.assertEqual(self.call(route,encoded,csrf=None)[0],403)
+        self.assertEqual(self.call(route,json.dumps({'requestId':ident,
+            'unsafe':'yes'}).encode())[0],404)
+        self.assertEqual(self.call(route,json.dumps({'requestId':'invalid'}).encode())[0],403)
+        before=self.core.events(ident)
+        code,assessment,_=self.call(route,encoded)
+        self.assertEqual(code,200)
+        self.assertEqual(assessment['verdict'],'OUTCOME_UNCONFIRMED')
+        self.assertTrue(assessment['dispatchedRecorded'])
+        self.assertFalse(assessment['freshRequestEligibleAfterPreflight'])
+        self.assertFalse(assessment['canCancelNow'])
+        self.assertEqual(self.adapter.get('R3')['version'],1)
+        self.assertEqual(self.core.events(ident),before)
+        self.assertEqual(self.core._read(ident)['state'],'UNCERTAIN')
+
     def test_unresolved_owner_listing_is_auth_bound_and_not_pending(self):
         pending=self.submit()
         self.assertEqual(self.call('/v1/owner/unresolved',cookie='')[0],403)

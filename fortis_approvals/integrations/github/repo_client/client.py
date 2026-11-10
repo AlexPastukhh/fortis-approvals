@@ -87,7 +87,7 @@ class GitHubClient:
                 result["state"] not in ("PENDING", "APPROVED", "DISPATCHED",
                                         "EXECUTED", "REJECTED", "DENIED",
                                         "EXPIRED", "STALE", "UNCERTAIN",
-                                        "CLOSED_UNCONFIRMED")):
+                                        "CLOSED_UNCONFIRMED", "CANCELLED_BEFORE_DISPATCH")):
             raise Denied("GITHUB_GATEWAY_STATUS_RESPONSE_INVALID")
         return result
 
