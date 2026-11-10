@@ -1,6 +1,6 @@
 # Primary Fortis Gateway — operator procedure
 
-## AI full incident read + one-click owner closure (installed 2026-11-09)
+## Исторический actor-scoped incident read и owner closure (релиз 2026-11-09)
 
 Owner-reported `FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED`
 confirm source `a200137775eb6c6b8dcec81f31206b0d481d9003` as the
@@ -20,8 +20,9 @@ full=client.details('2df32a24-efb1-4dac-97f6-3b66147d8944')
 ```
 
 This is `POST /v1/workspace/details` with a UUID and event pagination.
-It uses the existing machine grant and permits only requests **initiated
-by that authenticated actor**. Returns the complete Core owner-equivalent
+**At the 2026-11-09 release it was actor-scoped; this statement is historical.**
+After the 2026-11-10 PR #62 release, the same authenticated machine API
+reads requests of **any actor**. It returns the complete Core owner-equivalent
 request including payload, preview, fingerprint, decision, owner, timestamps,
 result and failure; plus audit events, worker state/result/error and durable
 receipts if present. A worker claim token and owner session are never included.
@@ -45,10 +46,24 @@ and a verified closure audit; no silent state change. Existing operator
 quiescence attestation for claim carryover remains necessary.
 
 
-## Защищённый перенос нескольких APPROVED — следующий source candidate
+## Защищённый перенос нескольких APPROVED — установлен 2026-11-10
 
-**Цель:** выпустить в Windows образ с Owner Portal (отмена до dispatch
-и пассивная автопроверка) без удаления зависших заявок из исходной SQLite.
+**Цель:** обновлять Gateway, сохраняя явно рассмотренные владельцем
+`APPROVED` без удаления/исполнения; затем отменять их через Owner Portal.
+
+**Live acceptance PR #62:** merged `main`
+`8403c63297f78e38294899c6bd094cc9f9eac66f`, owner
+`Check READY → FORTIS_INTEGRATIONS_ACTIVATED → FORTIS_PRIMARY_BACKUP_PASS
+→ FORTIS_PRIMARY_PROMOTED`, owner `docker inspect` healthy/`unless-stopped`
+на `127.0.0.1:19203/19204`. Image
+`sha256:cdd7c22308d9e5820545f9ead2f71c3543c29b6f4ee7886d3b1b6cbc8f24d66c`;
+record `31bdca259de84757a2a0f164a9e494bd/record.json`,
+backup `fortis-gateway-backup-b7d972135c774928bbedd19975072df7`
+(полные host пути — в [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)).
+Repo live `globalRequestInventory.crossActorDetails=true`,
+две `APPROVED` прочитаны с полным audit; никакой отмены не произошло.
+Следующие releases не должны повторять эту одноразовую процедуру
+по старым SHA/record без нового review.
 
 Точно названный владельцем список `APPROVED` передаётся в существующий
 параметр `-PreserveApprovedRequest` как **строка из UUID через запятую**
@@ -84,21 +99,26 @@ release smoke, стадию/активацию; существующие SQLite 
 `APPROVED → CANCELLED_BEFORE_DISPATCH`, каждый раз с fingerprint,
 Core writer-lock и проверками отсутствия dispatch/job/receipt. Это
 отмена, а не физическое удаление записи и не повтор старого UUID.
-Все AI, прошедшие существующую machine TLS/grant аутентификацию,
-могут видеть полный реестр любых инициаторов через
-`WorkflowClient.list_requests(offset,limit,unresolved_only)`.
-Для любого UUID `WorkflowClient.details(uuid)` возвращает полную
-read-only карточку: исходный request и preview, audit, worker evidence
-и receipt. Отдельные страницы audit через event_offset/event_limit.
-В ответе нет machine credential, owner session/WebAuthn и worker claim
-token. Cross-actor `status/result/reconcile/submit/finish/claim` не
-расширяются: доступ на запись и повтор остаются прежними.
-Функция активируется только после owner-managed image release.
+Глобальная инвентаризация **уже установлена**: любой AI с
+действующей machine TLS/grant-аутентификацией видит список по всем
+инициаторам через `WorkflowClient.list_requests()` и полную
+read-only карточку любого UUID через `WorkflowClient.details(uuid)`.
+`unresolved_only=True` возвращает также `PENDING`: это **не**
+«Требуют разбора». Точный состав Owner Portal:
+`APPROVED/DISPATCHED/UNCERTAIN`, см. [UC-GW-009](use-cases/incidents.md#uc-gw-009).
+Ответ `details` включает request/preview/audit/worker/receipt,
+но исключает machine credential, owner session/WebAuthn и worker claim
+token. Чужие `status/result/reconcile/claim/finish` не расширены.
+Глобальный live readback подтверждён для двух `APPROVED`; отдельный
+live сценарий под второй machine identity ещё не проведён.
 
-**Граница принятия:** это source candidate; даже merged GitHub PR и
-прошедший CI **не означают Windows release**. Проверенный SHA, owner
-`SelfTest → Check → Apply → Backup → Promote` и live readback
-обязательны. Не использовать новый endpoint на старом Gateway.
+**Граница принятия:** исходный PR и Windows image 2026-11-10 приняты
+владельцем как описано выше; это **не** доказательство живого owner
+browser click «Отменить до выполнения»/«Автопроверка результата»,
+cross-actor live теста под вторым grant или autostart после reboot.
+Для каждого будущего source SHA снова нужны owner admission,
+`Check → Apply → Backup → Promote` и readback; не копировать прежние
+release аргументы без актуального списка pending/approved/claimed.
 
 ## Исторические UNCERTAIN / CLAIMED — защищённый перенос (действующий механизм)
 

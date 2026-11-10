@@ -1,30 +1,35 @@
 <a id="uc-gw-009"></a>
 
-# UC-GW-009 — AI расследует заявку, владелец закрывает без повтора операции
+# UC-GW-009 — ИИ видит все заявки и расследует исход; решение остаётся у владельца
 
-**Когда:** операция вернула `UNCERTAIN`/`REMOTE_OUTCOME_UNCONFIRMED`,
-пропало подтверждение GitHub/worker или владелец хочет просмотреть/закрыть
-неопределённую заявку в Owner Portal.
+**Когда:** нужно проверить **все** заявки из «Требуют разбора», включая заявки
+других AI-инициаторов, обнаружить ожидающее решение, найти неизвестный
+результат GitHub/worker или безопасно завершить старый инцидент.
 
-**Цель:** дать ИИ всю доступную информацию о **своей** заявке, отличить
-проверенный фактический эффект от неизвестного и позволить владельцу
-административно убрать заявку из списка разбора без выдуманного результата.
+**Цель:** любой AI с действующей machine TLS/grant-аутентификацией может
+прочитать полный глобальный реестр и карточку **любого** инициатора,
+но не получает права принимать решения или повторять эффекты.
+Владелец отдельно отменяет/закрывает заявки в Owner Portal.
 
 **Как:**
 
-1. **ИИ сначала самостоятельно устанавливает UUID** по уже имеющемуся
-   контексту запроса, сохранённым результатам инструментов и журналу вызовов
-   Fortis Repo; не отправляет владельца в Portal за ID, пока доступные
-   источники не проверены. Для каждого кандидата через авторизованный machine TLS
+1. **ИИ сначала получает глобальный read-only список** через
+   `WorkflowClient.list_requests()` (рецепт и семантика ниже), а не просит
+   владельца переписать UUID из Portal. Сопоставляет actor, state,
+   service/operation/target, время и контекст исходного действия; при
+   необходимости использует прошлые ответы и журнал инструментов для
+   дополнительных доказательств. Для каждого UUID через авторизованный machine TLS
    `fortis_approvals.workflow.client.default_client().details(uuid)`
    (серверный `POST /v1/workspace/details`) прочитать полный Core request
    с исходными params/reason, preview, actor/decision, timestamps,
    fingerprint, result/failure, постраничный audit, состояние/result/error
    worker и имеющийся durable receipt. Дополнительные страницы событий —
-   `event_offset`/`event_limit`. На установленном сейчас Primary
-   `details()` actor-scoped; после обновления image (см. source candidate
-   выше) чтение любого UUID разрешено любому авторизованному AI.
-   Claim token, owner cookie и служебные machine secrets не выдаются.
+   `event_offset`/`event_limit`. С релиза PR #62
+   (`8403c63297f78e38294899c6bd094cc9f9eac66f`) метод доступен
+   **для любого actor**, даже если заявку создал другой AI.
+   Claim token, owner cookie и machine credentials не выдаются.
+   Сырые request/preview могут содержать рабочие данные — не публиковать
+   их без необходимости.
 2. **Не делать вывод только из `UNCERTAIN` или отсутствующего receipt.**
    Сопоставить operation/target/task, ожидаемые и новые SHA с независимыми
    read-only данными: GitHub branch/PR/CI/commit, локальными Git refs,
@@ -50,7 +55,37 @@
    При сохранённом `CLAIMED` соблюдать отдельную quiescence и точный
    preservation scope при будущих backup/release.
 
-Глобальный реестр AI (source candidate): WorkflowClient.list_requests() читает по всем инициаторам метаданные PENDING/APPROVED/DISPATCHED/UNCERTAIN. При unresolved_only=False включает историю. WorkflowClient.details(UUID) возвращает полную read-only карточку любого инициатора с исходными params, preview, audit, worker и receipt; не выдаёт machine secret, owner session или worker claim token и не меняет исходный request. Доступ требует machine TLS/grant аутентификацию, но не Owner WebAuthn. Cross-actor выполнение, reconcile и owner decisions остаются запрещены. Доступен только после отдельно подтверждённого Windows release.
+### Действующий глобальный read-only API и смысл состояний
+
+**Установлено 2026-11-10 (PR #62, owner Promote).** Любой
+аутентифицированный AI-инициатор может вызвать
+`POST /v1/workspace/list_requests` через `client.list_requests()`:
+глобальные метаданные всех actor с пагинацией, без фильтра по инициатору.
+`client.details(UUID)` возвращает полную карточку любого UUID
+(request, preview, decision/fingerprint, audit, worker, доступный receipt).
+Для полной истории событий использовать `event_offset/event_limit`.
+Это **чтение**, не owner role, не claim/reconcile/replay/approve/cancel;
+чужой `result()`/обычный `status` остаётся ограничен исходным actor.
+Machine credentials, owner session/WebAuthn и worker claim token не выдаются.
+
+**Точное соответствие разделу Owner Portal:**
+
+| Core state | Смысл | Раздел / действие |
+| --- | --- | --- |
+| `PENDING` | ASK ещё ожидает решения | «На согласовании», **не** «Требуют разбора» |
+| `APPROVED` | Решение принято, `DISPATCHED` ещё не отмечен | «Требуют разбора»; владелец может **отменить до dispatch** при всех проверках |
+| `DISPATCHED` | Gateway отметил начало эффекта; результата может не быть | «Требуют разбора»; **не** считать неисполненным |
+| `UNCERTAIN` | Исход эффекта неизвестен | «Требуют разбора»; разбор по evidence, возможна owner-closure без выдуманного результата |
+| `CANCELLED_BEFORE_DISPATCH` | Owner подтвердил защищённую отмену до dispatch | История; не исполнять старый UUID |
+| `CLOSED_UNCONFIRMED` | Административно закрыто, исход **не** доказан | История; возможный `CLAIMED` остаётся отдельным фактом |
+
+`list_requests(unresolved_only=True)` возвращает **четыре** состояния:
+`PENDING`, `APPROVED`, `DISPATCHED`, `UNCERTAIN`.
+Чтобы получить **точно «Требуют разбора»**, ИИ выбирает из результата
+только три последние состояния (без `PENDING`).
+`unresolved_only=False` включает также завершённую/закрытую историю;
+это не команда на очистку базы. `CLAIMED` — **worker state**, а не
+Core state и не дополнительная категория в списке Portal.
 
 ## APPROVED в «Требуют разбора»: безопасная отмена и быстрая автопроверка
 
@@ -93,12 +128,14 @@ worker claim. После `DISPATCHED` или `UNCERTAIN` автоматичес�
 защищённым audit и без `DISPATCHED` даёт это подтверждение для данного
 Gateway request. Подробный общий алгоритм расследования — ниже.
 
-**Первая установка кнопки при зависшем APPROVED:** действующий release
-preflight пока блокирует эту заявку. Отдельный source-candidate
-[one-off bootstrap контракт](../PRIMARY-GATEWAY-OPERATIONS.md#one-off-approved-bootstrap--source-candidate-not-deployed)
-предусматривает сохранение её исходного UUID только после точной owner
-аттестации и проверок состояния. Это не является разрешением на обход
-release-контроллера, ручную правку БД или повторное исполнение.
+**Установленный переход:** 2026-11-10 владелец выполнил
+`Check → Apply → Backup → Promote` для PR #62 с точным сохранением
+двух `APPROVED` и исторического `CLAIMED`. Глобальный машинный API
+и обе исходные карточки проверены read-only после активации; сами
+`APPROVED` **не отменены** этим выпуском. Нажатие отмены/автопроверки
+в браузере владельца требует отдельного live-подтверждения.
+[Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md) содержит границы
+переноса и восстановления. Никакой ручной правки SQLite.
 
 ## Самостоятельная инвентаризация и расследование: AI-first
 
@@ -107,13 +144,15 @@ Owner Portal — интерфейс решений владельца, а не �
 логов или Git-диагностики. Не просить владельца поочерёдно открывать карточки
 и переписывать `ID`, если их можно восстановить из уже доступных инструментов.
 
-1. **Найти кандидатов на UUID.** Использовать ID из исходного ответа Gateway,
-   предыдущих ходов/логов задачи и, при наличии подключения Fortis Repo,
-   `get_recent_tool_calls` (по узкому временному интервалу и связанным
-   `workspace.*` / `github.*` вызовам). Сопоставить `repository`, `operation`,
-   `task`, параметры, SHA и время. Журнал инструментов ограничен глубиной и
-   может не содержать все запросы; не объявлять найденный набор исчерпывающим.
-   Не публиковать в отчёте сырые журналы с возможными секретами.
+1. **Найти все заявки без ручного перечисления UUID.** Проверить live
+   `globalRequestInventory.readOnly/crossActorDetails`, затем пройти все
+   страницы `list_requests(unresolved_only=True)`. Для раздела «Требуют
+   разбора» фильтровать `APPROVED/DISPATCHED/UNCERTAIN`, а `PENDING`
+   учитывать отдельно как ожидающие согласования. При расследовании
+   использовать исторический `unresolved_only=False` и исходные
+   tool-call/evidence записи для сопоставления task, SHA и эффектов.
+   Если версия Gateway не поддерживает глобальный API — явно указать
+   ограничение, не выдавать actor-scoped `list_uncertain` за полный список.
 2. **Проверить каждый UUID, а не угадывать статус.** В разрешённом Repo
    окружении выполнить, например:
 
@@ -129,11 +168,11 @@ Owner Portal — интерфейс решений владельца, а не �
    # Остальные события: details(request_id, event_offset=100, event_limit=100)
    ```
 
-   `details()` возвращает полную карточку: исходные `params`, причину,
-   решение, историю событий, состояние worker, result/error и receipt.
-   До нового owner-managed image release виден только свой actor;
-   после него доступны чужие UUID при авторизованном machine grant.
-   Режим только для чтения, owner cookie/WebAuthn не нужны.
+   `details()` возвращает полную карточку: исходные `params`,
+   причину, решение, историю событий, состояние worker, result/error
+   и receipt **для любого actor**, в том числе не своего. Это read-only:
+   owner cookie/WebAuthn не нужны, а право выполнять чужую заявку
+   не появляется.
 3. **Независимо исследовать эффект.** Для GitHub использовать разрешённые
    Gateway READ (ветки, commits, PR, CI, точные SHA); для локальных действий —
    Git refs, worktree и worker journal в разрешённой Repo-среде, только read-only.
@@ -166,38 +205,54 @@ Owner Portal — интерфейс решений владельца, а не �
   положительного доказательства отсутствия исходного эффекта. `CLOSED_UNCONFIRMED`
   только убирает запись из операционного списка, но не устанавливает исход.
 
-**Версия API важна.** `POST /v1/workspace/list_uncertain` принят и
-установлен в Primary 2026-11-10 (`9481699faaa297d8ec1fb45b4f14be50ae17406f`).
-Это список текущих UNCERTAIN только инициировавшего machine actor через TLS;
-Owner Portal, WebAuthn и machine claim здесь не используются.
-Перед вызовом всегда проверять live `incidentInventory.readOnly == true`:
-исходник Docker Repo может отличаться от установленного image.
-Owner endpoint GET /v1/owner/unresolved не разрешён machine client.
+**Штатный вызов на новом Primary:** использовать обычный
+`default_client()` и проверять **живые** capabilities, а не наличие
+метода в Docker source. Для просмотра списка раздела «Требуют разбора»:
 
-Использование после установки новой версии:
+```python
+from fortis_approvals.workflow.client import default_client
 
-    from fortis_approvals.workflow.client import default_client
-    client = default_client()
-    cap = client.gateway.post('/v1/workspace/capabilities', {})
-    assert cap.get('incidentInventory', {}).get('readOnly') is True
-    offset, ids = 0, []
-    while True:
-        page = client.list_uncertain(offset=offset, limit=100)
-        ids.extend(item['requestId'] for item in page['items'])
-        if page['nextOffset'] is None:
-            break
-        offset = page['nextOffset']
-    for request_id in ids:
-        details = client.details(request_id)
-        print(request_id, details['diagnostic'])
+client = default_client()
+cap = client.gateway.post('/v1/workspace/capabilities', {})
+global_read = cap.get('globalRequestInventory') or {}
+assert global_read.get('readOnly') is True
+assert global_read.get('crossActorDetails') is True
 
-Ответ включает actor-owned UUID, service/operation/target, state,
-createdAt, failure, а также total, truncated и nextOffset. Он не
-содержит полные params, owner session или worker claim token.
-Каждая страница читается согласованно в одной SQLite-транзакции, но
-**все страницы вместе не являются одним атомарным snapshot**. При
-выпуске нужна независимая worker quiescence и повторная сверка
-полноты на отсутствие параллельных переходов state.
+offset = 0
+while True:
+    page = client.list_requests(offset=offset, limit=100,
+                                unresolved_only=True)
+    for item in page['items']:
+        if item['state'] in ('APPROVED', 'DISPATCHED', 'UNCERTAIN'):
+            print(item['requestId'], item['actor'], item['state'],
+                  item['service'], item['operation'], item['target'])
+            full = client.details(item['requestId'])
+            # full['request'], full['events'], full['worker'], full['receipt']
+            # Не печатать целиком payload/preview/worker result в общие логи.
+    if page['nextOffset'] is None:
+        break
+    offset = page['nextOffset']
+```
+
+Для `PENDING` не использовать фильтр «Требуют разбора»; эти записи
+у владельца ждут решения. Для всей истории — тот же метод с
+`unresolved_only=False` и проверкой всех страниц.
+Каждая страница — отдельный согласованный снимок SQLite, **но
+все страницы вместе не атомарны**; при параллельной работе
+список нужно перепроверять, а release admission независимо сверяет
+точный текущий набор. `list_uncertain()` остаётся прежним
+**actor-scoped** диагностическим API и не заменяет глобальную
+инвентаризацию. `activity()` тоже actor-scoped; `quiescenceProven=false`
+не доказывает остановку worker. Owner-only `GET /v1/owner/unresolved`
+машинным ИИ не вызывается.
+
+**Граница live evidence:** на PR #62 выполнены CI и negative tests
+для разных machine actors; на работающем Gateway подтверждены
+`globalRequestInventory.crossActorDetails=true`, глобальный список и
+полные карточки двух `APPROVED`. В текущем сохранённом наборе все
+записи принадлежат одному actor; отдельный live-запрос под **вторым
+machine grant** пока не подтверждён. Не подменять этим утверждение
+о полноценной multi-identity live acceptance.
 
 Новое поле details()['diagnostic'] различает только наблюдаемые
 стадии: worker job отсутствует, FAILED, CLAIMED, DONE или отсутствует
@@ -208,16 +263,17 @@ GitHub receipt. rootCause=UNDETERMINED всегда означает, что т�
 Датированный read-only разбор см. в
 [исследовании](../../fortis_approvals/evidence/UNCERTAIN-DIAGNOSTIC-INVESTIGATION-20261110.md).
 
-Если установленный API не умеет list_uncertain либо полнота по
-нескольким страницам не доказана, ИИ сообщает точный scope и gap;
-у владельца запрашивает только объективно недоступную инвентаризацию.
+Если глобальный API отсутствует или неполон, ИИ сообщает точный
+scope и gap; не выдаёт ограниченный результат за «все заявки» и
+не запрашивает у владельца данные, которые способен прочитать сам.
 Ни список, ни diagnosis не запускают reconcile, replay или finish.
 Закрытие, WebAuthn и Primary deployment остаются owner-only.
 
-**Готово:** ИИ собрал read-only карточку и внешние доказательства (или явно
-`UNKNOWN`); владелец при желании закрыл заявку, Owner Portal показывает
-`CLOSED_UNCONFIRMED`, оригинальный worker/job/audit не подменены.
-Отдельный worker claim может оставаться неразрешённым после закрытия.
+**Готово:** ИИ проверил глобальный список «Требуют разбора» без actor
+blind spot, прочитал нужные карточки и отделил фактические доказательства
+от `UNKNOWN`. Если владелец отменил `APPROVED` или закрыл
+`UNCERTAIN`, подтверждено соответствующее Core state и сохранность
+audit/job; автоматическое исполнение или повтор не запускались.
 
 Технический источник: [инцидентный Core и Owner API](../../fortis_approvals/incidents.py),
 [typed client](../../fortis_approvals/workflow/client.py) и
@@ -243,6 +299,12 @@ GitHub receipt. rootCause=UNDETERMINED всегда означает, что т�
 не превращаются в «worker точно завершил» либо «эффекта не было».
 `quiescenceProven` всегда `false`. Старые `CLAIMED` без telemetry сохраняют
 NULL timestamps и сигнал `NO_HEARTBEAT_UNCONFIRMED`.
+
+**Не смешивать:** новый глобальный `list_requests()` и `details(UUID)`
+из [UC-GW-009](#uc-gw-009) читают заявки всех инициаторов,
+но `activity()` остаётся **actor-scoped** и никогда не означает
+«все активные workers». В `details()` чужого UUID виден worker
+state/evidence, но не claim token и не право завершить job.
 При запуске нового worker best-effort POST `/v1/workspace/heartbeat`
 принимает только `{requestId,claim}` исходного владельца `CLAIMED`, без
 перевыдачи claims, renew leases или возможности повторить эффект.

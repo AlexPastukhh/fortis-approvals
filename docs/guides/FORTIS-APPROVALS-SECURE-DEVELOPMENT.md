@@ -1,10 +1,13 @@
 # Fortis Approvals Gateway — текущее состояние
 
-**Срез 2026-11-10.** Последний подробно подтверждённый владельцем Windows
-image release — PS-V1-09; отдельно есть более поздние authenticated Repo
-machine readbacks. Это **не** независимый Windows Docker inspect после всех
-последующих изменений. Точные current container/image/state/volume при
-host-операциях устанавливать по protected records и свежему owner readback.
+**Срез 2026-11-10, после PR #62.** Последний подтверждённый владельцем
+Windows Gateway release — `8403c63297f78e38294899c6bd094cc9f9eac66f`;
+`Check → Apply → Backup → Promote` завершились, owner `docker inspect`
+показал `fortis-gateway` running/healthy/unless-stopped. Подробности ниже.
+Реальный запуск после перезагрузки Docker Desktop, отдельная проверка
+WebAuthn-кнопки отмены и live межакторный E2E второй machine identity
+**ещё не подтверждены**. Точные runtime IDs всегда брать из защищённых
+записей и свежего host readback.
 [Agent guide](../GATEWAY-AGENT-GUIDE.md) владеет использованием,
 [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — API/policy,
 [backlog](../BACKLOG-IMPROVEMENTS.md) — незавершёнными задачами,
@@ -19,7 +22,37 @@ host-операциях устанавливать по protected records и с�
 | Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
 | Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
-Последний **OWNER-REPORTED** guarded image release (PS-V1-09, 2026-11-10):
+## Текущий Primary — owner-verified PR #62 (2026-11-10)
+
+| Факт | Подтверждение |
+| --- | --- |
+| Source | PR #62, merged `main` `8403c63297f78e38294899c6bd094cc9f9eac66f`; PR и merged-main CI: success |
+| Windows Check | `SOURCE_STATE_PREFLIGHT_READ_ONLY`, `FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED` и `status: READY` без missing credentials |
+| Apply | `FORTIS_INTEGRATIONS_ACTIVATED`, `active=true`, `previousRetained=true`, отдельный production baseline без изменений |
+| Image | `sha256:cdd7c22308d9e5820545f9ead2f71c3543c29b6f4ee7886d3b1b6cbc8f24d66c` |
+| Protected release record | `%LOCALAPPDATA%/Fortis/GatewayReleases/31bdca259de84757a2a0f164a9e494bd/record.json` |
+| Backup | `FORTIS_PRIMARY_BACKUP_PASS fortis-gateway-backup-b7d972135c774928bbedd19975072df7` |
+| Promote/host | `FORTIS_PRIMARY_PROMOTED`; owner `docker inspect`: `/fortis-gateway | running | healthy | unless-stopped`, bind `127.0.0.1:19203/19204` |
+| Global machine readback | `globalRequestInventory.readOnly=true`, `crossActorDetails=true`; `list_requests(unresolved_only=True)`: 2 APPROVED, оба доступны через `details(UUID)` с audit, без worker job/receipt |
+
+**Значение результата:** `APPROVED`
+`ba299f4f-f49c-4ef7-80cf-e1f31a232024` и
+`49bcd340-8d21-4a7c-906a-ea5ea56ba748` перенесены
+**без автоматического исполнения/отмены**. Исторический
+`CLAIMED` `2df32a24-efb1-4dac-97f6-3b66147d8944`
+оставался в exact preservation scope; отсутствие heartbeat/receipt
+не доказывает исход. Права на owner decisions у AI не появились.
+
+**Ограничение live:** global list и `details` проверены с существующим
+машинным доступом; все 1482 записи полной истории в текущей базе
+принадлежат одному actor. Доступ второго AI actor к чужой карточке
+проверен тестами, но пока не отдельным live обращением другого grant.
+Owner Portal browser cancel/assess click и restart/autostart после
+Docker Desktop reboot также остаются непроверенными.
+
+## Историческая owner acceptance — PS-V1-09 (предыдущий релиз)
+
+**Предыдущий OWNER-REPORTED** guarded image release (PS-V1-09, 2026-11-10):
 
 | Проверка | Подтверждено владельцем |
 | --- | --- |
@@ -30,8 +63,9 @@ host-операциях устанавливать по protected records и с�
 | Backup / Promote | `fortis-gateway-backup-4920ada96279425e8d45b4a9eed15d0a`, `PS_V1_09_BACKUP_READBACK=PASS`, `FORTIS_PRIMARY_PROMOTED`, `PS_V1_09_PROMOTE_READBACK=PASS` |
 | Owner Portal | V1 PowerShell owner opt-in включён; первая команда `Get-Date` — `EXECUTED`, exit `0` (PS-V1-10 **частичная** приёмка) |
 
-**LIVE-VERIFIED Repo machine:** authenticated Gateway capabilities и GitHub READ
-работают, `incidentInventory.readOnly=true`, actor-owned `list_uncertain` вернул
+**Исторический Repo readback после PS-V1-09:** authenticated Gateway
+capabilities и GitHub READ работали, `incidentInventory.readOnly=true`,
+actor-owned `list_uncertain` вернул
 три сохранённых `UNCERTAIN`; одна историческая Core-заявка
 `CLOSED_UNCONFIRMED` имеет сохранённый worker `CLAIMED`.
 Также наблюдался `workerActivity.readOnly=true` и успешный read-only
@@ -41,9 +75,10 @@ host-операциях устанавливать по protected records и с�
 [датированном evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
 и [UC-GW-009](../use-cases/incidents.md#uc-gw-009).
 
-**MANUAL-PENDING:** независимый host inspect после будущих изменений, Windows
-Executor restart/receipt persistence и отрицательные owner session/CSRF/UUID
-проверки. Эти открытые задачи ведутся только в
+**MANUAL-PENDING:** после PR #62 независимо проверить Owner Portal
+browser отмену/автопроверку, живой cross-actor read под вторым grant,
+Docker Desktop restart/autostart, Windows Executor restart/receipt
+persistence и отрицательные owner session/CSRF/UUID проверки. Эти открытые задачи ведутся только в
 [backlog](../BACKLOG-IMPROVEMENTS.md).
 
 The owner-confirmed 2026-11-09 PR #39 release (image
