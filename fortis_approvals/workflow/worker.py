@@ -10,6 +10,7 @@ import stat
 import tempfile
 
 from ..core import Denied, Stale, canonical
+from .error_diagnostics import category, ERROR_CODES
 from .common import Git, digest, file_path, repository_lock, require, secure_dir, sha, slug
 
 
@@ -306,11 +307,27 @@ print(len(files))
                     result=dict(requestId=payload['requestId'],operation=payload['operation'],repository=repo,
                         data=self._execute(payload,root,run,text))
                     require(len(canonical(result).encode())<=500000,'WORKER_RESULT_LIMIT')
-                except Exception:
-                    db.execute("UPDATE journal SET state='FAILED',error='UNCERTAIN' WHERE id=?",(payload['requestId'],));db.commit()
+                except Exception as exc:
+                    db.execute("UPDATE journal SET state='FAILED',error=? WHERE id=?",
+                               ('UNCERTAIN:'+category(exc),payload['requestId']));db.commit()
                     return None,'UNCERTAIN'
                 db.execute("UPDATE journal SET state='DONE',result=? WHERE id=?",(canonical(result),payload['requestId']));db.commit()
                 return result,None
+
+    def failure_code(self,job):
+        """Read the durable sanitized journal code, never the exception text."""
+        payload=job['payload']
+        repo=payload['target']
+        root,state,run,text=self._open(repo)
+        path=state/'receipts.sqlite'
+        if not path.is_file() or path.is_symlink():return 'UNKNOWN'
+        with sqlite3.connect(path.absolute().as_uri()+'?mode=ro',uri=True) as db:
+            row=db.execute('SELECT digest,error FROM journal WHERE id=?',
+                           (payload['requestId'],)).fetchone()
+        if row and row[0]==digest(payload) and type(row[1]) is str and row[1].startswith('UNCERTAIN:'):
+            code=row[1].split(':',1)[1]
+            if code in ERROR_CODES:return code
+        return 'UNKNOWN'
 
     def publish_package(self,repo,task,old,new,ident,reason):
         import uuid

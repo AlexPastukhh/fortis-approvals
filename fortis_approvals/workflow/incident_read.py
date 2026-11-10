@@ -79,7 +79,15 @@ def diagnose(details):
         phase = 'WORKSPACE_JOB_NOT_FOUND'
     else:
         phase = 'ADAPTER_OUTCOME_UNKNOWN'
+    # Event details are persisted at the effect boundary, not reconstructed
+    # from provider error strings. Pagination can omit the event: return null.
+    core_error = next((e.get('detail') for e in reversed(events)
+                       if e.get('state')=='ERROR_OBSERVED' and
+                       isinstance(e.get('detail'),dict) and
+                       set(e['detail'])=={'stage','code'}),None)
+    worker_error = worker.get('diagnostic') if worker is not None else None
     return dict(schemaVersion=1, phase=phase, rootCause='UNDETERMINED',
+                coreError=core_error, workerError=worker_error,
                 originalEffect='UNCONFIRMED',
                 workerState=worker.get('state') if worker else None,
                 receiptPresent=receipt is not None,

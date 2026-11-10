@@ -107,11 +107,11 @@ journal evidence. Report original-request evidence separately from any later
 successful request. Do **not** ask the owner to manually open incident cards
 just to copy IDs or inspect technical diagnostics that the Repo tools can read.
 
-**Version-gated machine inventory.** New Gateway source has
-default_client().list_uncertain(offset=0,limit=100), limited to
-the initiating TLS machine actor. Use it only when live capabilities
-advertise incidentInventory.readOnly == true: source code does not
-mean the installed endpoint is active. Follow nextOffset through
+**Version-gated machine inventory.** `list_uncertain` was accepted in the
+2026-11-10 Primary release (`9481699faaa297d8ec1fb45b4f14be50ae17406f`).
+It remains scoped to the initiating TLS machine actor. Always check live
+`incidentInventory.readOnly == true` before calling it; installed capabilities
+and source checkout can differ. Follow nextOffset through
 all pages, then use details(UUID) for each candidate. The diagnostic
 field classifies observed stages, **not** the actual exception or effect.
 Pages are independently consistent, not one atomic snapshot; verify
@@ -171,3 +171,13 @@ recorded outcomes.
 | Current Repo-side Sonar client | `integrations/sonarcloud/repo_client/client.py` |
 | Native policies / Git publication / local worker | `workflow/runtime.py`, `workflow/adapters.py`, `workflow/git_backend.py`, `workflow/worker.py` |
 | Contract/Core/ingress regression tests | `fortis_approvals/tests/test_repo_action_contract.py`, `test_core.py`, `test_repo_ingress.py`, `test_r7_unified_candidate.py` |
+
+**Source candidate, not installed:** `WorkflowClient.activity(offset=0,limit=100)`
+will enumerate actor-owned QUEUED/CLAIMED jobs with read-only heartbeat
+observations. `quiescenceProven=false` always. Neither a recent heartbeat nor
+an absent/stale heartbeat proves executor quiescence or an original effect.
+A new worker may send claim-bound best-effort telemetry and new UNCERTAIN
+errors may include bounded `{stage,code}` without raw exception messages.
+Wait for live `workerActivity` capability after a separate owner-approved
+image release. Do not alter protected historical claims or replace owner
+`-ConfirmWorkerQuiescent` with this observation.

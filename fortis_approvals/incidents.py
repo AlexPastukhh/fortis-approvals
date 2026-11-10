@@ -80,7 +80,8 @@ class IncidentCore(Core):
                         raise Denied('INCIDENT_WORKER_ACTOR_MISMATCH')
                     job=dict(state=saved['state'],actor=saved['actor'],
                              error=saved['error'],hasClaim=bool(saved['claim']),
-                             result=json.loads(saved['result']) if saved['result'] else None)
+                             result=json.loads(saved['result']) if saved['result'] else None,
+                             diagnostic=json.loads(saved['diagnostic']) if saved.get('diagnostic') else None)
                     if job['state']=='DONE' and type(job['result']) is dict:
                         evidence={'source':'native-worker-job','result':job['result']}
             elif row['request']['service']=='github':

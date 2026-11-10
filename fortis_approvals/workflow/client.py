@@ -10,6 +10,7 @@ import uuid
 
 from ..clients.gateway_transport import GatewayTransport
 from ..core import Denied
+from .error_diagnostics import category, evidence, ERROR_CODES
 from ..integrations.github.repo_client.client import GitHubClient
 from .common import require
 from .ingress import NATIVE_PATHS
@@ -25,8 +26,11 @@ class WorkflowTransport(GatewayTransport):
 
 
 class WorkflowClient:
-    def __init__(self,*,gateway,worker):
+    def __init__(self,*,gateway,worker,worker_observability=False):
+        # Critical version gate: after a source merge Repo may run new client
+        # against old Primary. Old /finish rejects a fifth diagnostic field.
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
+        self.worker_observability=worker_observability is True
 
     def result(self,ident,reconcile=False):
         return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident),accept_202=True)
@@ -49,18 +53,46 @@ class WorkflowClient:
         return self.gateway.post('/v1/workspace/list_uncertain',
             dict(offset=offset,limit=limit))
 
+    def activity(self, *, offset=0, limit=100):
+        """Read-only actor-owned active job inventory; not quiescence proof."""
+        if not self.worker_observability:
+            raise Denied('WORKFLOW_ACTIVITY_NOT_INSTALLED')
+        return self.gateway.post('/v1/workspace/activity',dict(offset=offset,limit=limit))
+
     def _finish_claim(self, ident, job):
-        # A worker exception can happen before its local journal is created, or
-        # after an unknown partial effect. Never infer NOT_EXECUTED or replay.
-        # Persist the uncertainty with the original claim if Gateway is reachable.
+        # A heartbeat is only evidence that this client was executing recently;
+        # it cannot renew a claim, prove liveness or authorize a second effect.
+        from threading import Event
+        signal_stop=Event()
+        def beat():
+            while not signal_stop.is_set():
+                try:self.gateway.post('/v1/workspace/heartbeat',
+                                      dict(requestId=ident,claim=job['claim']))
+                except Exception:pass  # best effort telemetry; never replay
+                if signal_stop.wait(5):break
+        heartbeat=Thread(target=beat,daemon=True) if self.worker_observability else None
+        if heartbeat is not None:heartbeat.start()
+        diagnostic=None
         try:
-            result, error = self.worker.execute(job)
-        except Exception:
-            result, error = None, 'UNCERTAIN'
-        # A lost finish acknowledgement must propagate; do not retry finish or
-        # claim the job again while its durable outcome is unknown.
-        self.gateway.post('/v1/workspace/finish', dict(
-            requestId=ident, claim=job['claim'], result=result, error=error))
+            try:
+                result, error = self.worker.execute(job)
+                if error=='UNCERTAIN':
+                    code='UNKNOWN'
+                    try:code=self.worker.failure_code(job)
+                    except Exception:pass  # worker may not have a journal
+                    if type(code) is not str or code not in ERROR_CODES:code='UNKNOWN'
+                    diagnostic=evidence('WORKER_EXECUTE',code)
+            except Exception as exc:
+                result, error = None, 'UNCERTAIN'
+                diagnostic=evidence('WORKER_CLIENT',category(exc))
+        finally:
+            signal_stop.set()
+            if heartbeat is not None:heartbeat.join(timeout=2)
+        body=dict(requestId=ident,claim=job['claim'],result=result,error=error)
+        if diagnostic is not None and self.worker_observability:
+            body['diagnostic']=diagnostic
+        # Lost finish ACK still propagates. No retry or claim re-delivery.
+        self.gateway.post('/v1/workspace/finish',body)
 
     def command(self,operation,repository,params,*,request_id,reason,wait_owner=False):
         response={};failure=[]
@@ -141,7 +173,12 @@ def default_client(endpoint='https://host.docker.internal:19204'):
         worktrees={} if dynamic else {repo:'/workspace/repo/Worktrees/'+repo},gateway=gateway,
         dynamic_repositories=dynamic,repository_root='/workspace/repo/Repos',
         worktree_root='/workspace/repo/Worktrees')
-    return WorkflowClient(gateway=gateway,worker=worker)
+    obs=capabilities.get('workerActivity')
+    diagnostics=capabilities.get('workerDiagnostics')
+    accepted=(type(obs) is dict and obs.get('signal')=='heartbeat-observation-v1' and
+              obs.get('readOnly') is True and
+              type(diagnostics) is dict and diagnostics.get('codes')=='bounded-class-v1')
+    return WorkflowClient(gateway=gateway,worker=worker,worker_observability=accepted)
 
 
 def main():

@@ -14,7 +14,7 @@ from .incident_read import list_uncertain, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
 
 
 class NativeIngress:
@@ -56,7 +56,10 @@ class NativeIngress:
                 githubCiControls={'default':'DENY','optIn':'ASK',
                     'repositories':list(getattr(self.github.config,'ci_control_repositories',()))},
                 incidentInventory={'readOnly':True,'actorScoped':True,
-                    'maxPageSize':100,'diagnostic':'evidence-stage-v1'})
+                    'maxPageSize':100,'diagnostic':'evidence-stage-v1'},
+                workerActivity={'readOnly':True,'actorScoped':True,'maxPageSize':100,
+                                'signal':'heartbeat-observation-v1','quiescenceProof':False},
+                workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False})
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)
@@ -95,7 +98,9 @@ class NativeIngress:
             if row['request']['service']!='workspace' or row['state']!='DISPATCHED':return dict(job=None)
             return dict(job=self.store.claim(actor,body['requestId']))
         if path=='/v1/workspace/finish':
-            require(set(body)=={'requestId','claim','result','error'},'WORKFLOW_PARAMS_INVALID')
+            require(set(body) in ({'requestId','claim','result','error'},
+                                  {'requestId','claim','result','error','diagnostic'}),
+                    'WORKFLOW_PARAMS_INVALID')
             row=self._row(credential,body['requestId'])
             require(row['request']['service']=='workspace' and row['state'] in ('DISPATCHED','UNCERTAIN','EXECUTED','STALE'),'WORKFLOW_JOB_NOT_DISPATCHED')
             require(len(canonical(body['result']).encode())<=524288,'WORKFLOW_RESULT_LIMIT')
@@ -103,8 +108,19 @@ class NativeIngress:
                 r=body['result']
                 require(type(r) is dict and r.get('requestId')==body['requestId'] and
                     r.get('operation')==row['request']['operation'] and r.get('repository')==row['request']['target'],'WORKFLOW_RESULT_BINDING_INVALID')
-            self.store.finish(actor,body['requestId'],body['claim'],body['result'],body['error'])
+            self.store.finish(actor,body['requestId'],body['claim'],body['result'],body['error'],
+                              body.get('diagnostic'))
             return dict(recorded=True)
+        if path=='/v1/workspace/heartbeat':
+            require(set(body)=={'requestId','claim'},'WORKFLOW_PARAMS_INVALID')
+            row=self._row(credential,body['requestId'])
+            require(row['request']['service']=='workspace','WORKFLOW_HEARTBEAT_SERVICE_DENIED')
+            self.store.heartbeat(actor,body['requestId'],body['claim'])
+            return dict(observed=True)  # no claim token or other actor metadata
+        if path=='/v1/workspace/activity':
+            require(set(body)=={'offset','limit'},'WORKFLOW_PARAMS_INVALID')
+            require(core.auth.authenticate(credential)==actor,'WORKFLOW_ACTOR_DENIED')
+            return self.store.activity(actor,offset=body['offset'],limit=body['limit'])
         if path=='/v1/workspace/list_uncertain':
             require(set(body)=={'offset','limit'},'WORKFLOW_PARAMS_INVALID')
             return list_uncertain(core,credential,offset=body['offset'],limit=body['limit'])
