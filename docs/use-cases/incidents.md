@@ -95,16 +95,12 @@ Owner Portal — интерфейс решений владельца, а не �
    фиктивного receipt при обычном расследовании. `reconcile` может изменить
    Core state, поэтому не является read-only эквивалентом `details()`.
 
-**Версия API важна.** Новый source-контракт добавляет machine endpoint
-POST /v1/workspace/list_uncertain: список текущих UNCERTAIN только для
-инициировавшего запросы machine actor, по действующему TLS grant.
+**Версия API важна.** `POST /v1/workspace/list_uncertain` принят и
+установлен в Primary 2026-11-10 (`9481699faaa297d8ec1fb45b4f14be50ae17406f`).
+Это список текущих UNCERTAIN только инициировавшего machine actor через TLS;
 Owner Portal, WebAuthn и machine claim здесь не используются.
-
-Этот метод доступен **только после отдельного owner-reviewed image release**.
-Прежде чем пользоваться им, получить live capabilities и убедиться, что
-incidentInventory.readOnly == true. Старый Primary без marker всё ещё
-предоставляет только details(UUID); тогда искать ID в имеющихся результатах
-и ограниченном журнале Fortis Repo, не выдавая его за полный индекс.
+Перед вызовом всегда проверять live `incidentInventory.readOnly == true`:
+исходник Docker Repo может отличаться от установленного image.
 Owner endpoint GET /v1/owner/unresolved не разрешён machine client.
 
 Использование после установки новой версии:
@@ -155,3 +151,38 @@ GitHub receipt. rootCause=UNDETERMINED всегда означает, что т�
 Технический источник: [инцидентный Core и Owner API](../../fortis_approvals/incidents.py),
 [typed client](../../fortis_approvals/workflow/client.py) и
 [операционные правила](../PRIMARY-GATEWAY-OPERATIONS.md).
+
+## UC-GW-010 — Read-only worker activity and safe typed error evidence (source candidate)
+
+**Когда:** нужно понять, есть ли наблюдаемые признаки исполнения `CLAIMED`
+при расследовании или перед owner-managed release. Не выполнять `claim`,
+`resume`, `finish`, `reconcile` или повтор исходного эффекта ради диагностики.
+
+**Доступ:** новый machine POST `/v1/workspace/activity` (параметры строго
+`offset`,`limit`) и `WorkflowClient.activity()`. Возвращает только задания
+авторизованного actor в состояниях `QUEUED` или `CLAIMED`, с ограниченной
+пагинацией. `lastHeartbeatAt` — время **доставленного Gateway** сигнала от
+оригинального claim-token-bound worker, а не доказательство активного
+процесса. В ответе никогда нет claim token, payload или секретов.
+
+`RECENT_HEARTBEAT_UNCONFIRMED` (30 с),
+`STALE_HEARTBEAT_UNCONFIRMED`, `NO_HEARTBEAT_UNCONFIRMED`, `NOT_CLAIMED`
+не превращаются в «worker точно завершил» либо «эффекта не было».
+`quiescenceProven` всегда `false`. Старые `CLAIMED` без telemetry сохраняют
+NULL timestamps и сигнал `NO_HEARTBEAT_UNCONFIRMED`.
+При запуске нового worker best-effort POST `/v1/workspace/heartbeat`
+принимает только `{requestId,claim}` исходного владельца `CLAIMED`, без
+перевыдачи claims, renew leases или возможности повторить эффект.
+
+Для **новых** `UNCERTAIN` сохраняются только `{stage,code}` из закрытого
+списка исключений, без сообщений, traceback, URL и credentials: адаптерные audit events
+`ERROR_OBSERVED` (`WORKSPACE_ADAPTER`/`GITHUB_ADAPTER`), worker journal после
+DISPATCHED и Gateway worker job после `finish`. `details(UUID).diagnostic`
+показывает эту информацию при наличии соответствующих событий, но
+`rootCause` и `originalEffect` остаются неопределёнными. Исторические
+ошибки задним числом не восстанавливаются.
+
+**Граница принятия:** SOURCE ONLY до owner merge, последующего image release
+и live acceptance. Для уже работающего Primary действует UC-GW-009.
+Никаких изменений `-ConfirmWorkerQuiescent`, exact preservation или политики
+Backup/Promote эта возможность не разрешает.

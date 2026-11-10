@@ -9,12 +9,14 @@ from ..integrations.github.gateway.adapter import GitHubAdapter
 from ..integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..integrations.github.contract import validate_github_read, validate_github_read_projection
+from .error_diagnostics import observe_adapter
 from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
 
 class NativeGitHubAdapter(AnalysisGitHubAdapter):
-    def __init__(self,transport,*,config,root,actor,backend,store):
+    def __init__(self,transport,*,config,root,actor,backend,store,observation_core=None):
         self.config=config;self.actor=actor;self.backend=backend;self.workflow=store
+        self.observation_core=observation_core
         super().__init__(transport,owner=config.owner,repositories=(config.repository,),
             receipt_store=Path(root)/'github-receipts.sqlite',bindings={})
         if config.dynamic_repositories:
@@ -242,6 +244,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             return {**GitHubAdapter.prepare(self,request),'requiredCI':ci}
         return GitHubAdapter.prepare(self,request)
 
+    @observe_adapter('GITHUB_ADAPTER')
     def apply(self,request):
         prior=self.receipt(request['requestId'])
         if prior is not None:return prior
@@ -429,6 +432,7 @@ class WorkspaceAdapter:
                 snapshot['mergeSha']=merged
         return snapshot
 
+    @observe_adapter('WORKSPACE_ADAPTER')
     def apply(self,payload):
         prior=self.receipt(payload['requestId'])
         if prior is not None:return prior

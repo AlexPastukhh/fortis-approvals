@@ -81,6 +81,10 @@ class IncidentCore(Core):
                     job=dict(state=saved['state'],actor=saved['actor'],
                              error=saved['error'],hasClaim=bool(saved['claim']),
                              result=json.loads(saved['result']) if saved['result'] else None)
+                    # Preserve the exact legacy machine details schema for old
+                    # jobs; new evidence is present only when it truly exists.
+                    if saved.get('diagnostic') is not None:
+                        job['diagnostic']=json.loads(saved['diagnostic'])
                     if job['state']=='DONE' and type(job['result']) is dict:
                         evidence={'source':'native-worker-job','result':job['result']}
             elif row['request']['service']=='github':

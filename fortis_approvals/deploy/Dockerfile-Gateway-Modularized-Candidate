@@ -15,7 +15,7 @@ COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/owne
 COPY fortis_approvals/integrations/ /opt/fortis/fortis_approvals/integrations/
 COPY fortis_approvals/extensions/ /opt/fortis/fortis_approvals/extensions/
 COPY fortis_approvals/clients/ /opt/fortis/fortis_approvals/clients/
-COPY fortis_approvals/workflow/__init__.py fortis_approvals/workflow/common.py fortis_approvals/workflow/store.py fortis_approvals/workflow/git_backend.py fortis_approvals/workflow/adapters.py fortis_approvals/workflow/ingress.py fortis_approvals/workflow/incident_read.py fortis_approvals/workflow/runtime.py /opt/fortis/fortis_approvals/workflow/
+COPY fortis_approvals/workflow/__init__.py fortis_approvals/workflow/common.py fortis_approvals/workflow/store.py fortis_approvals/workflow/git_backend.py fortis_approvals/workflow/adapters.py fortis_approvals/workflow/ingress.py fortis_approvals/workflow/incident_read.py fortis_approvals/workflow/error_diagnostics.py fortis_approvals/workflow/runtime.py /opt/fortis/fortis_approvals/workflow/
 COPY fortis_approvals/static /opt/fortis/fortis_approvals/static
 COPY fortis_approvals/deploy/github_pilot_helpers.py /opt/fortis/operator/state_helpers.py
 COPY fortis_approvals/deploy/image_offline_smoke.py /opt/fortis/operator/image_smoke.py

@@ -13,7 +13,7 @@ from ..integrations.github.registration import register_github_integration
 def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90):
     store=Store(root/'native-git')
     adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
-        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store)
+        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store,observation_core=core)
     register_github_integration(core=core,broker=broker,adapter=adapter)
     reads=(LEGACY_READ_OPERATIONS|CI_READS)-{('github','list_repositories')}
     if config.dynamic_repositories:

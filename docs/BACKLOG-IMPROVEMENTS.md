@@ -1,8 +1,8 @@
 # Backlog улучшений — Fortis Approvals Gateway
 
 Исходный план согласован 2026-11-06 после native Git/worktree live цикла;
-статусы актуализированы 2026-11-09 по установленному Primary, Repo machine
-readback и принятому source. [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+статусы актуализированы 2026-11-10 после установленного Primary, Repo machine
+readback и принятого source. [Current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
 фиксирует подтверждённый релиз и ограничения; этот backlog хранит
 **открытые улучшения и явно помеченный исторический контекст**, не разрешает
 новых runtime операций.
@@ -36,13 +36,24 @@ native worker job **всё ещё `CLAIMED`** без локального receip
 owner-attested worker quiescence и проверенный closure audit.
 Не удалять claim, не переписывать SQLite и не подделывать receipt.
 
-**Source-кандидат 2026-11-10 (до отдельного image release):**
-новый actor-scoped read-only list_uncertain с bounded страницами,
-capability marker и доказательной стадией диагностики в details(UUID).
+**LIVE ACCEPTED 2026-11-10:** PR #52 слит, CI success, общий source
+`9481699faaa297d8ec1fb45b4f14be50ae17406f` установлен владельцем через
+Check / Apply / Backup / Promote. Repo machine readback проверил
+`incidentInventory.readOnly=true`, `list_uncertain.total=3`, три исходных UUID,
+диагностику `details(UUID)` и неизменность исторического `CLAIMED`.
+Изображение: `sha256:f8fc333be0f1201441088b8386cb2cc409a3a390eb5fd8aef2f76c70032d02d8`.
+Backup: `fortis-gateway-backup-4b27b6c67d7740aea1c9310efd0be478`.
 См. [исследование](../fortis_approvals/evidence/UNCERTAIN-DIAGNOSTIC-INVESTIGATION-20261110.md).
-Это уменьшает ручную инвентаризацию, но **не восстанавливает утраченный
-exception class** и не устанавливает первопричину исторических сбоев.
-Нужны CI, owner merge, отдельный image admission и live acceptance.
+Функция классифицирует стадии, но не устанавливает исходный эффект.
+
+**SOURCE CANDIDATE (следующий PR, ещё не установлен):**
+безопасные bounded коды исключений в adapter audit events/worker journal/job,
+read-only actor-owned `activity()` и best-effort heartbeat от исполнителя.
+[Контракт и границы](../fortis_approvals/evidence/WORKER-OBSERVABILITY-20261110.md).
+Исторические заявки не получают задним числом error code или heartbeat.
+Сигнал `RECENT_HEARTBEAT_UNCONFIRMED` не доказывает, что executor работает в
+момент чтения; отсутствие сигнала **не** доказывает quiescence. Owner release
+`-ConfirmWorkerQuiescent` и exact protected scopes остаются обязательными.
 
 **Открытые задачи:** определить причины потери acknowledgement и появления
 `UNCERTAIN` между Gateway/worker/provider; связать каждый исторический
