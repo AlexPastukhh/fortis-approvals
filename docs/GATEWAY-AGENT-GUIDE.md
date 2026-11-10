@@ -91,9 +91,13 @@ verify `EXECUTED` plus effect/receipt, not just approval. On `UNCERTAIN`,
 use [UC-GW-009](use-cases/incidents.md#uc-gw-009):
 `default_client().details(uuid)` reads the full actor-owned request, audit,
 worker and receipt without retry/reconcile. Independently inspect upstream
-GitHub and local Git evidence before attributing the effect. An absent receipt
-does not prove the action failed. `reconcile` is a separate operation
-with its own contract, not a mandatory read-only viewing step.
+GitHub and local Git evidence before attributing the effect. An absent receipt does not prove the action failed. If independent evidence
+proves the original effect did not execute **and** no old executor can still
+perform it, the AI may continue the task with **one fresh typed request and a
+fresh UUID**, after verifying current preconditions and normal ALLOW/ASK/DENY.
+Never re-claim/replay the old request; an unknown outcome still blocks a new
+mutating effect. The decision procedure is in UC-GW-009. `reconcile` remains
+a separate, potentially state-changing operation, not read-only inspection.
 The AI never invokes owner routes or administratively closes requests.
 Unsupported services or operations stop at the integration boundary.
 
@@ -172,12 +176,13 @@ recorded outcomes.
 | Native policies / Git publication / local worker | `workflow/runtime.py`, `workflow/adapters.py`, `workflow/git_backend.py`, `workflow/worker.py` |
 | Contract/Core/ingress regression tests | `fortis_approvals/tests/test_repo_action_contract.py`, `test_core.py`, `test_repo_ingress.py`, `test_r7_unified_candidate.py` |
 
-**Source candidate, not installed:** `WorkflowClient.activity(offset=0,limit=100)`
-will enumerate actor-owned QUEUED/CLAIMED jobs with read-only heartbeat
-observations. `quiescenceProven=false` always. Neither a recent heartbeat nor
-an absent/stale heartbeat proves executor quiescence or an original effect.
-A new worker may send claim-bound best-effort telemetry and new UNCERTAIN
-errors may include bounded `{stage,code}` without raw exception messages.
-Wait for live `workerActivity` capability after a separate owner-approved
-image release. Do not alter protected historical claims or replace owner
-`-ConfirmWorkerQuiescent` with this observation.
+**Live read-only support (version-gated):**
+`WorkflowClient.activity(offset=0,limit=100)` enumerates actor-owned
+QUEUED/CLAIMED jobs when live `workerActivity.readOnly=true` is advertised.
+`quiescenceProven=false` always; recent, absent and stale heartbeat cannot
+prove executor quiescence or original effect. PR #54 introduced claim-bound
+best-effort telemetry and bounded `{stage,code}` for new failures; accepted
+source and a successful read-only `activity()` do not prove end-to-end
+error/heartbeat acceptance or reconstruct old exceptions. Do not alter
+protected historical claims or replace owner `-ConfirmWorkerQuiescent`
+with these observations.

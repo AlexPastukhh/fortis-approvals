@@ -12,8 +12,8 @@
 | [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
 | [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
-| [UC-GW-009](incidents.md#uc-gw-009) | ИИ самостоятельно находит доступные UUID UNCERTAIN и расследует заявки; владелец принимает решения в Portal | Actor-scoped read-only `list_uncertain` + details, Git/GitHub/worker evidence; owner-only `CLOSED_UNCONFIRMED` |
-| [UC-GW-010](incidents.md#uc-gw-010) | Наблюдать actor-owned worker activity без claim/retry и не путать heartbeat с доказательством простоя | Read-only `activity()` наблюдался live; код worker diagnostics требует отдельной owner acceptance |
+| [UC-GW-009](incidents.md#uc-gw-009) | ИИ находит UNCERTAIN и доказывает исход эффекта; доказанное невыполнение допускает новый typed запрос, неизвестный исход — STOP | Actor-scoped read-only `list_uncertain` + details, Git/GitHub/worker evidence; owner-only `CLOSED_UNCONFIRMED` |
+| [UC-GW-010](incidents.md#uc-gw-010) | Наблюдать actor-owned worker activity без claim/retry и не путать heartbeat с доказательством простоя | Read-only `activity()` наблюдался live; bounded worker errors не доказывают старую причину или quiescence |
 
 Каждый новый чат читает короткий вход главного реестра и полностью
 UC-CONT-002, UC-CONT-003 и [UC-GW-009](incidents.md#uc-gw-009);

@@ -61,3 +61,32 @@ recover exceptions already discarded by older worker/Core versions.
 
 **Boundary:** This report is a historical read-only investigation; source
 changes are not active on the live Windows Primary until approved release.
+
+
+## Additional actor-scoped readback — later 2026-11-10
+
+After the PR #54 owner release, live `list_uncertain()` returned **four** current
+actor-owned requests instead of the earlier three. New request:
+`6c20c00c-124c-4781-9dbd-c7875e7932d9`, `github.push_commits`,
+repository `feed_and_search_and_bank_and_brain`, task
+`action-execution-modes-20261110`, target commit
+`d62437ebbb6eb87ecad366b867285dcbe709757a`.
+
+Read-only `details()` showed `APPROVED → DISPATCHED → ERROR_OBSERVED →
+UNCERTAIN`; no native worker or receipt. The new bounded Core diagnostic
+recorded `GITHUB_ADAPTER / RUNTIME_ERROR` and the 19-second
+dispatch-to-uncertain interval. This identifies an exception **family and
+boundary**, not the original exception message or root cause.
+Local commit exists. A first-page GitHub branch/PR read did not show a
+matching published task; that negative readback does **not** prove that the
+original push never occurred. Original effect remains `UNCONFIRMED`.
+
+The historical `CLAIMED` request
+`2df32a24-efb1-4dac-97f6-3b66147d8944` remains
+`CLOSED_UNCONFIRMED` with no heartbeat and no receipt. Activity has
+`quiescenceProven=false`. No historical request was retried, reconciled,
+closed, claimed, reset or modified during this investigation.
+
+Future source diagnostics make evidence more specific, but requests affected
+before the instrumentation retain unknown error details. UC-GW-009 now
+defines the separate **proven non-execution → fresh typed request** route.
