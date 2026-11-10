@@ -7,7 +7,7 @@ param(
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
-    [string]$PreserveClaimedJobs='', [switch]$ConfirmWorkerQuiescent,
+    [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
 )
 $ForwardParameters=@{}+ $PSBoundParameters
@@ -22,6 +22,8 @@ $script:PreserveUncertainRequests=$PreserveUncertainRequests
 $script:PreserveUncertainExact=[bool]$PreserveUncertainRequests
 $script:PreserveClaimedJobs=$PreserveClaimedJobs
 $script:PreserveClaimedExact=[bool]$PreserveClaimedJobs
+$script:PreserveApprovedRequest=$PreserveApprovedRequest
+$script:PreserveApprovedExact=[bool]$PreserveApprovedRequest
 # Exact paths only; never accept an arbitrary endpoint or credential path from the caller.
 $script:OwnerShellJson='{"port":10443,"serverCA":"/run/fortis-secrets/owner-shell/server-ca.pem","clientCert":"/run/fortis-secrets/owner-shell/client.pem","clientKey":"/run/fortis-secrets/owner-shell/client.key","secretFile":"/run/fortis-secrets/owner-shell/secret.txt"}'
 
@@ -314,6 +316,25 @@ function Read-PreservedClaimedJobs {
     if($Value){$null=@(Parse-PreservedUncertainRequests $Value)}
     return $Value
 }
+function Read-PreservedApprovedRequest {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_APPROVED_RECORD_INVALID'}
+    $Value=''
+    if($Record -is [Collections.IDictionary]){
+        if($Record.Contains('preserveApprovedRequest')){$Value=$Record['preserveApprovedRequest']}
+    } else {
+        $Property=$Record.PSObject.Properties['preserveApprovedRequest']
+        if($null -ne $Property){$Value=$Property.Value}
+    }
+    if($Value -isnot [string] -or
+       ($Value -and $Value -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')){
+        throw 'RELEASE_APPROVED_RECORD_INVALID'
+    }
+    return $Value
+}
+function Approved-Ids {
+    if($script:PreserveApprovedRequest){Write-Output $script:PreserveApprovedRequest}
+}
 function Read-OwnerShellFlag {
     param($Record)
     if($null -eq $Record){throw 'RELEASE_OWNER_SHELL_RECORD_INVALID'}
@@ -374,6 +395,11 @@ function Get-SourceRecord {
     elseif($Claimed -and $Claimed -cne $script:PreserveClaimedJobs){
         if(-not $script:PreserveClaimedExact){throw 'RELEASE_CLAIMED_RECORD_SCOPE_CHANGED'}
     }
+    $Approved=Read-PreservedApprovedRequest $P
+    if(-not $script:PreserveApprovedRequest){$script:PreserveApprovedRequest=$Approved}
+    elseif($Approved -and $Approved -cne $script:PreserveApprovedRequest){
+        throw 'RELEASE_APPROVED_RECORD_SCOPE_CHANGED'
+    }
     return @{path=$Path;hash=$Hash;runtime=$P}
 }
 function Admit {
@@ -432,12 +458,14 @@ function Admit-ReturnCandidate {
     Write-Host 'FORTIS_INTEGRATIONS_RETURN_NEVER_STARTED_ENV_BUG'
 }
 function Receipt {
-    param([string]$Volume,[switch]$Exact,[switch]$ExactClaimed)
+    param([string]$Volume,[switch]$Exact,[switch]$ExactClaimed,[switch]$ExactApproved)
     $Ids=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)
     $Claims=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)
+    $Approved=@(Approved-Ids)
     State-Helper @{action='inspect';github=$true;native=$true;
         preserveUncertainIds=$Ids;requireExactUncertain=([bool]$Exact);
-        preserveClaimedIds=$Claims;requireExactClaimed=([bool]$ExactClaimed)} @('--mount',
+        preserveClaimedIds=$Claims;requireExactClaimed=([bool]$ExactClaimed);
+        preserveApprovedIds=$Approved;requireExactApproved=([bool]$ExactApproved)} @('--mount',
         ('type=volume,source='+$Volume+',target=/source,readonly'))
 }
 function Same-Json {param($A,$B) (ConvertTo-Json -InputObject $A -Compress -Depth 25) -ceq (ConvertTo-Json -InputObject $B -Compress -Depth 25)}
@@ -579,6 +607,17 @@ if($Action -eq 'SelfTest'){
         $ClaimForward -cnotcontains '-ConfirmWorkerQuiescent'){
         throw 'RELEASE_CLAIMED_FLAG_FORWARD_SELFTEST_FAILED'
     }
+    $OldApproved='{"schema":1}' | ConvertFrom-Json
+    $NewApproved='{"preserveApprovedRequest":"11111111-1111-4111-8111-111111111111"}' | ConvertFrom-Json
+    if((Read-PreservedApprovedRequest $OldApproved) -cne '' -or
+        (Read-PreservedApprovedRequest $NewApproved) -cne '11111111-1111-4111-8111-111111111111'){
+        throw 'RELEASE_APPROVED_RECORD_SELFTEST_FAILED'
+    }
+    $ApprovedForward=@(Forward-NativeParameters @{
+        PreserveApprovedRequest='11111111-1111-4111-8111-111111111111'})
+    if($ApprovedForward.Count -ne 2 -or $ApprovedForward -cnotcontains '-PreserveApprovedRequest'){
+        throw 'RELEASE_APPROVED_FLAG_FORWARD_SELFTEST_FAILED'
+    }
     $Disabled=@(OwnerShell-EnvLines $false)
     $Enabled=@(OwnerShell-EnvLines $true)
     if($Disabled.Count -ne 0 -or $Enabled.Count -ne 1){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
@@ -642,6 +681,14 @@ if($PreserveUncertainRequests){
         throw 'RELEASE_UNCERTAIN_REQUIRES_APPROVED_SOURCE_BUILD'
     }
 }
+if($PreserveApprovedRequest){
+    if($PreserveApprovedRequest -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+        $Action -cnotin @('Check','Apply') -or -not $Build -or
+        $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
+        -not $ConfirmWorkerQuiescent){
+        throw 'RELEASE_APPROVED_REQUIRES_EXACT_OWNER_BUILD_AND_QUIESCENCE'
+    }
+}
 if($PreserveClaimedJobs){
     $ClaimIds=@(Parse-PreservedUncertainRequests $PreserveClaimedJobs)
     # Eligibility is validated by the read-only state helper: an UNCERTAIN
@@ -657,7 +704,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -699,6 +746,12 @@ if($Action -eq 'Return' -or $AttemptRecord){
     }
     $script:PreserveUncertainRequests=$Stored
     $script:PreserveUncertainExact=$false
+    $StoredApproved=Read-PreservedApprovedRequest $script:R.runtime
+    if($script:PreserveApprovedRequest -and $script:PreserveApprovedRequest -cne $StoredApproved){
+        throw 'RELEASE_APPROVED_RECORD_SCOPE_CHANGED'
+    }
+    $script:PreserveApprovedRequest=$StoredApproved
+    $script:PreserveApprovedExact=$false
     $StoredClaimed=Read-PreservedClaimedJobs $script:R.runtime
     if($script:PreserveClaimedJobs -and $script:PreserveClaimedJobs -cne $StoredClaimed){
         throw 'RELEASE_CLAIMED_RECORD_SCOPE_CHANGED'
@@ -724,6 +777,9 @@ if($Action -eq 'Credential'){
 }
 if($Action -cin @('Backup','Promote')){
     $null=Get-SourceRecord
+    if($script:PreserveApprovedRequest -and -not $ConfirmWorkerQuiescent){
+        throw 'RELEASE_APPROVED_BACKUP_PROMOTE_REQUIRES_QUIESCENCE'
+    }
     if($script:PreserveClaimedJobs -and -not $ConfirmWorkerQuiescent){
         throw 'RELEASE_CLAIMED_BACKUP_PROMOTE_REQUIRES_QUIESCENCE'
     }
@@ -754,12 +810,11 @@ if($Action -eq 'Apply'){
 }
 if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
 if($Action -eq 'Check'){
-    if($script:PreserveUncertainRequests -or $script:PreserveClaimedJobs){
+    if($script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
         $Source=Get-SourceRecord
-        if($script:PreserveClaimedJobs -and -not $ConfirmWorkerQuiescent){
-            throw 'RELEASE_CLAIMED_REQUIRES_QUIESCENCE'
-        }
-        $null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact
+        if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
+            -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
+        $null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     }
     $Report|ConvertTo-Json -Depth 12;return
 }
@@ -787,13 +842,12 @@ $Preflight=Repo-JSON $Code
 if(-not $Preflight.nativeCapabilities -or -not $Preflight.githubRead){throw 'RELEASE_REPO_CLIENT_PREFLIGHT_FAILED'}
 Step 'SOURCE_ADMISSION'
 $Source=Get-SourceRecord
-if($script:PreserveClaimedJobs -and -not $ConfirmWorkerQuiescent){
-    throw 'RELEASE_CLAIMED_REQUIRES_QUIESCENCE'
-}
+if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
+    -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
 $Old=Container $Source.runtime.pilotId;Admit $Old $Source.runtime
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
-Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact
+Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
 $Baseline=Release-Production-Baseline
 $RunId=[Guid]::NewGuid().ToString('N');$Directory=Join-Path $ReleaseBase $RunId;Protect-Directory $Directory
 $script:RecordPath=Join-Path $Directory 'record.json'
@@ -809,6 +863,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     ciControlRepositories=$(if($CiControlRepositories){$CiControlRepositories}else{Read-CiControlRepositories $Source.runtime})
     preserveUncertainRequests=$script:PreserveUncertainRequests
     preserveClaimedJobs=$script:PreserveClaimedJobs
+    preserveApprovedRequest=$script:PreserveApprovedRequest
     workerQuiescenceOwnerAttested=([bool]$ConfirmWorkerQuiescent)
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;ownerShell=$OwnerShellEnabled;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
@@ -836,14 +891,15 @@ try {
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
-    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact;Save
+    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact;Save
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
     if(@(Docker-Json @('volume','inspect',$Runtime.stateVolume))[0].Labels.'io.fortis.release' -cne $RunId){throw 'RELEASE_STATE_VOLUME_PROVENANCE_INVALID'}
     $Clone=State-Helper @{action='clone';github=$true;native=$true;
         preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests);
-        preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)} @('--mount',
+        preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs);
+        preserveApprovedIds=@(Approved-Ids);requireExactApproved=([bool]$script:PreserveApprovedExact)} @('--mount',
         ('type=volume,source='+$Source.runtime.stateVolume+',target=/source,readonly'),'--mount',
         ('type=volume,source='+$Runtime.stateVolume+',target=/target')) -Root
     if(-not (Same-Json $Clone $script:R.sourceReceipt)){throw 'RELEASE_STATE_CLONE_MISMATCH'}

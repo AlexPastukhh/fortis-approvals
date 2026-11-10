@@ -82,7 +82,8 @@ def validate_uncertain_ids(value):
 
 def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                   preserve_uncertain_ids=None, require_exact_uncertain=False,
-                  preserve_claimed_ids=None, require_exact_claimed=False):
+                  preserve_claimed_ids=None, require_exact_claimed=False,
+                  preserve_approved_ids=None, require_exact_approved=False):
     permitted = validate_uncertain_ids(
         [] if preserve_uncertain_ids is None else preserve_uncertain_ids)
     claimed_permitted = validate_uncertain_ids(
@@ -91,6 +92,11 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
     require(type(require_exact_uncertain) is bool and type(require_exact_claimed) is bool,
             'PILOT_UNCERTAIN_SCOPE_INVALID')
     require(native or not claimed_permitted,'PILOT_CLAIMED_REQUIRES_NATIVE')
+    approved_permitted=validate_uncertain_ids(
+        [] if preserve_approved_ids is None else preserve_approved_ids)
+    require(len(approved_permitted)<=1,'PILOT_APPROVED_SCOPE_MUST_BE_SINGLE')
+    require(type(require_exact_approved) is bool,'PILOT_APPROVED_SCOPE_INVALID')
+    require(not approved_permitted or (native and github),'PILOT_APPROVED_REQUIRES_NATIVE_GITHUB')
     files = FILES | ({'github-receipts.sqlite'} if github else set())
     require(not native or github, 'PILOT_NATIVE_REQUIRES_GITHUB_STATE')
     databases = DBS + (('github-receipts.sqlite',) if github else ())
@@ -132,9 +138,61 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         # In-flight actions and unreviewed unknowns can never be carried into
         # an image. A scoped owner-reviewed opt-in preserves uncertain rows and
         # their immutable IDs/receipts verbatim; never rewrites their outcome.
+        # No PENDING or DISPATCHED carryover. One exact owner-authorized,
+        # pre-dispatch APPROVED may cross an image boundary unchanged so that
+        # the *new* owner Portal can cancel it atomically after activation.
         require(a.execute(
-            "SELECT COUNT(*) FROM requests WHERE state IN ('PENDING','APPROVED','DISPATCHED')"
+            "SELECT COUNT(*) FROM requests WHERE state IN ('PENDING','DISPATCHED')"
         ).fetchone()[0] == 0,'PILOT_REVIEW_HAS_UNFINISHED_REQUESTS')
+        approved_id_rows=list(a.execute("SELECT id FROM requests WHERE state='APPROVED'"))
+        approved_ids={r[0] for r in approved_id_rows}
+        require(len(approved_id_rows)==len(approved_ids) and
+                approved_ids<=approved_permitted,
+                'PILOT_REVIEW_HAS_UNREVIEWED_APPROVED')
+        if require_exact_approved:
+            require(approved_ids==approved_permitted,'PILOT_APPROVED_SET_CHANGED')
+        if approved_ids:
+            approved_rows=list(a.execute(
+                "SELECT id,actor,payload,result,failure FROM requests WHERE state='APPROVED'"))
+            columns={x[1] for x in a.execute('PRAGMA table_info(events)')}
+            require({'request_id','seq','state'}<=columns,
+                    'PILOT_APPROVED_AUDIT_SCHEMA_INVALID')
+            require(native and github,'PILOT_APPROVED_REQUIRES_NATIVE_GITHUB')
+            jobs=connections['native-git/workflow.sqlite']
+            # Trusted bootstrap scope: this one stranded doc-edit only, never
+            # an arbitrary approved secret/production/provider mutation.
+            for request_id,actor,payload,result,failure in approved_rows:
+                require(request_id=='ba299f4f-f49c-4ef7-80cf-e1f31a232024',
+                        'PILOT_APPROVED_NOT_BOOTSTRAP_ID')
+                require(type(actor) is str and bool(actor) and
+                        result is None and failure is None,
+                        'PILOT_APPROVED_RECORD_INVALID')
+                try: intent=json.loads(payload)
+                except (TypeError,ValueError):
+                    raise RuntimeError('PILOT_APPROVED_PAYLOAD_INVALID') from None
+                require(type(intent) is dict and
+                        intent.get('service')=='workspace' and
+                        intent.get('operation')=='edit' and
+                        intent.get('target')=='fortis-approvals' and
+                        type(intent.get('params')) is dict and
+                        intent['params'].get('task')=='mirror-read-provider-20261110',
+                        'PILOT_APPROVED_NOT_BOOTSTRAP_EDIT')
+                states=[x[0] for x in a.execute(
+                    'SELECT state FROM events WHERE request_id=? ORDER BY seq',
+                    (request_id,))]
+                require(states in (['APPROVED'],['PENDING','APPROVED']),
+                        'PILOT_APPROVED_WAS_DISPATCHED_OR_REWRITTEN')
+                require(jobs.execute('SELECT 1 FROM jobs WHERE id=?',
+                                     (request_id,)).fetchone() is None,
+                        'PILOT_APPROVED_WORKER_JOB_PRESENT')
+                require(connections['github-receipts.sqlite'].execute(
+                    'SELECT 1 FROM receipts WHERE request_id=?',
+                    (request_id,)).fetchone() is None,
+                        'PILOT_APPROVED_GITHUB_RECEIPT_PRESENT')
+                require(connections['sonar-receipts.sqlite'].execute(
+                    'SELECT 1 FROM receipts WHERE request_id=?',
+                    (request_id,)).fetchone() is None,
+                        'PILOT_APPROVED_SONAR_RECEIPT_PRESENT')
         unknown_count=a.execute(
             "SELECT COUNT(*) FROM requests WHERE state='UNCERTAIN'").fetchone()[0]
         # Historic offline fixtures contain only a state column. An actual
@@ -153,7 +211,8 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
             require(unresolved == permitted,'PILOT_REVIEW_UNCERTAIN_SET_CHANGED')
         summary = {'requests': a.execute('SELECT COUNT(*) FROM requests').fetchone()[0],
                    'uncertainRequestIds':sorted(unresolved),
-            'requestStates': dict(a.execute('SELECT state,COUNT(*) FROM requests GROUP BY state')),
+                        'approvedRequestIds':sorted(approved_ids),
+                        'requestStates': dict(a.execute('SELECT state,COUNT(*) FROM requests GROUP BY state')),
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
@@ -278,13 +337,16 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
 
 
 def clone_state(source, target, *, uid=10001, gid=10001, github=False,
-                native=False, preserve_uncertain_ids=None, preserve_claimed_ids=None):
+                native=False, preserve_uncertain_ids=None, preserve_claimed_ids=None,
+                preserve_approved_ids=None, require_exact_approved=False):
     source, target = Path(source), Path(target)
     require(not source.is_symlink() and not target.is_symlink() and source.is_dir() and target.is_dir(), 'PILOT_VOLUME_ROOT_INVALID')
     require(source.resolve() != target.resolve() and not any(target.iterdir()), 'PILOT_CLONE_TARGET_NOT_EMPTY')
     before = inspect_state(source, uid=uid, gid=gid, github=github, native=native,
                            preserve_uncertain_ids=preserve_uncertain_ids,
-                           preserve_claimed_ids=preserve_claimed_ids)
+                           preserve_claimed_ids=preserve_claimed_ids,
+                           preserve_approved_ids=preserve_approved_ids,
+                           require_exact_approved=require_exact_approved)
     files = set(before['sha256'])
     private = target / 'private'
     private.mkdir(mode=0o700)
@@ -305,11 +367,15 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
         os.chmod(directory, 0o700); os.chown(directory, uid, gid)
     require(inspect_state(target, uid=uid, gid=gid, github=github, native=native,
                            preserve_uncertain_ids=preserve_uncertain_ids,
-                           preserve_claimed_ids=preserve_claimed_ids) == before,
+                           preserve_claimed_ids=preserve_claimed_ids,
+                           preserve_approved_ids=preserve_approved_ids,
+                           require_exact_approved=require_exact_approved) == before,
             'PILOT_CLONE_VERIFICATION_FAILED')
     require(inspect_state(source, uid=uid, gid=gid, github=github, native=native,
                           preserve_uncertain_ids=preserve_uncertain_ids,
-                          preserve_claimed_ids=preserve_claimed_ids) == before,
+                          preserve_claimed_ids=preserve_claimed_ids,
+                          preserve_approved_ids=preserve_approved_ids,
+                          require_exact_approved=require_exact_approved) == before,
             'PILOT_SOURCE_CHANGED_DURING_CLONE')
     return before
 
@@ -477,13 +543,17 @@ def main():
     elif action == 'clone': result = clone_state(
         '/source','/target',github=value.get('github',False),native=value.get('native',False),
         preserve_uncertain_ids=value.get('preserveUncertainIds',[]),
-        preserve_claimed_ids=value.get('preserveClaimedIds',[]))
+        preserve_claimed_ids=value.get('preserveClaimedIds',[]),
+        preserve_approved_ids=value.get('preserveApprovedIds',[]),
+        require_exact_approved=value.get('requireExactApproved',False))
     elif action == 'inspect': result = inspect_state(
         '/source',github=value.get('github',False),native=value.get('native',False),
         preserve_uncertain_ids=value.get('preserveUncertainIds',[]),
         require_exact_uncertain=value.get('requireExactUncertain',False),
         preserve_claimed_ids=value.get('preserveClaimedIds',[]),
-        require_exact_claimed=value.get('requireExactClaimed',False))
+        require_exact_claimed=value.get('requireExactClaimed',False),
+        preserve_approved_ids=value.get('preserveApprovedIds',[]),
+        require_exact_approved=value.get('requireExactApproved',False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])
     elif action == 'file_pr_receipts': result = verify_file_pr_receipts(value['scenario'])

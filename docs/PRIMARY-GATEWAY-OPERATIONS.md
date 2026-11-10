@@ -45,6 +45,41 @@ and a verified closure audit; no silent state change. Existing operator
 quiescence attestation for claim carryover remains necessary.
 
 
+## One-off APPROVED bootstrap — source candidate, NOT deployed
+
+**Problem:** the current Primary contains one stranded owner-reviewed Core
+request `ba299f4f-f49c-4ef7-80cf-e1f31a232024` in `APPROVED` state.
+The existing release admission rejects every `APPROVED`, preventing the
+new Owner Portal cancellation code (PR #59) from being installed.
+
+**Narrow bootstrap (requires a second merged, reviewed PR):**
+`Manage-Integrations.ps1 -PreserveApprovedRequest
+ba299f4f-f49c-4ef7-80cf-e1f31a232024` is permitted **only** with
+`Check/Apply -Build -SourceSha <exact-reviewed-main-SHA>
+-ConfirmWorkerQuiescent`. The source helper must independently confirm
+the **exact** active APPROVED set, fixed
+`workspace.edit fortis-approvals` + task
+`mirror-read-provider-20261110`, no prior DISPATCHED event, no result,
+failure, native worker job, or provider receipt; every PENDING/DISPATCHED or
+another APPROVED still blocks the release. No SQLite rewrite and no worker
+claim reset. Confirmation of worker quiescence remains an owner attestation
+verified independently; `activity().quiescenceProven=false` is not proof.
+The existing exact preservation of `CLAIMED` remains mandatory.
+
+The flag is stored in the signed protected release record, inherited by
+`Backup/Promote` and accepted as a **subset** after the owner's later
+cancellation of the approved request. It is *not* a generic
+`--ignore-unfinished` bypass. Clone/rollback preserve every database byte
+and audit event, and recheck before and after stopping the source.
+The feature is not active until code review, CI, owner-managed Windows
+`SelfTest → Check → Apply → Backup → Promote`, and read-only verification.
+
+After activating the new release, owner may use **Cancel before dispatch**
+for this UUID; the Gateway verifies atomically that it remains APPROVED.
+A lost response, prior DISPATCHED or worker record must stop cancellation.
+A new task operation is allowed only under fresh policy/preconditions and a
+new UUID, never by reissuing the original UUID.
+
 ## Исторические UNCERTAIN / CLAIMED — защищённый перенос (действующий механизм)
 
 Установленный контроллер умеет переносить точный владелец-подтверждённый
