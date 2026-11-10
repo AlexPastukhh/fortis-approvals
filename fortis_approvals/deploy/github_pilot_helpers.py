@@ -146,9 +146,17 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         ).fetchone()[0] == 0,'PILOT_REVIEW_HAS_UNFINISHED_REQUESTS')
         approved_id_rows=list(a.execute("SELECT id FROM requests WHERE state='APPROVED'"))
         approved_ids={r[0] for r in approved_id_rows}
-        require(len(approved_id_rows)==len(approved_ids) and
-                approved_ids<=approved_permitted,
-                'PILOT_REVIEW_HAS_UNREVIEWED_APPROVED')
+        require(len(approved_id_rows)==len(approved_ids),
+                'PILOT_APPROVED_DUPLICATE_REQUEST_IDS')
+        if approved_ids and not approved_permitted:
+            # A nonempty approved set without an owner-pinned allowlist:
+            # either flag was omitted or was lost in the Windows path.
+            raise RuntimeError('PILOT_APPROVED_PRESERVATION_SCOPE_EMPTY')
+        unexpected=approved_ids-approved_permitted
+        if unexpected:
+            if approved_ids & approved_permitted:
+                raise RuntimeError('PILOT_APPROVED_ADDITIONAL_REQUESTS_PRESENT')
+            raise RuntimeError('PILOT_APPROVED_EXPECTED_REQUEST_MISMATCH')
         if require_exact_approved:
             require(approved_ids==approved_permitted,'PILOT_APPROVED_SET_CHANGED')
         if approved_ids:

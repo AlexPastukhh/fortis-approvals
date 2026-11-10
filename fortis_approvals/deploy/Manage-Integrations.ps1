@@ -193,8 +193,28 @@ function Repo-JSON {
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<repo-integrations>','exec'))"
     (Private-Process @('exec','--user','1000:1000','fortis-repo-test','python3','-I','-B','-c',$Wrapper) '')|ConvertFrom-Json
 }
+function Assert-ApprovedScopeForwarded {
+    param($Payload)
+    if($Payload.action -cnotin @('inspect','clone')){return}
+    # This guards the exact payload sent into the ephemeral image helper.
+    # The owner-specified UUID must survive script state/JSON assembly
+    # unchanged. Missing scope is a hard error, not permission to continue.
+    $Expected=$script:PreserveApprovedRequest
+    $Actual=@($Payload.preserveApprovedIds)
+    if($Expected){
+        if($Actual.Count -ne 1 -or $Actual[0] -cne $Expected){
+            throw 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'
+        }
+    } elseif($Actual.Count){
+        throw 'RELEASE_APPROVED_SCOPE_UNEXPECTED'
+    }
+}
 function State-Helper {
     param($Payload,[string[]]$Mounts=@(),[switch]$Root)
+    Assert-ApprovedScopeForwarded $Payload
+    if($script:PreserveApprovedRequest -and $Payload.action -cin @('inspect','clone')){
+        Write-Host 'FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED'
+    }
     if($Mounts.Count % 2 -ne 0){throw 'RELEASE_STATE_MOUNT_PAIR_INVALID'}
     for($Index=0;$Index -lt $Mounts.Count;$Index+=2){
         if($Mounts[$Index] -cne '--mount' -or
@@ -618,6 +638,31 @@ if($Action -eq 'SelfTest'){
     if($ApprovedForward.Count -ne 2 -or $ApprovedForward -cnotcontains '-PreserveApprovedRequest'){
         throw 'RELEASE_APPROVED_FLAG_FORWARD_SELFTEST_FAILED'
     }
+    $SavedApproved=$script:PreserveApprovedRequest
+    try {
+        $script:PreserveApprovedRequest='11111111-1111-4111-8111-111111111111'
+        $ApprovedScope=@(Approved-Ids)
+        Assert-ApprovedScopeForwarded @{action='inspect';preserveApprovedIds=$ApprovedScope}
+        Assert-ApprovedScopeForwarded @{action='clone';preserveApprovedIds=$ApprovedScope}
+        $Rejected=$false
+        try{Assert-ApprovedScopeForwarded @{action='inspect';preserveApprovedIds=@()}}
+        catch{if($_.Exception.Message -cne 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_APPROVED_SCOPE_FORWARD_SELFTEST_FAILED'}
+        $Rejected=$false
+        try{Assert-ApprovedScopeForwarded @{
+            action='inspect';preserveApprovedIds=@('22222222-2222-4222-8222-222222222222')}}
+        catch{if($_.Exception.Message -cne 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_APPROVED_SCOPE_WRONG_ID_SELFTEST_FAILED'}
+    } finally { $script:PreserveApprovedRequest=$SavedApproved }
+    $ScriptWasUnscoped=$script:PreserveApprovedRequest
+    try {
+        $script:PreserveApprovedRequest=''
+        $Rejected=$false
+        try{Assert-ApprovedScopeForwarded @{action='inspect';preserveApprovedIds=@(
+            '11111111-1111-4111-8111-111111111111')}}
+        catch{if($_.Exception.Message -cne 'RELEASE_APPROVED_SCOPE_UNEXPECTED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_APPROVED_SCOPE_WIDEN_SELFTEST_FAILED'}
+    } finally { $script:PreserveApprovedRequest=$ScriptWasUnscoped }
     $Disabled=@(OwnerShell-EnvLines $false)
     $Enabled=@(OwnerShell-EnvLines $true)
     if($Disabled.Count -ne 0 -or $Enabled.Count -ne 1){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
@@ -814,6 +859,7 @@ if($Action -eq 'Check'){
         $Source=Get-SourceRecord
         if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
             -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
+        Step 'SOURCE_STATE_PREFLIGHT_READ_ONLY'
         $null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     }
     $Report|ConvertTo-Json -Depth 12;return

@@ -46,7 +46,7 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
         return H.inspect_state(self.source, **self.kw, **params)
 
     def test_exact_approved_is_byte_preserved_and_still_approved(self):
-        with self.assertRaisesRegex(RuntimeError, 'UNREVIEWED_APPROVED'):
+        with self.assertRaisesRegex(RuntimeError, 'PRESERVATION_SCOPE_EMPTY'):
             self.read()
         state=self.read(**self.review, require_exact_approved=True)
         self.assertEqual(state['summary']['approvedRequestIds'], [APPROVED])
@@ -62,7 +62,7 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
 
     def test_scope_single_exact_and_no_wildcard(self):
         wrong=['11111111-1111-4111-8111-111111111111']
-        with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_APPROVED'):
+        with self.assertRaisesRegex(RuntimeError,'EXPECTED_REQUEST_MISMATCH'):
             self.read(preserve_approved_ids=wrong)
         with self.assertRaisesRegex(RuntimeError,'MUST_BE_SINGLE'):
             self.read(preserve_approved_ids=[APPROVED,*wrong])
@@ -72,6 +72,20 @@ class SingleApprovedCarryoverTests(unittest.TestCase):
             self.sql('approvals.sqlite',"UPDATE requests SET state='STALE' WHERE id=?",(APPROVED,))
             self.read(**self.review,require_exact_approved=True)
         self.assertEqual(self.read(**self.review)['summary']['approvedRequestIds'],[])
+
+    def test_another_approved_request_cannot_be_silently_preserved(self):
+        extra='11111111-1111-4111-8111-111111111111'
+        self.sql('approvals.sqlite',
+            'INSERT INTO requests(id,actor,state,payload) VALUES(?,?,?,?)',
+            (extra,'different-actor','APPROVED',json.dumps(PAYLOAD)))
+        with self.assertRaisesRegex(RuntimeError,'ADDITIONAL_REQUESTS_PRESENT'):
+            self.read(**self.review)
+        with self.assertRaisesRegex(RuntimeError,'PRESERVATION_SCOPE_EMPTY'):
+            self.read()
+        # Never fix a second APPROVED by silently expanding the bootstrap
+        # allowlist; that can only be a separate owner-reviewed design.
+        with self.assertRaisesRegex(RuntimeError,'MUST_BE_SINGLE'):
+            self.read(preserve_approved_ids=[APPROVED,extra])
 
     def test_dispatch_history_and_active_states_fail_closed(self):
         self.sql('approvals.sqlite',
@@ -134,7 +148,11 @@ class WindowsReleaseScopeStaticTests(unittest.TestCase):
             'preserveApprovedIds=$Approved;requireExactApproved=([bool]$ExactApproved)',
             'requireExactApproved=([bool]$script:PreserveApprovedExact',
             'RELEASE_APPROVED_BACKUP_PROMOTE_REQUIRES_QUIESCENCE',
-            'RELEASE_APPROVED_FLAG_FORWARD_SELFTEST_FAILED'):
+            'RELEASE_APPROVED_FLAG_FORWARD_SELFTEST_FAILED',
+            'RELEASE_APPROVED_SCOPE_FORWARD_SELFTEST_FAILED',
+            'RELEASE_APPROVED_SCOPE_NOT_FORWARDED',
+            'SOURCE_STATE_PREFLIGHT_READ_ONLY',
+            'Assert-ApprovedScopeForwarded $Payload'):
             self.assertIn(marker,script)
         self.assertIn('preserveApprovedIds=@(Approved-Ids)',backup)
         self.assertNotIn('UPDATE requests SET state',(
