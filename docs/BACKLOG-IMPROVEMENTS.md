@@ -47,17 +47,57 @@ owner-attested worker quiescence и проверенный closure audit.
 Код и WebAuthn тесты для кнопки пройдены; переходы в Core прочитаны live,
 но **ручная проверка конкретного browser click** отдельно не документирована.
 
-## Owner Portal PowerShell — source candidate (2026-11-08)
+## Owner Portal PowerShell — V1: текущий backlog и критерий приёмки (2026-11-10)
 
-- Вкладка PowerShell с однократным исполнением вставленного скрипта через отдельный
-  mTLS Windows Executor реализована в исходниках, но ещё **не развёрнута**.
-  Ручная активация Windows worker, сертификаты, отдельный low-privilege Windows
-  identity, сетевые правила, Gateway release/CI и Windows acceptance — отдельно.
-- Кнопки Analyzer и «Мнение ИИ» пока отключены. Универсальный Analyzer для
-  скриптов и других заявок должен быть отдельным этапом, не путать с существующим
-  Sonar/GitHub `analysis_review`. Нет обещания безопасного выполнения произвольного
-  PowerShell: команды от владельца сейчас не сканируются.
-- Источник/API границы и эксплуатация: [OWNER-POWERSHELL](OWNER-POWERSHELL.md).
+**Цель V1:** владелец входит в действующий Owner Portal через WebAuthn,
+открывает вкладку PowerShell, отправляет точную одноразовую команду (первый
+контрольный пример — `Get-Date`), получает реальный exit code/stdout/stderr и
+сохранённую SQLite-квитанцию; повтор исходного UUID **не запускает** команду
+второй раз. Команды не проходят Analyzer, не выполняются через machine/AI API
+и не образуют интерактивный терминал. Исходный [контракт и границы](OWNER-POWERSHELL.md).
+
+**Решение владельца для V1:** Windows Executor работает под существующей
+**неповышенной** Windows-учётной записью. Выделенная Windows-учётная запись
+**не является блокером V1** и отложена как усиление изоляции. Это осознанный
+компромисс: произвольная команда имеет доступ к обычным файлам и сетевым
+возможностям текущего пользователя. UAC/отсутствие администратора — **не**
+песочница. Нельзя считать Windows ACL, разрешающие доступ тому же пользователю,
+способом спрятать от Executor ключи, оставшиеся в его профиле.
+
+Статус `SOURCE` означает исходники в `main`, **не live-развёртывание**;
+`OWNER PASS` — результат сообщённой владельцем локальной проверки, не
+самостоятельный Docker/Gateway live acceptance. `OPEN` — без подтверждённого
+завершающего readback. Пункты ниже — последовательные V1 gates, а не право
+на изменение Primary без [UC-GW-005](use-cases/releases.md#uc-gw-005).
+
+| ID | Статус | Шаг и подтверждение | Что дальше / критерий готовности |
+| --- | --- | --- | --- |
+| PS-V1-01 | **SOURCE** | В `fortis-approvals/main` есть Owner Portal PowerShell routes, WebAuthn/Origin/CSRF, фиксированный mTLS client и тесты; в `docke-windows-mirror/main` — отдельный Windows Executor с bearer, durable UUID receipt и неадминским запуском | Включить в проверенный image release; **текущий Primary не объявлять обновлённым** |
+| PS-V1-02 | **OWNER PASS** | Владелец подтвердил обновление Browser Mirror и наличие `Start-OwnerPowerShellExecutor.ps1` на Windows; версия/поведение Executor в живом процессе ещё не проверены | Перед активацией проверить локальные SHA/исходник и отсутствие запуска от администратора |
+| PS-V1-03 | **OWNER PASS** | На Windows порт `10443` свободен, Docker Gateway видит временный TCP listener на `127.0.0.1:10443` через `host.docker.internal` (`GATEWAY_TO_WINDOWS_LOOPBACK=PASS`); отдельный Windows Firewall ingress на Ethernet не нужен | Использовать bind **только `127.0.0.1:10443`**; подтвердить повторно после запуска HTTPS |
+| PS-V1-04 | **OWNER PASS** | OpenSSL на Windows найден; созданы отдельные server/client CA, сертификаты, ключи и независимый bearer; `SERVER_TLS_IDENTITY`, `CLIENT_TLS_IDENTITY`, обе key-pair проверки и `BEARER_SECRET_MATCH` — PASS | Сохранить текущие материалы, не пересоздавать при ошибках следующего шага; проверить реальные TLS рукопожатия |
+| PS-V1-05 | **OWNER PASS** | Действующий `fortis-gateway` сообщён `healthy`, UID:GID `10001:10001`, `fortis-review-secrets` смонтирован только RO; четыре Gateway-файла пока **staged на Windows** | Не путать preflight тома с фактом установки файлов |
+| PS-V1-06 | **OPEN — следующий шаг** | Без перезапуска Primary положить `server-ca.pem`, `client.pem`, `client.key`, `secret.txt` в отдельный `/run/fortis-secrets/owner-shell/` внутри существующего volume, не изменяя прочие credentials | Нужны readback от UID 10001:10001, directory `0700`, files `0600`, совпадение/валидность; **нет подтверждённого `OWNER_SHELL_CLIENT_MATERIAL_READY`** |
+| PS-V1-07 | **OPEN** | После подтверждённой установки убрать из обычного Windows staging дубли клиентского ключа и bearer и вынести **закрытые CA-ключи** в защищённое offline-хранилище/резервную копию, не доступную запущенному Executor | Не удалять единственную копию до проверенного Docker readback и резервного сохранения; серверный ключ и bearer Windows остаются у учётной записи Executor по определению |
+| PS-V1-08 | **OPEN** | Вручную запустить отдельный `Start-OwnerPowerShellExecutor.ps1` **без elevation** на `127.0.0.1:10443`, с защищёнными Windows-серверными файлами и SQLite receipts вне Git | Проверить mTLS: отказ без сертификата/с неверным CA, отказ с неверным bearer, правильный capabilities read с клиентским сертификатом; без команд на этом этапе |
+| PS-V1-09 | **OPEN** | Проверенный Gateway image/release: Owner Portal содержит PowerShell tab/routes и trusted `FORTIS_OWNER_SHELL_CONFIG` с ровно `port,serverCA,clientCert,clientKey,secretFile`, отдельный RO mount и exact source SHA | CI/source admission, штатные Check/Apply/Backup/Promote и live readbacks по UC-GW-005; **не** редактировать текущий контейнер вручную и не ослаблять существующие guards/uncertain preservation |
+| PS-V1-10 | **OPEN — приёмка V1** | Из браузера owner WebAuthn → PowerShell `Get-Date` → реальный результат Windows + exit code + UUID/receipt | Отрицательные session/CSRF проверки, тот же UUID не повторяет выполнение, неверный UUID/команда не подменяет receipt, тайм-аут/сбой не объявляет успехом; проверить безопасную ручную остановку/повторный запуск и сохранность receipts |
+
+**Граница V1:** допускается документированный ручной запуск Executor. Автоматизация
+Windows service/autostart, отдельный ограниченный Windows account, Analyzer,
+«Мнение ИИ», общая policy engine для скриптов, интерактивный PTY, расширенная
+изоляция и автоматическая ротация сертификатов/секретов — **после V1**.
+Кнопки Analyzer/AI сейчас отключены, скрипты не проходят security verdict;
+само наличие mTLS не делает выполнение PowerShell безопасным. Независимые
+Mirror-specific исходники, UI/Windows acceptance и их дальнейший backlog
+принадлежат [Mirror](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
+здесь фиксируется только сквозная готовность функции Owner Portal.
+
+**Как обновлять:** у каждого PS-V1 ID после проверенного изменения обновлять
+статус и конкретный source SHA / receipt или owner-reported PASS. Не отмечать
+`DONE` по одному коду, локальному `git main` или отсутствию ошибки. После
+успешного browser acceptance пометить V1 `ACCEPTED` с датой и ссылкой на
+отдельное evidence, не стирая незавершённые V2 улучшения.
 
 ## Исторические инциденты 2026-11-07 — не список текущих UNCERTAIN
 
