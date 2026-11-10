@@ -346,13 +346,24 @@ class Core:
             # Durable marker BEFORE the external effect. Re-entry cannot repeat it.
             db.execute('UPDATE requests SET state=? WHERE id=?', ('DISPATCHED', request_id))
             self._event(db, request_id, 'DISPATCHED')
+        failure_diagnostic = None
         try:
             result = adapter.apply(payload)
             if not adapter.confirm(request_id, result):
                 raise RuntimeError('RECEIPT_NOT_CONFIRMED')
         except Stale as exc:
             state, failure, result = 'STALE', str(exc), None
-        except Exception:
+        except Exception as exc:
+            # Only bounded, whitelisted Git phase/code values reach the durable audit.
+            # Raw exception messages, Git stderr and provider credentials never do.
+            if payload['service'] == 'github' and payload['operation'] == 'push_commits':
+                phase, code = getattr(exc, 'phase', None), getattr(exc, 'code', None)
+                phases = {'revalidate', 'setup', 'fetch_main', 'fetch_task',
+                          'import_bundle', 'pre_push_check', 'push', 'readback'}
+                codes = {'GIT_OUTCOME_TIMEOUT', 'GIT_COMMAND_FAILED',
+                         'GIT_PUSH_READBACK_UNCONFIRMED', 'GIT_PUSH_STEP_UNCONFIRMED'}
+                if type(phase) is str and phase in phases and type(code) is str and code in codes:
+                    failure_diagnostic = {'gitPhase': phase, 'gitCode': code}
             # No blind retry after unknown remote outcome, even on timeout/restart.
             state, failure, result = 'UNCERTAIN', 'REMOTE_OUTCOME_UNCONFIRMED', None
         else:
@@ -363,7 +374,7 @@ class Core:
             if row['state'] == 'DISPATCHED':
                 db.execute('UPDATE requests SET state=?, result=?, failure=? WHERE id=?',
                            (state, canonical(result) if result is not None else None, failure, request_id))
-                self._event(db, request_id, state)
+                self._event(db, request_id, state, failure_diagnostic)
             return self._view(db.execute('SELECT * FROM requests WHERE id=?', (request_id,)).fetchone())
 
     def reconcile(self, request_id):

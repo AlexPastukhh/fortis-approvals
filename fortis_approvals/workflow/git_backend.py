@@ -20,6 +20,37 @@ from ..integrations.github.gateway.transport import _read_token
 from .common import Git, MAX_BUNDLE, MAX_NEW_COMMITS, branch, file_path, require, secure_dir, sha
 
 
+# Only fixed identifiers cross the Core audit boundary; never Git stderr or auth config.
+GIT_PUSH_PHASES = frozenset({
+    'revalidate', 'setup', 'fetch_main', 'fetch_task', 'import_bundle',
+    'pre_push_check', 'push', 'readback',
+})
+GIT_PUSH_FAILURE_CODES = frozenset({
+    'GIT_OUTCOME_TIMEOUT', 'GIT_COMMAND_FAILED',
+    'GIT_PUSH_READBACK_UNCONFIRMED', 'GIT_PUSH_STEP_UNCONFIRMED',
+})
+
+
+class GitPushFailure(RuntimeError):
+    def __init__(self, phase, code):
+        if phase not in GIT_PUSH_PHASES or code not in GIT_PUSH_FAILURE_CODES:
+            raise ValueError('GIT_PUSH_DIAGNOSTIC_INVALID')
+        self.phase, self.code = phase, code
+        super().__init__('GIT_PUSH_STEP_UNCONFIRMED')
+
+
+@contextmanager
+def push_phase(phase):
+    try:
+        yield
+    except Stale:
+        raise
+    except Exception as exc:
+        # The exception text is never stored unless it is a fixed known code.
+        code = str(exc) if type(exc) in (Denied, RuntimeError) and str(exc) in GIT_PUSH_FAILURE_CODES else 'GIT_PUSH_STEP_UNCONFIRMED'
+        raise GitPushFailure(phase, code) from None
+
+
 class GitHubGitBackend:
     def __init__(self, root, *, owner, repositories, token_path='/run/github-token/token'):
         self.root=secure_dir(root);self.owner=owner
@@ -65,7 +96,7 @@ class GitHubGitBackend:
     def _fetch(self,repo,bare,ref,dest,config):
         # Explicit refspec and URL only. No origin, hooks, helper, tags or submodules.
         self.git.run(['-c','protocol.file.allow=never','fetch','--no-tags','--no-write-fetch-head',
-                      self.url(repo),'refs/heads/'+ref+':'+dest],cwd=bare,config=config)
+                      self.url(repo),'refs/heads/'+ref+':'+dest],cwd=bare,config=config,timeout=90)
 
     @serialized
     def fetch_bundle(self,repo,ref,expected=None):
@@ -139,18 +170,27 @@ class GitHubGitBackend:
 
     @serialized
     def push(self,repo,task,old,new,data):
-        # Revalidate the bundle and ancestry. The explicit lease is CAS, never permission to rewrite history.
-        metadata=self.validate(repo,task,old,new,data)
+        # Revalidate unchanged. No blind retry, ref rewrite or provider credential leakage.
+        with push_phase('revalidate'):
+            metadata=self.validate(repo,task,old,new,data)
         with tempfile.TemporaryDirectory(prefix='git-push-',dir=self.root) as folder,self.credentials(repo) as config:
-            bare=self._init(folder);p=Path(folder)/'input.bundle';p.write_bytes(data);p.chmod(0o600)
-            self._fetch(repo,bare,'main','refs/remotes/verify/main',config)
-            if old is not None:self._fetch(repo,bare,task['branch'],'refs/remotes/verify/task',config)
-            self.git.run(['-c','protocol.file.allow=always','fetch','--no-tags','--no-write-fetch-head',
-                          p,'refs/heads/'+task['branch']+':refs/heads/candidate'],cwd=bare,protocols='file')
-            base=old or task['baseSha']
-            require(self.git.run(['merge-base','--is-ancestor',base,new],cwd=bare,ok=(0,1))[0]==0,'GIT_NON_FAST_FORWARD_DENIED')
+            with push_phase('setup'):
+                bare=self._init(folder);p=Path(folder)/'input.bundle';p.write_bytes(data);p.chmod(0o600)
+            with push_phase('fetch_main'):
+                self._fetch(repo,bare,'main','refs/remotes/verify/main',config)
+            if old is not None:
+                with push_phase('fetch_task'):
+                    self._fetch(repo,bare,task['branch'],'refs/remotes/verify/task',config)
+            with push_phase('import_bundle'):
+                self.git.run(['-c','protocol.file.allow=always','fetch','--no-tags','--no-write-fetch-head',
+                              p,'refs/heads/'+task['branch']+':refs/heads/candidate'],cwd=bare,protocols='file')
+            with push_phase('pre_push_check'):
+                base=old or task['baseSha']
+                require(self.git.run(['merge-base','--is-ancestor',base,new],cwd=bare,ok=(0,1))[0]==0,'GIT_NON_FAST_FORWARD_DENIED')
             lease='--force-with-lease=refs/heads/'+task['branch']+':'+(old or '')
-            self.git.run(['push','--porcelain','--no-follow-tags',lease,self.url(repo),
-                          new+':refs/heads/'+task['branch']],cwd=bare,config=config,timeout=80)
-            if self.refs(repo).get(task['branch'])!=new:raise RuntimeError('GIT_PUSH_READBACK_UNCONFIRMED')
+            with push_phase('push'):
+                self.git.run(['push','--porcelain','--no-follow-tags',lease,self.url(repo),
+                              new+':refs/heads/'+task['branch']],cwd=bare,config=config,timeout=80)
+            with push_phase('readback'):
+                if self.refs(repo).get(task['branch'])!=new:raise RuntimeError('GIT_PUSH_READBACK_UNCONFIRMED')
             return metadata
