@@ -34,7 +34,8 @@ function Backup-Primary {
         Assert-Volume $Name
         $Clone=State-Helper @{action='clone';github=$true;native=$true;
             preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests);
-            preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)} @('--mount',
+            preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs);
+            preserveApprovedIds=@(Approved-Ids)} @('--mount',
             ('type=volume,source='+$P.stateVolume+',target=/source,readonly'),
             '--mount',('type=volume,source='+$Name+',target=/target')) -Root
         if(-not (Same-Json $Clone $Before) -or -not (Same-Json (Receipt $P.stateVolume) $Before)){
