@@ -12,7 +12,7 @@
 | [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
 | [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
-| [UC-GW-009](incidents.md#uc-gw-009) | ИИ расследует UNCERTAIN и читает полную заявку; владелец закрывает её в Owner Portal | Read-only details + независимая проверка Git/GitHub, owner-local CLOSED_UNCONFIRMED без повтора |
+| [UC-GW-009](incidents.md#uc-gw-009) | ИИ самостоятельно находит доступные UUID UNCERTAIN и расследует заявки; владелец принимает решения в Portal | Actor-scoped read-only details + Fortis Repo tool history + Git/GitHub/worker journal; нет полного machine list API, owner-only CLOSED_UNCONFIRMED |
 
 Каждый новый чат читает короткий вход главного реестра и полностью
 UC-CONT-002, UC-CONT-003 и [UC-GW-009](incidents.md#uc-gw-009);
