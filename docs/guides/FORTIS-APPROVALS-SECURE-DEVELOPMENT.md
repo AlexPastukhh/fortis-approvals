@@ -1,11 +1,15 @@
 # Fortis Approvals Gateway — текущее состояние
 
-Датированный срез 2026-11-09: последний owner-provided Windows release output
-и последующие Repo machine readback. Это не независимый Docker inspect с Windows:
-перед runtime-операцией сверить protected records и реальную identity.
-Этот документ владеет deployment status; [agent guide](../GATEWAY-AGENT-GUIDE.md)
-— применением, [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md)
-— операциями/policy, [backlog](../BACKLOG-IMPROVEMENTS.md) — будущими задачами.
+**Срез 2026-11-10.** Последний подробно подтверждённый владельцем Windows
+image release — PS-V1-09; отдельно есть более поздние authenticated Repo
+machine readbacks. Это **не** независимый Windows Docker inspect после всех
+последующих изменений. Точные current container/image/state/volume при
+host-операциях устанавливать по protected records и свежему owner readback.
+[Agent guide](../GATEWAY-AGENT-GUIDE.md) владеет использованием,
+[native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — API/policy,
+[backlog](../BACKLOG-IMPROVEMENTS.md) — незавершёнными задачами,
+[датированное evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
+— точными owner outputs и границами подтверждения.
 
 ## Развёрнутые контуры
 
@@ -15,28 +19,36 @@
 | Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
 | Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
-Последний owner-confirmed image release (PR #39, 2026-11-09):
+Последний **OWNER-REPORTED** guarded image release (PS-V1-09, 2026-11-10):
 
-| Поле | Значение из owner output |
+| Проверка | Подтверждено владельцем |
 | --- | --- |
-| Source SHA образа | `a200137775eb6c6b8dcec81f31206b0d481d9003` |
-| Image ID | `sha256:69be667a654882f6b073eb89827a4be28e2f28b355838cc9325d2c66cc14bec8` |
-| Complete release record | `%LOCALAPPDATA%\Fortis\GatewayReleases\8412e8edec904cbdb0c4154bf6128632\record.json` |
-| State volume | `fortis-github-pilot-state-8412e8edec904cbdb0c4154bf6128632` |
-| Verified controller backup | `fortis-gateway-backup-8ee58a9644fe4288b6de40d16a694ea4` |
-| Host result | `FORTIS_PRIMARY_PROMOTED`; `FORTIS_PRIMARY_VERIFIED`; `fortis-gateway` healthy, restart `unless-stopped`, pinned image/volume/record checks PASS |
+| Источник | PR #53; image source `9481699faaa297d8ec1fb45b4f14be50ae17406f` |
+| Release | `Check -Build`, `Apply -Build -EnableOwnerShell`, verified staged Windows mTLS, activation `FORTIS_INTEGRATIONS_ACTIVATED` |
+| Образ | `sha256:03b258618e515988aaee17362889329c9b26d128012f13e62b733b99a3d5a273` |
+| Protected record | `%LOCALAPPDATA%\Fortis\GatewayReleases\fa449e3ee689466a818c1e730dc3787f\record.json` |
+| Backup / Promote | `fortis-gateway-backup-4920ada96279425e8d45b4a9eed15d0a`, `PS_V1_09_BACKUP_READBACK=PASS`, `FORTIS_PRIMARY_PROMOTED`, `PS_V1_09_PROMOTE_READBACK=PASS` |
+| Owner Portal | V1 PowerShell owner opt-in включён; первая команда `Get-Date` — `EXECUTED`, exit `0` (PS-V1-10 **частичная** приёмка) |
 
-Repo machine live confirmed `WorkflowClient.details(uuid)` for all six
-historical `UNCERTAIN` requests including worker state and audit.
-One worker job remained `CLAIMED`. Owner Portal `Закрыть заявку` is
-included in installed source and covered by UI and WebAuthn tests;
-no separate real owner click acceptance was provided in this snapshot.
-See [UC-GW-009](../use-cases/incidents.md#uc-gw-009).
+**LIVE-VERIFIED Repo machine:** authenticated Gateway capabilities и GitHub READ
+работают, `incidentInventory.readOnly=true`, actor-owned `list_uncertain` вернул
+три сохранённых `UNCERTAIN`; одна историческая Core-заявка
+`CLOSED_UNCONFIRMED` имеет сохранённый worker `CLAIMED`.
+Также наблюдался `workerActivity.readOnly=true` и успешный read-only
+`activity()`; это не доказательство worker quiescence и не подтверждает
+конкретный Docker image для возможного последующего релиза.
+Точный список UUID, owner output и границы приёмки — в
+[датированном evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
+и [UC-GW-009](../use-cases/incidents.md#uc-gw-009).
 
-The previous owner-confirmed releases, including
-`7cae534f8617482511bf486a6133563e8bcd2ae8` and
-`e74576903adcc355f3c0447c4a6b0baaf8bded68`, are historical,
-not current image pins. Owner-only reboot acceptance of the new image
+**MANUAL-PENDING:** независимый host inspect после будущих изменений, Windows
+Executor restart/receipt persistence и отрицательные owner session/CSRF/UUID
+проверки. Эти открытые задачи ведутся только в
+[backlog](../BACKLOG-IMPROVEMENTS.md).
+
+The owner-confirmed 2026-11-09 PR #39 release (image
+`sha256:69be667a654882f6b073eb89827a4be28e2f28b355838cc9325d2c66cc14bec8`)
+and older releases are historical, **not** current image pins. Owner-only reboot acceptance of the new image
 was not established; do not infer it from `healthy` or restart policy.
 История первоначального cutover — в
 [dated evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
@@ -56,7 +68,8 @@ owner maintenance record:
 ## Что подтверждено через Repo
 
 - Live capabilities: `dynamicRepositories=true`, присутствует
-  `workspace.update_main_from_pr`, ordinary task push и PR creation — ALLOW.
+  `workspace.update_main_from_pr`; documented task push/PR creation прошли
+  через typed Gateway, но policy всегда проверять для текущих actor/target.
 - Live `cleanupTask` соответствует [native cleanup contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md#task-worktree-cleanup).
   Одноразовый пустой task создан и удалён без owner ASK; `fetch/create/cleanup`
   имеют `EXECUTED`, task path отсутствует. Четыре retired request ID возвращают

@@ -6,17 +6,42 @@
 
 **Цель:** typed provider с минимальным scope, проверками и owner approval.
 
-**Как:** по [extension contract](../INTEGRATION-EXTENSIONS.md) и
-[пакету integrations](../../fortis_approvals/integrations/README.md)
-проверить совместимость и использовать provider scaffold в task worktree.
-Определить закрытые request/result schemas, preview/effect/receipts,
-trusted actor/target policy и READ/ASK/Reject acceptance. Новые permissions
-не возникают от каталогизации provider. Credential отдельно по [UC-GW-004](credential-lifecycle.md#uc-gw-004),
-image activation по [UC-GW-005](releases.md#uc-gw-005), GitHub публикация —
-через глобальные UC-CONT-002/003.
+**Как:** направление этого UC — **Fortis → свой/внешний API**. Обратное
+«новое приложение → Gateway» учтено, но **отложено** до реального спроса
+([UC-CONT-008](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/authorization.md#uc-cont-008)).
 
-**Готово:** поддержка подтверждена в live каталоге и авторизованном readback;
-набор операций/ошибок сверяется с кодом, а не продублирован здесь.
+1. Получить документацию/версию API, test endpoint и **точную** цель владельца:
+   необходимые READ/WRITE, среда, исходный контракт, ownership, модель auth,
+   запрашиваемые upstream scopes и возможность readback без секрета в Repo.
+2. По [extension contract](../INTEGRATION-EXTENSIONS.md) проверить, подходит ли
+   фиксированный HTTPS/443 JSON transport. Локальная сеть, произвольный порт,
+   свой CA/mTLS, OAuth refresh или non-JSON требуют reviewed transport и
+   специальных отказных тестов; не проксировать через Owner PowerShell.
+3. По [provider package](../../fortis_approvals/integrations/README.md)
+   создать scaffold в отдельном task worktree, описать **закрытые** операции,
+   params/results/targets, trusted actor policy и отказ при лишних полях.
+   Source scaffold и доступность API по сети **не** означают готовность provider.
+4. Для write определить read-only preview/preconditions, идемпотентность
+   upstream и проверяемый receipt/lookup с исходным requestId; при неизвестном
+   эффекте **не** повторять под новым UUID. Утвердить минимальную policy
+   (`ALLOW/ASK/DENY`) и безопасный test target; READ не выдаёт WRITE прав.
+5. Провести source/negative tests, точный PR/CI через UC-CONT-002/003,
+   credential отдельно по [UC-GW-004](credential-lifecycle.md#uc-gw-004),
+   owner-managed image activation по [UC-GW-005](releases.md#uc-gw-005).
+   Подтвердить в live каталоге разрешённые actor/target, реальные upstream
+   permissions, read result, отказ лишнему scope и, **если разрешён write**,
+   точный effect/receipt через ASK и owner decision.
+
+**STOP / UNKNOWN:** неизвестный транспорт, лишние права, отсутствие безопасного
+scope или доказуемого исхода значимой write-операции. Тогда ограничить пилот
+READ или остановить; не выдавать `scaffold`, CI или `Check -Build` за live API.
+
+**Готово:** только конкретная принятая операция имеет проверяемую границу
+`SOURCE_READY` → `PR_MERGED` → `IMAGE_ACTIVATED` → `LIVE_API_VERIFIED`;
+неподтверждённые upstream эффекты обозначены отдельно, не как PASS.
+Подробная последовательность P0 и этап выбора пилота — в
+[backlog](../BACKLOG-IMPROVEMENTS.md); методические детали остаются у
+extension owner, а не дублируются в UC.
 
 ## UC-GW-003
 

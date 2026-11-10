@@ -1,12 +1,14 @@
 # Owner Portal PowerShell — optional owner-local command execution
 
-**Status: Gateway Owner Shell integration is source-only, not yet activated in Primary.**
-On 2026-11-10 the owner reported a non-admin Windows Executor running with
-mTLS and bearer negative tests passing, plus a real HTTPS capabilities GET
-from the existing Docker Gateway UID 10001. This does **not** prove the
-Owner Portal release or any actual PowerShell execution. This adds a
-PowerShell tab to the existing Owner Portal (`http://localhost:19203` in the
-accepted environment). Existing Pending/History and machine API remain separate.
+**Status (2026-11-10): owner-reported live V1 opt-in and first `Get-Date` execution,
+with additional security/recovery acceptance pending.** The installed Gateway
+was activated via guarded `Check/Apply/Backup/Promote`, not a manual Docker
+configuration; exact image, protected release evidence and remaining acceptance
+are recorded in [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
+[dated owner evidence](../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
+and the [single backlog](BACKLOG-IMPROVEMENTS.md). The optional PowerShell tab
+belongs to the existing Owner Portal; Pending/History and machine API remain
+separate. **Do not infer full security acceptance from one successful command.**
 
 ## Interaction
 
@@ -40,27 +42,28 @@ until the operator investigates. There is **no automatic retry**.
 
 **Important:** the command is arbitrary PowerShell under the account running
 the Windows executor. There is no sandbox or risk analysis. It can read files,
-contact the network and create subprocesses. The owner must use a dedicated
-non-admin Windows account with minimal files/network access. Compromise of the
+contact the network and create subprocesses. A dedicated
+least-privilege Windows identity with minimal file/network access is the
+recommended isolation target, **not** an accomplished V1 prerequisite. Compromise of the
 Portal's client key **and** bearer can allow arbitrary commands on Windows.
 Browser extensions that have access to this page may see commands and output.
-For V1, the owner has chosen to run the Executor as the existing Windows user
-**without elevation**; a separate low-privilege user is a later hardening option,
-not a code prerequisite. This permits access to that user's ordinary files,
-applications and network credentials. Before activation, keep private CA keys
-offline and remove staged Gateway client credentials from this user's accessible
-profile after verified transfer into Docker. Windows server key and bearer remain
-readable by the Executor identity by design; this is not isolation from a
-compromised same-user process. Do not paste secrets, admin scripts, recovery
-material or credentials.
+For V1, the owner chose the existing Windows user **without elevation**;
+this permits access to that user's ordinary files, applications and network
+credentials. The owner **deferred** offline issuer CA backup/isolation and
+removal of Windows-staged Gateway client credentials. These protections must
+not be marked complete. Windows server key and bearer are readable by the
+Executor identity by design; this does not isolate them from a compromised
+same-user process. Until hardening, do not run untrusted or unrelated scripts,
+and never paste secrets, admin scripts or recovery materials. The remaining
+work is tracked only in the [backlog](BACKLOG-IMPROVEMENTS.md).
 
 ## Explicit opt-in release configuration
 
-The production image is **not** modified by this PR. The accepted release
-operator must independently provision private configuration and mutual TLS
-certificates for the Windows executor, review Windows bind/firewall/identity
-and explicitly configure `FORTIS_OWNER_SHELL_CONFIG` in trusted Gateway
-composition. This env var contains JSON with exactly:
+The optional runtime configuration is enabled only through the reviewed
+owner-managed release controller, with private mTLS material and a verified
+Windows bind/identity. No caller-supplied URL, credential file or manual
+`docker -e` is permitted. The trusted release configuration uses
+`FORTIS_OWNER_SHELL_CONFIG`. This env var contains JSON with exactly:
 
 ```json
 {
@@ -84,7 +87,7 @@ If the variable is absent, the portal tab is visible but execution is
 **disabled** and the owner sees `Windows Executor пока не подключён`.
 The Analyzer/second-AI buttons remain disabled regardless of configuration.
 
-## Trusted release opt-in (source candidate)
+## Trusted release opt-in (accepted mechanism)
 
 The `Manage-Integrations.ps1` owner controller accepts `-EnableOwnerShell`
 **only together with** `-Action Check` or `-Action Apply`, `-Build` and an
@@ -107,20 +110,21 @@ must not silently enable the release. No manual Docker environment editing
 is permitted. Real Check/Apply/Backup/Promote must still satisfy UC-GW-005
 and exact preserved native `UNCERTAIN` and `CLAIMED` worker scopes.
 
-Owner deferred offline CA backup and the removal of Windows Gateway staging
-copies for functional V1. This **does not establish isolation**: an arbitrary
-PowerShell script run as the same Windows user can access those profile files
-(and potentially Docker Engine). No unrelated or untrusted scripts should be
-executed until this known risk is addressed. The public tab offers no Analyzer
-verdict; it is not a sandbox.
+The current owner deviation on CA/staging hygiene is recorded above and in the
+single backlog; it does **not** establish Windows user isolation. The public tab
+offers no Analyzer verdict and is not a sandbox.
 
 ## Acceptance
 
-Before any live execution, on a disposable non-admin Windows identity: verify
-failed no-client-cert/mismatched-CA/bearer attempts, denied unauthenticated
-owner browser POST, CSRF, replay with same/mismatched UUID, timeout and loss
-of connection, and output. Use `Get-Date` as a controlled first command.
-A passing GitHub source CI is not Windows host or TLS acceptance.
+For full security acceptance verify denied unauthenticated owner API POST,
+incorrect Origin/CSRF, same-UUID replay, mismatched command/UUID, timeout,
+connection loss, and durable receipts after a controlled Executor restart.
+Owner already completed one successful `Get-Date` execution, while prior
+mTLS/Bearer negative preflights and the newer browser result are separate
+pieces of evidence. These remaining tests need a safe owner-controlled
+procedure; **do not replay the original effect to test an unknown outcome**.
+A passing source CI is not host/WebAuthn acceptance. See the dated evidence
+and the open PS-V1-10 backlog gates.
 
 Future Analyzer should be reusable across commands and other Owner Portal
 requests, but is deliberately out of scope. Sending arbitrary PowerShell to
