@@ -76,7 +76,9 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT * FROM jobs WHERE id=? AND actor=?',(ident,actor)).fetchone()
             if row is None:return None
-            if row['state']=='CLAIMED':return dict(state='CLAIMED',claim=row['claim'],payload=json.loads(row['payload']))
+            # An existing claim is owned by its original executor. Re-delivery
+            # of its token/payload could replay an unjournaled partial effect.
+            if row['state']=='CLAIMED':return dict(state='CLAIMED')
             if row['state']!='QUEUED':return dict(state=row['state'])
             claim=str(uuid.uuid4())
             db.execute("UPDATE jobs SET state='CLAIMED',claim=? WHERE id=?",(claim,ident))
