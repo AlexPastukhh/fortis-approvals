@@ -5,7 +5,7 @@ param(
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
-    [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories,
+    [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
@@ -22,6 +22,8 @@ $script:PreserveUncertainRequests=$PreserveUncertainRequests
 $script:PreserveUncertainExact=[bool]$PreserveUncertainRequests
 $script:PreserveClaimedJobs=$PreserveClaimedJobs
 $script:PreserveClaimedExact=[bool]$PreserveClaimedJobs
+# Exact paths only; never accept an arbitrary endpoint or credential path from the caller.
+$script:OwnerShellJson='{"port":10443,"serverCA":"/run/fortis-secrets/owner-shell/server-ca.pem","clientCert":"/run/fortis-secrets/owner-shell/client.pem","clientKey":"/run/fortis-secrets/owner-shell/client.key","secretFile":"/run/fortis-secrets/owner-shell/secret.txt"}'
 
 function Json-Items { param([string]$Text) $Parsed=ConvertFrom-Json -InputObject $Text; foreach($Item in $Parsed){Write-Output $Item} }
 function Docker-Json { param([string[]]$Arguments) Json-Items (Docker-Text $Arguments) }
@@ -35,6 +37,19 @@ function Check-ExtensionEnv {
     $Actual=@($Lines|Where-Object{$_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -or $_.StartsWith('FORTIS_RELEASE_NONCE=')})
     if($Actual.Count -ne 2 -or @($Actual|Where-Object{$Expected -cnotcontains $_}).Count -or
        @($Actual|Select-Object -Unique).Count -ne 2){throw 'RELEASE_CONFIG_CHANGED'}
+}
+function OwnerShell-EnvLines {
+    param([bool]$Enabled)
+    if($Enabled){Write-Output ('FORTIS_OWNER_SHELL_CONFIG='+$script:OwnerShellJson)}
+}
+function Check-OwnerShellEnv {
+    param([string[]]$Lines,[bool]$Enabled)
+    $Actual=@($Lines|Where-Object{$_.StartsWith('FORTIS_OWNER_SHELL_CONFIG=')})
+    if($Enabled){
+        if($Actual.Count -ne 1 -or $Actual[0] -cne ('FORTIS_OWNER_SHELL_CONFIG='+$script:OwnerShellJson)){
+            throw 'RELEASE_OWNER_SHELL_ENV_MISMATCH'
+        }
+    } elseif($Actual.Count){throw 'RELEASE_OWNER_SHELL_UNEXPECTED_ENV'}
 }
 function Assert-PublicEnvFile {
     param([string]$Path,[string[]]$Expected)
@@ -122,6 +137,46 @@ runpy.run_module('fortis_approvals.extensions.cli',run_name='__main__')
     $Encoded=Code64 $Code
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<owner-integrations>','exec'))"
     (Private-Process ($Arguments+@('-I','-B','-c',$Wrapper)) $Payload) | ConvertFrom-Json
+}
+function Image-OwnerShell-Preflight {
+    # Offline, uid-10001, read-only inspection. No client credentials in argv/env/log.
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.owner_shell_release import verify_material
+verify_material()
+print('OWNER_SHELL_MATERIAL_PREFLIGHT_PASS')
+'@
+    $DockerArguments=@('run','--rm','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','128m',
+        '--mount',('type=volume,source='+$VaultVolume+',target=/run/fortis-secrets,readonly'),
+        '--entrypoint','python',$script:Image)
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<owner-shell-release>','exec'))"
+    $Result=Private-Process ($DockerArguments+@('-I','-B','-c',$Wrapper)) ''
+    if($Result -cne 'OWNER_SHELL_MATERIAL_PREFLIGHT_PASS'){
+        throw 'RELEASE_OWNER_SHELL_MATERIAL_PREFLIGHT_FAILED'
+    }
+}
+function Running-OwnerShell-Check {
+    param([string]$Id)
+    # Read-only HTTPS capabilities: validate both identities and bearer before activation.
+    # No execute route is called. Only a fixed public result marker leaves the container.
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.owner_shell import OwnerShellClient
+client=OwnerShellClient.from_environment()
+assert client is not None,'OWNER_SHELL_DISABLED'
+data=client.capabilities()
+assert type(data) is dict and data=={'schemaVersion':1,'oneShot':True,'windows':True,'analyzer':False,'externalAI':False},'OWNER_SHELL_CAPABILITIES_INVALID'
+print('OWNER_SHELL_STAGED_MTLS_CAPABILITIES_PASS')
+'@
+    $Result=Python-Code @('exec','-i','--user','10001:10001',$Id) $Code
+    if($Result -cne 'OWNER_SHELL_STAGED_MTLS_CAPABILITIES_PASS'){
+        throw 'RELEASE_OWNER_SHELL_STAGED_MTLS_FAILED'
+    }
 }
 function Running-CLI {
     param([string]$Id,[string[]]$Command,[string]$InputText='', [switch]$Root)
@@ -259,6 +314,20 @@ function Read-PreservedClaimedJobs {
     if($Value){$null=@(Parse-PreservedUncertainRequests $Value)}
     return $Value
 }
+function Read-OwnerShellFlag {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_OWNER_SHELL_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('ownerShell')){return $false}
+        $Value=$Record['ownerShell']
+    } else {
+        $Property=$Record.PSObject.Properties['ownerShell']
+        if($null -eq $Property){return $false}
+        $Value=$Property.Value
+    }
+    if($Value -isnot [bool]){throw 'RELEASE_OWNER_SHELL_RECORD_INVALID'}
+    return $Value
+}
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -270,7 +339,7 @@ function Get-SourceRecord {
         $P=[ordered]@{pilotId=$Value.pilotId;pilotName=$Value.pilotName;image=$Value.image;stateVolume=$Value.stateVolume
             tokenVolume=$Value.tokenVolume;owner=$Value.owner;repository=$Value.repository;filePrBranch=$Value.filePrBranch
             ciReads=$Value.ciReads;nativeWorktree=$Value.nativeWorktree;requiredWorkflows=$Value.requiredWorkflows
-            bootstrapTask=$Value.bootstrapTask;vaultVolume='';extensionsConfig='';releaseNonce='';runId=$Value.runId}
+            bootstrapTask=$Value.bootstrapTask;vaultVolume='';extensionsConfig='';releaseNonce='';ownerShell=$false;runId=$Value.runId}
     } else {throw 'RELEASE_SOURCE_PROFILE_UNSUPPORTED'}
     $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     if(Test-Path -LiteralPath $PrimaryPointer){
@@ -323,7 +392,7 @@ function Admit {
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         ciControlRepositories=(Read-CiControlRepositories $P)
-        vaultVolume=$P.vaultVolume;status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
+        vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
     if($P.restartPolicy -ceq 'unless-stopped'){
         # The already deployed immutable image still validates the original
         # review name and restart=no. Admit the exact primary rename/policy
@@ -424,6 +493,10 @@ function Resume-Target {
         $RepoCatalog=Repo-JSON "import json;from fortis_approvals.extensions.client import default_client;print(json.dumps(default_client().catalog()))"
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         $null=Running-CLI $C.Id @('probe') $script:R.probes
+        if(Read-OwnerShellFlag $P){
+            Step 'VERIFY_STAGED_OWNER_SHELL_MTLS'
+            Running-OwnerShell-Check $C.Id
+        }
         $script:R.probesPassed=$true;Save
         Assert-SourceUnchanged;Assert-Release-Production
         Step 'ACTIVATE'
@@ -506,6 +579,37 @@ if($Action -eq 'SelfTest'){
         $ClaimForward -cnotcontains '-ConfirmWorkerQuiescent'){
         throw 'RELEASE_CLAIMED_FLAG_FORWARD_SELFTEST_FAILED'
     }
+    $Disabled=@(OwnerShell-EnvLines $false)
+    $Enabled=@(OwnerShell-EnvLines $true)
+    if($Disabled.Count -ne 0 -or $Enabled.Count -ne 1){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
+    Check-OwnerShellEnv $Disabled $false
+    Check-OwnerShellEnv $Enabled $true
+    $Rejected=$false
+    try {Check-OwnerShellEnv @('FORTIS_OWNER_SHELL_CONFIG={}') $true}
+    catch {if($_.Exception.Message -cne 'RELEASE_OWNER_SHELL_ENV_MISMATCH'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
+    $Rejected=$false
+    try {Check-OwnerShellEnv @($Enabled[0],$Enabled[0]) $true}
+    catch {if($_.Exception.Message -cne 'RELEASE_OWNER_SHELL_ENV_MISMATCH'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
+    $Unexpected=$false
+    try {Check-OwnerShellEnv $Enabled $false}
+    catch {if($_.Exception.Message -cne 'RELEASE_OWNER_SHELL_UNEXPECTED_ENV'){throw};$Unexpected=$true}
+    if(-not $Unexpected){throw 'RELEASE_OWNER_SHELL_ENV_SELFTEST_FAILED'}
+    $OwnerOld='{"schema":1}' | ConvertFrom-Json
+    $OwnerNew='{"ownerShell":true}' | ConvertFrom-Json
+    $OwnerInvalid='{"ownerShell":"true"}' | ConvertFrom-Json
+    if((Read-OwnerShellFlag $OwnerOld) -or -not (Read-OwnerShellFlag $OwnerNew)){
+        throw 'RELEASE_OWNER_SHELL_RECORD_SELFTEST_FAILED'
+    }
+    $Rejected=$false
+    try{$null=Read-OwnerShellFlag $OwnerInvalid}
+    catch{if($_.Exception.Message -cne 'RELEASE_OWNER_SHELL_RECORD_INVALID'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_OWNER_SHELL_RECORD_SELFTEST_FAILED'}
+    $Flag=@(Forward-NativeParameters @{EnableOwnerShell=([switch]$true)})
+    if($Flag.Count -ne 1 -or $Flag[0] -cne '-EnableOwnerShell'){
+        throw 'RELEASE_OWNER_SHELL_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
@@ -518,6 +622,10 @@ if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
 if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
+}
+if($EnableOwnerShell -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
+    throw 'RELEASE_OWNER_SHELL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
 if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
@@ -549,7 +657,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -631,6 +739,12 @@ if($Action -eq 'Return' -or $AttemptRecord){
     Resume-Target;return
 }
 if(-not $Config){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
+$SourceForOwnerShell=Get-SourceRecord
+$OwnerShellEnabled=((Read-OwnerShellFlag $SourceForOwnerShell.runtime) -or [bool]$EnableOwnerShell)
+if($OwnerShellEnabled){
+    Step 'OWNER_SHELL_MATERIAL_PREFLIGHT'
+    Image-OwnerShell-Preflight
+}
 $ConfigText=Get-Content -LiteralPath $Config -Raw
 Step 'CONFIG_AND_CREDENTIAL_PREFLIGHT'
 $Report=Image-CLI @('check') $ConfigText
@@ -696,7 +810,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     preserveUncertainRequests=$script:PreserveUncertainRequests
     preserveClaimedJobs=$script:PreserveClaimedJobs
     workerQuiescenceOwnerAttested=([bool]$ConfirmWorkerQuiescent)
-    vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;runId=$RunId}
+    vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;ownerShell=$OwnerShellEnabled;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
     activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''}
@@ -708,10 +822,13 @@ try {
         -not $_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -and
         -not $_.StartsWith('FORTIS_RELEASE_NONCE=') -and
         -not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=') -and
-        -not $_.StartsWith('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=')})
+        -not $_.StartsWith('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=') -and
+        -not $_.StartsWith('FORTIS_OWNER_SHELL_CONFIG=')})
     if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}
     if($Runtime.ciControlRepositories){$EnvLines+='FORTIS_GITHUB_CI_CONTROL_REPOSITORIES='+$Runtime.ciControlRepositories}
     $EnvLines+=@(Extension-EnvLines $CompactConfig $Nonce)
+    $EnvLines+=@(OwnerShell-EnvLines $Runtime.ownerShell)
+    Check-OwnerShellEnv $EnvLines $Runtime.ownerShell
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
     Assert-PublicEnvFile $EnvFile $EnvLines
