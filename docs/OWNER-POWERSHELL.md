@@ -1,6 +1,10 @@
 # Owner Portal PowerShell — optional owner-local command execution
 
-**Status: source-only, not installed or connected to Windows.** This adds a
+**Status: Gateway Owner Shell integration is source-only, not yet activated in Primary.**
+On 2026-11-10 the owner reported a non-admin Windows Executor running with
+mTLS and bearer negative tests passing, plus a real HTTPS capabilities GET
+from the existing Docker Gateway UID 10001. This does **not** prove the
+Owner Portal release or any actual PowerShell execution. This adds a
 PowerShell tab to the existing Owner Portal (`http://localhost:19203` in the
 accepted environment). Existing Pending/History and machine API remain separate.
 
@@ -79,6 +83,36 @@ verification. The certificate and key must be independently reviewed.
 If the variable is absent, the portal tab is visible but execution is
 **disabled** and the owner sees `Windows Executor пока не подключён`.
 The Analyzer/second-AI buttons remain disabled regardless of configuration.
+
+## Trusted release opt-in (source candidate)
+
+The `Manage-Integrations.ps1` owner controller accepts `-EnableOwnerShell`
+**only together with** `-Action Check` or `-Action Apply`, `-Build` and an
+explicit approved exact `-SourceSha`. It does **not** accept caller-supplied
+arbitrary Windows URL, port or credential paths. The sole trusted configuration
+is `port=10443` and the four paths under the existing read-only
+`/run/fortis-secrets/owner-shell/` mount (`server-ca.pem`, `client.pem`,
+`client.key`, `secret.txt`). The five-key JSON is pinned to the protected
+release record's `ownerShell` boolean. Missing or mismatched configuration
+is rejected by the full container admission helper; future approved releases
+retain an already-enabled `ownerShell` flag unless separate reviewed disable
+semantics are implemented.
+
+Before any release stop, the controller checks the private directory and
+files under UID 10001 using an isolated read-only/no-network image helper,
+including mode/ownership, certificate parsing and bearer format. A staged
+container verifies an authenticated read-only `GET /owner-shell/v1/capabilities`
+from Windows before owner activation, never running commands. A failed probe
+must not silently enable the release. No manual Docker environment editing
+is permitted. Real Check/Apply/Backup/Promote must still satisfy UC-GW-005
+and exact preserved native `UNCERTAIN` and `CLAIMED` worker scopes.
+
+Owner deferred offline CA backup and the removal of Windows Gateway staging
+copies for functional V1. This **does not establish isolation**: an arbitrary
+PowerShell script run as the same Windows user can access those profile files
+(and potentially Docker Engine). No unrelated or untrusted scripts should be
+executed until this known risk is addressed. The public tab offers no Analyzer
+verdict; it is not a sandbox.
 
 ## Acceptance
 

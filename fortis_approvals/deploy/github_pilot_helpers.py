@@ -354,6 +354,11 @@ def admit(container, expected, *, pilot):
         require(pilot and expected.get('nativeWorktree') is True,
                 'PILOT_CI_CONTROL_REQUIRES_NATIVE')
         required['FORTIS_GITHUB_CI_CONTROL_REPOSITORIES']=ci_repos
+    owner_shell=expected.get('ownerShell',False)
+    require(type(owner_shell) is bool and (not owner_shell or pilot and bool(expected.get('vaultVolume'))),
+            'PILOT_OWNER_SHELL_CONFIGURATION_INVALID')
+    if owner_shell:
+        required['FORTIS_OWNER_SHELL_CONFIG']='{"port":10443,"serverCA":"/run/fortis-secrets/owner-shell/server-ca.pem","clientCert":"/run/fortis-secrets/owner-shell/client.pem","clientKey":"/run/fortis-secrets/owner-shell/client.key","secretFile":"/run/fortis-secrets/owner-shell/secret.txt"}'
     require(env == required, 'PILOT_PUBLIC_CONFIGURATION_MISMATCH')
     require(container['State']['Status'] == expected['status'], 'PILOT_CONTAINER_STATUS_MISMATCH')
     if expected['status'] == 'running' and expected.get('requireHealthy', True):

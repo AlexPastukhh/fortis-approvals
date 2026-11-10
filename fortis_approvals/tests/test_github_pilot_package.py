@@ -263,6 +263,44 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'PILOT_DYNAMIC_REPOSITORIES_CONFIGURATION_INVALID'):
             HELPERS.admit(c,e,pilot=True)
 
+    def test_owner_shell_requires_record_exact_env_and_existing_readonly_vault(self):
+        c,e=self.fixture()
+        # A pre-existing named vault is already mounted; no new mount or RW access.
+        vault='fortis-review-secrets'
+        c['Mounts'].append(dict(Type='volume',Name=vault,
+            Destination='/run/fortis-secrets',RW=False,
+            Source='/var/lib/docker/volumes/'+vault+'/_data'))
+        e['vaultVolume']=vault
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        c['Config']['Env'].append('FORTIS_OWNER_SHELL_CONFIG={}')
+        with self.assertRaisesRegex(RuntimeError,'PUBLIC_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        e['ownerShell']=True
+        with self.assertRaisesRegex(RuntimeError,'PUBLIC_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        from fortis_approvals.tests.test_owner_shell_release_source import OWNER_SHELL_ENV
+        c['Config']['Env'][-1]='FORTIS_OWNER_SHELL_CONFIG='+OWNER_SHELL_ENV
+        self.assertEqual(HELPERS.admit(c,e,pilot=True),{'admission':'PASS'})
+        c['Config']['Env'].append('FORTIS_OWNER_SHELL_CONFIG='+OWNER_SHELL_ENV)
+        with self.assertRaisesRegex(RuntimeError,'PILOT_DUPLICATE_ENVIRONMENT'):
+            HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'].pop()
+        c['Config']['Env'][-1]='FORTIS_OWNER_SHELL_CONFIG='+OWNER_SHELL_ENV.replace('10443','10444')
+        with self.assertRaisesRegex(RuntimeError,'PUBLIC_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        c['Config']['Env'][-1]='FORTIS_OWNER_SHELL_CONFIG='+OWNER_SHELL_ENV
+        e['ownerShell']='true'
+        with self.assertRaisesRegex(RuntimeError,'OWNER_SHELL_CONFIGURATION_INVALID'):
+            HELPERS.admit(c,e,pilot=True)
+        e['ownerShell']=True
+        c['Mounts'][-1]['RW']=True
+        with self.assertRaisesRegex(RuntimeError,'MOUNT_CONFIGURATION_MISMATCH'):
+            HELPERS.admit(c,e,pilot=True)
+        c['Mounts'].pop()
+        e['vaultVolume']=''
+        with self.assertRaisesRegex(RuntimeError,'OWNER_SHELL_CONFIGURATION_INVALID'):
+            HELPERS.admit(c,e,pilot=True)
+
     def test_ci_control_scope_requires_record_and_exact_public_environment(self):
         c,e=self.fixture()
         e.update(filePrBranch='fortis-e2e/11111111-1111-4111-8111-111111111111-approve',
