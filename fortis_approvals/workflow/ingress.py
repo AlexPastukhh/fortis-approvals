@@ -10,10 +10,11 @@ from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
+from .incident_read import list_uncertain, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch'})
 
 
 class NativeIngress:
@@ -53,7 +54,9 @@ class NativeIngress:
                 cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'},
                 githubCiReads=sorted(CI_READ_NAMES),
                 githubCiControls={'default':'DENY','optIn':'ASK',
-                    'repositories':list(getattr(self.github.config,'ci_control_repositories',()))})
+                    'repositories':list(getattr(self.github.config,'ci_control_repositories',()))},
+                incidentInventory={'readOnly':True,'actorScoped':True,
+                    'maxPageSize':100,'diagnostic':'evidence-stage-v1'})
         if path=='/v1/git/fetch':
             require(set(body)=={'repository','ref','expectedSha'},'WORKFLOW_PARAMS_INVALID')
             self.github._access(body['repository']);sha(body['expectedSha'],optional=True)
@@ -102,14 +105,19 @@ class NativeIngress:
                     r.get('operation')==row['request']['operation'] and r.get('repository')==row['request']['target'],'WORKFLOW_RESULT_BINDING_INVALID')
             self.store.finish(actor,body['requestId'],body['claim'],body['result'],body['error'])
             return dict(recorded=True)
+        if path=='/v1/workspace/list_uncertain':
+            require(set(body)=={'offset','limit'},'WORKFLOW_PARAMS_INVALID')
+            return list_uncertain(core,credential,offset=body['offset'],limit=body['limit'])
         if path=='/v1/workspace/details':
             require(set(body)=={'requestId','eventOffset','eventLimit'},
                     'WORKFLOW_PARAMS_INVALID')
             require(callable(getattr(core,'machine_request_details',None)),
                     'INCIDENT_DETAIL_NOT_SUPPORTED')
-            return core.machine_request_details(
+            details=core.machine_request_details(
                 credential,body['requestId'],
                 event_offset=body['eventOffset'],event_limit=body['eventLimit'])
+            details['diagnostic']=diagnose(details)
+            return details
         if path in ('/v1/workspace/result','/v1/workspace/reconcile'):
             require(set(body)=={'requestId'},'WORKFLOW_PARAMS_INVALID')
             try:row=self._row(credential,body['requestId'])

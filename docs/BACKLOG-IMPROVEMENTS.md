@@ -36,6 +36,14 @@ native worker job **всё ещё `CLAIMED`** без локального receip
 owner-attested worker quiescence и проверенный closure audit.
 Не удалять claim, не переписывать SQLite и не подделывать receipt.
 
+**Source-кандидат 2026-11-10 (до отдельного image release):**
+новый actor-scoped read-only list_uncertain с bounded страницами,
+capability marker и доказательной стадией диагностики в details(UUID).
+См. [исследование](../fortis_approvals/evidence/UNCERTAIN-DIAGNOSTIC-INVESTIGATION-20261110.md).
+Это уменьшает ручную инвентаризацию, но **не восстанавливает утраченный
+exception class** и не устанавливает первопричину исторических сбоев.
+Нужны CI, owner merge, отдельный image admission и live acceptance.
+
 **Открытые задачи:** определить причины потери acknowledgement и появления
 `UNCERTAIN` между Gateway/worker/provider; связать каждый исторический
 эффект с доказательствами его конкретного UUID (позднее похожее действие
@@ -199,12 +207,11 @@ Source-кандидат первого пункта описан в [analysis-re
 
 ## Незавершённое сопровождение принятого native этапа
 
-- **Открыто:** `WorkflowClient.result(UUID)` в `main` по-прежнему не
-  передаёт `accept_202=True` в transport. В
-  `task/native-client-pending-status-20261106` есть **незакоммиченный**
-  diff и регрессионный тест. Не объявлять исправление принятым: сначала
-  проверить task/source/CI, затем отдельный PR и совместимость.
-  Обновление только Repo-side client не требует Gateway image release.
+- **Завершено в main (коммит b265838e):** WorkflowClient.result(UUID)
+  уже передаёт accept_202=True; нативный клиент корректно принимает PENDING.
+  Предыдущая запись про незакоммиченный task/native-client-pending-status-20261106
+  устарела. Не создавать новый PR и не делать новый Gateway image release для
+  исправления, уже принятого в source.
 - Bootstrap worktree пока сохраняется: owner-run record ссылается на его точный
   source path/SHA. Перенести источник будущего пакета на принятый merged source
   отдельно, затем решить вопрос очистки. Старые M1–M3 methods сохраняются для
