@@ -40,7 +40,15 @@ contact the network and create subprocesses. The owner must use a dedicated
 non-admin Windows account with minimal files/network access. Compromise of the
 Portal's client key **and** bearer can allow arbitrary commands on Windows.
 Browser extensions that have access to this page may see commands and output.
-Do not paste secrets, admin scripts, recovery material or credentials.
+For V1, the owner has chosen to run the Executor as the existing Windows user
+**without elevation**; a separate low-privilege user is a later hardening option,
+not a code prerequisite. This permits access to that user's ordinary files,
+applications and network credentials. Before activation, keep private CA keys
+offline and remove staged Gateway client credentials from this user's accessible
+profile after verified transfer into Docker. Windows server key and bearer remain
+readable by the Executor identity by design; this is not isolation from a
+compromised same-user process. Do not paste secrets, admin scripts, recovery
+material or credentials.
 
 ## Explicit opt-in release configuration
 
