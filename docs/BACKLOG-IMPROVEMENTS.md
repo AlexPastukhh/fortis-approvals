@@ -75,14 +75,16 @@ Backup: `fortis-gateway-backup-4b27b6c67d7740aea1c9310efd0be478`.
 См. [исследование](../fortis_approvals/evidence/UNCERTAIN-DIAGNOSTIC-INVESTIGATION-20261110.md).
 Функция классифицирует стадии, но не устанавливает исходный эффект.
 
-**SOURCE CANDIDATE (следующий PR, ещё не установлен):**
-безопасные bounded коды исключений в adapter audit events/worker journal/job,
-read-only actor-owned `activity()` и best-effort heartbeat от исполнителя.
-[Контракт и границы](../fortis_approvals/evidence/WORKER-OBSERVABILITY-20261110.md).
-Исторические заявки не получают задним числом error code или heartbeat.
-Сигнал `RECENT_HEARTBEAT_UNCONFIRMED` не доказывает, что executor работает в
-момент чтения; отсутствие сигнала **не** доказывает quiescence. Owner release
-`-ConfirmWorkerQuiescent` и exact protected scopes остаются обязательными.
+**SOURCE MERGED; READ-ONLY LIVE OBSERVED (2026-11-10):** PR #54 принят в
+`main`, а authenticated Repo увидел live `workerActivity.readOnly=true` и
+успешно вызвал bounded `activity()`. Источник новых кодов исключений,
+heartbeat semantics и запреты описаны в
+[контракте](../fortis_approvals/evidence/WORKER-OBSERVABILITY-20261110.md)
+и [UC-GW-010](use-cases/incidents.md#uc-gw-010). **Не подтверждены:** точная
+post-merge Windows image/release identity и полный end-to-end тест heartbeat/
+error code на новом worker failure. Нельзя называть это завершённой live
+приёмкой или доказательством quiescence. Старая `CLAIMED` не получает
+задним числом heartbeat. `-ConfirmWorkerQuiescent` и protected scope нужны по-прежнему.
 
 **Открытые задачи:** определить причины потери acknowledgement и появления
 `UNCERTAIN` между Gateway/worker/provider; связать каждый исторический
@@ -120,26 +122,26 @@ read-only actor-owned `activity()` и best-effort heartbeat от исполни�
 
 | ID | Статус | Шаг и подтверждение | Что дальше / критерий готовности |
 | --- | --- | --- | --- |
-| PS-V1-01 | **SOURCE** | В `fortis-approvals/main` есть Owner Portal PowerShell routes, WebAuthn/Origin/CSRF, фиксированный mTLS client и тесты; в `docke-windows-mirror/main` — отдельный Windows Executor с bearer, durable UUID receipt и неадминским запуском | Включить в проверенный image release; **текущий Primary не объявлять обновлённым** |
+| PS-V1-01 | **SOURCE ACCEPTED / RELEASED** | Owner Portal и Windows Executor source приняты; Gateway opt-in установлен владельцем на PS-V1-09 | Не считать source/CI доказательством отрицательных browser/receipt тестов (PS-V1-10) |
 | PS-V1-02 | **OWNER PASS** | Владелец подтвердил обновление Browser Mirror и наличие `Start-OwnerPowerShellExecutor.ps1` на Windows; версия/поведение Executor в живом процессе ещё не проверены | Перед активацией проверить локальные SHA/исходник и отсутствие запуска от администратора |
-| PS-V1-03 | **OWNER PASS** | На Windows порт `10443` свободен, Docker Gateway видит временный TCP listener на `127.0.0.1:10443` через `host.docker.internal` (`GATEWAY_TO_WINDOWS_LOOPBACK=PASS`); отдельный Windows Firewall ingress на Ethernet не нужен | Использовать bind **только `127.0.0.1:10443`**; подтвердить повторно после запуска HTTPS |
+| PS-V1-03 | **OWNER PASS** | TCP loopback preflight `10443` подтверждён, последующие authenticated HTTPS/mTLS проверки проведены на PS-V1-08/09 | Bind должен оставаться **только `127.0.0.1:10443`**; новый host deployment требует свежей проверки |
 | PS-V1-04 | **OWNER PASS** | OpenSSL на Windows найден; созданы отдельные server/client CA, сертификаты, ключи и независимый bearer; `SERVER_TLS_IDENTITY`, `CLIENT_TLS_IDENTITY`, обе key-pair проверки и `BEARER_SECRET_MATCH` — PASS | Сохранить текущие материалы, не пересоздавать при ошибках следующего шага; проверить реальные TLS рукопожатия |
 | PS-V1-05 | **OWNER PASS** | Действующий `fortis-gateway` сообщён `healthy`, UID:GID `10001:10001`, `fortis-review-secrets` смонтирован только RO; исходные четыре Gateway-файла были staged на Windows | Последующая установка материалов в Docker подтверждена отдельно в PS-V1-06 |
 | PS-V1-06 | **OWNER PASS (2026-11-10)** | Владелец подтвердил `OWNER_SHELL_TARGET_PREFLIGHT=PASS`, `OWNER_SHELL_PRIVATE_DIR_PREPARED=PASS`, `OWNER_SHELL_VOLUME_INSTALL=PASS`, `GATEWAY_UID10001_READONLY_VERIFY=PASS`, `GATEWAY_UNCHANGED=PASS`, `OWNER_SHELL_CLIENT_MATERIAL_READY` для четырёх файлов `/run/fortis-secrets/owner-shell/` | Root volume **не** изменён (`root:root / 0755`); приватный подкаталог UID `10001` `0700`, четыре файла `0600`. Это Docker materials, **не** Gateway релиз |
 | PS-V1-07 | **DEFERRED AFTER V1 — owner decision** | Владелец решил отложить offline backup/изоляцию `issuer/server-ca.key` и `issuer/client-ca.key`, а также удаление временных Gateway staging key/bearer из Windows profile, **только для функциональной V1**. Инвентаризация `WINDOWS_TLS_FILES=PASS`, `PS_V1_07_INVENTORY_COMPLETE`; зашифрованного внешнего накопителя нет | Не считать защиту CA/staging выполненной. До безопасного резервирования **не** удалять ключи; arbitrary PowerShell под `alexa` может читать доступные файлы и использовать Docker. До реальных пользовательских скриптов повторно оценить риск; отдельная post-V1 hardening задача обязательна |
-| PS-V1-08 | **OWNER PASS (2026-11-10)** | Windows Mirror SHA `747ffaa8830a1bcbc12838ada0b5dccbd9b1e08e`, `EXECUTOR_SOURCE_AND_IDENTITY=PASS`, `OWNER_SHELL_MTLS_READY`; локальные `VALID_MTLS_AND_BEARER`, `INVALID_BEARER_REJECTED`, `NO_CLIENT_CERT_REJECTED`, `WRONG_SERVER_CA_REJECTED`, `PS_V1_08_LOCAL_AUTH_TESTS` — PASS | Владелец также подтвердил из живого `fortis-gateway` UID `10001`: `GATEWAY_TO_WINDOWS_MTLS=PASS`, `GATEWAY_WRONG_BEARER_REJECTED=PASS`, `PS_V1_08_DOCKER_NETWORK_AUTH=PASS`. Только capabilities GET, **без execute**; после owner остановки потребуются новые runtime-проверки |
-| PS-V1-09 | **OPEN — SOURCE CANDIDATE** | Owner-only Gateway opt-in: зафиксировать `-EnableOwnerShell` в trusted `Manage-Integrations.ps1`, ровно `port,serverCA,clientCert,clientKey,secretFile`, private material preflight, immutability admission и staged mTLS capabilities before activation | Нужны source PR, точный SHA, CI/PowerShell 5.1 SelfTest, owner merge, штатный guarded Check/Apply/Backup/Promote и live readback по UC-GW-005. Существующий `fortis-review-secrets` root `root:root/0755` не менять; **не** активировать вручную, не обходить preservation `UNCERTAIN`/`CLAIMED` |
-| PS-V1-10 | **OPEN — приёмка V1** | Из браузера owner WebAuthn → PowerShell `Get-Date` → реальный результат Windows + exit code + UUID/receipt | Отрицательные session/CSRF проверки, тот же UUID не повторяет выполнение, неверный UUID/команда не подменяет receipt, тайм-аут/сбой не объявляет успехом; проверить безопасную ручную остановку/повторный запуск и сохранность receipts |
+| PS-V1-08 | **OWNER PASS (2026-11-10)** | Windows Mirror SHA `747ffaa8830a1bcbc12838ada0b5dccbd9b1e08e`, `OWNER_SHELL_MTLS_READY`, локальные valid/invalid bearer, missing cert, wrong server CA и Gateway HTTPS capabilities GET — PASS | Это preflight TLS; первый реальный execute отдельно подтверждён в PS-V1-10. При смене хоста/сертификатов проверки повторять по контракту |
+| PS-V1-09 | **OWNER PASS / PROMOTED (2026-11-10)** | PR #53 / `9481699faaa297d8ec1fb45b4f14be50ae17406f`: `Check -Build`, `Apply -Build -EnableOwnerShell`, staged mTLS, `FORTIS_INTEGRATIONS_ACTIVATED`, protected Backup и `FORTIS_PRIMARY_PROMOTED` с readback PASS | Точный image/record/backup и preserved `UNCERTAIN`/`CLAIMED` — в [датированном evidence](../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md). **Не** запускать релиз повторно и не выдавать это за завершённый PS-V1-10 |
+| PS-V1-10 | **OWNER FUNCTIONAL PASS / SECURITY OPEN** | Из авторизованного браузерного Portal `Get-Date`: `EXECUTED`, exit `0`, UUID `349937f9-d7b6-436d-9a9a-773b9164970e` и реальный Windows stdout. Отдельного per-command подтверждения не было; это не доказательство API bypass | **OPEN:** отрицательные session/Origin/CSRF, UUID replay/conflict, timeout/lost ack, restart/receipt persistence; убрать лишний CLIXML progress/кодировку stderr, не скрывая настоящие ошибки. [Evidence](../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md) |
 
 **Owner-reported PS-V1-06/08 evidence (2026-11-10):** первый подготовленный
 установщик остановился на preflight из-за `root:root / 0755` в непустом
 `fortis-review-secrets`; исправленный установщик подготовил **только**
 отдельный приватный `owner-shell/`, оставив корень и существующий Gateway
 неизменными. После этого владелец запустил Windows Executor без elevation
-и подтвердил как локальные отрицательные mTLS/Bearer проверки, так и успешный
-HTTPS/mTLS capabilities GET из работающего Docker Gateway (только GET;
-PowerShell execute ещё не вызывался). Срок доступности процесса после этих
-проверок **не** подтверждён: это не Windows service/autostart.
+и подтвердил локальные отрицательные mTLS/Bearer проверки и HTTPS/mTLS
+capabilities GET из Docker Gateway. Это исторический preflight **до** PS-V1-10:
+последующая реальная команда `Get-Date` подтверждена отдельно. Windows service/
+autostart и безопасный restart Executor не приняты.
 
 **Publication warning:** отдельный предшествующий task commit
 `d37417ef773be1499fc94d4b70dbeb0a07317e5b` для PS-V1-06 evidence
@@ -245,6 +247,9 @@ owner-confirmed image `a200137775eb6c6b8dcec81f31206b0d481d9003`)
 лишь ради изменения статуса этой документации.
 
 ## Следующие задачи
+
+Это **внутренняя очередность после P0**, а не замена первому приоритету
+[Fortis → API](#p0--подключение-собственных-api-через-gateway-первое-в-очереди-2026-11-10).
 
 | Порядок | Задача | Что должно получиться |
 | --- | --- | --- |

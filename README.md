@@ -53,9 +53,10 @@ Historical provisioning/cutover scripts are not routine development commands.
 
 ## Optional Owner Portal PowerShell
 
-The Owner Portal source now includes a **PowerShell** tab. Single-shot script
-execution is available only after a separately reviewed **mTLS Windows
-Executor** is provisioned and explicitly opted into the trusted Gateway
-runtime. Without it, Apply is disabled; Analyzer and second-AI buttons are
-always disabled placeholders. **No production deploy or Windows execution**
-is implied by source/CI. See [Owner PowerShell contract](docs/OWNER-POWERSHELL.md).
+The Owner Portal **PowerShell** tab uses a separately provisioned mTLS
+Windows Executor. Owner-reported PS-V1-09 opt-in and the first real `Get-Date`
+execution are accepted as **functional evidence**; full session/CSRF/receipt
+safety acceptance is still open. Analyzer and second-AI controls remain disabled.
+See [current state](docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
+[Owner PowerShell contract](docs/OWNER-POWERSHELL.md) and the
+[single backlog](docs/BACKLOG-IMPROVEMENTS.md).

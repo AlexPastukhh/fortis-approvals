@@ -152,7 +152,9 @@ GitHub receipt. rootCause=UNDETERMINED всегда означает, что т�
 [typed client](../../fortis_approvals/workflow/client.py) и
 [операционные правила](../PRIMARY-GATEWAY-OPERATIONS.md).
 
-## UC-GW-010 — Read-only worker activity and safe typed error evidence (source candidate)
+<a id="uc-gw-010"></a>
+
+## UC-GW-010 — Read-only worker activity and safe typed error evidence
 
 **Когда:** нужно понять, есть ли наблюдаемые признаки исполнения `CLAIMED`
 при расследовании или перед owner-managed release. Не выполнять `claim`,
@@ -182,7 +184,11 @@ DISPATCHED и Gateway worker job после `finish`. `details(UUID).diagnostic`
 `rootCause` и `originalEffect` остаются неопределёнными. Исторические
 ошибки задним числом не восстанавливаются.
 
-**Граница принятия:** SOURCE ONLY до owner merge, последующего image release
-и live acceptance. Для уже работающего Primary действует UC-GW-009.
-Никаких изменений `-ConfirmWorkerQuiescent`, exact preservation или политики
-Backup/Promote эта возможность не разрешает.
+**Граница принятия (2026-11-10):** source принят в `main` через PR #54;
+authenticated Repo увидел `workerActivity.readOnly=true` и успешный read-only
+`activity()` живого Gateway. Это **не** доказывает точный post-PR образ в
+Windows, end-to-end новых heartbeat/errors или quiescence. До отдельного
+owner release/provenance evidence и негативных тестов не объявлять полную
+live acceptance. Для самостоятельного поиска неопределённых UUID действует
+[UC-GW-009](#uc-gw-009). Эта возможность не меняет
+`-ConfirmWorkerQuiescent`, exact preservation или Backup/Promote policy.

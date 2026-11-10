@@ -70,11 +70,12 @@ of ordinary source work. Deployment/return authorization belongs to the exact
 reviewed record and target, not merely to the existence of a script.
 Remaining work is in the [follow-up plan](../../docs/BACKLOG-IMPROVEMENTS.md).
 
-## AI incident details and simple owner close — installed 2026-11-09
+## AI incident details and simple owner close — established 2026-11-09
 
-Owner-reported installed Primary is source
-`a200137775eb6c6b8dcec81f31206b0d481d9003`, with exact image
-`sha256:69be667a654882f6b073eb89827a4be28e2f28b355838cc9325d2c66cc14bec8`.
+This feature predates the subsequent 2026-11-10 Owner Shell release. The latest
+owner-confirmed source/image identity is recorded **only** in the
+[current state](../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md), not
+as a hardcoded historical pin in this operational index.
 Authenticated Repo `WorkflowClient.details(UUID)` provides actor-owned
 Core request, params/reason/preview, paginated audit, worker summary
 (no claim token) and durable receipt if present. Live machine read was

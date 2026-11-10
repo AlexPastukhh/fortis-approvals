@@ -21,13 +21,15 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
 | Optional analysis-review source operations (not deployed) | [Analysis review contract](ANALYSIS-REVIEW-CONTRACT.md) |
 | Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
-| Upcoming work and acceptance goals | [Follow-up plan](BACKLOG-IMPROVEMENTS.md) |
+| Upcoming work, acceptance gaps and priority P0 | [Single backlog](BACKLOG-IMPROVEMENTS.md) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
 | Provider-specific implementation | [Integration catalog](../fortis_approvals/integrations/README.md) |
 | Deployment scripts and retained return paths | [Deployment index](../fortis_approvals/deploy/README.md) |
 | Completed onboarding milestones | [Onboarding record](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md) |
 
 ## Evidence and historical references
+
+- [Owner Shell PS-V1-09 guarded release and PS-V1-10 first `Get-Date` — owner report, 2026-11-10](../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md).
 
 - [Primary Gateway promotion, recovery backup, Docker restart and Legacy retirement — 2026-11-07](../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md).
 - [Native Git/worktree live cycle — 2026-11-06](../fortis_approvals/evidence/FORTIS-NATIVE-GIT-LIVE-20261106.md).
