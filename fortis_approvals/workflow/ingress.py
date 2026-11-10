@@ -10,11 +10,11 @@ from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
-from .incident_read import list_uncertain, diagnose
+from .incident_read import list_uncertain, list_requests, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/list_requests','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
 
 
 class NativeIngress:
@@ -58,6 +58,9 @@ class NativeIngress:
                     'repositories':list(getattr(self.github.config,'ci_control_repositories',()))},
                 incidentInventory={'readOnly':True,'actorScoped':True,
                     'maxPageSize':100,'diagnostic':'evidence-stage-v1'},
+                globalRequestInventory={'readOnly':True,'actorScoped':False,
+                    'maxPageSize':100,'metadataOnly':True,'supportsHistory':True,
+                    'crossActorDetails':True},
                 workerActivity={'readOnly':True,'actorScoped':True,'maxPageSize':100,
                                 'signal':'heartbeat-observation-v1','quiescenceProof':False},
                 workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False})
@@ -136,11 +139,17 @@ class NativeIngress:
         if path=='/v1/workspace/list_uncertain':
             require(set(body)=={'offset','limit'},'WORKFLOW_PARAMS_INVALID')
             return list_uncertain(core,credential,offset=body['offset'],limit=body['limit'])
+        if path=='/v1/workspace/list_requests':
+            require(set(body)=={'offset','limit','unresolvedOnly'},'WORKFLOW_PARAMS_INVALID')
+            require(core.auth.authenticate(credential)==actor,'WORKFLOW_ACTOR_DENIED')
+            return list_requests(core,credential,offset=body['offset'],limit=body['limit'],
+                                 unresolved_only=body['unresolvedOnly'])
         if path=='/v1/workspace/details':
             require(set(body)=={'requestId','eventOffset','eventLimit'},
                     'WORKFLOW_PARAMS_INVALID')
             require(callable(getattr(core,'machine_request_details',None)),
                     'INCIDENT_DETAIL_NOT_SUPPORTED')
+            require(core.auth.authenticate(credential)==actor,'WORKFLOW_ACTOR_DENIED')
             details=core.machine_request_details(
                 credential,body['requestId'],
                 event_offset=body['eventOffset'],event_limit=body['eventLimit'])
@@ -168,7 +177,12 @@ class NativeIngress:
         acquired=False
         try:
             require(self.base._environment(env) and env.get('REQUEST_METHOD')=='POST','WORKFLOW_ROUTE_DENIED')
-            credential,actor=self.base._credential(env);require(actor==self.actor,'WORKFLOW_ACTOR_DENIED')
+            credential,actor=self.base._credential(env)
+            # All authenticated AI actors may READ a global request inventory
+            # or full request details. Every other native route stays scoped to
+            # the configured Repo actor (including claim/result/reconcile).
+            global_read=path in ('/v1/workspace/list_requests','/v1/workspace/details')
+            require(actor==self.actor or global_read,'WORKFLOW_ACTOR_DENIED')
             if not self.limiter.take(actor):return RepoIngress._reply(start,429,dict(error='WORKFLOW_RATE_LIMIT'))
             if path in ('/v1/git/artifact','/v1/github/visual-review/stage') and not self.upload_limiter.take(actor):
                 return RepoIngress._reply(start,429,dict(error='WORKFLOW_UPLOAD_RATE_LIMIT'))

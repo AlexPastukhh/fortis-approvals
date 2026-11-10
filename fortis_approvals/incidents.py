@@ -51,16 +51,23 @@ class IncidentCore(Core):
                     'total':total,'truncated':total>len(rows)}
 
     def machine_request_details(self, credential, request_id, *, event_offset=0, event_limit=100):
-        """Read-only full owner-equivalent request for its initiating machine actor.
+        """Read-only request/audit/receipt for any authenticated machine actor.
 
-        Never expose the worker claim token, a session, or a machine secret.
-        Unlike WorkspaceAdapter.receipt(), this never performs post-dispatch
-        task registration or any other state-changing operation.
+        The authenticated machine grant authorizes investigation globally.
+        No decision, dispatch, claim, retry, session, or machine credential
+        is exposed or performed. In particular, WorkspaceAdapter.receipt()
+        is never called: it may register tasks after dispatch.
         """
         if (type(event_offset) is not int or event_offset < 0 or event_offset > 1000000 or
             type(event_limit) is not int or not 1 <= event_limit <= 100):
             raise Denied('INCIDENT_READ_PAGINATION_DENIED')
-        row=self.client(credential,'status',request_id)
+        if (type(request_id) is not str or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',request_id)):
+            raise Denied('INCIDENT_READ_UUID_INVALID')
+        self.auth.authenticate(credential)
+        # Machine-only global read: no Core.client(status), whose actor
+        # equality is still required for result/reconcile/execute/owner paths.
+        row=self._read(request_id)
         with self._db() as db:
             count=db.execute('SELECT COUNT(*) FROM events WHERE request_id=?',
                              (request_id,)).fetchone()[0]

@@ -117,6 +117,8 @@ journal evidence. Report original-request evidence separately from any later
 successful request. Do **not** ask the owner to manually open incident cards
 just to copy IDs or inspect technical diagnostics that the Repo tools can read.
 
+**Planned global machine inventory and full read-only details (source candidate, not yet deployed).** WorkflowClient.list_requests(unresolved_only=True) lists PENDING/APPROVED/DISPATCHED/UNCERTAIN metadata for all actors; False includes history. WorkflowClient.details(uuid) then returns any actor's full request, preview, events, worker state and available receipts. Verify live globalRequestInventory.readOnly AND globalRequestInventory.crossActorDetails first. This grants no cross-actor status/reconcile/execute, owner access, machine credentials, worker claim token, or owner session.
+
 **Version-gated machine inventory.** `list_uncertain` was accepted in the
 2026-11-10 Primary release (`9481699faaa297d8ec1fb45b4f14be50ae17406f`).
 It remains scoped to the initiating TLS machine actor. Always check live

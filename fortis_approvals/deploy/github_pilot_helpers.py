@@ -94,7 +94,8 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
     require(native or not claimed_permitted,'PILOT_CLAIMED_REQUIRES_NATIVE')
     approved_permitted=validate_uncertain_ids(
         [] if preserve_approved_ids is None else preserve_approved_ids)
-    require(len(approved_permitted)<=1,'PILOT_APPROVED_SCOPE_MUST_BE_SINGLE')
+    # Bounded exact owner-reviewed set, not a wildcard or auto-admission.
+    require(len(approved_permitted)<=20,'PILOT_APPROVED_SCOPE_TOO_LARGE')
     require(type(require_exact_approved) is bool,'PILOT_APPROVED_SCOPE_INVALID')
     require(not approved_permitted or (native and github),'PILOT_APPROVED_REQUIRES_NATIVE_GITHUB')
     files = FILES | ({'github-receipts.sqlite'} if github else set())
@@ -167,11 +168,9 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                     'PILOT_APPROVED_AUDIT_SCHEMA_INVALID')
             require(native and github,'PILOT_APPROVED_REQUIRES_NATIVE_GITHUB')
             jobs=connections['native-git/workflow.sqlite']
-            # Trusted bootstrap scope: this one stranded doc-edit only, never
-            # an arbitrary approved secret/production/provider mutation.
+            # Each explicitly named request must still be pre-dispatch.
+            # Never invoke an adapter, reconcile, reset jobs or mutate Core.
             for request_id,actor,payload,result,failure in approved_rows:
-                require(request_id=='ba299f4f-f49c-4ef7-80cf-e1f31a232024',
-                        'PILOT_APPROVED_NOT_BOOTSTRAP_ID')
                 require(type(actor) is str and bool(actor) and
                         result is None and failure is None,
                         'PILOT_APPROVED_RECORD_INVALID')
@@ -179,12 +178,14 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                 except (TypeError,ValueError):
                     raise RuntimeError('PILOT_APPROVED_PAYLOAD_INVALID') from None
                 require(type(intent) is dict and
-                        intent.get('service')=='workspace' and
-                        intent.get('operation')=='edit' and
-                        intent.get('target')=='fortis-approvals' and
-                        type(intent.get('params')) is dict and
-                        intent['params'].get('task')=='mirror-read-provider-20261110',
-                        'PILOT_APPROVED_NOT_BOOTSTRAP_EDIT')
+                        type(intent.get('service')) is str and
+                        bool(intent['service']) and
+                        type(intent.get('operation')) is str and
+                        bool(intent['operation']) and
+                        type(intent.get('target')) is str and
+                        bool(intent['target']) and
+                        type(intent.get('params')) is dict,
+                        'PILOT_APPROVED_PAYLOAD_INVALID')
                 states=[x[0] for x in a.execute(
                     'SELECT state FROM events WHERE request_id=? ORDER BY seq',
                     (request_id,))]

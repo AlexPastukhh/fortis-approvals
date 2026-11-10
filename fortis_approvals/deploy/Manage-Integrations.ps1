@@ -196,13 +196,12 @@ function Repo-JSON {
 function Assert-ApprovedScopeForwarded {
     param($Payload)
     if($Payload.action -cnotin @('inspect','clone')){return}
-    # This guards the exact payload sent into the ephemeral image helper.
-    # The owner-specified UUID must survive script state/JSON assembly
-    # unchanged. Missing scope is a hard error, not permission to continue.
-    $Expected=$script:PreserveApprovedRequest
+    # Owner-pinned full list must survive PowerShell -> JSON -> Docker unchanged.
+    # An empty/missing, reordered or widened list is rejected before Docker.
+    $Expected=@(Approved-Ids)
     $Actual=@($Payload.preserveApprovedIds)
-    if($Expected){
-        if($Actual.Count -ne 1 -or $Actual[0] -cne $Expected){
+    if($Expected.Count){
+        if(($Actual -join ',') -cne ($Expected -join ',')){
             throw 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'
         }
     } elseif($Actual.Count){
@@ -346,14 +345,14 @@ function Read-PreservedApprovedRequest {
         $Property=$Record.PSObject.Properties['preserveApprovedRequest']
         if($null -ne $Property){$Value=$Property.Value}
     }
-    if($Value -isnot [string] -or
-       ($Value -and $Value -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')){
-        throw 'RELEASE_APPROVED_RECORD_INVALID'
-    }
+    if($Value -isnot [string]){throw 'RELEASE_APPROVED_RECORD_INVALID'}
+    if($Value){$null=@(Parse-PreservedUncertainRequests $Value)}
     return $Value
 }
 function Approved-Ids {
-    if($script:PreserveApprovedRequest){Write-Output $script:PreserveApprovedRequest}
+    if($script:PreserveApprovedRequest){
+        Parse-PreservedUncertainRequests $script:PreserveApprovedRequest
+    }
 }
 function Read-OwnerShellFlag {
     param($Record)
@@ -653,6 +652,14 @@ if($Action -eq 'SelfTest'){
             action='inspect';preserveApprovedIds=@('22222222-2222-4222-8222-222222222222')}}
         catch{if($_.Exception.Message -cne 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'){throw};$Rejected=$true}
         if(-not $Rejected){throw 'RELEASE_APPROVED_SCOPE_WRONG_ID_SELFTEST_FAILED'}
+        $script:PreserveApprovedRequest='11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222'
+        $Both=@(Approved-Ids)
+        if($Both.Count -ne 2){throw 'RELEASE_APPROVED_MULTI_SCOPE_SELFTEST_FAILED'}
+        Assert-ApprovedScopeForwarded @{action='inspect';preserveApprovedIds=$Both}
+        $Rejected=$false
+        try{Assert-ApprovedScopeForwarded @{action='clone';preserveApprovedIds=@($Both[0])}}
+        catch{if($_.Exception.Message -cne 'RELEASE_APPROVED_SCOPE_NOT_FORWARDED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_APPROVED_MULTI_SCOPE_SELFTEST_FAILED'}
     } finally { $script:PreserveApprovedRequest=$SavedApproved }
     $ScriptWasUnscoped=$script:PreserveApprovedRequest
     try {
@@ -727,7 +734,7 @@ if($PreserveUncertainRequests){
     }
 }
 if($PreserveApprovedRequest){
-    if($PreserveApprovedRequest -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+    if(@(Parse-PreservedUncertainRequests $PreserveApprovedRequest).Count -lt 1 -or
         $Action -cnotin @('Check','Apply') -or -not $Build -or
         $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
         -not $ConfirmWorkerQuiescent){

@@ -45,73 +45,60 @@ and a verified closure audit; no silent state change. Existing operator
 quiescence attestation for claim carryover remains necessary.
 
 
-## Проверка сохранения APPROVED при обновлении образа — diagnostic candidate
+## Защищённый перенос нескольких APPROVED — следующий source candidate
 
-Если Windows `Check -Build` завершится после
-`CONFIG_AND_CREDENTIAL_PREFLIGHT` ошибкой из `inspect_state()`,
-последняя напечатанная стадия **не означает**, что упал CLI configuration
-check: в `Check` затем есть read-only вызов `Receipt()`, который раньше
-не печатал отдельную стадию. Новый вариант печатает
-`SOURCE_STATE_PREFLIGHT_READ_ONLY` и
-`FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED`, если ровно один ожидаемый UUID
-передан в Docker state-helper. `SelfTest` теперь проверяет положительный
-и отрицательные пути доставки этого singleton.
+**Цель:** выпустить в Windows образ с Owner Portal (отмена до dispatch
+и пассивная автопроверка) без удаления зависших заявок из исходной SQLite.
 
-Дифференцированные fail-closed результаты:
+Точно названный владельцем список `APPROVED` передаётся в существующий
+параметр `-PreserveApprovedRequest` как **строка из UUID через запятую**
+(старый одиночный UUID остаётся допустим). Для текущего блокера:
 
-- `RELEASE_APPROVED_SCOPE_NOT_FORWARDED` — Windows собирал state-helper
-  payload без ожидаемого UUID: ошибка именно в связывании/передаче флага.
-- `PILOT_APPROVED_PRESERVATION_SCOPE_EMPTY` — image обнаружил хотя бы
-  одну `APPROVED`, но разрешённый список в полученном payload пуст.
-- `PILOT_APPROVED_EXPECTED_REQUEST_MISMATCH` — текущие `APPROVED`
-  не совпадают с явно указанным UUID.
-- `PILOT_APPROVED_ADDITIONAL_REQUESTS_PRESENT` — помимо явно
-  разрешённой заявки обнаружена хотя бы одна другая `APPROVED`.
-  Не расширять allowlist автоматически; требуется отдельный разбор.
-- `PILOT_APPROVED_SET_CHANGED` — exact set успел измениться после
-  принятого owner scope; повторно исследовать источник до release.
+```powershell
+$approved = 'ba299f4f-f49c-4ef7-80cf-e1f31a232024,49bcd340-8d21-4a7c-906a-ea5ea56ba748'
+$claimed  = '2df32a24-efb1-4dac-97f6-3b66147d8944'
+# Вручную, только с owner-подтверждением quiescence и SHA нового merged main:
+# & $manager -Action Check -Build -SourceSha $sha -Config $configFile `
+#     -PreserveApprovedRequest $approved -PreserveClaimedJobs $claimed -ConfirmWorkerQuiescent
+```
 
-Ни один код не меняет SQLite, не удаляет заявки и не отключает
-предохранители. Ошибка `PILOT_REVIEW_HAS_UNREVIEWED_APPROVED` на
-предыдущей версии **не позволяет установить**, какой из случаев
-произошёл, поэтому прежнее предположение о потере UUID не считается
-доказательством. Следующий Check допустим только после проверенного
-owner control/quiescence и принятия нового source/CI.
+**Безопасность и стоп-условия:** это не список на исполнение или авто-ASK.
+`Check/Apply` требует точный `main` SHA, owner review и независимое
+подтверждение отсутствия активного старого worker. Каждый текущий APPROVED
+обязательно входит в список (максимум 20; никаких подстановок или
+дубликатов), список должен в точности совпасть. Для каждого проверяется
+Core result/failure=null, audit без DISPATCHED, отсутствие нативного job,
+GitHub/Sonar receipt и корректная связка request. Любой PENDING/DISPATCHED,
+неизвестный UUID, race, отсутствующая проверка, активное исполнение
+или изменение набора во время preflight — STOP.
 
-## One-off APPROVED bootstrap — source candidate, NOT deployed
+`Check` печатает `SOURCE_STATE_PREFLIGHT_READ_ONLY` и
+`FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED`. Дальше `Apply` делает
+строгий приём источника, побайтовый clone, повторную сверку источника,
+release smoke, стадию/активацию; существующие SQLite и audit не
+переписываются. `Backup/Promote` наследуют точную изначальную область,
+допускают уменьшение APPROVED после отмены владельцем и сохраняют
+неопределённые CLAIMED, но требуют новой quiescence attestation.
 
-**Problem:** the current Primary contains one stranded owner-reviewed Core
-request `ba299f4f-f49c-4ef7-80cf-e1f31a232024` in `APPROVED` state.
-The existing release admission rejects every `APPROVED`, preventing the
-new Owner Portal cancellation code (PR #59) from being installed.
+**После owner release:** владелец через Owner Portal может выполнить
+`APPROVED → CANCELLED_BEFORE_DISPATCH`, каждый раз с fingerprint,
+Core writer-lock и проверками отсутствия dispatch/job/receipt. Это
+отмена, а не физическое удаление записи и не повтор старого UUID.
+Все AI, прошедшие существующую machine TLS/grant аутентификацию,
+могут видеть полный реестр любых инициаторов через
+`WorkflowClient.list_requests(offset,limit,unresolved_only)`.
+Для любого UUID `WorkflowClient.details(uuid)` возвращает полную
+read-only карточку: исходный request и preview, audit, worker evidence
+и receipt. Отдельные страницы audit через event_offset/event_limit.
+В ответе нет machine credential, owner session/WebAuthn и worker claim
+token. Cross-actor `status/result/reconcile/submit/finish/claim` не
+расширяются: доступ на запись и повтор остаются прежними.
+Функция активируется только после owner-managed image release.
 
-**Narrow bootstrap (requires a second merged, reviewed PR):**
-`Manage-Integrations.ps1 -PreserveApprovedRequest
-ba299f4f-f49c-4ef7-80cf-e1f31a232024` is permitted **only** with
-`Check/Apply -Build -SourceSha <exact-reviewed-main-SHA>
--ConfirmWorkerQuiescent`. The source helper must independently confirm
-the **exact** active APPROVED set, fixed
-`workspace.edit fortis-approvals` + task
-`mirror-read-provider-20261110`, no prior DISPATCHED event, no result,
-failure, native worker job, or provider receipt; every PENDING/DISPATCHED or
-another APPROVED still blocks the release. No SQLite rewrite and no worker
-claim reset. Confirmation of worker quiescence remains an owner attestation
-verified independently; `activity().quiescenceProven=false` is not proof.
-The existing exact preservation of `CLAIMED` remains mandatory.
-
-The flag is stored in the signed protected release record, inherited by
-`Backup/Promote` and accepted as a **subset** after the owner's later
-cancellation of the approved request. It is *not* a generic
-`--ignore-unfinished` bypass. Clone/rollback preserve every database byte
-and audit event, and recheck before and after stopping the source.
-The feature is not active until code review, CI, owner-managed Windows
-`SelfTest → Check → Apply → Backup → Promote`, and read-only verification.
-
-After activating the new release, owner may use **Cancel before dispatch**
-for this UUID; the Gateway verifies atomically that it remains APPROVED.
-A lost response, prior DISPATCHED or worker record must stop cancellation.
-A new task operation is allowed only under fresh policy/preconditions and a
-new UUID, never by reissuing the original UUID.
+**Граница принятия:** это source candidate; даже merged GitHub PR и
+прошедший CI **не означают Windows release**. Проверенный SHA, owner
+`SelfTest → Check → Apply → Backup → Promote` и live readback
+обязательны. Не использовать новый endpoint на старом Gateway.
 
 ## Исторические UNCERTAIN / CLAIMED — защищённый перенос (действующий механизм)
 
