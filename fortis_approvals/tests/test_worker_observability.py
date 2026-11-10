@@ -238,6 +238,9 @@ class CoreAndIngressTests(unittest.TestCase):
         with self.core._db() as db:
             db.execute("UPDATE requests SET state='UNCERTAIN' WHERE id=?",(ident,))
         token=self.store.claim('actor-a',ident)['claim']
+        legacy=self.native._dispatch('/v1/workspace/details',
+            {'requestId':ident,'eventOffset':0,'eventLimit':100},'secret-a','actor-a')
+        self.assertNotIn('diagnostic',legacy['worker'])
         d=evidence('WORKER_EXECUTE','OPERATING_SYSTEM')
         self.native._dispatch('/v1/workspace/finish',
             {'requestId':ident,'claim':token,'result':None,'error':'UNCERTAIN','diagnostic':d},
