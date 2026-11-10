@@ -70,7 +70,7 @@ def _list_sessions(ctx):
         check(type(row) is dict, 'OBS_SESSION_ENTRY_INVALID')
         sessions.append({
             'conversation_id': row.get('conversation_id'),
-            'session_id': row.get('session_id'),
+            'session_id': row.get('reporting_session_id'),
         })
     result = {'ok': True, 'sessions': sessions}
     _sessions_result(result)
