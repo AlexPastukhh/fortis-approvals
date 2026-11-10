@@ -36,10 +36,12 @@ class WorkflowClient:
         return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident),accept_202=True)
 
     def details(self,ident,*,event_offset=0,event_limit=100):
-        """Full owner-equivalent request + audit and worker evidence, read-only.
+        """Read-only full request + audit/worker evidence for any actor.
 
-        Scoped by the existing Repo machine grant to requests initiated by
-        that actor. No owner cookie, credentials, claim token or retry.
+        An authenticated AI may inspect a different initiator's request but
+        cannot approve, execute, retry, or reconcile it. No machine secret,
+        owner cookie, or worker claim token is exposed. Requires deployed
+        globalRequestInventory.crossActorDetails capability.
         """
         return self.gateway.post('/v1/workspace/details',
             dict(requestId=ident,eventOffset=event_offset,eventLimit=event_limit))
@@ -57,9 +59,10 @@ class WorkflowClient:
         """All actors' request metadata through the authenticated machine Gateway.
 
         Includes PENDING/APPROVED/DISPATCHED/UNCERTAIN by default;
-        unresolved_only=False also includes history. No payload/credentials,
-        owner permissions, cross-actor execution, or effect readback.
-        Requires an installed Gateway advertising globalRequestInventory.
+        unresolved_only=False also includes history. Use details(UUID) to
+        read a full request/preview/audit and local evidence from any actor.
+        No owner permission, cross-actor execution or retry.
+        Requires a deployed Gateway advertising globalRequestInventory.
         """
         return self.gateway.post('/v1/workspace/list_requests',
             dict(offset=offset,limit=limit,unresolvedOnly=unresolved_only))

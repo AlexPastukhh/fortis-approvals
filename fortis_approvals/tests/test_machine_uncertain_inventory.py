@@ -78,6 +78,21 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(self.core._read(other)['state'],'UNCERTAIN')
         self.assertEqual(self.core._read(closed)['state'],'CLOSED_UNCONFIRMED')
 
+    def test_foreign_full_details_excludes_worker_claim_token(self):
+        foreign=self.submit('agent-b')['requestId']
+        claim='SENSITIVE-WORKER-CLAIM-NEVER-TO-EXPOSE'
+        self.adapter.store=SimpleNamespace(job=lambda request_id: {
+            'actor':'agent-b', 'state':'CLAIMED', 'claim':claim,
+            'result':None, 'error':None, 'diagnostic':None})
+        before=self.core._read(foreign)
+        full=self.core.machine_request_details('secret-a',foreign)
+        self.assertTrue(full['worker']['hasClaim'])
+        self.assertEqual(full['worker']['state'],'CLAIMED')
+        self.assertNotIn('claim',full['worker'])
+        self.assertNotIn(claim,json.dumps(full))
+        self.assertIsNone(full['receipt'])
+        self.assertEqual(self.core._read(foreign),before)
+
     def test_global_readonly_inventory_sees_every_actor_and_archived_history(self):
         a=self.submit('agent-a')['requestId']
         b=self.submit('agent-b')['requestId']
@@ -110,12 +125,30 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(self.core._read(closed)['state'],'CLOSED_UNCONFIRMED')
         self.assertEqual(self.core._read(a)['state'],'PENDING')
 
-    def test_global_inventory_cannot_expand_existing_other_actor_details(self):
+    def test_global_details_reads_foreign_request_without_action_or_claim(self):
         foreign=self.submit('agent-b')['requestId']
         self.assertIn(foreign,[i['requestId'] for i in
                       list_requests(self.core,'secret-a')['items']])
+        original=self.core._read(foreign)
+        original_events=len(self.core.events(foreign))
+        full=self.native._dispatch('/v1/workspace/details',
+            {'requestId':foreign,'eventOffset':0,'eventLimit':100},
+            'secret-a','agent-a')
+        self.assertEqual(full['request'],original)
+        self.assertEqual(full['request']['actor'],'agent-b')
+        self.assertEqual(full['request']['request']['params']['value'],'private')
+        self.assertEqual(full['request']['preview'],original['preview'])
+        self.assertEqual(full['eventTotal'],original_events)
+        self.assertIsNone(full['worker'])
+        self.assertIsNone(full['receipt'])
+        self.assertEqual(len(self.core.events(foreign)),original_events)
+        self.assertEqual(self.core._read(foreign),original)
+        # Old status/decision/effect policy still limits the caller.
         with self.assertRaises(Denied):
-            self.core.machine_request_details('secret-a',foreign)
+            self.core.client('secret-a','status',foreign)
+        response=self.native._dispatch('/v1/workspace/result',
+            {'requestId':foreign},'secret-a','agent-a')
+        self.assertEqual(response['state'],'NOT_FOUND')
         with self.assertRaises(Denied):
             list_requests(self.core,'invalid')
         for opts in ({'offset':-1},{'offset':True},{'limit':101},
@@ -152,8 +185,13 @@ class InventoryTests(unittest.TestCase):
             list_uncertain(self.core,'secret-b')['items'],[])
         with self.assertRaises(Denied):
             list_uncertain(self.core,'wrong-token')
+        self.assertEqual(
+            self.core.machine_request_details('secret-b',uid)['request']['requestId'],
+            uid)
         with self.assertRaises(Denied):
-            self.core.machine_request_details('secret-b',uid)
+            self.core.machine_request_details('wrong-token',uid)
+        with self.assertRaises(Denied):
+            self.core.machine_request_details('secret-a','not-a-uuid')
         for opts in ({'offset':-1},{'offset':True},{'offset':1000001},
                      {'limit':0},{'limit':False},{'limit':101},
                      {'limit':'1'}):
@@ -188,6 +226,38 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(result['total'],1)
         self.assertEqual(run(actor='agent-b')[0][:3],'403')
         self.assertEqual(run(method='GET')[0][:3],'403')
+
+    def test_other_ai_machine_actor_can_read_but_not_mutate(self):
+        uid=self.uncertain('agent-b')
+        class Base:
+            def __init__(self,core): self.broker=SimpleNamespace(core=core)
+            @staticmethod
+            def _environment(env): return True
+            @staticmethod
+            def _credential(env): return ('secret-b','agent-b')
+        native=NativeIngress(Base(self.core),github=None,workspace=None,
+                             store=None,actor='agent-a')
+        def run(path,body):
+            encoded=json.dumps(body).encode()
+            env={'PATH_INFO':path,'REQUEST_METHOD':'POST',
+                 'CONTENT_TYPE':'application/json','CONTENT_LENGTH':str(len(encoded)),
+                 'wsgi.input':BytesIO(encoded)}
+            statuses=[]
+            raw=b''.join(native(env,lambda status,headers:statuses.append(status)))
+            return statuses[0][:3],json.loads(raw)
+        status,inventory=run('/v1/workspace/list_requests',
+            {'offset':0,'limit':100,'unresolvedOnly':True})
+        self.assertEqual(status,'200')
+        self.assertIn(uid,[r['requestId'] for r in inventory['items']])
+        status,full=run('/v1/workspace/details',
+            {'requestId':uid,'eventOffset':0,'eventLimit':100})
+        self.assertEqual(status,'200')
+        self.assertEqual(full['request']['requestId'],uid)
+        self.assertIsNotNone(full['diagnostic'])
+        status,_=run('/v1/workspace/activity',{'offset':0,'limit':5})
+        self.assertEqual(status,'403')
+        status,_=run('/v1/workspace/result',{'requestId':uid})
+        self.assertEqual(status,'403')
 
     def test_safe_phase_diagnosis_from_existing_evidence(self):
         uid=self.uncertain()
@@ -226,7 +296,8 @@ class InventoryTests(unittest.TestCase):
             'diagnostic':'evidence-stage-v1'})
         self.assertEqual(capabilities['globalRequestInventory'],{
             'readOnly':True,'actorScoped':False,'maxPageSize':100,
-            'metadataOnly':True,'supportsHistory':True})
+            'metadataOnly':True,'supportsHistory':True,
+            'crossActorDetails':True})
 
     def test_native_details_adds_read_only_diagnostic(self):
         uid=self.uncertain()

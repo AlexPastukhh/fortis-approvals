@@ -84,11 +84,16 @@ release smoke, стадию/активацию; существующие SQLite 
 `APPROVED → CANCELLED_BEFORE_DISPATCH`, каждый раз с fingerprint,
 Core writer-lock и проверками отсутствия dispatch/job/receipt. Это
 отмена, а не физическое удаление записи и не повтор старого UUID.
-Все AI, прошедшие существующую machine TLS/grant аутентификацию, могут
-видеть глобальный минимальный реестр через
-`WorkflowClient.list_requests(offset,limit,unresolved_only)`;
-без payload, params, credentials, WebAuthn или доступа к чужому
-`details()`. Доступ на запись остаётся прежним.
+Все AI, прошедшие существующую machine TLS/grant аутентификацию,
+могут видеть полный реестр любых инициаторов через
+`WorkflowClient.list_requests(offset,limit,unresolved_only)`.
+Для любого UUID `WorkflowClient.details(uuid)` возвращает полную
+read-only карточку: исходный request и preview, audit, worker evidence
+и receipt. Отдельные страницы audit через event_offset/event_limit.
+В ответе нет machine credential, owner session/WebAuthn и worker claim
+token. Cross-actor `status/result/reconcile/submit/finish/claim` не
+расширяются: доступ на запись и повтор остаются прежними.
+Функция активируется только после owner-managed image release.
 
 **Граница принятия:** это source candidate; даже merged GitHub PR и
 прошедший CI **не означают Windows release**. Проверенный SHA, owner

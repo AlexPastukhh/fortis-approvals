@@ -21,8 +21,10 @@
    с исходными params/reason, preview, actor/decision, timestamps,
    fingerprint, result/failure, постраничный audit, состояние/result/error
    worker и имеющийся durable receipt. Дополнительные страницы событий —
-   `event_offset`/`event_limit`. Чтение разрешено **только actor,
-   инициировавшему запрос**. Claim token, owner cookie и секреты не выдаются.
+   `event_offset`/`event_limit`. На установленном сейчас Primary
+   `details()` actor-scoped; после обновления image (см. source candidate
+   выше) чтение любого UUID разрешено любому авторизованному AI.
+   Claim token, owner cookie и служебные machine secrets не выдаются.
 2. **Не делать вывод только из `UNCERTAIN` или отсутствующего receipt.**
    Сопоставить operation/target/task, ожидаемые и новые SHA с независимыми
    read-only данными: GitHub branch/PR/CI/commit, локальными Git refs,
@@ -48,7 +50,7 @@
    При сохранённом `CLAIMED` соблюдать отдельную quiescence и точный
    preservation scope при будущих backup/release.
 
-Глобальный реестр AI (source candidate): WorkflowClient.list_requests() читает по всем инициаторам только метаданные PENDING/APPROVED/DISPATCHED/UNCERTAIN. При unresolved_only=False включает историю. Доступ требует действующую machine TLS/grant аутентификацию, но не Owner WebAuthn; сырые params, payload, secret, owner proof и cross-actor details() не раскрываются. Доступен только после отдельно подтверждённого Windows release.
+Глобальный реестр AI (source candidate): WorkflowClient.list_requests() читает по всем инициаторам метаданные PENDING/APPROVED/DISPATCHED/UNCERTAIN. При unresolved_only=False включает историю. WorkflowClient.details(UUID) возвращает полную read-only карточку любого инициатора с исходными params, preview, audit, worker и receipt; не выдаёт machine secret, owner session или worker claim token и не меняет исходный request. Доступ требует machine TLS/grant аутентификацию, но не Owner WebAuthn. Cross-actor выполнение, reconcile и owner decisions остаются запрещены. Доступен только после отдельно подтверждённого Windows release.
 
 ## APPROVED в «Требуют разбора»: безопасная отмена и быстрая автопроверка
 
@@ -127,10 +129,11 @@ Owner Portal — интерфейс решений владельца, а не �
    # Остальные события: details(request_id, event_offset=100, event_limit=100)
    ```
 
-   `details()` возвращает полную actor-owned карточку: исходные `params`,
-   причину, решение, историю событий, состояние worker, result/error и receipt.
-   Авторизация ограничена **инициировавшим machine actor**; чужие UUID
-   недоступны. Режим только для чтения, owner cookie/WebAuthn не нужны.
+   `details()` возвращает полную карточку: исходные `params`, причину,
+   решение, историю событий, состояние worker, result/error и receipt.
+   До нового owner-managed image release виден только свой actor;
+   после него доступны чужие UUID при авторизованном machine grant.
+   Режим только для чтения, owner cookie/WebAuthn не нужны.
 3. **Независимо исследовать эффект.** Для GitHub использовать разрешённые
    Gateway READ (ветки, commits, PR, CI, точные SHA); для локальных действий —
    Git refs, worktree и worker journal в разрешённой Repo-среде, только read-only.
