@@ -29,18 +29,25 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+VISUAL_MEDIA_DIR = 'native-git/visual-media'
+
 NATIVE_DIRS = ('native-git', 'native-git/artifacts', 'native-git/git',
                'native-git/git/runner', 'native-git/git/runner/home',
                'native-git/git/runner/empty-hooks')
 
 
 def native_files(root, *, uid, gid):
-    """Closed persistent native layout. Never copy transient Git auth/config."""
-    expected = {'native-git': {'artifacts', 'workflow.sqlite', 'git'},
+    """Admit old and PNG-MVP native layouts, never unlisted transient files."""
+    visual_dir = root / VISUAL_MEDIA_DIR
+    # The PNG-MVP Store creates this directory on startup. Older accepted
+    # volumes do not have it, so its absence must remain backward compatible.
+    visual_present = visual_dir.exists() or visual_dir.is_symlink()
+    expected = {'native-git': {'artifacts', 'workflow.sqlite', 'git'} |
+                ({'visual-media'} if visual_present else set()),
         'native-git/git': {'runner'},
         'native-git/git/runner': {'home', 'empty-hooks', 'empty.config'},
         'native-git/git/runner/home': set(), 'native-git/git/runner/empty-hooks': set()}
-    for name in NATIVE_DIRS:
+    for name in NATIVE_DIRS + ((VISUAL_MEDIA_DIR,) if visual_present else ()):
         directory = root / name
         info = directory.lstat()
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
@@ -50,9 +57,14 @@ def native_files(root, *, uid, gid):
                     'PILOT_NATIVE_UNKNOWN_FILES_OR_TEMPORARY_GIT_STATE')
     files = {'native-git/workflow.sqlite', 'native-git/git/runner/empty.config'}
     for artifact in (root / 'native-git/artifacts').iterdir():
-        require(re.fullmatch('[0-9a-f]{64}\\.bundle', artifact.name) is not None,
+        require(re.fullmatch('[0-9a-f]{64}\.bundle', artifact.name) is not None,
                 'PILOT_NATIVE_ARTIFACT_NAME_INVALID')
         files.add('native-git/artifacts/' + artifact.name)
+    if visual_present:
+        for media in visual_dir.iterdir():
+            require(re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-4]-[0-9a-f]{64}\.png',
+                                 media.name) is not None, 'PILOT_VISUAL_MEDIA_FILENAME_INVALID')
+            files.add(VISUAL_MEDIA_DIR + '/' + media.name)
     return files
 
 
@@ -147,8 +159,40 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
         if native:
             db = connections['native-git/workflow.sqlite']
-            require({r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")} ==
-                    {'artifacts', 'tasks', 'jobs'}, 'PILOT_NATIVE_SCHEMA_UNKNOWN')
+            tables = {r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+            has_visual = (root / VISUAL_MEDIA_DIR).is_dir()
+            require(tables == ({'artifacts', 'tasks', 'jobs', 'visual_media'} if has_visual
+                               else {'artifacts', 'tasks', 'jobs'}), 'PILOT_NATIVE_SCHEMA_UNKNOWN')
+            if has_visual:
+                # Files and rows are a closed, byte-preserved pair: do not lose
+                # attachments, silently drop unknown paths or follow symlinks.
+                media_files = {name for name in files if name.startswith(VISUAL_MEDIA_DIR + '/')}
+                media_rows = db.execute(
+                    'SELECT request_id,actor,repo,run_id,idx,sha,size,name FROM visual_media').fetchall()
+                require(len(media_rows) <= 5000, 'PILOT_VISUAL_MEDIA_LIMIT')
+                expected_files = set()
+                for ident, actor, repo, run_id, idx, sha, size, name in media_rows:
+                    require(type(ident) is str and bool(re.fullmatch(
+                                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', ident)) and
+                            type(actor) is str and bool(actor) and
+                            repo == 'visual-workspace' and
+                            type(run_id) is str and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',run_id)) and
+                            type(idx) is int and 0 <= idx < 5 and
+                            type(sha) is str and bool(re.fullmatch('[0-9a-f]{64}',sha)) and
+                            type(size) is int and 24 <= size <= 10*1024*1024 and
+                            type(name) is str and 1 <= len(name) <= 120,
+                            'PILOT_VISUAL_MEDIA_ROW_INVALID')
+                    rel = VISUAL_MEDIA_DIR + '/' + ident + '-' + str(idx) + '-' + sha + '.png'
+                    require(rel in media_files, 'PILOT_VISUAL_MEDIA_FILE_MISSING')
+                    path = root / rel
+                    content = path.read_bytes()
+                    require(len(content) == size and
+                            content.startswith(b'\x89PNG\r\n\x1a\n') and content[12:16] == b'IHDR' and
+                            hashlib.sha256(content).hexdigest() == sha,
+                            'PILOT_VISUAL_MEDIA_DIGEST_MISMATCH')
+                    expected_files.add(rel)
+                require(expected_files == media_files, 'PILOT_VISUAL_MEDIA_UNREGISTERED_FILE')
             states = dict(db.execute('SELECT state,COUNT(*) FROM jobs GROUP BY state'))
             require(set(states) <= {'DONE', 'FAILED', 'CLAIMED'},
                     'PILOT_NATIVE_HAS_UNFINISHED_JOBS')
@@ -245,7 +289,9 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
     private = target / 'private'
     private.mkdir(mode=0o700)
     if native:
-        for name in NATIVE_DIRS: (private / name).mkdir(mode=0o700)
+        for name in NATIVE_DIRS + ((VISUAL_MEDIA_DIR,) if
+                (source / 'private' / VISUAL_MEDIA_DIR).is_dir() else ()):
+            (private / name).mkdir(mode=0o700)
     for name in sorted(files):
         descriptor = os.open(private / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
@@ -253,7 +299,9 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
             output.flush(); os.fsync(output.fileno())
         os.chmod(private / name, 0o600)
         os.chown(private / name, uid, gid)
-    for directory in ([private] + [private / name for name in NATIVE_DIRS] if native else [private]):
+    native_dirs = NATIVE_DIRS + ((VISUAL_MEDIA_DIR,) if native and
+        (source / 'private' / VISUAL_MEDIA_DIR).is_dir() else ())
+    for directory in ([private] + [private / name for name in native_dirs] if native else [private]):
         os.chmod(directory, 0o700); os.chown(directory, uid, gid)
     require(inspect_state(target, uid=uid, gid=gid, github=github, native=native,
                            preserve_uncertain_ids=preserve_uncertain_ids,
