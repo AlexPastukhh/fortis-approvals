@@ -97,6 +97,30 @@ with its own contract, not a mandatory read-only viewing step.
 The AI never invokes owner routes or administratively closes requests.
 Unsupported services or operations stop at the integration boundary.
 
+**UNCERTAIN investigation is AI-first.** When the user reports unresolved
+operations, recover their UUIDs from the original Gateway responses, prior
+conversation/task output and (if connected) the Fortis Repo
+`get_recent_tool_calls` history; match repository, operation, task, SHA and
+creation time. For each candidate call **`default_client().details(uuid)`**
+and independently inspect authorized GitHub READ, local Git/worktree and worker
+journal evidence. Report original-request evidence separately from any later
+successful request. Do **not** ask the owner to manually open incident cards
+just to copy IDs or inspect technical diagnostics that the Repo tools can read.
+
+**Do not overstate coverage:** the present machine API has no actor-scoped
+`list_uncertain`; `details(UUID)` reads only requests initiated by the
+machine actor, and local tool-call history is finite/incomplete. The
+`/v1/owner/unresolved` inventory is owner-only, not a permitted machine
+endpoint. If a *complete* current uncertainty inventory is required (for
+example a Windows release preservation scope), report the known verified IDs
+and any remaining completeness gap; request the minimum owner-supplied
+inventory only if the authorized tools cannot resolve it. `result()` and
+`details()` do not replace a true inventory. Never call `claim`, `resume`,
+`finish`, `reconcile` or owner routes as part of routine incident review;
+`reconcile` may mutate Core state. Owner Portal is for decisions and
+administrative closure, not a mandatory technical investigation step.
+See [UC-GW-009](use-cases/incidents.md#uc-gw-009) for the complete sequence.
+
 ## One owner approval per ASK effect
 
 Within an assigned task the user authorizes the AI to submit the necessary
