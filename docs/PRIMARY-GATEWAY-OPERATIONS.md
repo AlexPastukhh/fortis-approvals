@@ -45,6 +45,39 @@ and a verified closure audit; no silent state change. Existing operator
 quiescence attestation for claim carryover remains necessary.
 
 
+## Проверка сохранения APPROVED при обновлении образа — diagnostic candidate
+
+Если Windows `Check -Build` завершится после
+`CONFIG_AND_CREDENTIAL_PREFLIGHT` ошибкой из `inspect_state()`,
+последняя напечатанная стадия **не означает**, что упал CLI configuration
+check: в `Check` затем есть read-only вызов `Receipt()`, который раньше
+не печатал отдельную стадию. Новый вариант печатает
+`SOURCE_STATE_PREFLIGHT_READ_ONLY` и
+`FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED`, если ровно один ожидаемый UUID
+передан в Docker state-helper. `SelfTest` теперь проверяет положительный
+и отрицательные пути доставки этого singleton.
+
+Дифференцированные fail-closed результаты:
+
+- `RELEASE_APPROVED_SCOPE_NOT_FORWARDED` — Windows собирал state-helper
+  payload без ожидаемого UUID: ошибка именно в связывании/передаче флага.
+- `PILOT_APPROVED_PRESERVATION_SCOPE_EMPTY` — image обнаружил хотя бы
+  одну `APPROVED`, но разрешённый список в полученном payload пуст.
+- `PILOT_APPROVED_EXPECTED_REQUEST_MISMATCH` — текущие `APPROVED`
+  не совпадают с явно указанным UUID.
+- `PILOT_APPROVED_ADDITIONAL_REQUESTS_PRESENT` — помимо явно
+  разрешённой заявки обнаружена хотя бы одна другая `APPROVED`.
+  Не расширять allowlist автоматически; требуется отдельный разбор.
+- `PILOT_APPROVED_SET_CHANGED` — exact set успел измениться после
+  принятого owner scope; повторно исследовать источник до release.
+
+Ни один код не меняет SQLite, не удаляет заявки и не отключает
+предохранители. Ошибка `PILOT_REVIEW_HAS_UNREVIEWED_APPROVED` на
+предыдущей версии **не позволяет установить**, какой из случаев
+произошёл, поэтому прежнее предположение о потере UUID не считается
+доказательством. Следующий Check допустим только после проверенного
+owner control/quiescence и принятия нового source/CI.
+
 ## One-off APPROVED bootstrap — source candidate, NOT deployed
 
 **Problem:** the current Primary contains one stranded owner-reviewed Core
