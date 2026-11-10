@@ -8,11 +8,11 @@
 | [UC-GW-002](integrations.md#uc-gw-002) | Подключить новый внешний provider | Проверенный extension package, минимальные scopes, owner acceptance |
 | [UC-GW-003](integrations.md#uc-gw-003) | Добавить операцию, клиентский метод или machine API | Версионированный контракт, отрицательные тесты, сохранение старых вызовов, CI и live release |
 | [UC-GW-004](credential-lifecycle.md#uc-gw-004) | Добавить или ротировать provider credential | Owner-controlled secret lifecycle без утечки и обходов |
-| [UC-GW-005](releases.md#uc-gw-005) | Установить новый image/config | SHA admission, backup, activation и live verification |
+| [UC-GW-005](releases.md#uc-gw-005) | Установить новый image/config, сохранив ожидающие APPROVED | Exact SHA/owner scope, guarded state transfer, Backup/Promote и live readback |
 | [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
 | [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
-| [UC-GW-009](incidents.md#uc-gw-009) | ИИ самостоятельно находит доступные UUID UNCERTAIN и расследует заявки; владелец принимает решения в Portal | Read-only incident evidence; owner-only `APPROVED → CANCELLED_BEFORE_DISPATCH`, passive assessment и `CLOSED_UNCONFIRMED` |
+| [UC-GW-009](incidents.md#uc-gw-009) | Любой авторизованный ИИ читает **все** заявки (включая других инициаторов) и разбирает «Требуют разбора» | Global `list_requests()` + cross-actor `details()`; решения, отмена/closure — только в Owner Portal |
 | [UC-GW-010](incidents.md#uc-gw-010) | Наблюдать actor-owned worker activity без claim/retry и не путать heartbeat с доказательством простоя | Read-only `activity()` наблюдался live; код worker diagnostics требует отдельной owner acceptance |
 
 Каждый новый чат читает короткий вход главного реестра и полностью

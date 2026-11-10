@@ -89,8 +89,8 @@ when using the client version currently in main. For local ASK operations,
 keep a worker available or resume the same request after the owner decision;
 verify `EXECUTED` plus effect/receipt, not just approval. On `UNCERTAIN`,
 use [UC-GW-009](use-cases/incidents.md#uc-gw-009):
-`default_client().details(uuid)` reads the full actor-owned request, audit,
-worker and receipt without retry/reconcile. Independently inspect upstream
+`default_client().details(uuid)` reads the full request, audit, worker
+and receipt for **any authenticated machine actor** without retry/reconcile. Independently inspect upstream
 GitHub and local Git evidence before attributing the effect. An absent receipt
 does not prove the action failed. `reconcile` is a separate operation
 with its own contract, not a mandatory read-only viewing step.
@@ -117,7 +117,24 @@ journal evidence. Report original-request evidence separately from any later
 successful request. Do **not** ask the owner to manually open incident cards
 just to copy IDs or inspect technical diagnostics that the Repo tools can read.
 
-**Planned global machine inventory and full read-only details (source candidate, not yet deployed).** WorkflowClient.list_requests(unresolved_only=True) lists PENDING/APPROVED/DISPATCHED/UNCERTAIN metadata for all actors; False includes history. WorkflowClient.details(uuid) then returns any actor's full request, preview, events, worker state and available receipts. Verify live globalRequestInventory.readOnly AND globalRequestInventory.crossActorDetails first. This grants no cross-actor status/reconcile/execute, owner access, machine credentials, worker claim token, or owner session.
+**Installed global machine inventory and cross-actor full read (2026-11-10,
+PR #62, owner-verified Promote).** Check live
+`globalRequestInventory.readOnly == true` AND
+`globalRequestInventory.crossActorDetails == true`. Then use
+`WorkflowClient.list_requests(unresolved_only=True)`, following
+`nextOffset` until complete; this returns all actors'
+`PENDING/APPROVED/DISPATCHED/UNCERTAIN`. **Owner Portal «Требуют разбора»**
+corresponds to `APPROVED/DISPATCHED/UNCERTAIN`, NOT `PENDING` (awaiting
+owner decision). `unresolved_only=False` lists history as well. Use
+`WorkflowClient.details(uuid)` on any UUID for full request/preview,
+paginated audit, worker and available receipt. Raw request/preview can
+contain private work content: only report relevant/redacted evidence.
+No owner authority, other-actor `result/reconcile/claim/execute`, machine
+secret, owner session or worker claim token is granted by these reads.
+The historical `list_uncertain` remains **actor-scoped**, as does
+`activity()`. At installed Primary, global inventory and two APPROVED
+details were observed live; cross-actor access was covered by negative
+unit/integration tests, not a separate live second-grant read.
 
 **Version-gated machine inventory.** `list_uncertain` was accepted in the
 2026-11-10 Primary release (`9481699faaa297d8ec1fb45b4f14be50ae17406f`).
@@ -129,10 +146,12 @@ field classifies observed stages, **not** the actual exception or effect.
 Pages are independently consistent, not one atomic snapshot; verify
 the exact scope during worker quiescence before release.
 
-Without that installed marker, available tool history is finite and
-incomplete: recover known UUIDs through available tools first, then ask
-the owner only for a missing inventory if truly needed.
-The owner-only /v1/owner/unresolved route is not a permitted machine API.
+For an old image without the global capability, actor-scoped inventory
+and tool history are incomplete. State the version/scope gap and never
+pretend that a single actor's listing is the entire owner review queue.
+On the installed Primary, obtain the global list directly before asking
+the owner to copy UUIDs. The owner-only /v1/owner/unresolved route is not
+a permitted machine API.
 Never use claim, resume, finish, reconcile or owner routes during
 routine incident investigation; reconcile may change Core state.
 Owner Portal is for decisions, not mandatory technical investigation.

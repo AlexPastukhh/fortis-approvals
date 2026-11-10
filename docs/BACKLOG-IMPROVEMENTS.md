@@ -97,19 +97,27 @@ error code на новом worker failure. Нельзя называть это 
 Код и WebAuthn тесты для кнопки пройдены; переходы в Core прочитаны live,
 но **ручная проверка конкретного browser click** отдельно не документирована.
 
-## Owner Portal: отмена APPROVED и доказательная автопроверка — source candidate
+## Owner Portal: защищённая отмена APPROVED и пассивная автопроверка — image установлен
 
-**В этом task worktree, не в live Primary:** новый owner-only guarded
-`APPROVED → CANCELLED_BEFORE_DISPATCH` под Core SQLite writer lock,
-при условии отсутствия `DISPATCHED` в audit и native worker job; в
-«Требуют разбора» остаются `APPROVED`, `DISPATCHED`, `UNCERTAIN`.
-Owner-only read-only `incidents/assess` сообщает явные ограниченные статусы:
-can cancel, verified no dispatch, confirmed Core execution, durable receipt
-available for reconciliation или outcome unknown. Ни один result-check не
-вызывает эффект или silent retry. Для ASK остаётся WebAuthn, состояние
-исторических UNCERTAIN/CLAIMED не меняется. Нужны PR CI, owner review,
-отдельный Windows image release и live owner click acceptance до маркировки
-«работает на Primary».
+**Установлено на Primary 2026-11-10:** PR #62 / merged `main`
+`8403c63297f78e38294899c6bd094cc9f9eac66f`. Owner
+`Check READY → Apply ACTIVE → Backup PASS → Promote PASS` и host
+`running/healthy/unless-stopped`; Repo подтвердил глобальный read-only
+API и полные карточки 2 `APPROVED` без исполнения/изменения состояния.
+Owner-only guarded `APPROVED → CANCELLED_BEFORE_DISPATCH` доступен
+в новом образе: Core writer lock, проверка отсутствия `DISPATCHED`
+в audit и worker job, owner session/CSRF; никакой новой подписи за ИИ.
+Отдельный owner-only пассивный `incidents/assess`
+не выполняет операцию и не делает reconcile/auto-resubmit.
+
+**Не подтверждено отдельно:** нажатие реальной кнопки cancel/assess
+в браузере владельца после PR #62, второй machine grant на чтение
+чужой карточки, autostart после Docker Desktop restart. Исторические
+`CLAIMED`/`CLOSED_UNCONFIRMED` нельзя автоматически считать
+исполненными/неисполненными. Глобальная `list_requests` включает
+`PENDING` вместе с `APPROVED/DISPATCHED/UNCERTAIN`, а раздел
+«Требуют разбора» включает только последние три. Значения и разрешения
+зафиксированы в [UC-GW-009](use-cases/incidents.md#uc-gw-009).
 
 **Дальнейшая автоматизация (OPEN, отдельные PR):** реестр независимых
 readback-верификаторов для *конкретных* typed операций с bounded запросами

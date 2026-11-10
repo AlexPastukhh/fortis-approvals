@@ -87,6 +87,14 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    worker preconditions при обоих решениях; флаг из payload не авторизация.
    Клиентское имя не даёт новых прав само по себе; сервер без
    deployment не умеет вызывать новый метод.
+   **Для глобального read-only machine API:** отделить инвентаризацию
+   и `details(UUID)` для любого аутентифицированного actor от owner
+   API и от actor-scoped `status/result/reconcile/claim/finish`.
+   Тестировать вторую machine identity: видит чужую карточку и audit,
+   но не получает чужую возможность исполнения или claim token.
+   Проверить live capability `globalRequestInventory` и отрицательные
+   сценарии HTTP route/payload; source-тест не равен живому межакторному
+   E2E. Нормативная семантика состояний — [UC-GW-009](incidents.md#uc-gw-009).
 4. **Для local `workspace` операций** разграничить `create_task` и
    `update_main`: первая создаёт/регистрирует *изолированный* worktree только
    при **чистом** canonical `main`, иначе незакоммиченные файлы primary
