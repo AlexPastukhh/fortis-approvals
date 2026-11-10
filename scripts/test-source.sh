@@ -42,6 +42,7 @@ tests=(
   test_native_workflow.py
   test_native_git_push_diagnostics.py
   test_native_pending_status.py
+  test_native_worker_exception.py
   test_dynamic_github_repos.py
   test_native_github_ci.py
   test_dynamic_github_release_source.py

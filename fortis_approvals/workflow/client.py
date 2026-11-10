@@ -40,6 +40,19 @@ class WorkflowClient:
         return self.gateway.post('/v1/workspace/details',
             dict(requestId=ident,eventOffset=event_offset,eventLimit=event_limit))
 
+    def _finish_claim(self, ident, job):
+        # A worker exception can happen before its local journal is created, or
+        # after an unknown partial effect. Never infer NOT_EXECUTED or replay.
+        # Persist the uncertainty with the original claim if Gateway is reachable.
+        try:
+            result, error = self.worker.execute(job)
+        except Exception:
+            result, error = None, 'UNCERTAIN'
+        # A lost finish acknowledgement must propagate; do not retry finish or
+        # claim the job again while its durable outcome is unknown.
+        self.gateway.post('/v1/workspace/finish', dict(
+            requestId=ident, claim=job['claim'], result=result, error=error))
+
     def command(self,operation,repository,params,*,request_id,reason,wait_owner=False):
         response={};failure=[]
         def submit():
@@ -51,8 +64,7 @@ class WorkflowClient:
         while time.monotonic()<deadline:
             job=self.gateway.post('/v1/workspace/claim',dict(requestId=request_id))['job']
             if job and job.get('payload'):
-                result,error=self.worker.execute(job)
-                self.gateway.post('/v1/workspace/finish',dict(requestId=request_id,claim=job['claim'],result=result,error=error))
+                self._finish_claim(request_id, job)
                 thread.join(timeout=3)
                 return self.result(request_id,reconcile=True)
             if not thread.is_alive():
@@ -73,8 +85,7 @@ class WorkflowClient:
         while time.monotonic()<deadline:
             job=self.gateway.post('/v1/workspace/claim',dict(requestId=ident))['job']
             if job and job.get('payload'):
-                result,error=self.worker.execute(job)
-                self.gateway.post('/v1/workspace/finish',dict(requestId=ident,claim=job['claim'],result=result,error=error))
+                self._finish_claim(ident, job)
                 return self.result(ident,reconcile=True)
             time.sleep(.2)
         return self.result(ident,reconcile=True)
