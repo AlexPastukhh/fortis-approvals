@@ -22,7 +22,8 @@ PUBLIC_SERVER_CERT = DEFAULT_CERTIFICATE
 CLIENT_GRANT_FILE = DEFAULT_GRANT
 ALLOW_TEST_ENDPOINTS = False  # patched only by isolated TLS tests
 _STATES = frozenset(("PENDING", "APPROVED", "DISPATCHED", "EXECUTED",
-                     "REJECTED", "DENIED", "EXPIRED", "STALE", "UNCERTAIN"))
+                     "REJECTED", "DENIED", "EXPIRED", "STALE", "UNCERTAIN",
+                     "CANCELLED_BEFORE_DISPATCH"))
 _OPERATIONS = {
     "sonar.list_projects": ("list_projects", "/v1/reads"),
     "sonar.list_issues": ("list_issues", "/v1/reads"),

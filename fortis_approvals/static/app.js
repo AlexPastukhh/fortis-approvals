@@ -146,6 +146,19 @@ function show(row){
   btn.textContent='Проверить подтверждение (receipt)';
   btn.onclick=action(()=>reconcileUncertain(row));controls.append(btn);
  }
+ if(['APPROVED','DISPATCHED','UNCERTAIN','CLOSED_UNCONFIRMED',
+     'CANCELLED_BEFORE_DISPATCH'].includes(row.state)){
+  const assess=document.createElement('button');assess.type='button';
+  assess.textContent='Автопроверка результата';
+  assess.title='Только чтение сохранённых событий и receipts, без запуска операции.';
+  assess.onclick=action(()=>assessIncident(row));controls.append(assess);
+ }
+ if(row.state==='APPROVED'){
+  const cancel=document.createElement('button');cancel.type='button';
+  cancel.textContent='Отменить до выполнения';
+  cancel.title='Отмена разрешена только пока Gateway не зафиксировал DISPATCHED.';
+  cancel.onclick=action(()=>cancelApproved(row));controls.append(cancel);
+ }
  if(row.state==='UNCERTAIN'){
   const close=document.createElement('button');close.type='button';
   close.textContent='Закрыть заявку';
@@ -168,6 +181,8 @@ function show(row){
  }
  else if(row.state==='CLOSED_UNCONFIRMED')detailFeedback(
   'Расследование закрыто владельцем. Итог исходной операции НЕ доказан; не повторяйте её вслепую.',true);
+ else if(row.state==='CANCELLED_BEFORE_DISPATCH')detailFeedback(
+  'Отменено до DISPATCHED. Этот UUID не исполнялся; новое действие допускается лишь с новым UUID и актуальными проверками.');
  if(row.incidentClosure){
   const evidence=row.incidentClosure;
   if(evidence.backupVolumeOwnerAttested)area.append(
@@ -261,6 +276,49 @@ async function closeIncident(row){
    const actual=await api('/v1/owner/requests/'+row.requestId);
    show(actual);
    detailFeedback('Текущее состояние после ошибки: '+actual.state+'.',true);
+  }catch(_lookup){lockDetailActions(true);}
+  throw err;
+ }finally{decisionBusy=false;await refresh();}
+}
+async function assessIncident(row){
+ if(decisionBusy)return;
+ decisionBusy=true;lockDetailActions(true);
+ detailFeedback('Проверяю только сохранённый audit, worker и receipt. Ничего не исполняется.');
+ try{
+  const result=await api('/v1/owner/incidents/assess',{requestId:row.requestId},true);
+  const descriptions={
+   VERIFIED_NOT_DISPATCHED:'Отмена подтверждена: исходный Gateway не передавал операцию исполнителю. Новый запрос требует свежих условий и UUID.',
+   CANCELLABLE_IF_STILL_APPROVED:'Заявка пока APPROVED без записи DISPATCHED. Можно попытаться отменить; повторная проверка произойдёт атомарно.',
+   CORE_EXECUTION_CONFIRMED:'Gateway записал подтверждённое EXECUTED. Повторять действие не нужно.',
+   RECEIPT_PRESENT_RECONCILE_REQUIRED:'Есть сохранённый receipt. Можно сверить подтверждение; исходная операция не повторится.',
+   RECEIPT_AFTER_CLOSURE_REVIEW_REQUIRED:'После административного закрытия обнаружена квитанция. Нужен отдельный разбор; нельзя автоматически менять исход.',
+   OUTCOME_UNCONFIRMED:'Достоверного подтверждения нет. Нужны дополнительные независимые проверки, автоматический повтор запрещён.'
+  };
+  const message=descriptions[result.verdict]||'Статус проверки: '+result.verdict;
+  detailFeedback(message,result.verdict==='OUTCOME_UNCONFIRMED');
+  status(message,result.verdict==='OUTCOME_UNCONFIRMED');
+ }catch(err){
+  detailFeedback('Автопроверка не завершена: '+err.message+'. Не повторяйте действие.',true);
+  throw err;
+ }finally{decisionBusy=false;await refresh();}
+}
+async function cancelApproved(row){
+ if(decisionBusy)return;
+ decisionBusy=true;lockDetailActions(true);
+ detailFeedback('Пытаюсь отменить только если состояние всё ещё APPROVED…');
+ try{
+  const result=await api('/v1/owner/incidents/cancel/approved',
+   {requestId:row.requestId,fingerprint:row.fingerprint},true);
+  show(result);
+  const message='Заявка '+row.requestId+
+   ' отменена до DISPATCHED. Исходный UUID не исполнять; для новой попытки нужен новый запрос.';
+  detailFeedback(message);status(message);
+ }catch(err){
+  try{
+   const actual=await api('/v1/owner/requests/'+row.requestId);
+   show(actual);
+   detailFeedback('Отмена не подтверждена. Текущее состояние: '+actual.state+
+    '. Если DISPATCHED/UNCERTAIN — сначала проверить результат.',true);
   }catch(_lookup){lockDetailActions(true);}
   throw err;
  }finally{decisionBusy=false;await refresh();}

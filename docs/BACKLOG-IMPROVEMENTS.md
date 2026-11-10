@@ -97,6 +97,34 @@ error code на новом worker failure. Нельзя называть это 
 Код и WebAuthn тесты для кнопки пройдены; переходы в Core прочитаны live,
 но **ручная проверка конкретного browser click** отдельно не документирована.
 
+## Owner Portal: отмена APPROVED и доказательная автопроверка — source candidate
+
+**В этом task worktree, не в live Primary:** новый owner-only guarded
+`APPROVED → CANCELLED_BEFORE_DISPATCH` под Core SQLite writer lock,
+при условии отсутствия `DISPATCHED` в audit и native worker job; в
+«Требуют разбора» остаются `APPROVED`, `DISPATCHED`, `UNCERTAIN`.
+Owner-only read-only `incidents/assess` сообщает явные ограниченные статусы:
+can cancel, verified no dispatch, confirmed Core execution, durable receipt
+available for reconciliation или outcome unknown. Ни один result-check не
+вызывает эффект или silent retry. Для ASK остаётся WebAuthn, состояние
+исторических UNCERTAIN/CLAIMED не меняется. Нужны PR CI, owner review,
+отдельный Windows image release и live owner click acceptance до маркировки
+«работает на Primary».
+
+**Дальнейшая автоматизация (OPEN, отдельные PR):** реестр независимых
+readback-верификаторов для *конкретных* typed операций с bounded запросами
+и привязкой к requestId, target, expected/new SHA и неизменяемым receipts:
+`workspace.create_task/edit/stage/commit/update_main_from_pr`, GitHub
+`push_commits/create_pull_request`, Sonar provider effects, Windows owner
+PowerShell и Docker image/record pointer. Для GitHub отсутствие ветки или PR
+в текущем состоянии **не доказывает**, что исходная операция никогда не
+была выполнена; там нужны provider audit/receipt и защита от позднего эффекта.
+Автоматический статус может быть `EXECUTED_PROVEN`,
+`NON_EXECUTION_PROVEN`, `UNKNOWN` или `MANUAL_REVIEW`, но не
+псевдоподтверждение по эвристике. Не делать auto-resubmit до отдельной
+проверки безопасности, owner approval policy и тестов race/timeout/lost ACK.
+Расследование редких неизвестных исходов остаётся у ИИ по UC-GW-009.
+
 ## Owner Portal PowerShell — V1: текущий backlog и критерий приёмки (2026-11-10)
 
 **Цель V1:** владелец входит в действующий Owner Portal через WebAuthn,

@@ -32,6 +32,16 @@ class OwnerIncidentUXSourceTests(unittest.TestCase):
         self.assertIn("try{\n   const exact=await api('/v1/owner/requests/'+row.requestId)",APP)
         self.assertIn('Не отправляйте решение повторно',APP)
 
+    def test_owner_approved_cancel_and_passive_assessment_buttons(self):
+        self.assertIn("row.state==='APPROVED'",APP)
+        self.assertIn("cancel.textContent='Отменить до выполнения'",APP)
+        self.assertIn("api('/v1/owner/incidents/cancel/approved'",APP)
+        self.assertIn("api('/v1/owner/incidents/assess'",APP)
+        self.assertIn("assess.textContent='Автопроверка результата'",APP)
+        self.assertIn("CANCELLED_BEFORE_DISPATCH",APP)
+        self.assertIn("OUTCOME_UNCONFIRMED",APP)
+        self.assertNotIn("api('/v1/workspace/claim'",APP)
+
     def test_one_click_owner_close_requires_only_session_csrf_and_known_fingerprint(self):
         self.assertIn("row.state==='UNCERTAIN'",APP)
         self.assertIn("close.textContent='Закрыть заявку'",APP)
