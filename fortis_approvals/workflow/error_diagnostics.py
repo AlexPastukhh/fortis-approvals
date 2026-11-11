@@ -7,11 +7,18 @@ import sqlite3
 from functools import wraps
 
 from ..core import Stale, Denied
+from ..integrations.github.gateway.transport import GitHubTransportError
 
 ERROR_CODES = frozenset({
     'TIMEOUT', 'CONNECTION', 'PERMISSION', 'NOT_FOUND', 'DATABASE',
     'OPERATING_SYSTEM', 'STALE_PRECONDITION', 'DOMAIN_REJECTION',
     'RUNTIME_ERROR', 'INTERNAL_ERROR', 'UNKNOWN',
+    'GITHUB_TRANSPORT_ERROR', 'GITHUB_HTTP_401', 'GITHUB_HTTP_403',
+    'GITHUB_HTTP_404', 'GITHUB_HTTP_422',
+    'GITHUB_VISUAL_UPLOAD_HTTP_401', 'GITHUB_VISUAL_UPLOAD_HTTP_403',
+    'GITHUB_VISUAL_UPLOAD_HTTP_404', 'GITHUB_VISUAL_UPLOAD_HTTP_422',
+    'GITHUB_VISUAL_UPLOAD_URL_INVALID', 'GITHUB_VISUAL_UPLOAD_UNCONFIRMED',
+    'GITHUB_RESPONSE_TOO_LARGE', 'GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID',
 })
 ERROR_STAGES = frozenset({'WORKSPACE_ADAPTER', 'GITHUB_ADAPTER',
                           'WORKER_EXECUTE', 'WORKER_CLIENT'})
@@ -25,6 +32,11 @@ def category(exc):
     if isinstance(exc, FileNotFoundError):return 'NOT_FOUND'
     if isinstance(exc, sqlite3.Error):return 'DATABASE'
     if isinstance(exc, OSError):return 'OPERATING_SYSTEM'
+    # GitHub transport creates fixed, redacted codes. Never forward arbitrary
+    # provider exception text (including tokens/URLs) to a machine audit event.
+    if isinstance(exc, GitHubTransportError):
+        code=exc.args[0] if len(exc.args)==1 else None
+        return code if type(code) is str and code in ERROR_CODES else 'GITHUB_TRANSPORT_ERROR'
     # Core subclasses have no external API error-message requirement here.
     if isinstance(exc, Stale):return 'STALE_PRECONDITION'
     if isinstance(exc, Denied):return 'DOMAIN_REJECTION'

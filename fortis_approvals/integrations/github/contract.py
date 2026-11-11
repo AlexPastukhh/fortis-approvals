@@ -15,6 +15,8 @@ GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_repositories"), ("github", "get_repository"),
     ("github", "list_branches"), ("github", "list_commits"), ("github", "get_file"),
     ("github", "list_pull_requests"), ("github", "get_pull_request"),
+    ("github", "list_issues"), ("github", "get_issue"),
+    ("github", "list_issue_comments"),
     ("github", "list_workflow_runs"), ("github", "list_check_runs"),
     ("github", "get_commit_status"),
 })
@@ -83,6 +85,21 @@ def validate_github_read(operation, target, params):
             raise Denied("GITHUB_READ_PARAMS_DENIED")
     elif operation in ("list_branches", "list_commits", "list_workflow_runs"):
         _page(params)
+    elif operation in ("list_issues", "list_issue_comments"):
+        if operation == "list_issues":
+            if set(params) != {"page", "perPage", "state"} or params.get("state") not in ("open", "closed", "all"):
+                raise Denied("GITHUB_READ_PARAMS_DENIED")
+        else:
+            if set(params) != {"page", "perPage", "number"} or type(params.get("number")) is not int or not 1 <= params["number"] <= 1_000_000:
+                raise Denied("GITHUB_READ_PARAMS_DENIED")
+        _page({"page": params["page"], "perPage": params["perPage"]})
+        # GitHub sends full Issue/comment objects; 100 per page can exceed the
+        # transport's closed 1 MiB response limit even when projections are small.
+        if params["perPage"] > 30:
+            raise Denied("GITHUB_ISSUE_PAGE_TOO_LARGE")
+    elif operation == "get_issue":
+        if set(params) != {"number"} or type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000:
+            raise Denied("GITHUB_READ_PARAMS_DENIED")
     elif operation == "list_pull_requests":
         if set(params) != {"page", "perPage", "state"} or params.get("state") not in ("open", "closed", "all"):
             raise Denied("GITHUB_READ_PARAMS_DENIED")
@@ -332,6 +349,46 @@ def validate_github_read_projection(operation, result):
                        re.fullmatch('[0-9a-f]{64}', row["contentSha256"]) is not None) or
                       (row["exists"] is False and row["sha"] is None and row["size"] == 0 and
                        type(row["size"]) is int and row["contentSha256"] is None)))
+    elif operation in ("list_issues", "get_issue", "list_issue_comments"):
+        issue_fields = ("number", "title", "state", "url", "createdAt", "updatedAt", "runIdMarker", "embeddedMediaCount")
+        def issue(row):
+            return (exact(row, issue_fields) and positive(row["number"]) and row["number"] <= 1_000_000 and
+                    text(row["title"], 500) and row["state"] in ("open", "closed") and
+                    github_url(row["url"]) and "/issues/" + str(row["number"]) in row["url"] and
+                    text(row["createdAt"], 80) and text(row["updatedAt"], 80) and
+                    (row["runIdMarker"] is None or
+                     (text(row["runIdMarker"], 80) and bool(re.fullmatch('[A-Za-z0-9][A-Za-z0-9_-]{0,79}', row["runIdMarker"])))) and
+                    type(row["embeddedMediaCount"]) is int and 0 <= row["embeddedMediaCount"] <= 100)
+        if operation == "list_issues":
+            valid = (exact(result, ("operation", "items", "page", "perPage", "hasNextPage")) and
+                     rows("items", issue_fields) and positive(result["page"]) and
+                     positive(result["perPage"]) and type(result["hasNextPage"]) is bool and
+                     all(issue(x) for x in result["items"]))
+        elif operation == "get_issue":
+            valid = (exact(result, ("operation", "found", "issue")) and type(result["found"]) is bool and
+                     ((result["found"] is False and result["issue"] is None) or
+                      (result["found"] is True and type(result["issue"]) is dict and
+                       exact(result["issue"], (*issue_fields, "body", "embeddedMediaUrls")) and
+                       issue({key: result["issue"][key] for key in issue_fields}) and
+                       text(result["issue"]["body"], 24000) and
+                       type(result["issue"]["embeddedMediaUrls"]) is list and
+                       result["issue"]["embeddedMediaCount"] == len(result["issue"]["embeddedMediaUrls"]) and
+                       len(result["issue"]["embeddedMediaUrls"]) <= 100 and
+                       all(type(u) is str and re.fullmatch(
+                           r'https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200}',u)
+                           for u in result["issue"]["embeddedMediaUrls"]))))
+        else:
+            fields = ("id", "url", "body", "createdAt", "embeddedMediaUrls")
+            valid = (exact(result, ("operation", "issueNumber", "items", "page", "perPage", "hasNextPage")) and
+                     positive(result["issueNumber"]) and result["issueNumber"] <= 1_000_000 and
+                     rows("items", fields) and positive(result["page"]) and positive(result["perPage"]) and
+                     type(result["hasNextPage"]) is bool and all(
+                         positive(x["id"]) and github_url(x["url"]) and text(x["body"], 24000) and
+                         text(x["createdAt"], 80) and type(x["embeddedMediaUrls"]) is list and
+                         len(x["embeddedMediaUrls"]) <= 100 and all(
+                             type(u) is str and re.fullmatch(
+                                 r'https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200}',u)
+                             for u in x["embeddedMediaUrls"]) for x in result["items"]))
     elif operation in ("list_pull_requests", "get_pull_request"):
         if operation == "list_pull_requests":
             valid_shape = (exact(result, ("operation", "items", "page", "perPage")) and

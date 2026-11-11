@@ -168,6 +168,45 @@ class GitHubAdapter:
                                  "pullRequest": projected})
         return projected
 
+    @staticmethod
+    def _visual_issue_links(body):
+        """GitHub Markdown references only; NOT authenticated attachment-byte verification."""
+        if type(body) is not str or len(body) > 24000:
+            raise Denied("GITHUB_ISSUE_BODY_LIMIT")
+        urls = re.findall(
+            r'!\[[^\r\n]{0,400}\]\((https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200})\)',body)
+        if len(urls) > 100:
+            raise Denied("GITHUB_ISSUE_MEDIA_LIMIT")
+        return urls
+
+    def _project_issue(self, repo, row, *, with_body=False):
+        if type(row) is not dict or 'pull_request' in row:
+            raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
+        number = row.get('number');title=row.get('title');body=row.get('body')
+        if body is None:body=''
+        if (type(number) is not int or not 1 <= number <= 1_000_000 or
+                type(title) is not str or len(title) > 500 or
+                type(body) is not str or
+                row.get('state') not in ('open', 'closed') or
+                row.get('html_url') != 'https://github.com/'+self.owner+'/'+repo+'/issues/'+str(number) or
+                type(row.get('created_at')) is not str or len(row['created_at']) > 80 or
+                type(row.get('updated_at')) is not str or len(row['updated_at']) > 80):
+            raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
+        # We only parse Fortis's own leading marker, not comments or arbitrary HTML.
+        matched=re.match(r'<!-- fortis-visual-review:([A-Za-z0-9][A-Za-z0-9_-]{0,79}) -->',body)
+        media=self._visual_issue_links(body) if with_body else []
+        if not with_body:
+            # GitHub list response bodies can be long; validate media references only for get_issue.
+            media_count=len(re.findall(r'!\[[^\r\n]{0,400}\]\(https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200}\)',body))
+            if media_count > 100:raise Denied('GITHUB_ISSUE_MEDIA_LIMIT')
+        else:media_count=len(media)
+        result=dict(number=number,title=title,state=row['state'],url=row['html_url'],
+                    createdAt=row['created_at'],updatedAt=row['updated_at'],
+                    runIdMarker=matched.group(1) if matched else None,
+                    embeddedMediaCount=media_count)
+        if with_body:result.update(body=body,embeddedMediaUrls=media)
+        return result
+
     def read(self, request):
         if type(request) is not dict or request.get("service") != self.SERVICE:
             raise Denied("GITHUB_READ_REQUEST_DENIED")
@@ -232,6 +271,41 @@ class GitHubAdapter:
             result = {"operation": operation,
                       "items": [self._project_commit(x) for x in raw],
                       "page": params["page"], "perPage": params["perPage"]}
+        elif operation == "list_issues":
+            raw = self._api("GET", base + "/issues",params={
+                "page":params["page"],"per_page":params["perPage"],"state":params["state"]})
+            if (type(raw) is not list or len(raw) > params["perPage"] or
+                    any(type(x) is not dict for x in raw)):
+                raise Denied("GITHUB_ISSUES_RESPONSE_INVALID")
+            result = {"operation":operation,
+                      "items":[self._project_issue(repo,x) for x in raw if type(x) is dict and 'pull_request' not in x],
+                      "page":params["page"],"perPage":params["perPage"],
+                      "hasNextPage":len(raw)==params["perPage"]}
+        elif operation == "get_issue":
+            raw=self._api("GET",base+"/issues/"+str(params["number"]),allow_not_found=True)
+            if type(raw) is not dict:
+                raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
+            result={"operation":operation,"found":raw.get("_httpStatus")!=404,
+                    "issue":None if raw.get("_httpStatus")==404 else self._project_issue(repo,raw,with_body=True)}
+        elif operation == "list_issue_comments":
+            raw=self._api("GET",base+"/issues/"+str(params["number"])+"/comments",
+                          params={"page":params["page"],"per_page":params["perPage"]})
+            if type(raw) is not list or len(raw)>params["perPage"]:
+                raise Denied("GITHUB_ISSUE_COMMENTS_RESPONSE_INVALID")
+            items=[]
+            for row in raw:
+                if (type(row) is not dict or type(row.get('id')) is not int or
+                    row['id']<=0 or type(row.get('body')) is not str or
+                    type(row.get('created_at')) is not str or
+                    row.get('html_url')!='https://github.com/'+self.owner+'/'+repo+
+                        '/issues/'+str(params['number'])+'#issuecomment-'+str(row['id'])):
+                    raise Denied('GITHUB_ISSUE_COMMENT_RESPONSE_INVALID')
+                items.append(dict(id=row['id'],url=row['html_url'],body=row['body'],
+                                  createdAt=row['created_at'],
+                                  embeddedMediaUrls=self._visual_issue_links(row['body'])))
+            result={"operation":operation,"issueNumber":params["number"],"items":items,
+                    "page":params["page"],"perPage":params["perPage"],
+                    "hasNextPage":len(raw)==params["perPage"]}
         elif operation == "list_pull_requests":
             raw = self._api("GET", base + "/pulls",
                             params={"page": params["page"], "per_page": params["perPage"],

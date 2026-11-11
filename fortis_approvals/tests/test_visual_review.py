@@ -151,7 +151,8 @@ class Tests(unittest.TestCase):
                          'https://github.com/user-attachments/assets/abc123')
         self.assertEqual(len(opener.calls),1)
         self.assertTrue(opener.calls[0].full_url.startswith('https://uploads.github.com/user-attachments/assets?'))
-        self.assertEqual(opener.calls[0].get_header('Authorization'),'token '+'x'*32)
+        self.assertEqual(opener.calls[0].get_header('Authorization'),'Bearer '+'x'*32)
+        self.assertEqual(opener.calls[0].get_header('Content-type'),'image/png')
         self.assertEqual(opener.calls[0].data,PNG)
         for filename,data in [('bad.jpg',PNG),('image.png',b'malware'),('other/foo.png',PNG)]:
             with self.assertRaises(Denied):transport.upload_visual_png(33,filename,data)

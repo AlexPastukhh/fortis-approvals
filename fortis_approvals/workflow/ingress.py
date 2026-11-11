@@ -45,12 +45,20 @@ class NativeIngress:
         if path=='/v1/workspace/capabilities':
             require(not body,'WORKFLOW_PARAMS_INVALID')
             pr_policy=core._policy(actor,dict(service='github',operation='create_pull_request',target=self.github.config.repository))
+            visual_policy=core._policy(actor,dict(service='github',operation='publish_visual_review',target='visual-workspace'))
             dynamic=getattr(self.github.config,'dynamic_repositories',False)
             require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
-                allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else []),
-                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file'],
+                allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
+                    (['publish_visual_review'] if visual_policy=='ALLOW' else []),
+                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file']+
+                    (['publish_visual_review'] if visual_policy=='ASK' else []),
+                githubIssueReads=['list_issues','get_issue','list_issue_comments'],
+                githubIssueMaxPageSize=30,
+                visualReview={'repository':'visual-workspace','publishPolicy':visual_policy,
+                              'media':'png-only','maxFiles':5,'maxBytesPerFile':10*1024*1024,
+                              'attachmentReadback':'markdown-links-only','retryUnknown':'STOP'},
                 sensitivePush='ASK',gitHubCredentialInRepo=False,
                 cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'},
                 githubCiReads=sorted(CI_READ_NAMES),
@@ -154,8 +162,12 @@ class NativeIngress:
                 credential,body['requestId'],
                 event_offset=body['eventOffset'],event_limit=body['eventLimit'])
             details['diagnostic']=diagnose(details)
-            if (details.get('request',{}).get('service')=='github' and
-                    details['request'].get('operation')=='publish_visual_review'):
+            # Core returns a request *record* containing the nested intent.
+            # Reading fields on the outer record silently disabled visual evidence.
+            record=details.get('request')
+            intent=record.get('request') if type(record) is dict else None
+            if (type(intent) is dict and intent.get('service')=='github' and
+                    intent.get('operation')=='publish_visual_review'):
                 details['visualReview']=self.github.visual_evidence(body['requestId'])
             return details
         if path in ('/v1/workspace/result','/v1/workspace/reconcile'):
