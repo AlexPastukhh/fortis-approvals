@@ -297,6 +297,13 @@ class GitHubClient:
         return self.action("mark_pr_ready",repo,dict(number=number,expectedHeadSha=expected_head_sha),
             request_id=request_id,reason=reason)
 
+    def update_pull_request(self, repo, number, expected_head_sha, body, *, request_id, reason):
+        """ASK to replace only the description of an open, registered PR."""
+        return self.action("update_pull_request", repo, {
+            "number": number, "expectedHeadSha": expected_head_sha,
+            "body": body,
+        }, request_id=request_id, reason=reason)
+
     def merge_pull_request(self, repo, number, expected_head_sha,
                            merge_method="squash", *, request_id, reason):
         return self.action("merge_pull_request", repo, {

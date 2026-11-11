@@ -22,7 +22,7 @@ GITHUB_READ_OPERATIONS = frozenset({
 })
 GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "create_branch"), ("github", "push_files"), ("github", "push_commits"), ("github", "mark_pr_ready"), ("github", "create_pull_request"),
-    ("github", "merge_pull_request"), ("github", "update_workflow_file"),
+    ("github", "merge_pull_request"), ("github", "update_pull_request"), ("github", "update_workflow_file"),
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
     ("github", "publish_visual_review"),
@@ -220,6 +220,14 @@ def validate_github_action(operation, target, params):
             raise Denied("GITHUB_PR_FIELDS_INVALID")
         _utf8_size(params["title"], "GITHUB_PR_FIELDS_INVALID")
         _utf8_size(params["body"], "GITHUB_PR_FIELDS_INVALID")
+    elif operation == "update_pull_request":
+        if (set(params) != {"number", "expectedHeadSha", "body"} or
+                type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000 or
+                type(params["body"]) is not str):
+            raise Denied("GITHUB_UPDATE_PR_PARAMS_DENIED")
+        _sha(params["expectedHeadSha"])
+        if _utf8_size(params["body"], "GITHUB_UPDATE_PR_BODY_INVALID") > 20_000:
+            raise Denied("GITHUB_UPDATE_PR_BODY_INVALID")
     elif operation == "merge_pull_request":
         if set(params) != {"number", "expectedHeadSha", "mergeMethod"}:
             raise Denied("GITHUB_MERGE_PARAMS_DENIED")

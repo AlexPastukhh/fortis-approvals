@@ -31,6 +31,7 @@ All grants are restricted to the configured owner, admitted repository mode and 
 | github.push_commits | ALLOW | Registered task/*, exact existing Git commit SHA and expected remote SHA, ancestry and atomic remote lease |
 | github.push_commits affecting .github/workflows | ASK | Every new commit is scanned, including intermediate changes reverted at the tip; preview bound to bundle digest |
 | github.create_pull_request | ALLOW | Admitted actor; registered task branch to main. Single-repo mode pins the configured repo; dynamic mode admits token-scoped owner repos. No grant for other actors |
+| github.update_pull_request | ASK (source candidate; not live until owner release) | Replace **only** PR description on a registered, open, same-repository task PR to main; exact HEAD, immutable body digest in preview, recheck before PATCH, bounded UTF-8, independent readback and receipt; no title/refs/merge or retry on UNKNOWN |
 | github.mark_pr_ready | ASK | Open draft from this repository, exact HEAD/node ID |
 | github.merge_pull_request | ASK | Implemented machine gate, not the normal AI delivery route: exact ready PR HEAD and required CI; bootstrap uses its configured workflow ID, dynamic repos use supported active branch rules |
 | github.update_workflow_file | ASK | Existing dedicated typed workflow operation on a registered task branch; separate GitHub workflow permission |
