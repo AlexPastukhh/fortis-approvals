@@ -600,7 +600,8 @@ class NativeTLS(unittest.TestCase):
         self.assertEqual(self.core._policy('unrelated-actor',query),'DENY')
         self.assertEqual(self.core._policy(actor,{**query,'target':'foreign'}),'ASK')
         for service,operation in (('github','mark_pr_ready'),('github','merge_pull_request'),
-                                  ('github','update_workflow_file'),('workspace','cleanup_task')):
+                                  ('github','update_pull_request'),('github','update_workflow_file'),
+                                  ('workspace','cleanup_task')):
             self.assertEqual(self.core._policy(actor,dict(service=service,operation=operation,target='sandbox')),'ASK')
 
     def test_pr_allow_rejects_foreign_repo_base_and_unregistered_branch(self):

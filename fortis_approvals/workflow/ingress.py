@@ -52,7 +52,7 @@ class NativeIngress:
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
                     (['publish_visual_review'] if visual_policy=='ALLOW' else []),
-                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file']+
+                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file']+
                     (['publish_visual_review'] if visual_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
                 githubIssueMaxPageSize=30,
