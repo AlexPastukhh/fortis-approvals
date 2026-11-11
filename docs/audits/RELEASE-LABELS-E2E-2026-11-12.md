@@ -1,8 +1,10 @@
 # Release Labels v1 — controlled PR acceptance note
 
 This documentation-only change is a test fixture for the Fortis Release Labels
-Gateway contract (UC-GW-011). It does not change runtime code, configuration,
-credentials, CI workflows or deployment state.
+Gateway contract (UC-GW-011). Its companion update to
+`docs/MODULARIZED-SOURCE-MANIFEST.sha256` records the new document for Source CI.
+Neither file changes runtime code, configuration, credentials, CI workflows
+or deployment state.
 
 ## Established prerequisite
 
