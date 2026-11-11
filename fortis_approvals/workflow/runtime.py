@@ -30,7 +30,9 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
         core.policies[(actor,'github','create_pull_request',config.repository)]='ALLOW'
     # Exact target only; the generic Github ASK remains for other actions.
     core.policies[(actor,'github','publish_visual_review')]='DENY'
-    core.policies[(actor,'github','publish_visual_review','visual-workspace')]='ASK'
+    # Owner-approved scoped autonomy: visual PNG publication only in the pinned
+    # private visual-workspace repository. GitHub merges and other writes stay ASK.
+    core.policies[(actor,'github','publish_visual_review','visual-workspace')]='ALLOW'
     # CI control stays DENY until the operator explicitly pins repositories.
     if config.ci_control_repositories:
         writes=writes|CI_ACTIONS

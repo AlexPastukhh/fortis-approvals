@@ -151,6 +151,19 @@ class NativeTLS(unittest.TestCase):
             worktrees={'sandbox':self.fixture.worktrees},gateway=self.gateway)
         self.flow=WorkflowClient(gateway=self.gateway,worker=self.worker)
 
+    def test_visual_issues_capabilities_are_policy_scoped(self):
+        capabilities=self.gateway.post('/v1/workspace/capabilities',{})
+        self.assertEqual(capabilities['visualReview']['repository'],'visual-workspace')
+        self.assertEqual(capabilities['visualReview']['publishPolicy'],'ALLOW')
+        self.assertEqual(capabilities['visualReview']['attachmentReadback'],'markdown-links-only')
+        self.assertEqual(capabilities['githubIssueReads'],
+                         ['list_issues','get_issue','list_issue_comments'])
+        self.assertIn('publish_visual_review',capabilities['allowGitHub'])
+        self.assertNotIn('publish_visual_review',capabilities['askGitHub'])
+        self.assertIn('merge_pull_request',capabilities['askGitHub'])
+        # The dynamic repo pilot fixture uses sandbox; no auto-publish to other repos.
+        self.assertNotIn('publish_visual_review',capabilities['workspaceOperations'])
+
     def command(self,op,p,ident=None):
         out=self.flow.command(op,'sandbox',p,request_id=ident or str(uuid.uuid4()),reason='Offline authorized worktree task')
         self.assertEqual(out['state'],'EXECUTED',out)

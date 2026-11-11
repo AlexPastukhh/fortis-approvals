@@ -16,11 +16,24 @@ from unittest.mock import Mock, patch
 from fortis_approvals.core import Authenticator, Conflict, Core, Denied
 from fortis_approvals.incidents import IncidentCore
 from fortis_approvals.workflow.error_diagnostics import category, evidence, observe_adapter
+from fortis_approvals.integrations.github.gateway.transport import GitHubTransportError
 from fortis_approvals.workflow.client import WorkflowClient
 from fortis_approvals.workflow.incident_read import diagnose
 from fortis_approvals.workflow.ingress import NativeIngress, NATIVE_PATHS
 from fortis_approvals.workflow.store import Store
 from fortis_approvals.workflow.worker import Worker
+
+
+class GithubTransportEvidenceTests(unittest.TestCase):
+    def test_only_fixed_redacted_http_statuses_are_observable(self):
+        self.assertEqual(category(GitHubTransportError('GITHUB_HTTP_403')),'GITHUB_HTTP_403')
+        self.assertEqual(category(GitHubTransportError('GITHUB_VISUAL_UPLOAD_HTTP_404')),
+                         'GITHUB_VISUAL_UPLOAD_HTTP_404')
+        self.assertEqual(category(GitHubTransportError('secret=NOT_FOR_AUDIT')),
+                         'GITHUB_TRANSPORT_ERROR')
+        self.assertEqual(category(RuntimeError('secret=NOT_FOR_AUDIT')),'RUNTIME_ERROR')
+        self.assertEqual(evidence('GITHUB_ADAPTER','GITHUB_HTTP_403'),
+                         {'stage':'GITHUB_ADAPTER','code':'GITHUB_HTTP_403'})
 
 
 class ActivityStoreTests(unittest.TestCase):

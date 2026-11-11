@@ -172,6 +172,32 @@ class GitHubClient:
     def list_commits(self, repo, *, page=1, per_page=30):
         return self.read("list_commits", repo, {"page": page, "perPage": per_page})
 
+    def list_issues(self, repo, *, state="all", page=1, per_page=100):
+        return self.read("list_issues",repo,{"page":page,"perPage":per_page,"state":state})
+
+    def get_issue(self, repo, number):
+        return self.read("get_issue",repo,{"number":number})
+
+    def list_issue_comments(self, repo, number, *, page=1, per_page=100):
+        return self.read("list_issue_comments",repo,{"number":number,"page":page,"perPage":per_page})
+
+    def find_visual_review_run(self, repo, run_id, *, max_pages=10):
+        """Find an Issue claiming this run marker; absence is not retry authorization."""
+        if (type(run_id) is not str or not __import__('re').fullmatch(
+                r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',run_id) or
+                type(max_pages) is not int or not 1 <= max_pages <= 10):
+            raise Denied('GITHUB_VISUAL_REVIEW_LOOKUP_INVALID')
+        for page in range(1,max_pages+1):
+            listing=self.list_issues(repo,state='all',page=page,per_page=100)
+            for issue in listing['items']:
+                if issue['runIdMarker']==run_id:
+                    detail=self.get_issue(repo,issue['number'])
+                    if detail['found'] and detail['issue']['runIdMarker']==run_id:
+                        return dict(found=True,complete=True,issue=detail['issue'])
+            if not listing['hasNextPage']:
+                return dict(found=False,complete=True,issue=None)
+        return dict(found=False,complete=False,issue=None)
+
     def list_pull_requests(self, repo, *, state="open", page=1, per_page=30):
         return self.read("list_pull_requests", repo,
                          {"page": page, "perPage": per_page, "state": state})

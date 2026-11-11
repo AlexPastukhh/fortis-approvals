@@ -112,15 +112,54 @@ is a single typed GitHub action. `media` contains 1–5 PNG files (up to 10 MiB
 each), each a regular non-symlink file inside `/workspace/repo/Workfiles`
 under a directory named for `run_id`. The client stages bytes using a pinned
 machine-authenticated TLS route, then submits `github.publish_visual_review`
-for **ASK** owner approval. Only `visual-workspace` is authorized. A fresh
+for the exact target's runtime policy. **Only `visual-workspace`** is authorized. A fresh
 run ID is used for each distinct published result; the Gateway reserves each
 repository/run pair and refuses conflicting requests.
 
-After owner approval, the Gateway creates one private Issue, uploads bounded
-PNG user attachments to the pinned GitHub upload host, updates the Issue and
-reads it back. The final URL is returned through the existing
-`WorkflowClient.result(request_id)`. An unknown remote outcome stays
-`UNCERTAIN` rather than automatically retrying. Actor-scoped
-`WorkflowClient.details(request_id)` includes the durable `visualReview`
-progress (issue number and uploaded count) for investigation. The running
-Gateway must be separately released; a source-only client cannot enable it.
+After the **installed Gateway is updated**, this exact-target action uses
+`ALLOW` (no Owner Portal ASK) **only for `visual-workspace`**; the generic
+`publish_visual_review` policy stays `DENY`, other GitHub writes keep their
+existing ASK/ALLOW restrictions. The existing installed Gateway still uses
+ASK until its owner-gated release is completed. A controlled auto-publication
+request remains a real GitHub side effect: do not publish every draft.
+
+The Gateway creates one private Issue, uploads bounded PNG user attachments
+to the pinned GitHub upload host, updates the Issue and reads it back. The
+final URL is returned by `WorkflowClient.result(request_id)` after EXECUTED.
+`GitHubClient.list_issues(repo, state='all', page=1, per_page=100)`,
+`get_issue(repo, number)` and `list_issue_comments(repo, number)` provide
+read-only, paginated, exact-repository issue/comment views. `list_issues`
+filters Pull Requests (the GitHub Issues endpoint includes PRs). Exact
+`get_issue` and comments return recognized `github.com/user-attachments`
+Markdown **references** and body: these do **not** independently prove
+that attachment bytes are still accessible. `find_visual_review_run(repo,
+run_id)` scans bounded pages for the Fortis *claim marker*, and requires an
+exact Issue readback; a manually inserted marker is not authoritative proof
+of a GitHub effect. No match or a 404 never authorizes re-sending an
+UNCERTAIN/CLOSED_UNCONFIRMED request.
+
+`WorkflowClient.details(request_id)` now attaches durable `visualReview`
+evidence from the separate publisher reservation store for a correctly
+identified nested Core request. This can show an `issueNumber`/upload count
+for an earlier unconfirmed run after the new Gateway has been released.
+No issue number or matching marker is not proof of no remote effect.
+Future GithubTransportError events carry only a strictly allowlisted,
+non-secret HTTP status category, e.g. `GITHUB_HTTP_403` for the REST Issues
+write or `GITHUB_VISUAL_UPLOAD_HTTP_404` for an upload failure. Old generic
+`RUNTIME_ERROR` events do not retroactively become more precise.
+
+**Upload dependency and credentials:** the pinned `uploads.github.com/user-
+attachments/assets` endpoint is not a standard documented GitHub REST route.
+The official GitHub CLI media attachment support uses OAuth or classic PAT
+credentials. GitHub App installation tokens can return 404 at the media
+upload endpoint despite repository write permission. Credential type,
+repository Issue-write permission and the exact failed phase must be checked
+with owner-owned secure diagnostics; do not print, copy or replace any token
+in this Repo client. In addition to valid JSON metadata, a live positive
+E2E must verify an actual Issue and browser-visible PNGs before declaring
+success. No read method validates the remote media bytes.
+
+The running Gateway must be separately released; a source-only client cannot
+enable these changes. Preserve exact UNCERTAIN, CLAIMED and worker activity
+state through any owner-controlled release. A new successful E2E requires
+separate approval of its source/release and no blind replay of old requests.

@@ -18,7 +18,7 @@ _BASE = r"/repos/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}"
 _ROUTES = (
     ("GET", re.compile(r"/user/repos$")),
     ("GET", re.compile(_BASE + r"$")),
-    ("GET", re.compile(_BASE + r"/(branches|commits|pulls|actions/runs)$")),
+    ("GET", re.compile(_BASE + r"/(branches|commits|pulls|issues|actions/runs)$")),
     ("GET", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/rules/branches/main$")),
     ("GET", re.compile(_BASE + r"/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}$")),
@@ -34,6 +34,7 @@ _ROUTES = (
     ("POST", re.compile(_BASE + r"/issues$")),
     ("PATCH", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*/comments$")),
     ("POST", re.compile(_BASE + r"/actions/workflows/[A-Za-z0-9_.-]+/dispatches$")),
     ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/(rerun|cancel|approve)$")),
     ("PATCH", re.compile(_BASE + r"/git/refs/heads/[A-Za-z0-9_.%~-]+$")),
@@ -245,8 +246,8 @@ class GitHubHTTPTransport:
         url='https://uploads.github.com/user-attachments/assets?'+urlencode({
             'name':name,'content_type':'image/png','repository_id':repository_id})
         outgoing=request.Request(url,data=data,method='POST',headers={
-            'Authorization':'token '+self._token,'Accept':'application/vnd.github+json',
-            'Content-Type':'application/octet-stream'})
+            'Authorization':'Bearer '+self._token,'Accept':'application/json',
+            'Content-Type':'image/png'})
         opener=self._opener or request.build_opener(request.ProxyHandler({}),
             request.HTTPSHandler(context=ssl.create_default_context()),_NoRedirect())
         try:
