@@ -163,6 +163,45 @@ class GitHubClient:
     def get_repository(self, repo):
         return self.read("get_repository", repo)
 
+    def list_repository_labels(self, repo, *, page=1, per_page=50):
+        return self.read("list_repository_labels",repo,
+                         {"page":page,"perPage":per_page})
+
+    def list_pr_labels(self, repo, number, *, page=1, per_page=50):
+        return self.read("list_pr_labels",repo,
+                         {"number":number,"page":page,"perPage":per_page})
+
+    def get_pr_release_label_context(self, repo, number):
+        """Read SHA/body and complete-label fingerprints for exact-head ASK writes."""
+        return self.read("get_pr_release_label_context",repo,{"number":number})
+
+    def create_release_label(self, repo, name, *, request_id, reason):
+        """ASK: create one strictly managed label with server-chosen styling."""
+        return self.action("create_release_label",repo,{"name":name},
+                           request_id=request_id,reason=reason)
+
+    def add_pr_release_labels(self, repo, number, expected_head_sha, expected_base_sha,
+                              expected_body_sha256, expected_labels_sha256, labels,
+                              *, request_id, reason):
+        """ASK: additive GitHub labels; never replaces human label list."""
+        return self.action("add_pr_release_labels",repo,{
+            "number":number,"expectedHeadSha":expected_head_sha,
+            "expectedBaseSha":expected_base_sha,
+            "expectedBodySha256":expected_body_sha256,
+            "expectedLabelsSha256":expected_labels_sha256,
+            "labels":labels},request_id=request_id,reason=reason)
+
+    def remove_pr_release_label(self, repo, number, expected_head_sha, expected_base_sha,
+                                expected_body_sha256, expected_labels_sha256, name,
+                                *, request_id, reason):
+        """ASK: remove one managed label, never sticky owner-review marker."""
+        return self.action("remove_pr_release_label",repo,{
+            "number":number,"expectedHeadSha":expected_head_sha,
+            "expectedBaseSha":expected_base_sha,
+            "expectedBodySha256":expected_body_sha256,
+            "expectedLabelsSha256":expected_labels_sha256,
+            "name":name},request_id=request_id,reason=reason)
+
     def list_branches(self, repo, *, page=1, per_page=100):
         return self.read("list_branches", repo, {"page": page, "perPage": per_page})
 

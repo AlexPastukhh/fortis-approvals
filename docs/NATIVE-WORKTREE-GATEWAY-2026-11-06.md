@@ -16,6 +16,8 @@ All grants are restricted to the configured owner, admitted repository mode and 
 | Operation | Policy | Conditions |
 | --- | --- | --- |
 | get_repository, list_branches, list_commits, get_file, list_pull_requests, get_pull_request, list_workflow_runs, list_check_runs, get_commit_status | ALLOW | Selected repository, closed projected read contracts |
+| list_repository_labels, list_pr_labels, get_pr_release_label_context | ALLOW (**SOURCE CANDIDATE; not live until owner release**) | Selected token-scoped repo, bounded projections, only PR context, exact SHA/body/labels fingerprints; see UC-GW-011 |
+| create_release_label, add_pr_release_labels, remove_pr_release_label | ASK (**SOURCE CANDIDATE; not live until owner release**) | Narrow managed names only, registered same-repo open task PR, exact head/base/body/label digest, full readback + Core receipt; owner approval and STOP on UNCERTAIN |
 | get_workflow_run, list_workflow_jobs, get_job_log | ALLOW (new source, awaiting release) | Exact GitHub repo/run/attempt/SHA and job membership, bounded/redacted logs, no Sonar project required |
 | get_check_run, list_check_annotations, list_run_artifacts | ALLOW (new source, awaiting release) | Same owner/token scope; Checks endpoints may require unavailable provider token permission |
 | get_analysis_manifest | ALLOW (new source, awaiting release) | GitHub CI artifact metadata is CI_RECORDED_NOT_SONAR_VERIFIED; unpinned project key proves nothing about Sonar |

@@ -220,6 +220,30 @@ copy its old runtime pins. Normal image releases use the next section.
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
 
+## Pending Release Labels typed API release — not yet installed
+
+The source candidate for PR label READ/ASK methods is defined in
+[UC-GW-011](use-cases/integrations.md#uc-gw-011). It changes server-side
+`fortis_approvals/integrations/github/*` and native policy/ingress code,
+so **it requires an image-baked Primary release**, not merely a Docker
+source fast-forward. Follow the existing owner-managed release procedure
+below and [UC-GW-005](use-cases/releases.md#uc-gw-005), preserving active
+APPROVED/CLAIMED/UNCERTAIN work and retained rollback.
+
+Before Apply/Build, check exact owner-merged PR HEAD, source manifest,
+tests, no unresolved effects, policy/read grants and token permissions
+(Issues or Pull requests write); **do not print token contents**. The
+label APIs must remain ASK, not blanket ALLOW. After Backup/Promote,
+read `/v1/workspace/capabilities` for the exact three read and three
+write method names; exercise read-only repository/PR context, wrong
+actor/repo/branch rejection and owner-approved label changes on an
+isolated test PR. Verify GitHub labels, Core receipts and unchanged
+human labels; only then mark `LIVE_API_VERIFIED`. A denied/absent
+permission or unknown effect is STOP, not retry or credential bypass.
+No Projects mutations or unattended publisher are activated by
+this release. Technical method schemas belong in UC-GW-011; this
+runbook deliberately does not duplicate them.
+
 ## Normal releases after adoption
 
 `Manage-Integrations.ps1 -Action Apply` retains the exact source, stages a

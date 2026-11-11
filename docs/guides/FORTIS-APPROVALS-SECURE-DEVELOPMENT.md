@@ -14,6 +14,17 @@ WebAuthn-кнопки отмены и live межакторный E2E второ
 [датированное evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
 — точными owner outputs и границами подтверждения.
 
+**Release Labels update (source candidate, 2026-11-11):** новые
+typed read/ASK методы для GitHub PR labels подготавливаются в отдельной
+ветке. Они **не** наблюдались в Primary Gateway, не являются live
+grants и не могут использоваться до отдельного owner release/acceptance.
+Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
+операционный релиз:
+[Primary operations](../PRIMARY-GATEWAY-OPERATIONS.md).
+Нормативные правила меток принадлежат приватному
+`fortis-container/docs/RELEASE-PLANNING-CONTRACT.md`,
+а вычисление — публичному `fortis-release-impact-action`.
+
 ## Развёрнутые контуры
 
 | Контур | Endpoint / роль | Последнее подтверждение |

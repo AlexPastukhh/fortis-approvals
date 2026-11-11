@@ -163,3 +163,30 @@ The running Gateway must be separately released; a source-only client cannot
 enable these changes. Preserve exact UNCERTAIN, CLAIMED and worker activity
 state through any owner-controlled release. A new successful E2E requires
 separate approval of its source/release and no blind replay of old requests.
+
+
+## Release Labels typed methods — SOURCE CANDIDATE, NOT LIVE
+
+The normative classification belongs to
+[Fortis Release Planning Contract](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-PLANNING-CONTRACT.md);
+the public `fortis-release-impact-action` owns the only executable
+`suggestedLabels` projection. The Gateway only owns **typed transport
+authorization, minimal managed namespace, owner ASK, idempotency and GitHub
+readback**, not a second release rules engine.
+
+The typed READ methods `list_repository_labels`, `list_pr_labels` and
+`get_pr_release_label_context` return bounded, strictly projected data.
+The typed write methods `create_release_label`,
+`add_pr_release_labels` and `remove_pr_release_label` use exact PR
+head/base/body SHA and complete-label digest, same-repo registered task
+scope, individually approved Core `ASK`, provider readback and stored
+receipts. They never use the bulk label replacement endpoint and never
+silently remove `release:review-required`. Their low-level name validation
+is a security boundary, not an independent business classification.
+
+The operational route, source→merge→image→live gates and STOP rules are
+centralized in [UC-GW-011](../../../docs/use-cases/integrations.md#uc-gw-011).
+Do not assume method availability just because this source exists.
+`GitHub Projects V2` and an unattended write-capable publisher require
+separate typed APIs, grants and owner acceptance. No generic GraphQL
+proxy or second deployment controller should be introduced.

@@ -14,6 +14,7 @@
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |
 | [UC-GW-009](incidents.md#uc-gw-009) | Любой авторизованный ИИ читает **все** заявки (включая других инициаторов) и разбирает «Требуют разбора» | Global `list_requests()` + cross-actor `details()`; решения, отмена/closure — только в Owner Portal |
 | [UC-GW-010](incidents.md#uc-gw-010) | Наблюдать actor-owned worker activity без claim/retry и не путать heartbeat с доказательством простоя | Read-only `activity()` наблюдался live; код worker diagnostics требует отдельной owner acceptance |
+| [UC-GW-011](integrations.md#uc-gw-011) | Типизированные GitHub Release Labels: читать, определять и изменять метки открытого PR | Строго закрытый API, ASK/receipt/UNCERTAIN; после Merge source ещё не означает установленный Primary, live по UC-GW-005 |
 
 Каждый новый чат читает короткий вход главного реестра и полностью
 UC-CONT-002, UC-CONT-003 и [UC-GW-009](incidents.md#uc-gw-009);

@@ -304,6 +304,19 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             return dict(operation=operation,repository=repo,**{k:row[k] for k in (
                 'task','branch','baseSha','expectedHeadSha','newSha','bundleSha256','commits','paths',
                 'sensitivePaths','sensitivePreview','diffSha256')})
+        if operation in ('create_release_label','add_pr_release_labels','remove_pr_release_label'):
+            validate_github_action(operation,repo,p)
+            if operation!='create_release_label':
+                pr=self._api('GET',self._path(repo,'pulls/'+str(p['number'])))
+                require(type(pr) is dict and type(pr.get('head')) is dict and
+                        type(pr['head'].get('repo')) is dict and
+                        pr['head']['repo'].get('full_name')==self.owner+'/'+repo and
+                        type(pr.get('base')) is dict and
+                        type(pr['base'].get('repo')) is dict and
+                        pr['base']['repo'].get('full_name')==self.owner+'/'+repo,
+                        'GITHUB_RELEASE_PR_REPOSITORY_DENIED')
+                self.task_branch(repo,pr['head'].get('ref'))
+            return GitHubAdapter.prepare(self,request)
         require(operation in ('create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file'),'GIT_OPERATION_DISABLED')
         if operation=='create_pull_request':
             self.task_branch(repo,p['head']);require(p['base']=='main','GIT_PR_BASE_DENIED')

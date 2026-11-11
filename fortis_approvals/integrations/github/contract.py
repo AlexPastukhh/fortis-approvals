@@ -8,6 +8,7 @@ import re
 from urllib.parse import urlsplit
 
 from ...core import Denied
+from .release_label_contract import managed, checked_names, label_definition
 
 from .analysis_contract import READS as ANALYSIS_READS, ACTIONS as ANALYSIS_ACTIONS, READ_NAMES as ANALYSIS_READ_NAMES, ACTION_NAMES as ANALYSIS_ACTION_NAMES, validate_read as validate_analysis_read, validate_action as validate_analysis_action, validate_result as validate_analysis_result
 
@@ -17,6 +18,8 @@ GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_pull_requests"), ("github", "get_pull_request"),
     ("github", "list_issues"), ("github", "get_issue"),
     ("github", "list_issue_comments"),
+    ("github", "list_repository_labels"), ("github", "list_pr_labels"),
+    ("github", "get_pr_release_label_context"),
     ("github", "list_workflow_runs"), ("github", "list_check_runs"),
     ("github", "get_commit_status"),
 })
@@ -26,6 +29,8 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
     ("github", "publish_visual_review"),
+    ("github", "create_release_label"), ("github", "add_pr_release_labels"),
+    ("github", "remove_pr_release_label"),
 })
 LEGACY_READ_OPERATIONS = GITHUB_READ_OPERATIONS
 GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS
@@ -100,6 +105,20 @@ def validate_github_read(operation, target, params):
     elif operation == "get_issue":
         if set(params) != {"number"} or type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000:
             raise Denied("GITHUB_READ_PARAMS_DENIED")
+    elif operation == "get_pr_release_label_context":
+        if set(params)!={"number"} or type(params["number"]) is not int or not 1<=params["number"]<=1_000_000:
+            raise Denied("GITHUB_LABEL_PR_INVALID")
+    elif operation == "list_repository_labels":
+        _page(params)
+        if params["perPage"] > 50:
+            raise Denied("GITHUB_LABEL_PAGE_TOO_LARGE")
+    elif operation == "list_pr_labels":
+        if set(params) != {"number", "page", "perPage"} or (
+            type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000):
+            raise Denied("GITHUB_LABEL_PR_INVALID")
+        _page({"page": params["page"], "perPage": params["perPage"]})
+        if params["perPage"] > 50:
+            raise Denied("GITHUB_LABEL_PAGE_TOO_LARGE")
     elif operation == "list_pull_requests":
         if set(params) != {"page", "perPage", "state"} or params.get("state") not in ("open", "closed", "all"):
             raise Denied("GITHUB_READ_PARAMS_DENIED")
@@ -137,7 +156,27 @@ def validate_github_action(operation, target, params):
     _repo(target)
     if operation in ANALYSIS_ACTION_NAMES:
         return validate_analysis_action(operation, params)
-    if operation == "publish_visual_review":
+    if operation == "create_release_label":
+        if set(params) != {"name"}:
+            raise Denied("GITHUB_RELEASE_LABEL_PARAMS_INVALID")
+        label_definition(params["name"])
+    elif operation in ("add_pr_release_labels", "remove_pr_release_label"):
+        required = {"number", "expectedHeadSha", "expectedBaseSha",
+                    "expectedBodySha256", "expectedLabelsSha256"}
+        required |= {"labels"} if operation == "add_pr_release_labels" else {"name"}
+        if set(params) != required or type(params["number"]) is not int or (
+            not 1 <= params["number"] <= 1_000_000):
+            raise Denied("GITHUB_RELEASE_LABEL_PARAMS_INVALID")
+        _sha(params["expectedHeadSha"])
+        _sha(params["expectedBaseSha"])
+        for field in ("expectedBodySha256","expectedLabelsSha256"):
+            if type(params[field]) is not str or not re.fullmatch("[0-9a-f]{64}",params[field]):
+                raise Denied("GITHUB_RELEASE_LABEL_PROOF_INVALID")
+        if operation == "add_pr_release_labels":
+            checked_names(params["labels"],managed_only=True,nonempty=True,limit=5)
+        else:
+            managed(params["name"],removable=True)
+    elif operation == "publish_visual_review":
         if target != "visual-workspace" or set(params) != {"runId", "title", "description", "qaSummary", "durationSeconds", "media"}:
             raise Denied("GITHUB_VISUAL_REVIEW_SCOPE_DENIED")
         if (type(params["runId"]) is not str or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}", params["runId"]) or
@@ -324,6 +363,39 @@ def validate_github_read_projection(operation, result):
                  rows("items", ("name", "owner")) and
                  all(text(x["name"], 100) and text(x["owner"], 100)
                      for x in result["items"]))
+    elif operation == "get_pr_release_label_context":
+        valid=(exact(result,("operation","number","headSha","baseSha",
+                             "bodySha256","labelsSha256","labels","branch")) and
+               positive(result["number"]) and sha(result["headSha"]) and
+               sha(result["baseSha"]) and
+               all(type(result[k]) is str and re.fullmatch("[0-9a-f]{64}",result[k])
+                   for k in ("bodySha256","labelsSha256")) and
+               type(result["branch"]) is str and result["branch"].startswith("task/") and
+               type(result["labels"]) is list and len(result["labels"])<=250 and
+               all(text(x,50) and bool(x) for x in result["labels"]) and
+               len(set(result["labels"]))==len(result["labels"]))
+    elif operation in ("list_repository_labels", "list_pr_labels"):
+        fields=("name","color","description")
+        valid=(exact(result,("operation","items","page","perPage","hasNextPage")) and
+               rows("items",fields) and positive(result["page"]) and
+               type(result["perPage"]) is int and 1<=result["perPage"]<=50 and
+               type(result["hasNextPage"]) is bool and
+               all(text(x["name"],50) and bool(x["name"]) and
+                   type(x["color"]) is str and
+                   re.fullmatch("[0-9a-fA-F]{6}",x["color"]) and
+                   text(x["description"],500,optional=True)
+                   for x in result["items"]))
+        if operation=="list_pr_labels":
+            valid=(exact(result,("operation","number","items","page","perPage","hasNextPage"))
+                   and positive(result.get("number")) and
+                   type(result.get("items")) is list and len(result["items"])<=50 and
+                   all(exact(item,fields) and text(item["name"],50) and bool(item["name"]) and
+                       type(item["color"]) is str and
+                       re.fullmatch("[0-9a-fA-F]{6}",item["color"]) and
+                       text(item["description"],500,optional=True)
+                       for item in result["items"]) and
+                   positive(result["page"]) and type(result["perPage"]) is int and
+                   1<=result["perPage"]<=50 and type(result["hasNextPage"]) is bool)
     elif operation == "get_repository":
         fields = ("name", "full_name", "private", "default_branch",
                   "archived", "disabled", "html_url", "pushed_at")

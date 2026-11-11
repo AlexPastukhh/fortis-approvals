@@ -21,6 +21,7 @@ from ..contract import (
     validate_github_read_projection,
 )
 from .transport import GitHubHTTPTransport, GitHubTransportError
+from ..release_label_contract import (managed, checked_names, names_hash, label_definition, MAX_LABELS)
 
 
 class GitHubAdapter:
@@ -306,6 +307,22 @@ class GitHubAdapter:
             result={"operation":operation,"issueNumber":params["number"],"items":items,
                     "page":params["page"],"perPage":params["perPage"],
                     "hasNextPage":len(raw)==params["perPage"]}
+        elif operation == "get_pr_release_label_context":
+            context=self._release_pr_context(repo,params["number"])
+            result=context
+        elif operation in ("list_repository_labels","list_pr_labels"):
+            suffix=("labels" if operation=="list_repository_labels" else
+                    "issues/"+str(params["number"])+"/labels")
+            if operation=="list_pr_labels":
+                # Do not expose arbitrary issue label inventories via a PR method.
+                check=self._api("GET",base+"/pulls/"+str(params["number"]))
+                if type(check) is not dict or check.get("number")!=params["number"]:
+                    raise Denied("GITHUB_LABEL_PR_INVALID")
+            items=self._label_page(repo,suffix,params["page"],params["perPage"])
+            result={"operation":operation,"items":items,
+                    "page":params["page"],"perPage":params["perPage"],
+                    "hasNextPage":len(items)==params["perPage"]}
+            if operation=="list_pr_labels":result["number"]=params["number"]
         elif operation == "list_pull_requests":
             raw = self._api("GET", base + "/pulls",
                             params={"page": params["page"], "per_page": params["perPage"],
@@ -371,6 +388,86 @@ class GitHubAdapter:
         validate_github_read_projection(operation, result)
         return result
 
+    @staticmethod
+    def _label_row(row):
+        if (type(row) is not dict or type(row.get("name")) is not str or
+                len(row["name"])>50 or type(row.get("color")) is not str or
+                re.fullmatch("[0-9a-fA-F]{6}",row["color"]) is None or
+                row.get("description") is not None and type(row.get("description")) is not str):
+            raise Denied("GITHUB_LABEL_RESPONSE_INVALID")
+        checked_names([row["name"]])
+        description=row.get("description")
+        if description is not None and len(description)>500:
+            raise Denied("GITHUB_LABEL_RESPONSE_INVALID")
+        return dict(name=row["name"],color=row["color"].lower(),
+                    description=description)
+
+    def _label_page(self,repo,suffix,page,per_page):
+        raw=self._api("GET",self._path(repo,suffix),
+                      params={"page":page,"per_page":per_page})
+        if type(raw) is not list or len(raw)>per_page:
+            raise Denied("GITHUB_LABEL_RESPONSE_INVALID")
+        result=[self._label_row(x) for x in raw]
+        checked_names([x["name"] for x in result])
+        return result
+
+    def _complete_label_rows(self,repo,suffix):
+        items=[]
+        for page in range(1,5):
+            chunk=self._label_page(repo,suffix,page,100)
+            items+=chunk
+            if len(items)>MAX_LABELS:
+                raise Denied("GITHUB_LABEL_INVENTORY_LIMIT")
+            if len(chunk)<100:
+                checked_names([x["name"] for x in items])
+                return items
+        raise Denied("GITHUB_LABEL_INVENTORY_LIMIT")
+
+    def _release_pr_context(self,repo,number):
+        raw=self._api("GET",self._path(repo,"pulls/"+str(number)))
+        if (type(raw) is not dict or raw.get("number")!=number or
+                raw.get("state")!="open" or raw.get("draft") is not False or
+                raw.get("merged") is True or raw.get("merged_at") is not None):
+            raise Denied("GITHUB_RELEASE_PR_NOT_OPEN")
+        head=raw.get("head");base=raw.get("base")
+        if type(head) is not dict or type(base) is not dict:
+            raise Denied("GITHUB_RELEASE_PR_PROVENANCE_INVALID")
+        fullname=(self.owner+"/"+repo).casefold()
+        if (type(head.get("repo")) is not dict or
+                type(base.get("repo")) is not dict or
+                str(head["repo"].get("full_name","")).casefold()!=fullname or
+                str(base["repo"].get("full_name","")).casefold()!=fullname or
+                base.get("ref")!="main" or type(head.get("ref")) is not str or
+                not head["ref"].startswith("task/")):
+            raise Denied("GITHUB_RELEASE_PR_PROVENANCE_INVALID")
+        head_sha=self._sha(head.get("sha"))
+        base_sha=self._sha(base.get("sha"))
+        body=raw.get("body") or ""
+        if type(body) is not str or len(body)>20000:
+            raise Denied("GITHUB_RELEASE_PR_BODY_INVALID")
+        current=self._complete_label_rows(repo,"issues/"+str(number)+"/labels")
+        names=[x["name"] for x in current]
+        return dict(operation="get_pr_release_label_context",number=number,
+                    headSha=head_sha,baseSha=base_sha,
+                    bodySha256=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                    labelsSha256=names_hash(names),labels=sorted(names),
+                    branch=head["ref"])
+
+    def _release_pr_snapshot(self,repo,params,operation):
+        context=self._release_pr_context(repo,params["number"])
+        for field,actual in (
+            ("expectedHeadSha",context["headSha"]),
+            ("expectedBaseSha",context["baseSha"]),
+            ("expectedBodySha256",context["bodySha256"]),
+            ("expectedLabelsSha256",context["labelsSha256"])):
+            if params[field]!=actual:
+                raise Stale("GITHUB_RELEASE_PR_"+field+"_CHANGED")
+        return dict(operation=operation,repository=repo,number=params["number"],
+                    headSha=context["headSha"],baseSha=context["baseSha"],
+                    bodySha256=context["bodySha256"],
+                    currentLabels=context["labels"],
+                    currentLabelsSha256=context["labelsSha256"])
+
     def _ref(self, repo, branch, *, allow_not_found=False):
         return self._api("GET", self._path(repo, self._branch_ref(branch)),
                          allow_not_found=allow_not_found)
@@ -391,6 +488,23 @@ class GitHubAdapter:
             raise Denied("GITHUB_ACTION_DENIED")
         validate_github_action(operation, repo, params)
         base = self._path(repo)
+        if operation=="create_release_label":
+            definition=label_definition(params["name"])
+            names=[x["name"] for x in self._complete_label_rows(repo,"labels")]
+            if params["name"] in names:raise Denied("GITHUB_RELEASE_LABEL_ALREADY_DEFINED")
+            return {"operation":operation,"repository":repo,
+                    "definition":definition,"currentLabelsSha256":names_hash(names)}
+        if operation in ("add_pr_release_labels","remove_pr_release_label"):
+            snapshot=self._release_pr_snapshot(repo,params,operation)
+            if operation=="add_pr_release_labels":
+                desired=checked_names(params["labels"],managed_only=True,nonempty=True,limit=5)
+                defined=[x["name"] for x in self._complete_label_rows(repo,"labels")]
+                if not set(desired)<=set(defined):
+                    raise Denied("GITHUB_RELEASE_LABEL_MISSING_DEFINITION")
+                snapshot["add"]=desired
+            else:
+                snapshot["remove"]=managed(params["name"],removable=True)
+            return snapshot
         if operation == "create_branch":
             self._assert_working_branch(params["branch"])
             existing = self._ref(repo, params["branch"], allow_not_found=True)
@@ -515,7 +629,56 @@ class GitHubAdapter:
         snapshot = self.prepare(request)
         operation, repo, params = request["operation"], request["target"], request["params"]
         base = self._path(repo)
-        if operation == "create_branch":
+        if operation=="create_release_label":
+            again=self.prepare(request)
+            if canonical(again)!=canonical(snapshot):
+                raise Stale("GITHUB_RELEASE_LABEL_DEFINITIONS_CHANGED")
+            created=self._api("POST",base+"/labels",body=snapshot["definition"],expected=(201,))
+            if type(created) is not dict or created.get("name")!=params["name"]:
+                raise GitHubTransportError("GITHUB_RELEASE_LABEL_CREATE_UNCONFIRMED")
+            defined=[x["name"] for x in self._complete_label_rows(repo,"labels")]
+            if params["name"] not in defined:
+                raise GitHubTransportError("GITHUB_RELEASE_LABEL_READBACK_UNCONFIRMED")
+            result={"requestId":request_id,"operation":operation,
+                    "repository":repo,"name":params["name"],"created":True}
+        elif operation in ("add_pr_release_labels","remove_pr_release_label"):
+            again=self.prepare(request)
+            if canonical(again)!=canonical(snapshot):
+                raise Stale("GITHUB_RELEASE_PR_LABELS_OR_HEAD_CHANGED")
+            before=set(snapshot["currentLabels"])
+            number=params["number"]
+            if operation=="add_pr_release_labels":
+                desired=set(snapshot["add"])
+                expected=before|desired
+                changed=expected!=before
+                if changed:
+                    self._api("POST",base+"/issues/"+str(number)+"/labels",
+                              body={"labels":sorted(desired)},expected=(200,))
+            else:
+                value=snapshot["remove"]
+                expected=before-{value}
+                changed=expected!=before
+                if changed:
+                    self._api("DELETE",base+"/issues/"+str(number)+"/labels/"+
+                              quote(value,safe="-._~"),expected=(200,))
+            # The Issue labels API has no PR HEAD CAS. Verify both HEAD and full
+            # label inventory after effect; ambiguity means UNCERTAIN, no retry.
+            fresh=self._api("GET",base+"/pulls/"+str(number))
+            if (type(fresh) is not dict or fresh.get("number")!=number or
+                    fresh.get("head",{}).get("sha")!=snapshot["headSha"] or
+                    fresh.get("base",{}).get("sha")!=snapshot["baseSha"] or
+                    fresh.get("state")!="open" or fresh.get("draft") is not False or
+                    hashlib.sha256((fresh.get("body") or "").encode("utf-8")).hexdigest()!=snapshot["bodySha256"]):
+                raise GitHubTransportError("GITHUB_RELEASE_PR_AFTER_WRITE_UNCONFIRMED")
+            actual={x["name"] for x in self._complete_label_rows(
+                repo,"issues/"+str(number)+"/labels")}
+            if actual!=expected:
+                raise GitHubTransportError("GITHUB_RELEASE_LABEL_READBACK_UNCONFIRMED")
+            result={"requestId":request_id,"operation":operation,
+                    "repository":repo,"number":number,
+                    "headSha":snapshot["headSha"],"changed":changed,
+                    "labels":sorted(actual)}
+        elif operation == "create_branch":
             self._api("POST", base + "/git/refs",
                       body={"ref": "refs/heads/" + params["branch"], "sha": params["sourceSha"]},
                       expected=(201,))
