@@ -93,6 +93,10 @@ def validate_github_read(operation, target, params):
             if set(params) != {"page", "perPage", "number"} or type(params.get("number")) is not int or not 1 <= params["number"] <= 1_000_000:
                 raise Denied("GITHUB_READ_PARAMS_DENIED")
         _page({"page": params["page"], "perPage": params["perPage"]})
+        # GitHub sends full Issue/comment objects; 100 per page can exceed the
+        # transport's closed 1 MiB response limit even when projections are small.
+        if params["perPage"] > 30:
+            raise Denied("GITHUB_ISSUE_PAGE_TOO_LARGE")
     elif operation == "get_issue":
         if set(params) != {"number"} or type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000:
             raise Denied("GITHUB_READ_PARAMS_DENIED")

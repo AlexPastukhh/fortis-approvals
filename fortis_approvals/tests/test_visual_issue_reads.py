@@ -93,6 +93,7 @@ class Tests(unittest.TestCase):
 
     def test_closed_contract_rejects_unbounded_or_unknown_fetches(self):
         for op,args in [('list_issues',{'page':1,'perPage':101,'state':'all'}),
+                        ('list_issues',{'page':1,'perPage':31,'state':'all'}),
                         ('get_issue',{'number':True}),
                         ('get_issue',{'number':0}),
                         ('list_issue_comments',{'number':42,'page':1,'perPage':100,'url':'evil'})]:

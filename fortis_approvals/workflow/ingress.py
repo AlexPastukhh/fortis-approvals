@@ -55,6 +55,7 @@ class NativeIngress:
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_workflow_file']+
                     (['publish_visual_review'] if visual_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
+                githubIssueMaxPageSize=30,
                 visualReview={'repository':'visual-workspace','publishPolicy':visual_policy,
                               'media':'png-only','maxFiles':5,'maxBytesPerFile':10*1024*1024,
                               'attachmentReadback':'markdown-links-only','retryUnknown':'STOP'},

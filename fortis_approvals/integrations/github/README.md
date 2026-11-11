@@ -126,7 +126,7 @@ request remains a real GitHub side effect: do not publish every draft.
 The Gateway creates one private Issue, uploads bounded PNG user attachments
 to the pinned GitHub upload host, updates the Issue and reads it back. The
 final URL is returned by `WorkflowClient.result(request_id)` after EXECUTED.
-`GitHubClient.list_issues(repo, state='all', page=1, per_page=100)`,
+`GitHubClient.list_issues(repo, state='all', page=1, per_page=30)`,
 `get_issue(repo, number)` and `list_issue_comments(repo, number)` provide
 read-only, paginated, exact-repository issue/comment views. `list_issues`
 filters Pull Requests (the GitHub Issues endpoint includes PRs). Exact
