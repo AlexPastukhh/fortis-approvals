@@ -11,6 +11,27 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Release Labels / GitHub Projects — Gateway typed API (2026-11-11)
+
+**Status: SOURCE CANDIDATE, НЕ УСТАНОВЛЕНО.** По запросу владельца
+расширяется native GitHub provider без generic HTTP/GraphQL proxy.
+Предлагается READ `list_repository_labels`, `list_pr_labels`,
+`get_pr_release_label_context` и owner ASK `create_release_label`,
+`add_pr_release_labels`, `remove_pr_release_label`.
+Контракт/Use Case: [UC-GW-011](use-cases/integrations.md#uc-gw-011).
+Реализация/валидации живут в одном GitHub provider, политики — в
+native `workflow/runtime.py`; описание не дублирует полный контракт.
+
+**Незакрытые gates:** source tests/CI, Owner Merge, Primary image
+UC-GW-005, live capabilities + реальный scope/readback и negative
+actor/repository tests. Привилегированный автоматический publisher
+остаётся выключенным до отдельной trusted CI admission, no-PR-code
+review, race/UNCERTAIN E2E и owner принятия. GitHub Projects V2 —
+следующая типизированная операция только после проверки owner Project
+ID и GraphQL token scope; **никаких живых Project writes сейчас**.
+Нормативный Release Planning контракт один —
+`fortis-container/docs/RELEASE-PLANNING-CONTRACT.md`.
+
 ## P0 — Подключение собственных API через Gateway: ПЕРВОЕ В ОЧЕРЕДИ (2026-11-10)
 
 **Статус:** PLANNED / TOP PRIORITY. **Рабочий подробный план:**

@@ -52,9 +52,16 @@ class NativeIngress:
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
                     (['publish_visual_review'] if visual_policy=='ALLOW' else []),
-                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file']+
+                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file',
+                     'create_release_label','add_pr_release_labels','remove_pr_release_label']+
                     (['publish_visual_review'] if visual_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
+                githubReleaseLabelReads=['list_repository_labels','list_pr_labels',
+                    'get_pr_release_label_context'],
+                githubReleaseLabelWrites={'policy':'ASK','commands':[
+                    'create_release_label','add_pr_release_labels','remove_pr_release_label'],
+                    'scope':'registered-open-same-repo-task-PR-only',
+                    'unknownEffect':'STOP','automaticPublisher':'NOT_ACTIVE'},
                 githubIssueMaxPageSize=30,
                 visualReview={'repository':'visual-workspace','publishPolicy':visual_policy,
                               'media':'png-only','maxFiles':5,'maxBytesPerFile':10*1024*1024,

@@ -18,7 +18,7 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     reads=(LEGACY_READ_OPERATIONS|CI_READS)-{('github','list_repositories')}
     if config.dynamic_repositories:
         reads=reads|{('github','list_repositories')}
-    writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file','publish_visual_review')}
+    writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file','publish_visual_review','create_release_label','add_pr_release_labels','remove_pr_release_label')}
     for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
     for service,operation in writes:core.policies[(actor,service,operation)]='ASK'
     core.policies[(actor,'github','push_commits')]=adapter.push_policy

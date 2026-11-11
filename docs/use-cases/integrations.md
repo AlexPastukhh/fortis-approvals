@@ -122,3 +122,102 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 продолжают работать, отказ/гонка доказаны тестами, точный PR SHA имеет CI success,
 а новый метод подтверждён live после отдельного релиза. Разделять `SOURCE_READY`,
 `PR_MERGED`, `IMAGE_ACTIVATED` и `LIVE_API_VERIFIED`.
+
+
+## UC-GW-011 — Typed Release Labels через Fortis Gateway
+
+**Когда:** после принятого read-only Release Impact CI требуется
+создать определения управляемых меток или безопасно добавить/удалить их
+на открытом PR. Нормативная классификация и правила `build:` /
+`release:` принадлежат только
+[Fortis Release Planning Contract](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-PLANNING-CONTRACT.md).
+Единственный исполняемый источник расчёта `suggestedLabels` —
+`fortis-release-impact-action`; Gateway **не вычисляет Release Impact
+второй раз и не объявляет развёртывание выполненным**.
+
+**Цель:** один типизированный, проверяемый и owner-controlled путь
+для изменения PR-меток, без прямого AI GitHub write, универсального REST proxy,
+массовой замены всех labels или второго approval-механизма.
+
+**Роли/границы:** Repo agent через existing TLS machine ingress может
+делать только разрешённые READ и отправлять typed intent. Текущие
+`create_release_label`, `add_pr_release_labels`,
+`remove_pr_release_label` имеют **ASK** и требуют подтверждения владельца
+в действующем Owner Portal. Наличие источников в `main` и зелёного CI
+не делает их активными до owner release Primary; GitHub токен никогда
+не попадает в Repo actor. Политика `ASK` не заменяет semantic
+revalidation перед будущим полностью автоматическим publisher.
+
+**Методы (см. закрытый Python-контракт
+`fortis_approvals/integrations/github/contract.py`):**
+
+| Тип | Метод | Результат / ограничение |
+| --- | --- | --- |
+| READ | `list_repository_labels(repo, page, per_page)` | Постранично, только `name,color,description`; max 50/page |
+| READ | `list_pr_labels(repo, number, page, per_page)` | Только PR, не произвольный Issue |
+| READ | `get_pr_release_label_context(repo, number)` | Открытый same-repo task PR → head/base SHA, SHA-256 body и полного набора labels; тело PR и token не раскрываются |
+| ASK | `create_release_label(repo, name, request_id, reason)` | Только `build:<target>` и перечисленные `release:<action>`; цвет/описание задаёт сервер, дубликат STOP |
+| ASK | `add_pr_release_labels(..., labels, request_id, reason)` | До 5 существующих управляемых labels; **POST добавляет**, не заменяет чужие |
+| ASK | `remove_pr_release_label(..., name, request_id, reason)` | DELETE ровно одного управляемого label; `release:review-required` и чужие labels запрещено удалять |
+
+**Порядок работы:**
+
+1. Проверить текущий owner-managed `main`, полный
+   `release/targets.yaml`, PR body, точный HEAD и успешный Release Impact
+   из **доверенного** API/checkout; не брать список имён из PR-артефакта
+   как authorization. Вычислять план меток только единым
+   `fortis-release-impact-action` (pure label projection/admission).
+2. Прочитать `get_pr_release_label_context` и все нужные определения
+   `list_repository_labels`. При отсутствии определения — отдельный ASK
+   `create_release_label`, owner approval и независимый readback;
+   только после этого повторно читать контекст PR.
+3. Отправить запрос `add_pr_release_labels` или
+   `remove_pr_release_label` с **точными** `expectedHeadSha`,
+   `expectedBaseSha`, `expectedBodySha256`,
+   `expectedLabelsSha256`, `number` и immutable
+   `requestId`. Любой stale PR, fork, draft, чужой repo,
+   non-`main` base, незарегистрированная task branch, неизвестное
+   имя label либо несоответствие digest → STOP до мутации.
+4. Владелец просматривает ASK preview и подтверждает через WebAuthn.
+   Native adapter снова проверяет scope, актуальный PR и набор labels
+   **перед** одним ограниченным GitHub REST-эффектом; проверяет PR
+   HEAD/body и **весь** набор меток после эффекта, сохраняет receipt.
+   Повтор с тем же UUID возвращает установленную квитанцию.
+5. `UNCERTAIN`, HTTP timeout/403, SHA race или неполный readback →
+   [UC-GW-009](incidents.md#uc-gw-009), без слепого retry,
+   смены requestId или попытки GitHub connector как обхода.
+
+**Важный предел:** GitHub REST не поддерживает атомарный compare-and-swap
+по PR SHA вместе с изменением labels. Даже при свежих preflight/readback
+возможна гонка; в этом случае это **UNKNOWN/STOP**, а не `Deployed`.
+Не использовать `PUT /issues/{n}/labels`, который заменяет все метки,
+и не удалять ручной `release:review-required`. Действия здесь
+не запускают build, Windows install, GitHub Deployment или GitHub Projects.
+
+**Релиз и критерий готовности:**
+
+- Для source: отрицательные контрактные/HTTP route/forged input
+  тесты + existing tests, `scripts/update-source-manifests.py --check`
+  и `scripts/test-source.sh`; exact-head Source CI на PR.
+- После owner Review/Merge: `update_main_from_pr` с точным merge SHA;
+  обновление image-baked Gateway — **только** через
+  [UC-GW-005](releases.md#uc-gw-005) и
+  [Primary operator runbook](../PRIMARY-GATEWAY-OPERATIONS.md),
+  с сохранением PENDING/APPROVED/CLAIMED/UNCERTAIN, backup и
+  rollback. Установка требует отдельного owner approval.
+- `LIVE_API_VERIFIED` только после проверки
+  `/v1/workspace/capabilities`, реального READ token scope,
+  отказа wrong actor/repo, controlled ASK на тестовом PR,
+  точного GitHub readback и Core receipt. Пока это не
+  подтверждено, статус **SOURCE_CANDIDATE**, а не Production.
+- Для автоматического publisher нужны отдельные принятые trusted
+  workflow/worker, независимая source metadata revalidation и
+  policy acceptance; текущие ASK-методы **не являются**
+  unattended автоматическим назначением.
+
+**GitHub Projects V2** здесь не активируется: он требует конкретного
+owner-approved project ID, доступов GraphQL и собственного typed
+UC-GW-003 с pagination, item-idempotency/receipt и live readback.
+GitHub Project — только проекция планирования; Deployment evidence
+всегда отдельно. Состояние этой следующей задачи — в
+[едином Gateway backlog](../BACKLOG-IMPROVEMENTS.md).
