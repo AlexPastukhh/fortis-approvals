@@ -1,0 +1,85 @@
+# Source candidate for Fortis release planning; not an authorization to deploy.
+# Two independent target identities: Gateway image and owner Windows controller.
+# Image inputs are derived conservatively from active Manage-Integrations.ps1
+# (Dockerfile-Gateway-Modularized-Candidate), not historical pilot Dockerfiles.
+schemaVersion: 1
+repository: fortis-approvals
+buildUnits:
+  - id: primary-gateway-image
+    artifactType: docker-image
+    recipe: fortis_approvals/deploy/Dockerfile-Gateway-Modularized-Candidate
+    inputs:
+      - fortis_approvals/deploy/Dockerfile-Gateway-Modularized-Candidate
+      - .dockerignore
+      - fortis_approvals/requirements-owner.txt
+      - fortis_approvals/__init__.py
+      - fortis_approvals/core.py
+      - fortis_approvals/owner_auth.py
+      - fortis_approvals/owner_portal.py
+      - fortis_approvals/owner_shell.py
+      - fortis_approvals/owner_shell_release.py
+      - fortis_approvals/owner_shell_portal.py
+      - fortis_approvals/incidents.py
+      - fortis_approvals/repo_action_contract.py
+      - fortis_approvals/repo_ingress.py
+      - fortis_approvals/r5_read_candidate.py
+      - fortis_approvals/r5_read_server.py
+      - fortis_approvals/r7_unified_candidate.py
+      - fortis_approvals/r7_unified_server.py
+      - fortis_approvals/a3_server.py
+      - fortis_approvals/server.py
+      - fortis_approvals/integrations/**
+      - fortis_approvals/extensions/**
+      - fortis_approvals/clients/**
+      - fortis_approvals/workflow/__init__.py
+      - fortis_approvals/workflow/common.py
+      - fortis_approvals/workflow/store.py
+      - fortis_approvals/workflow/git_backend.py
+      - fortis_approvals/workflow/adapters.py
+      - fortis_approvals/workflow/ingress.py
+      - fortis_approvals/workflow/incident_read.py
+      - fortis_approvals/workflow/error_diagnostics.py
+      - fortis_approvals/workflow/runtime.py
+      - fortis_approvals/static/**
+      - fortis_approvals/deploy/github_pilot_helpers.py
+      - fortis_approvals/deploy/image_offline_smoke.py
+targets:
+  - id: fortis-gateway
+    buildUnit: primary-gateway-image
+    deployment:
+      kind: owner-controlled
+      procedure: docs/use-cases/releases.md
+      environments: [production]
+    verification:
+      - source-ci
+      - owner-selftest
+      - protected-check-apply
+      - live-readback
+      - backup-promote
+  - id: gateway-owner-controller
+    inputs:
+      - fortis_approvals/deploy/Manage-Integrations.ps1
+      - fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1
+      - fortis_approvals/deploy/Primary-Gateway.ps1
+      - fortis_approvals/deploy/Provider-Credentials.ps1
+    deployment:
+      kind: windows-source
+      procedure: docs/PRIMARY-GATEWAY-OPERATIONS.md
+      environments: [windows-owner]
+    verification:
+      - windows-source-exact-sha
+      - owner-powershell-selftest
+noDeploymentPaths:
+  - README.md
+  - CONTRIBUTING.md
+  - SECURITY.md
+  - AGENTS.md
+  - .editorconfig
+  - .gitattributes
+  - .gitignore
+  - .github/**
+  - docs/**
+  - scripts/**
+  - fortis_approvals/README.md
+  - fortis_approvals/evidence/**
+  - fortis_approvals/tests/**
