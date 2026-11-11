@@ -17,6 +17,12 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 [Fortis → API: onboarding, UC, безопасность, автоматизация](/workspace/repo/Workfiles/fortis-api-onboarding-priority-20261110/PLAN.md)
 (локальный Workfiles в постоянном Fortis workspace; путь не является GitHub-ссылкой).
 
+**Отдельное ТЗ:** в чате подготовлен файл «Fortis Own API → Gateway», версия 0.2
+(2026-11-11), для координации работ по Mirror, Observatory и Owner Shell.
+Файл пока не опубликован в Git; это рабочий проект требований, а не принятый UC,
+релизный контракт или разрешение менять runtime. Перед применением сверять с
+актуальными исходниками и действующими правилами Gateway.
+
 **Цель:** сделать подключение собственного API через существующие typed Gateway
 extensions повторяемым: проверка совместимости транспорта, контракт операций,
 actor/target/policy, credential lifecycle, idempotency/receipts, тесты, штатный
