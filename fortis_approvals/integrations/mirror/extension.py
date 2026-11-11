@@ -6,7 +6,7 @@ reads are separate. This package intentionally does not register pull_main.
 """
 import re
 
-from fortis_approvals.extensions.http import JSONAPI, Route
+from fortis_approvals.integrations.mirror.tls import MirrorPinnedAPI
 from fortis_approvals.extensions.model import Operation, Provider, bounded, check
 from fortis_approvals.integrations.review_schema import object_schema
 
@@ -142,6 +142,4 @@ PROVIDER=Provider('mirror',(
     Operation('get_repository','Read fixed Windows/Docker Git status (GitHub NOT_CHECKED)',
               'read',object_schema({}),validate_result,read_repository,
               credential='link',routes=('get_repo',)),
-),api=JSONAPI('https://host.docker.internal',(
-    Route('get_repo','GET','/gateway/v1/repositories/{repo_id}',readonly=True),
-)))
+),api=MirrorPinnedAPI())

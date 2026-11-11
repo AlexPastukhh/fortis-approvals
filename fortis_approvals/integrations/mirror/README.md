@@ -5,7 +5,15 @@ exact allowed repo IDs). No Gateway ASK Pull is registered. A source package,
 green tests or published PR is not a Windows or Gateway deployment.
 
 The fixed TLS transport is HTTPS/443 to host.docker.internal, using a
-Gateway-owned named Bearer secret (future alias mirror-link). The Windows
+Gateway-owned named Bearer secret (future alias mirror-link). **Mirror-only CA
+trust** is read from the fixed public PEM
+/run/fortis-secrets/mirror-read/ca.pem in the already existing Gateway
+read-only secrets mount. The CA must be independently reviewed and staged by
+the Windows owner only after shared-vault coordination. This is not a new mount,
+a token, or permission to modify the shared volume here. Missing/invalid CA
+fails closed (MIRROR_CA_UNAVAILABLE); TLS keeps hostname verification and
+CERT_REQUIRED, without proxy/redirect or system CA fallback. No private
+Mirror CA key or Windows TLS server key ever belongs inside the Gateway. The Windows
 GatewayHandler must be separately enabled with a trusted server certificate
 and a Windows exact-repo allowlist. No browser cookie or OwnerShell port 10443
 is used. Credential and vault compatibility are owned by the other flow:
