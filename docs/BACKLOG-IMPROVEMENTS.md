@@ -17,6 +17,15 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 [Fortis → API: onboarding, UC, безопасность, автоматизация](/workspace/repo/Workfiles/fortis-api-onboarding-priority-20261110/PLAN.md)
 (локальный Workfiles в постоянном Fortis workspace; путь не является GitHub-ссылкой).
 
+**Предварительное блокирующее улучшение (2026-11-11, SOURCE CANDIDATE):**
+добавить типизированную операцию github.update_pull_request для изменения только
+описания уже открытого PR через Gateway. Цель — не требовать от владельца
+ручного GitHub UI Edit при исправлении PR Release Impact. Операция имеет
+отдельную политику ASK, точные PR/HEAD/task/repo, проверку исходного описания,
+readback и receipt; не даёт права менять код, ветки, title или merge.
+Пока изменение не прошло source PR/CI, owner merge и отдельный Gateway release,
+в живом Gateway метод **недоступен**. Не использовать GitHub-коннектор в обход.
+
 **Цель:** сделать подключение собственного API через существующие typed Gateway
 extensions повторяемым: проверка совместимости транспорта, контракт операций,
 actor/target/policy, credential lifecycle, idempotency/receipts, тесты, штатный

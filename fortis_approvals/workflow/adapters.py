@@ -8,7 +8,7 @@ from ..core import Denied, Stale, canonical
 from ..integrations.github.gateway.adapter import GitHubAdapter
 from ..integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
-from ..integrations.github.contract import validate_github_read, validate_github_read_projection
+from ..integrations.github.contract import validate_github_action, validate_github_read, validate_github_read_projection
 from .error_diagnostics import observe_adapter
 from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
@@ -304,12 +304,14 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             return dict(operation=operation,repository=repo,**{k:row[k] for k in (
                 'task','branch','baseSha','expectedHeadSha','newSha','bundleSha256','commits','paths',
                 'sensitivePaths','sensitivePreview','diffSha256')})
-        require(operation in ('create_pull_request','mark_pr_ready','merge_pull_request','update_workflow_file'),'GIT_OPERATION_DISABLED')
+        require(operation in ('create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file'),'GIT_OPERATION_DISABLED')
         if operation=='create_pull_request':
             self.task_branch(repo,p['head']);require(p['base']=='main','GIT_PR_BASE_DENIED')
         elif operation=='update_workflow_file':
             self.task_branch(repo,p['branch'])
         else:
+            if operation=='update_pull_request':
+                validate_github_action(operation,repo,p)
             raw=self._api('GET',self._path(repo,'pulls/'+str(p['number'])))
             expected=self.config.owner+'/'+repo
             require(raw.get('head',{}).get('repo',{}).get('full_name')==expected and
@@ -321,6 +323,8 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
                 require(pr['draft'] is True and type(raw.get('node_id')) is str and
                         re.fullmatch('[A-Za-z0-9_+=/-]{1,240}',raw['node_id']),'GIT_DRAFT_PR_REQUIRED')
                 return dict(operation=operation,repository=repo,number=p['number'],head=pr['head'],base=pr['base'],nodeId=raw['node_id'])
+            if operation=='update_pull_request':
+                return GitHubAdapter.prepare(self,request)
             require(not pr['draft'] and p['mergeMethod']=='merge','GIT_READY_PR_MERGE_REQUIRED')
             ci=(self._dynamic_ci_gate(repo,p['expectedHeadSha'])
                 if self.config.dynamic_repositories and repo!=self.config.repository

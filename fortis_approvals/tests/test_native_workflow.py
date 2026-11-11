@@ -107,8 +107,12 @@ class FakeAPI:
         if method=='POST' and path==base+'/pulls':
             number=len(self.pulls)+1;self.posts+=1
             self.pulls[number]=dict(number=number,node_id='PR_fixture_'+str(number),title=body['title'],state='open',
-                draft=body['draft'],merged=False,head=dict(ref=body['head'],sha=refs[body['head']],repo={'full_name':'PilotOwner/sandbox'}),
+                draft=body['draft'],merged=False,body=body['body'],head=dict(ref=body['head'],sha=refs[body['head']],repo={'full_name':'PilotOwner/sandbox'}),
                 base=dict(ref=body['base'],sha=refs[body['base']],repo={'full_name':'PilotOwner/sandbox'}),html_url='https://github.com/PilotOwner/sandbox/pull/'+str(number))
+            return self.pulls[number]
+        if method=='PATCH' and path.startswith(base+'/pulls/'):
+            number=int(path.rsplit('/',1)[1]);assert set(body)=={'body'}
+            self.pulls[number]['body']=body['body'];self.posts+=1
             return self.pulls[number]
         if method=='GET' and path==base+'/pulls':return list(self.pulls.values())
         if method=='GET' and path.startswith(base+'/pulls/'):return self.pulls[int(path.rsplit('/',1)[1])]
@@ -217,6 +221,46 @@ class NativeTLS(unittest.TestCase):
         self.assertNotIn('claim',details['worker'])
         self.assertEqual(self.flow.details(ident,event_offset=1,event_limit=1)['eventOffset'],1)
         self.assertEqual(self.core.events(ident),before)
+
+    def test_pr_description_update_requires_owner_ask_and_registered_task(self):
+        self.create()
+        head=self.edit_commit()['headSha']
+        self.flow.publish('sandbox','real-cycle',None,head,
+                          request_id=str(uuid.uuid4()),reason='Publish PR metadata test')
+        self.assertEqual(self.flow.github.create_pull_request(
+            'sandbox','task/real-cycle','main','Review description',body='Old text',
+            request_id=str(uuid.uuid4()),reason='Create bounded PR')['state'],'EXECUTED')
+        cap=self.gateway.post('/v1/workspace/capabilities',{})
+        self.assertIn('update_pull_request',cap['askGitHub'])
+        self.assertNotIn('update_pull_request',cap['allowGitHub'])
+        ident=str(uuid.uuid4())
+        before=self.api.posts
+        response=self.flow.github.update_pull_request(
+            'sandbox',1,head,'Corrected release impact description',
+            request_id=ident,reason='Fix PR metadata using typed Gateway ASK')
+        self.assertEqual(response['state'],'PENDING')
+        self.assertEqual(self.api.posts,before)
+        self.assertEqual(self.api.pulls[1]['body'],'Old text')
+        self.login()
+        accepted=self.decide(ident,'approve')[1]
+        self.assertEqual(accepted['state'],'EXECUTED')
+        self.assertEqual(self.api.pulls[1]['body'],'Corrected release impact description')
+        self.assertEqual(self.api.posts,before+1)
+        self.assertEqual(self.flow.github.status(ident)['state'],'EXECUTED')
+        self.assertEqual(self.flow.github.update_pull_request(
+            'sandbox',1,head,'Corrected release impact description',
+            request_id=ident,reason='Fix PR metadata using typed Gateway ASK')['state'],'EXECUTED')
+        self.assertEqual(self.api.posts,before+1)
+        rejected=self.flow.github.update_pull_request(
+            'sandbox',1,head,'Disallowed without owner',
+            request_id=str(uuid.uuid4()),reason='Owner must review exact changed body')
+        self.assertEqual(rejected['state'],'PENDING')
+        self.assertEqual(self.api.posts,before+1)
+        with self.assertRaises(Denied):
+            self.flow.github.update_pull_request(
+                'foreign',1,head,'Another repo',
+                request_id=str(uuid.uuid4()),reason='Wrong repository denied')
+        self.assertEqual(self.api.posts,before+1)
 
     def test_full_actual_worktree_commit_push_pr_ci_merge_update_main(self):
         self.command('fetch',dict(ref='main',expectedSha=self.fixture.base))

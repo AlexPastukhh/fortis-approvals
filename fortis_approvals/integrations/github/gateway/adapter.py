@@ -421,6 +421,29 @@ class GitHubAdapter:
                     "titleSha256": hashlib.sha256(params["title"].encode()).hexdigest(),
                     "bodySha256": hashlib.sha256(params["body"].encode()).hexdigest(),
                     "draft": params["draft"]}
+        if operation == "update_pull_request":
+            raw = self._api("GET", base + "/pulls/" + str(params["number"]))
+            pr = self._project_pull(raw)
+            if pr["state"] != "open" or pr["merged"]:
+                raise Denied("GITHUB_PR_NOT_EDITABLE")
+            if pr["head"]["sha"] != params["expectedHeadSha"]:
+                raise Stale("GITHUB_PR_HEAD_CHANGED")
+            current_body = raw.get("body")
+            if current_body is None:
+                current_body = ""
+            if type(current_body) is not str or len(current_body) > 100_000:
+                raise Denied("GITHUB_PR_BODY_INVALID")
+            try:
+                title_hash = hashlib.sha256(pr["title"].encode("utf-8")).hexdigest()
+                before_hash = hashlib.sha256(current_body.encode("utf-8")).hexdigest()
+            except UnicodeEncodeError:
+                raise Denied("GITHUB_PR_BODY_INVALID") from None
+            return {"operation": operation, "repository": repo,
+                    "number": params["number"],
+                    "head": pr["head"], "base": pr["base"],
+                    "titleSha256": title_hash,
+                    "currentBodySha256": before_hash,
+                    "nextBodySha256": hashlib.sha256(params["body"].encode("utf-8")).hexdigest()}
         if operation == "merge_pull_request":
             pr = self._api("GET", base + "/pulls/" + str(params["number"]))
             projected = self._project_pull(pr)
@@ -552,6 +575,26 @@ class GitHubAdapter:
                 raise GitHubTransportError("GITHUB_PR_READBACK_UNCONFIRMED")
             result = {"requestId": request_id, "operation": operation,
                       "repository": repo, "pullRequest": projected}
+        elif operation == "update_pull_request":
+            latest = self.prepare(request)
+            if canonical(latest) != canonical(snapshot):
+                raise Stale("GITHUB_PR_CHANGED_BEFORE_UPDATE")
+            updated = self._api("PATCH", base + "/pulls/" + str(params["number"]),
+                                body={"body": params["body"]}, expected=(200,))
+            if type(updated) is not dict or updated.get("number") != params["number"]:
+                raise GitHubTransportError("GITHUB_PR_UPDATE_UNCONFIRMED")
+            after = self._api("GET", base + "/pulls/" + str(params["number"]))
+            pr = self._project_pull(after)
+            if (pr["number"] != params["number"] or
+                    pr["head"] != snapshot["head"] or pr["base"] != snapshot["base"] or
+                    pr["state"] != "open" or pr["merged"] or
+                    hashlib.sha256(pr["title"].encode()).hexdigest() != snapshot["titleSha256"] or
+                    (after.get("body") or "") != params["body"]):
+                raise GitHubTransportError("GITHUB_PR_UPDATE_UNCONFIRMED")
+            result = {"requestId": request_id, "operation": operation,
+                      "repository": repo, "number": params["number"],
+                      "headSha": pr["head"]["sha"],
+                      "bodySha256": snapshot["nextBodySha256"], "url": pr["url"]}
         elif operation == "merge_pull_request":
             latest = self.prepare(request)
             if canonical(latest) != canonical(snapshot):

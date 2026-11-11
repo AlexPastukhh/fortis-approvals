@@ -28,6 +28,8 @@ class FakeTransport:
     def __init__(self):
         self.calls = []
         self.head = SHA_A
+        self.pr_body = "Original description"
+        self.pr_state = "open"
     def request(self, method, path, *, params=None, body=None,
                 expected_statuses=(200,), allow_not_found=False):
         self.calls.append((method, path, params, body))
@@ -62,8 +64,11 @@ class FakeTransport:
         if path.endswith("/pulls") and method == "GET":
             return []
         if path.endswith("/pulls/1"):
-            return {"number": 1, "title": "T", "state": "open",
-                    "draft": False, "merged": False,
+            if method == "PATCH":
+                assert set(body) == {"body"}
+                self.pr_body = body["body"]
+            return {"number": 1, "title": "T", "state": self.pr_state,
+                    "draft": False, "merged": False, "body": self.pr_body,
                     "head": {"ref": "feature", "sha": SHA_A},
                     "base": {"ref": "main", "sha": SHA_B},
                     "html_url": "https://github.com/Alex/tunnel/pull/1"}
@@ -103,6 +108,18 @@ class ContractTests(unittest.TestCase):
                 "branch": "feature/work", "expectedHeadSha": SHA_A,
                 "message": "x", "files": [{"path": "../escape", "content": "x"}],
             })
+
+    def test_update_pr_description_schema_only(self):
+        valid = {"number": 1, "expectedHeadSha": SHA_A, "body": "Safe description"}
+        validate_github_action("update_pull_request", "tunnel", valid)
+        for bad in (
+                {**valid, "base": "other"}, {**valid, "title": "Change"},
+                {**valid, "merge": True}, {**valid, "number": True},
+                {**valid, "number": 0}, {**valid, "expectedHeadSha": SHA_B.upper()},
+                {**valid, "body": None}, {**valid, "body": "x" * 20_001},
+                {**valid, "body": chr(0xD800)}):
+            with self.subTest(bad=str(bad)[:45]), self.assertRaises(Denied):
+                validate_github_action("update_pull_request", "tunnel", bad)
 
     def test_github_action_envelope_respects_ingress_body_cap(self):
         body = {"requestId": "00000000-0000-4000-8000-000000000001",
@@ -184,6 +201,38 @@ class AdapterTests(unittest.TestCase):
         self.assertIn(("PATCH", "/repos/Alex/tunnel/git/refs/heads/feature%2Ftest"), methods)
         patch = next(x for x in self.transport.calls if x[0] == "PATCH")
         self.assertIs(patch[3]["force"], False)
+
+    def test_update_pr_body_is_bound_to_exact_head_and_receipted(self):
+        request = {
+            "requestId": "00000000-0000-4000-8000-000000000081",
+            "service": "github", "operation": "update_pull_request", "target": "tunnel",
+            "params": {"number": 1, "expectedHeadSha": SHA_A,
+                       "body": "Updated exact description"},
+        }
+        preview = self.adapter.prepare(request)
+        self.assertEqual(preview["number"], 1)
+        self.assertNotIn("Original description", str(preview))
+        result = self.adapter.apply(request)
+        self.assertEqual(result["bodySha256"], preview["nextBodySha256"])
+        self.assertEqual(self.transport.pr_body, "Updated exact description")
+        self.assertEqual(self.adapter.apply(request), result)
+        self.assertEqual(sum(1 for method, path, _, _ in self.transport.calls
+                             if method == "PATCH" and path.endswith("/pulls/1")), 1)
+        self.assertTrue(self.adapter.confirm(request["requestId"], result))
+
+        stale = {**request, "requestId": "00000000-0000-4000-8000-000000000082"}
+        self.transport.pr_body = "External owner edit"
+        # External edit is observed in the preview; applying the exact request
+        # requires a fresh owner decision, never silently retrying a past UUID.
+        self.assertNotEqual(self.adapter.prepare(stale)["currentBodySha256"],
+                            preview["currentBodySha256"])
+        self.transport.pr_state = "closed"
+        with self.assertRaisesRegex(Denied, "GITHUB_PR_NOT_EDITABLE"):
+            self.adapter.prepare(stale)
+        self.transport.pr_state = "open"
+        stale["params"] = {**stale["params"], "expectedHeadSha": SHA_C}
+        with self.assertRaisesRegex(Exception, "GITHUB_PR_HEAD_CHANGED"):
+            self.adapter.prepare(stale)
 
     def test_protected_branch_is_never_push_target(self):
         request = {"service": "github", "operation": "push_files",

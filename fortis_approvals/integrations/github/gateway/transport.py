@@ -24,6 +24,7 @@ _ROUTES = (
     ("GET", re.compile(_BASE + r"/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}$")),
     ("GET", re.compile(_BASE + r"/commits/[0-9a-f]{40}/pulls$")),
     ("GET", re.compile(_BASE + r"/pulls/[1-9][0-9]*$")),
+    ("PATCH", re.compile(_BASE + r"/pulls/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/actions/workflows/[A-Za-z0-9_.-]+$")),
     ("GET", re.compile(_BASE + r"/commits/[A-Za-z0-9_.%~-]+/(check-runs|status)$")),
     ("GET", re.compile(_BASE + r"/git/ref/heads/[A-Za-z0-9_.%~-]+$")),
