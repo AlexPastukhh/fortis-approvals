@@ -58,6 +58,7 @@ tests=(
   test_extensions.py
   test_extensions_http.py
   test_extensions_tooling.py
+  test_own_api_onboarding.py
   test_provider_credentials.py
   test_extensions_tls.py
   test_r7_runtime_endpoints.py

@@ -287,6 +287,12 @@ audit/job; автоматическое исполнение или повтор
 при расследовании или перед owner-managed release. Не выполнять `claim`,
 `resume`, `finish`, `reconcile` или повтор исходного эффекта ради диагностики.
 
+**Цель:** безопасный actor-scoped read-only worker сигнал без claim token,
+без replay и без объявления heartbeat доказательством quiescence.
+
+**Как:** читать штатный activity() и details(UUID), сопоставляя с Core
+audit, не инициируя claim, reconcile или выполнение effect.
+
 **Доступ:** новый machine POST `/v1/workspace/activity` (параметры строго
 `offset`,`limit`) и `WorkflowClient.activity()`. Возвращает только задания
 авторизованного actor в состояниях `QUEUED` или `CLAIMED`, с ограниченной
@@ -325,3 +331,8 @@ owner release/provenance evidence и негативных тестов не об
 live acceptance. Для самостоятельного поиска неопределённых UUID действует
 [UC-GW-009](#uc-gw-009). Эта возможность не меняет
 `-ConfirmWorkerQuiescent`, exact preservation или Backup/Promote policy.
+
+
+**Готово:** actor-scoped readback и пределы его достоверности установлены;
+подтверждение отсутствия активного worker и release quiescence отдельно
+принадлежат владельцу.
