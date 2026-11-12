@@ -4,6 +4,8 @@ param(
     [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest')][string]$Action='Check',
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CheckedImageRecord='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
+    [string]$EmergencyRescueImage='', [string]$EmergencyRescueArchiveSha256='',
+    [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
@@ -450,6 +452,9 @@ function Checked-Image-Binding {
         publicConfigHash=$ConfigHash;probeHash=$ProbeHash
         configurationDigest=$Report.configurationDigest
         vaultVolume=$VaultVolume
+        emergencyRescueImage=$EmergencyRescueImage
+        emergencyRescueArchiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
+        acceptUnverifiedRestore=[bool]$AcceptUnverifiedRestore
         enableDynamicGitHubRepositories=[bool]$EnableDynamicGitHubRepositories
         enableOwnerShell=[bool]$EnableOwnerShell
         ciControlRepositories=$CiControlRepositories
@@ -506,14 +511,79 @@ function Assert-Checked-Source-Receipt {
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
+function Assert-Emergency-Rescue {
+    param($Source)
+    # Explicit one-release risk acceptance; NEVER claim old-image retention or restore tested.
+    if(-not $AcceptUnverifiedRestore -or
+       $EmergencyRescueImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       $EmergencyRescueArchiveSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+       $EmergencyRescueImage -ceq $Source.runtime.image -or
+       $EmergencyRescueImage -ceq $script:Image -or
+       $Source.runtime.pilotName -cne 'fortis-gateway'){
+        throw 'RELEASE_EMERGENCY_RESCUE_INVALID'
+    }
+    # This is a fixed owner-local archive, never a caller-provided path or remote URL.
+    $Directory=Join-Path $env:LOCALAPPDATA 'Fortis\GatewayRecovery'
+    $Archive=Join-Path $Directory ('fortis-gateway-rescue-'+$EmergencyRescueImage.Substring(7,12)+'.tar')
+    foreach($Path in @($Directory,$Archive)){
+        $Item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if($Item.Attributes -band [IO.FileAttributes]::ReparsePoint){
+            throw 'RELEASE_EMERGENCY_ARCHIVE_REPARSE_DENIED'
+        }
+    }
+    if(-not (Test-Path -LiteralPath $Archive -PathType Leaf) -or
+       (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -cne
+       $EmergencyRescueArchiveSha256.ToUpperInvariant()){
+        throw 'RELEASE_EMERGENCY_ARCHIVE_HASH_CHANGED'
+    }
+    $ImageInfo=@(Docker-Json @('image','inspect',$EmergencyRescueImage))[0]
+    if($null -eq $ImageInfo -or $ImageInfo.Id -cne $EmergencyRescueImage){
+        throw 'RELEASE_EMERGENCY_RESCUE_IMAGE_CHANGED'
+    }
+    # A verified state-volume backup is required, although a restore drill
+    # has explicitly been waived. Do NOT stop the Gateway to make a new one.
+    $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
+    if(-not (Test-Path -LiteralPath $BackupPointer)){
+        throw 'RELEASE_EMERGENCY_STATE_BACKUP_REQUIRED'
+    }
+    $Backup=Read-Private ((Read-Private $BackupPointer).record)
+    if($Backup.schema -cne 'fortis-primary-backup-v1' -or
+       $Backup.phase -cne 'Complete' -or
+       $Backup.sourceRecord -cne $Source.path -or
+       $Backup.sourceHash -cne $Source.hash -or
+       $Backup.containerId -cne $Source.runtime.pilotId -or
+       $Backup.image -cne $Source.runtime.image -or
+       $Backup.stateVolume -cne $Source.runtime.stateVolume -or
+       -not (Same-Json (Receipt $Backup.backupVolume) $Backup.receipt)){
+        throw 'RELEASE_EMERGENCY_STATE_BACKUP_INVALID'
+    }
+    # Offline only, no real state, credentials, network or Owner Shell private paths.
+    $Code='import os,runpy;os.environ.pop("FORTIS_OWNER_SHELL_CONFIG",None);runpy.run_path("/opt/fortis/operator/image_smoke.py",run_name="__main__")'
+    $Smoke=Private-Process @('run','--rm','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','64','--memory','256m','--tmpfs','/tmp:rw,noexec,nosuid,size=32m',
+        '--entrypoint','python',$EmergencyRescueImage,'-I','-B','-c',$Code) ''
+    foreach($Marker in @('IMAGE_OWNER_INCIDENT_IMPORT_PASS','IMAGE_EXTENSIONS_OFFLINE_PASS',
+                         'IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_PASS',
+                         'IMAGE_GITHUB_NOT_REGISTERED_PASS')){
+        if($Smoke -notmatch $Marker){throw 'RELEASE_EMERGENCY_RESCUE_SMOKE_FAILED'}
+    }
+    Write-Host 'FORTIS_EMERGENCY_UNVERIFIED_RESTORE_OWNER_ACCEPTED'
+}
 function Assert-Previous-Image-Retained {
     param($Source)
-    # This necessary pre-stop guard does not itself prove an isolated restore.
+    $Info=$null
     try{$Info=@(Docker-Json @('image','inspect',$Source.runtime.image))[0]}
-    catch{throw 'RELEASE_PREVIOUS_IMAGE_MISSING'}
-    if($null -eq $Info -or $Info.Id -cne $Source.runtime.image){
-        throw 'RELEASE_PREVIOUS_IMAGE_MISSING'
+    catch{
+        if(-not $AcceptUnverifiedRestore){throw 'RELEASE_PREVIOUS_IMAGE_MISSING'}
     }
+    if($null -ne $Info){
+        if($Info.Id -cne $Source.runtime.image){throw 'RELEASE_PREVIOUS_IMAGE_MISSING'}
+        if($AcceptUnverifiedRestore){throw 'RELEASE_EMERGENCY_UNNECESSARY'}
+        return
+    }
+    if(-not $AcceptUnverifiedRestore){throw 'RELEASE_PREVIOUS_IMAGE_MISSING'}
+    Assert-Emergency-Rescue $Source
 }
 
 function Admit {
@@ -817,6 +887,16 @@ if($Action -eq 'SelfTest'){
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
+$EmergencyRequested=([bool]$EmergencyRescueImage -or [bool]$EmergencyRescueArchiveSha256 -or [bool]$AcceptUnverifiedRestore)
+if($EmergencyRequested -and (-not $AcceptUnverifiedRestore -or
+    $EmergencyRescueImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+    $EmergencyRescueArchiveSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+    $Action -cnotin @('Check','Apply') -or $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or
+    $CurrentRecord -or $AttemptRecord -or $Pull -or -not $ConfirmWorkerQuiescent -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))){
+    throw 'RELEASE_EMERGENCY_EXPLICIT_CHECKED_SOURCE_REQUIRED'
+}
 if($CheckedImageRecord -and ($Action -cne 'Apply' -or $Build -or $Pull -or $CurrentRecord -or
     $AttemptRecord -or $Image -cnotmatch '^sha256:[0-9a-f]{64}$' -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$')){
@@ -1001,6 +1081,7 @@ if($Action -eq 'Check'){
         $CheckReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     }
     if($Build){
+        if($EmergencyRequested){Assert-Previous-Image-Retained $Source}
         $Path=Save-Checked-Image $Source $Report $CheckReceipt
         $Report|Add-Member -NotePropertyName checkedImageId -NotePropertyValue $script:Image
         $Report|Add-Member -NotePropertyName checkedImageRecord -NotePropertyValue $Path
@@ -1062,7 +1143,10 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;ownerShell=$OwnerShellEnabled;runId=$RunId}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
-    activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''}
+    activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''
+    emergencyRecovery=[ordered]@{ownerAcceptedUnverifiedRestore=[bool]$AcceptUnverifiedRestore
+        rescueImage=$EmergencyRescueImage;archiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
+        isolatedRestoreTested=$false}}
 Save
 Step 'PREPARED_RECORD_SAVED'
 Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}

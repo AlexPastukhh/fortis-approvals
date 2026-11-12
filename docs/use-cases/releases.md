@@ -70,3 +70,12 @@ host `running/healthy/unless-stopped`, и фактический Repo readback
 без изменения state/audit; последующая отмена — отдельно владельцем.
 Не считать \`Apply\` эквивалентом \`Promote\` или source commit —
 обновлением работающего образа.
+
+**Редкое исключение:** если старый immutable image отсутствует, обычный
+UC-GW-005 останавливается. Допускается только явно owner-accepted
+сценарий [UC-GW-013](recovery.md#uc-gw-013--аварийный-image-release-при-отсутствии-прежнего-image)
+с точными rescue image/TAR, локальным offline smoke, protected Check
+binding, новой проверкой source state и задокументированным **непроверенным**
+restore. Согласие на пропуск изолированного restore не означает
+возможность автоматически восстановиться. Нельзя обходить остановку
+`RELEASE_PREVIOUS_IMAGE_MISSING` простым `-Image` или правкой records.

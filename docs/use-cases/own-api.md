@@ -81,7 +81,11 @@ Source/tests/CI, owner release и живой результат — разные
    `APPROVED`, worker `CLAIMED`), owner quiescence, TLS grants,
    upstream, public config/probes, vault, exact старый image и
    [UC-CONT-022](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/docker.md#uc-cont-022)
-   isolated restore. Никаких concurrent build/release нескольких чатов:
+   isolated restore. Если владелец сознательно принимает отсутствие
+   isolated restore для конкретного Gateway с отсутствующим image, пользоваться
+   только отдельным [UC-GW-013](recovery.md#uc-gw-013--аварийный-image-release-при-отсутствии-прежнего-image),
+   а не ослаблять release guard или считать аварийную копию tested restore.
+   Никаких concurrent build/release нескольких чатов:
    один владелец, один agreed window, один accepted merged SHA.
    Штатный [UC-GW-005](releases.md#uc-gw-005) и
    [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md) владеют
