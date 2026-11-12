@@ -47,7 +47,8 @@ owner-protected checkedImageRecord в Apply -Image <sha256:id>
 Оба этапа должны использовать идентичные config/probes, полные UUID scopes
 и свежую owner quiescence attestation. Перед STOP_SOURCE контроллер повторно
 сверяет защищённые records и SHA256 состояния, привязку образа и наличие
-прежнего runtime image. При его отсутствии или неподтверждённом восстановлении
+прежнего runtime image; после остановки старого writer повторяет проверку
+неизменности receipt перед копированием состояния. При его отсутствии или неподтверждённом восстановлении
 остаётся STOP. Путь не отменяет Backup/Promote и проверку Owner Shell.
 См. [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md).
 

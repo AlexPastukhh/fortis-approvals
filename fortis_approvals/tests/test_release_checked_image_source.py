@@ -62,6 +62,7 @@ class CheckedImageSourceTests(unittest.TestCase):
             "sourceStateVolume=$Source.runtime.stateVolume",
             "sourceRunId=$Source.runtime.runId",
             "currentPointerHash=$CurrentHash;primaryPointerHash=$PrimaryHash",
+            "attemptPointerHash=$AttemptHash;backupPointerHash=$BackupHash",
             "publicConfigHash=$ConfigHash;probeHash=$ProbeHash",
             "configurationDigest=$Report.configurationDigest",
             "vaultVolume=$VaultVolume",
@@ -104,6 +105,12 @@ class CheckedImageSourceTests(unittest.TestCase):
         stop_marker = SCRIPT.index("Step 'STOP_SOURCE'", admission)
         self.assertLess(stop_marker, original_stop)
         self.assertIn("Assert-Previous-Image-Retained $Source", SCRIPT[stop_marker:original_stop])
+        # The pre-stop check cannot prevent a request racing with docker stop.
+        post_stop = SCRIPT.index("Assert-Checked-Source-Receipt $script:R.sourceReceipt", original_stop)
+        clone = SCRIPT.index("Step 'CLONE_STATE'", original_stop)
+        self.assertLess(original_stop, post_stop)
+        self.assertLess(post_stop, clone)
+        self.assertIn("RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED", SCRIPT)
 
     def test_no_second_build_on_checked_apply(self):
         build = SCRIPT.index("if($Build){\n    Step 'BUILD_IMAGE'")

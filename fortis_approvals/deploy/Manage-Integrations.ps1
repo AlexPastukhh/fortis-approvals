@@ -433,6 +433,11 @@ function Checked-Image-Binding {
     if(Test-Path -LiteralPath $Pointer){$CurrentHash=(Get-FileHash -LiteralPath $Pointer -Algorithm SHA256).Hash}
     $PrimaryHash=''
     if(Test-Path -LiteralPath $PrimaryPointer){$PrimaryHash=(Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash}
+    $AttemptHash=''
+    if(Test-Path -LiteralPath $AttemptPointer){$AttemptHash=(Get-FileHash -LiteralPath $AttemptPointer -Algorithm SHA256).Hash}
+    $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
+    $BackupHash=''
+    if(Test-Path -LiteralPath $BackupPointer){$BackupHash=(Get-FileHash -LiteralPath $BackupPointer -Algorithm SHA256).Hash}
     [ordered]@{
         image=$script:Image;sourceSha=$SourceSha
         sourceRecord=$Source.path;sourceHash=$Source.hash
@@ -441,6 +446,7 @@ function Checked-Image-Binding {
         sourceStateVolume=$Source.runtime.stateVolume
         sourceRunId=$Source.runtime.runId
         currentPointerHash=$CurrentHash;primaryPointerHash=$PrimaryHash
+        attemptPointerHash=$AttemptHash;backupPointerHash=$BackupHash
         publicConfigHash=$ConfigHash;probeHash=$ProbeHash
         configurationDigest=$Report.configurationDigest
         vaultVolume=$VaultVolume
@@ -487,6 +493,16 @@ function Verify-Checked-Image {
     Assert-Checked-Image-Binding $Record.binding $Expected
     $Now=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     if(-not (Same-Json $Record.sourceReceipt $Now)){
+        throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
+    }
+}
+function Assert-Checked-Source-Receipt {
+    param($Receipt)
+    if(-not $CheckedImageRecord){return}
+    $Stored=Read-Private $CheckedImageRecord
+    if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready' -or
+       $null -eq $Stored.sourceReceipt -or
+       -not (Same-Json $Stored.sourceReceipt $Receipt)){
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
@@ -1075,6 +1091,9 @@ try {
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
     $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact;Save
+    # Close the final race: recheck the frozen source AFTER the old writer stops.
+    # On mismatch, the guarded failure path returns the retained source.
+    if($CheckedImageRecord){Assert-Checked-Source-Receipt $script:R.sourceReceipt}
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume

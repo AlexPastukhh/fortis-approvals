@@ -264,7 +264,9 @@ The controller checks the immutable image ID and revision label, Windows clean
 main SHA, source/current/primary protected records, configuration and probe
 hashes, configuration digest, full source-state SHA256 receipt, exact scope and
 quiescence flags, and owner shell/dynamic/CI opt-ins, including again immediately
-before STOP_SOURCE. Missing credentials or any source drift is STOP, not a
+before STOP_SOURCE and once more on the frozen source receipt after the previous
+writer stops but before CLONE_STATE. A late mismatch enters guarded return.
+Missing credentials or any source drift is STOP, not a
 prompt to silently replace an unrecognized credential or re-run the build.
 
 The previous live runtime image itself MUST still be inspectable by exact ID
