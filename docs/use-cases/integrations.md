@@ -1,5 +1,9 @@
 # Providers и typed операции
 
+Собственные Windows/Docker API и проверяемый owner handoff:
+[UC-GW-012](own-api.md#uc-gw-012). Этот UC дополняет, но не заменяет
+общую процедуру UC-GW-002.
+
 ## UC-GW-002
 
 **Когда:** требуется подключить новый внешний API/service к Gateway.
@@ -124,6 +128,8 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 `PR_MERGED`, `IMAGE_ACTIVATED` и `LIVE_API_VERIFIED`.
 
 
+<a id="uc-gw-011"></a>
+
 ## UC-GW-011 — Typed Release Labels через Fortis Gateway
 
 **Когда:** после принятого read-only Release Impact CI требуется
@@ -160,6 +166,9 @@ revalidation перед будущим полностью автоматичес
 | ASK | `create_release_label(repo, name, request_id, reason)` | Только `build:<target>` и перечисленные `release:<action>`; цвет/описание задаёт сервер, дубликат STOP |
 | ASK | `add_pr_release_labels(..., labels, request_id, reason)` | До 5 существующих управляемых labels; **POST добавляет**, не заменяет чужие |
 | ASK | `remove_pr_release_label(..., name, request_id, reason)` | DELETE ровно одного управляемого label; `release:review-required` и чужие labels запрещено удалять |
+
+**Как:** выполнять только закрытые typed операции по текущему exact-head PR,
+trusted policy, owner ASK и независимому readback.
 
 **Порядок работы:**
 
@@ -220,6 +229,10 @@ revalidation перед будущим полностью автоматичес
   workflow/worker, независимая source metadata revalidation и
   policy acceptance; текущие ASK-методы **не являются**
   unattended автоматическим назначением.
+
+**Готово:** Source/CI и owner merge отдельно от live acceptance.
+Только deployed Gateway + owner ASK, GitHub readback без потери чужих
+меток и сохранённый Core receipt позволяют LIVE_API_VERIFIED; иначе STOP.
 
 **GitHub Projects V2** здесь не активируется: он требует конкретного
 owner-approved project ID, доступов GraphQL и собственного typed

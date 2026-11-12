@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "serviceId": "metricsprobe",
+  "ownerRepository": "fixture-owned-metrics",
+  "sourceSha": null,
+  "transport": {
+    "profile": "DOCKER-HTTPS",
+    "origin": "https://metricsprobe:443",
+    "tlsServerName": "metricsprobe",
+    "pinnedCaPath": "/run/fortis-secrets/metricsprobe-read/ca.pem",
+    "gatewayDockerNetwork": "ownapi-fixture-net"
+  },
+  "credential": {
+    "vaultAlias": "metricsprobe-link",
+    "upstreamPrincipal": "metricsprobe-reader",
+    "vaultOwner": "OWNER_ONLY"
+  },
+  "operations": [
+    {
+      "name": "read_status",
+      "method": "GET",
+      "path": "/v1/status",
+      "targetBinding": null,
+      "targets": [
+        "service"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 16384
+    }
+  ]
+}

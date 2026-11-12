@@ -5,6 +5,12 @@ native Git или существующие Sonar/GitHub контракты. Ст
 [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md), результаты проверок —
 в [evidence](../fortis_approvals/evidence/EXTENSIONS-OFFLINE-20261106.md).
 
+Для **собственных** Windows/Docker API обязательная специализация —
+[UC-GW-012](use-cases/own-api.md#uc-gw-012): выбор WIN-HTTPS/DOCKER-HTTPS,
+границы upstream owner/TLS/credential, независимое восстановление,
+[offline manifest и handoff](templates/own-api/README.md). Не заменяет
+следующий общий порядок и не означает live activation.
+
 ## Порядок работы
 
 1. В зарегистрированном task worktree создать пакет командой:

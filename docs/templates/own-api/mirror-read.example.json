@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "serviceId": "mirror",
+  "ownerRepository": "docke-windows-mirror",
+  "sourceSha": "efa353791e1cd79ef5d0122019ffb982e21cab4e",
+  "transport": {
+    "profile": "WIN-HTTPS",
+    "origin": "https://host.docker.internal:443",
+    "tlsServerName": "host.docker.internal",
+    "pinnedCaPath": "/run/fortis-secrets/mirror-read/ca.pem",
+    "gatewayDockerNetwork": null
+  },
+  "credential": {
+    "vaultAlias": "mirror-link",
+    "upstreamPrincipal": "mirror-gateway-read",
+    "vaultOwner": "OWNER_ONLY"
+  },
+  "operations": [
+    {
+      "name": "get_repository",
+      "method": "GET",
+      "path": "/gateway/v1/repositories/{repo_id}",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    }
+  ]
+}
