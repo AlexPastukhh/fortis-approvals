@@ -310,6 +310,9 @@ class GitHubAdapter:
         elif operation == "get_pr_release_label_context":
             context=self._release_pr_context(repo,params["number"])
             result=context
+        elif operation == "get_pr_release_impact_evidence":
+            result=self._release_impact_pr_evidence(
+                repo, params["number"], params["expectedHeadSha"])
         elif operation in ("list_repository_labels","list_pr_labels"):
             suffix=("labels" if operation=="list_repository_labels" else
                     "issues/"+str(params["number"])+"/labels")
@@ -422,6 +425,50 @@ class GitHubAdapter:
                 checked_names([x["name"] for x in items])
                 return items
         raise Denied("GITHUB_LABEL_INVENTORY_LIMIT")
+
+    def _release_impact_pr_evidence(self, repo, number, expected_head_sha):
+        """Bounded, exact-head PR body/provenance for trusted read-only impact.
+
+        Never a publish authority. Existing label fingerprints remain separate
+        and must be freshly re-read before any later owner-gated mutation.
+        """
+        raw = self._api("GET", self._path(repo, "pulls/" + str(number)))
+        if (type(raw) is not dict or raw.get("number") != number or
+                raw.get("state") != "open" or raw.get("draft") is not False or
+                raw.get("merged") is not False or raw.get("merged_at") is not None):
+            raise Denied("GITHUB_IMPACT_PR_NOT_OPEN")
+        head, base = raw.get("head"), raw.get("base")
+        if type(head) is not dict or type(base) is not dict:
+            raise Denied("GITHUB_IMPACT_PR_PROVENANCE_INVALID")
+        origin = self.owner + "/" + repo
+        for entry in (head, base):
+            rep = entry.get("repo")
+            if (type(rep) is not dict or type(rep.get("full_name")) is not str or
+                    rep["full_name"].casefold() != origin.casefold()):
+                raise Denied("GITHUB_IMPACT_PR_PROVENANCE_INVALID")
+        if (type(head.get("ref")) is not str or
+                not head["ref"].startswith("task/") or base.get("ref") != "main"):
+            raise Denied("GITHUB_IMPACT_PR_PROVENANCE_INVALID")
+        head_sha = self._sha(head.get("sha"))
+        base_sha = self._sha(base.get("sha"))
+        if head_sha != expected_head_sha:
+            raise Stale("GITHUB_IMPACT_PR_HEAD_CHANGED")
+        body = raw.get("body")
+        if type(body) is not str or not 0 < len(body) <= 20000:
+            raise Denied("GITHUB_IMPACT_PR_BODY_INVALID")
+        try:
+            encoded = body.encode("utf-8")
+        except UnicodeError:
+            raise Denied("GITHUB_IMPACT_PR_BODY_INVALID") from None
+        if len(encoded) > 20000:
+            raise Denied("GITHUB_IMPACT_PR_BODY_INVALID")
+        digest = hashlib.sha256(encoded).hexdigest()
+        return dict(operation="get_pr_release_impact_evidence", number=number,
+                    headSha=head_sha, baseSha=base_sha,
+                    headRepository=origin, baseRepository=origin,
+                    headBranch=head["ref"], baseBranch="main",
+                    body=body, bodySha256=digest,
+                    state="open", draft=False, merged=False)
 
     def _release_pr_context(self,repo,number):
         raw=self._api("GET",self._path(repo,"pulls/"+str(number)))

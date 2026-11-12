@@ -4,6 +4,7 @@ No GitHub credential, network transport or policy is defined here. All
 operations are denied by Core until a trusted owner explicitly registers
 actor grants and ALLOW/ASK policy for them.
 """
+import hashlib
 import re
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_issue_comments"),
     ("github", "list_repository_labels"), ("github", "list_pr_labels"),
     ("github", "get_pr_release_label_context"),
+    ("github", "get_pr_release_impact_evidence"),
     ("github", "list_workflow_runs"), ("github", "list_check_runs"),
     ("github", "get_commit_status"),
 })
@@ -108,6 +110,11 @@ def validate_github_read(operation, target, params):
     elif operation == "get_pr_release_label_context":
         if set(params)!={"number"} or type(params["number"]) is not int or not 1<=params["number"]<=1_000_000:
             raise Denied("GITHUB_LABEL_PR_INVALID")
+    elif operation == "get_pr_release_impact_evidence":
+        if (set(params) != {"number", "expectedHeadSha"} or
+                type(params["number"]) is not int or not 1 <= params["number"] <= 1_000_000):
+            raise Denied("GITHUB_IMPACT_PR_PARAMS_INVALID")
+        _sha(params["expectedHeadSha"])
     elif operation == "list_repository_labels":
         _page(params)
         if params["perPage"] > 50:
@@ -358,7 +365,31 @@ def validate_github_read_projection(operation, result):
                 all(exact(item, fields) for item in items))
 
     valid = False
-    if operation == "list_repositories":
+    if operation == "get_pr_release_impact_evidence":
+        fields = ("operation", "number", "headSha", "baseSha", "headRepository",
+                  "baseRepository", "headBranch", "baseBranch", "body",
+                  "bodySha256", "state", "draft", "merged")
+        body = result.get("body")
+        digest = result.get("bodySha256")
+        body_bytes = (_utf8_size(body, "GITHUB_IMPACT_BODY_UTF8_DENIED")
+                      if type(body) is str else 0)
+        valid = (
+            exact(result, fields) and positive(result["number"]) and
+            sha(result["headSha"]) and sha(result["baseSha"]) and
+            type(result["headRepository"]) is str and
+            type(result["baseRepository"]) is str and
+            bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", result["headRepository"])) and
+            result["headRepository"] == result["baseRepository"] and
+            type(result["headBranch"]) is str and
+            result["headBranch"].startswith("task/") and
+            result["baseBranch"] == "main" and
+            type(body) is str and 0 < body_bytes <= 20000 and
+            type(digest) is str and
+            digest == hashlib.sha256(body.encode("utf-8")).hexdigest() and
+            result["state"] == "open" and
+            result["draft"] is False and result["merged"] is False
+        )
+    elif operation == "list_repositories":
         valid = (exact(result, ("operation", "items")) and
                  rows("items", ("name", "owner")) and
                  all(text(x["name"], 100) and text(x["owner"], 100)

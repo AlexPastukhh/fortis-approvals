@@ -34,6 +34,9 @@ class FakeReleaseGitHub:
         self.draft=False
         self.head_repo="Alex/tunnel"
         self.head_ref="task/release-pilot"
+        self.base_repo="Alex/tunnel"
+        self.base_ref="main"
+        self.merged=False
         self.issue_labels=["bug", "build:legacy", "release:review-required"]
         self.definitions=["bug", "build:legacy", "release:review-required",
                           "build:api", "release:image-rebuild", "release:no-deployment"]
@@ -48,12 +51,12 @@ class FakeReleaseGitHub:
         assert path.startswith(base)
         suffix=path[len(base):]
         if method=="GET" and suffix=="/pulls/7":
-            return {"number":7,"state":self.state,"draft":self.draft,"merged":False,
-                    "merged_at":None,"body":self.body,
+            return {"number":7,"state":self.state,"draft":self.draft,
+                    "merged":self.merged,"merged_at":None,"body":self.body,
                     "head":{"ref":self.head_ref,"sha":self.head,
                             "repo":{"full_name":self.head_repo}},
-                    "base":{"ref":"main","sha":self.base,
-                            "repo":{"full_name":"Alex/tunnel"}}}
+                    "base":{"ref":self.base_ref,"sha":self.base,
+                            "repo":{"full_name":self.base_repo}}}
         if method=="GET" and suffix in ("/labels","/issues/7/labels"):
             source=self.definitions if suffix=="/labels" else self.issue_labels
             page=params["page"]
@@ -156,6 +159,73 @@ class ReleaseLabelGatewayTests(unittest.TestCase):
         self.assertEqual(data["labelsSha256"],names_hash(self.upstream.issue_labels))
         self.assertEqual(data["bodySha256"],hashlib.sha256(BODY.encode()).hexdigest())
         self.assertNotIn("body",data)
+
+    def test_bounded_impact_evidence_exposes_body_only_for_exact_open_pr(self):
+        operation = "get_pr_release_impact_evidence"
+        params = {"number":7, "expectedHeadSha": HEAD}
+        validate_github_read(operation, "tunnel", params)
+        before = len(self.upstream.calls)
+        data = self.adapter.read(dict(service="github", operation=operation,
+                                      target="tunnel", params=params))
+        validate_github_read_projection(operation, data)
+        self.assertEqual(data["body"], BODY)
+        self.assertEqual(data["bodySha256"], hashlib.sha256(BODY.encode()).hexdigest())
+        self.assertEqual((data["headSha"], data["baseSha"]), (HEAD, BASE))
+        self.assertEqual((data["headRepository"], data["baseRepository"]),
+                         ("Alex/tunnel", "Alex/tunnel"))
+        self.assertEqual((data["headBranch"], data["baseBranch"]),
+                         ("task/release-pilot", "main"))
+        self.assertEqual([method for method, _, _ in self.upstream.calls[before:]],
+                         ["GET"])
+
+    def test_impact_evidence_rejects_stale_invalid_or_overbroad_request(self):
+        operation = "get_pr_release_impact_evidence"
+        for params in (
+            {}, {"number":7}, {"number":7,"expectedHeadSha":BASE},
+            {"number":True,"expectedHeadSha":HEAD},
+            {"number":7,"expectedHeadSha":HEAD,"extra":True}):
+            with self.subTest(params=params):
+                if params == {"number":7,"expectedHeadSha":BASE}:
+                    with self.assertRaises(Stale):
+                        self.adapter.read(dict(service="github",operation=operation,
+                                               target="tunnel",params=params))
+                else:
+                    with self.assertRaises(Denied):
+                        validate_github_read(operation,"tunnel",params)
+
+    def test_impact_evidence_rejects_untrusted_pr_provenance_or_body(self):
+        operation = "get_pr_release_impact_evidence"
+        params = {"number":7,"expectedHeadSha":HEAD}
+        for attr, value in (
+            ("draft", True), ("state", "closed"), ("merged", True),
+            ("head_repo", "other/fork"), ("base_repo", "other/fork"),
+            ("head_ref", "main"), ("base_ref", "develop"),
+            ("body", None), ("body", ""), ("body", "z"*20001),
+            ("body", "ю"*11000)):
+            with self.subTest(attr=attr):
+                original = getattr(self.upstream, attr)
+                setattr(self.upstream, attr, value)
+                try:
+                    with self.assertRaises(Denied):
+                        self.adapter.read(dict(service="github", operation=operation,
+                                               target="tunnel", params=params))
+                finally:
+                    setattr(self.upstream, attr, original)
+
+    def test_impact_evidence_projection_rejects_forged_body_or_metadata(self):
+        operation = "get_pr_release_impact_evidence"
+        good = self.adapter.read(dict(service="github", operation=operation,
+                                      target="tunnel",
+                                      params={"number":7,"expectedHeadSha":HEAD}))
+        for changes in ({"body": "forged"},
+                        {"bodySha256": "0"*64},
+                        {"headRepository": "Other/tunnel"},
+                        {"headBranch": "main"},
+                        {"unexpected": True}):
+            with self.subTest(changes=changes):
+                altered = {**good, **changes}
+                with self.assertRaises(Denied):
+                    validate_github_read_projection(operation, altered)
 
     def test_add_is_incremental_and_preserves_nonmanaged_human_and_review_flag(self):
         params={**self.params(),"labels":["build:api","release:image-rebuild"]}
