@@ -55,7 +55,12 @@ SHA256 всех uncompressed layers, совпадение с Docker RootFS и п
 `-AcceptUnverifiedRestore`. Архив проверяется в фиксированном
 owner-local пути `%LOCALAPPDATA%\Fortis\GatewayRecovery\fortis-gateway-rescue-<first-12-hex>.tar`,
 без пользовательских URL/путей. Rescue image должен быть inspectable
-по точному ID и пройти offline smoke *снова*. Если прежний image
+по точному ID и пройти offline smoke *снова*. В Windows этот smoke
+передаётся через штатный Base64-wrapper команды `python -c`:
+`Private-Process` запрещает буквальные двойные кавычки в аргументе.
+Ошибка `PILOT_NATIVE_ARGUMENT_DENIED` означает STOP/source fix, а не
+проблему с сохранённым rescue image или разрешение обойти контроллер.
+Если прежний image
 появился, аварийный режим отказывается запускаться.
 Стандартный Check выдаёт owner-protected `checkedImageId` и
 `checkedImageRecord`.
