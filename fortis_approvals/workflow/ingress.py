@@ -58,6 +58,7 @@ class NativeIngress:
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
                 githubReleaseLabelReads=['list_repository_labels','list_pr_labels',
                     'get_pr_release_label_context'],
+                githubReleaseImpactReads=['get_pr_release_impact_evidence'],
                 githubReleaseLabelWrites={'policy':'ASK','commands':[
                     'create_release_label','add_pr_release_labels','remove_pr_release_label'],
                     'scope':'registered-open-same-repo-task-PR-only',

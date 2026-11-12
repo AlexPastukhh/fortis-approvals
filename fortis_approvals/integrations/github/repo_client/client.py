@@ -175,6 +175,14 @@ class GitHubClient:
         """Read SHA/body and complete-label fingerprints for exact-head ASK writes."""
         return self.read("get_pr_release_label_context",repo,{"number":number})
 
+    def get_pr_release_impact_evidence(self, repo, number, expected_head_sha):
+        """Read-only exact-head bounded PR body/provenance for trusted planning.
+
+        This is NOT label-write permission or proof of successful CI.
+        """
+        return self.read("get_pr_release_impact_evidence", repo, {
+            "number": number, "expectedHeadSha": expected_head_sha})
+
     def create_release_label(self, repo, name, *, request_id, reason):
         """ASK: create one strictly managed label with server-chosen styling."""
         return self.action("create_release_label",repo,{"name":name},
