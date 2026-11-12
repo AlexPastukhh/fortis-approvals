@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "fortis_approvals" / "deploy"
 MANAGER = (DEPLOY / "Manage-Integrations.ps1").read_text()
 PILOT = (DEPLOY / "Run-GitHub-Pilot-E2E.ps1").read_text()
-BOUNDED = (DEPLOY / "Bounded-Release-Json.ps1").read_text()
+BOUNDED = MANAGER
 WORKFLOW = (ROOT / ".github" / "workflows" / "source-ci.yml").read_text()
 
 
 class BoundedReleaseRecordSourceTests(unittest.TestCase):
     def test_bounded_serializer_used_only_for_integration_release_record(self):
-        self.assertIn(". (Join-Path $PSScriptRoot 'Bounded-Release-Json.ps1')", MANAGER)
+        self.assertIn("function ConvertTo-BoundedReleaseJson {", MANAGER)
         self.assertIn("function Save {", MANAGER)
         self.assertIn("$JsonText=ConvertTo-BoundedReleaseJson $script:R", MANAGER)
         self.assertIn("Save-Record -SerializedJson $JsonText", MANAGER)
