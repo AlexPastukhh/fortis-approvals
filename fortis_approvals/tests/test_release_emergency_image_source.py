@@ -57,7 +57,7 @@ class EmergencyImageSourceTests(unittest.TestCase):
             'ReparsePoint', "Docker-Json @('image','inspect',$EmergencyRescueImage)",
             "'--network','none'", "'--read-only'", "'--pull=never'",
             "'--cap-drop','ALL'", "'--user','10001:10001'",
-            'os.environ.pop("FORTIS_OWNER_SHELL_CONFIG",None)',
+            '$Wrapper=Emergency-Rescue-Smoke-Argument',
             'IMAGE_OWNER_INCIDENT_IMPORT_PASS', 'IMAGE_GITHUB_NOT_REGISTERED_PASS',
             'RELEASE_EMERGENCY_RESCUE_SMOKE_FAILED',
             'RELEASE_EMERGENCY_STATE_BACKUP_REQUIRED',
@@ -69,6 +69,26 @@ class EmergencyImageSourceTests(unittest.TestCase):
         for forbidden in ("Docker-Text @('load'", "Docker-Text @('stop'", "Docker-Text @('restart'",
                           "Docker-Text @('rm'", "Docker-Text @('volume'"):
             self.assertNotIn(forbidden, fn)
+
+    def test_emergency_smoke_argv_uses_private_process_compatible_wrapper(self):
+        """Regression: PR #79 passed raw Python with double quotes to a native
+        argument validator that fails with PILOT_NATIVE_ARGUMENT_DENIED."""
+        helper=SCRIPT.split('function Emergency-Rescue-Smoke-Argument {',1)[1].split(
+            'function Assert-Emergency-Rescue {',1)[0]
+        rescue=SCRIPT.split('function Assert-Emergency-Rescue {',1)[1].split(
+            'function Assert-Previous-Image-Retained {',1)[0]
+        self.assertIn('os.environ.pop("FORTIS_OWNER_SHELL_CONFIG",None)',helper)
+        self.assertIn('runpy.run_path("/opt/fortis/operator/image_smoke.py"',helper)
+        self.assertIn('$Encoded=Code64 $Code',helper)
+        self.assertIn("base64.b64decode('$Encoded')",helper)
+        self.assertIn('$Wrapper=Emergency-Rescue-Smoke-Argument',rescue)
+        self.assertIn("'-c',$Wrapper) ''",rescue)
+        self.assertNotIn("'-c',$Code) ''",rescue)
+        self.assertIn("if($Action -eq 'SelfTest')",SCRIPT)
+        self.assertIn("'RELEASE_EMERGENCY_SMOKE_ARG_SELFTEST_FAILED'",SCRIPT)
+        runner=(ROOT/'fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1').read_text()
+        self.assertIn('if ($Argument.Contains(',runner)
+        self.assertIn("throw 'PILOT_NATIVE_ARGUMENT_DENIED'",runner)
 
     def test_protected_release_records_do_not_claim_restore_tested(self):
         self.assertIn('ownerAcceptedUnverifiedRestore=[bool]$AcceptUnverifiedRestore', SCRIPT)

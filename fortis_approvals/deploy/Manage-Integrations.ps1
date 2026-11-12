@@ -511,6 +511,13 @@ function Assert-Checked-Source-Receipt {
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
+function Emergency-Rescue-Smoke-Argument {
+    # Private-Process explicitly rejects double quotes in native argv. Keep
+    # Python source inside the same vetted base64 wrapper as State-Helper.
+    $Code='import os,runpy;os.environ.pop("FORTIS_OWNER_SHELL_CONFIG",None);runpy.run_path("/opt/fortis/operator/image_smoke.py",run_name="__main__")'
+    $Encoded=Code64 $Code
+    return "import base64;exec(compile(base64.b64decode('$Encoded'),'<emergency-rescue-smoke>','exec'))"
+}
 function Assert-Emergency-Rescue {
     param($Source)
     # Explicit one-release risk acceptance; NEVER claim old-image retention or restore tested.
@@ -558,11 +565,11 @@ function Assert-Emergency-Rescue {
         throw 'RELEASE_EMERGENCY_STATE_BACKUP_INVALID'
     }
     # Offline only, no real state, credentials, network or Owner Shell private paths.
-    $Code='import os,runpy;os.environ.pop("FORTIS_OWNER_SHELL_CONFIG",None);runpy.run_path("/opt/fortis/operator/image_smoke.py",run_name="__main__")'
+    $Wrapper=Emergency-Rescue-Smoke-Argument
     $Smoke=Private-Process @('run','--rm','--pull=never','--network','none','--read-only',
         '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
         '--pids-limit','64','--memory','256m','--tmpfs','/tmp:rw,noexec,nosuid,size=32m',
-        '--entrypoint','python',$EmergencyRescueImage,'-I','-B','-c',$Code) ''
+        '--entrypoint','python',$EmergencyRescueImage,'-I','-B','-c',$Wrapper) ''
     foreach($Marker in @('IMAGE_OWNER_INCIDENT_IMPORT_PASS','IMAGE_EXTENSIONS_OFFLINE_PASS',
                          'IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_PASS',
                          'IMAGE_GITHUB_NOT_REGISTERED_PASS')){
@@ -729,6 +736,13 @@ if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INV
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
 if($Action -eq 'SelfTest'){
+    # Ensure the private native-argv restriction cannot break the rescue smoke.
+    $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
+    if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
+       $RescueSmokeArgument.EndsWith([string][char]92) -or
+       $RescueSmokeArgument -cnotmatch '^import base64;exec\(compile\(base64\.b64decode\('){
+        throw 'RELEASE_EMERGENCY_SMOKE_ARG_SELFTEST_FAILED'
+    }
     if($ForwardParameters['Action'] -cne 'SelfTest' -or $ForwardParameters.ContainsKey('Mode')){throw 'RELEASE_PARAMETER_FORWARDING_SELFTEST_FAILED'}
     $Sample='{"schemaVersion":1,"providers":{}}'
     $Nonce='11111111-1111-4111-8111-111111111111'
