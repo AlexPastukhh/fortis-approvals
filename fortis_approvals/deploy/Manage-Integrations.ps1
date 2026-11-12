@@ -14,6 +14,7 @@ param(
 )
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
+. (Join-Path $PSScriptRoot 'Bounded-Release-Json.ps1')
 $ErrorActionPreference='Stop'
 $ReleaseBase=Join-Path $env:LOCALAPPDATA 'Fortis\GatewayReleases'
 $Pointer=Join-Path $ReleaseBase 'current.json'
@@ -111,7 +112,15 @@ function Write-Private {
     try {$script:R=$Value;$script:RecordPath=$Path;Save-Record}
     finally {$script:R=$SavedR;$script:RecordPath=$SavedPath}
 }
-function Save { Save-Record }
+function Save {
+    # Exact release records only: never recursively serialize the live
+    # PowerShell object graph. Abort pre-STOP_SOURCE on unknown/large types.
+    Write-Host 'FORTIS_INTEGRATIONS_RECORD_BOUNDED_SERIALIZE_START'
+    $JsonText=ConvertTo-BoundedReleaseJson $script:R
+    Write-Host 'FORTIS_INTEGRATIONS_RECORD_BOUNDED_SERIALIZE_PASS'
+    Save-Record -SerializedJson $JsonText
+    Write-Host 'FORTIS_INTEGRATIONS_RECORD_PERSISTED'
+}
 function Python-Code {
     param([string[]]$Arguments,[string]$Code,[string]$InputText='')
     $Encoded=Code64 $Code
@@ -736,6 +745,7 @@ if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INV
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
 if($Action -eq 'SelfTest'){
+    Assert-BoundedReleaseJsonSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
@@ -1139,6 +1149,7 @@ $Baseline=Release-Production-Baseline
 Step 'PRODUCTION_BASELINE_CAPTURED'
 $RunId=[Guid]::NewGuid().ToString('N');$Directory=Join-Path $ReleaseBase $RunId;Protect-Directory $Directory
 Step 'RELEASE_DIRECTORY_PROTECTED'
+Step 'PREPARE_RECORD_MODEL'
 $script:RecordPath=Join-Path $Directory 'record.json'
 $ConfigObject=ConvertFrom-Json -InputObject $ConfigText
 $CompactConfig=ConvertTo-Json -InputObject $ConfigObject -Compress -Depth 20
@@ -1161,6 +1172,7 @@ $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';sourc
     emergencyRecovery=[ordered]@{ownerAcceptedUnverifiedRestore=[bool]$AcceptUnverifiedRestore
         rescueImage=$EmergencyRescueImage;archiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
         isolatedRestoreTested=$false}}
+Step 'PREPARE_RECORD_MODEL_READY'
 Save
 Step 'PREPARED_RECORD_SAVED'
 Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}

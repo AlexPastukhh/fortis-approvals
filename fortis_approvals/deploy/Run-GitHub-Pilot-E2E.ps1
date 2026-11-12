@@ -234,8 +234,11 @@ function Assert-RecordAcl {
     }
 }
 function Save-Record {
+    param([string]$SerializedJson='')
+    $JsonText=$SerializedJson
+    if(-not $JsonText){$JsonText=ConvertTo-Json -InputObject $script:R -Depth 25}
     $Temporary=$script:RecordPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
-    [IO.File]::WriteAllText($Temporary,(ConvertTo-Json -InputObject $script:R -Depth 25),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($Temporary,$JsonText,[Text.UTF8Encoding]::new($false))
     # Elevated Windows processes may otherwise assign Administrators as the file owner.
     $Acl=Get-Acl -LiteralPath $Temporary
     $Acl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
