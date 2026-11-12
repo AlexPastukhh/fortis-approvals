@@ -244,6 +244,42 @@ No Projects mutations or unattended publisher are activated by
 this release. Technical method schemas belong in UC-GW-011; this
 runbook deliberately does not duplicate them.
 
+## Checked image: one build, exact image reuse (source pending merge/release)
+
+The source-side controller now supports an owner-protected Check artifact to avoid
+building the same mutable source tag twice. It is NOT installed until this task
+PR is accepted/merged and the Windows clone is verified at that source SHA.
+
+After owner approval of a coordinated window and recovery readiness, the owner
+runs SelfTest, then one Check -Build -SourceSha <merged-sha> with -Config,
+-Probes and the exact reviewed preservation/owner-quiescence scopes.
+The READY report contains checkedImageId (full sha256 image ID) and
+checkedImageRecord (an owner-protected record path). Record those values in
+owner-local evidence, not the private record payload.
+
+Run Apply -Image <checkedImageId> -CheckedImageRecord <checkedImageRecord>
+-SourceSha <merged-sha> with the SAME config, probes, scopes, owner quiescence,
+vault and opt-in flags. DO NOT use -Build on this Apply.
+The controller checks the immutable image ID and revision label, Windows clean
+main SHA, source/current/primary protected records, configuration and probe
+hashes, configuration digest, full source-state SHA256 receipt, exact scope and
+quiescence flags, and owner shell/dynamic/CI opt-ins, including again immediately
+before STOP_SOURCE. Missing credentials or any source drift is STOP, not a
+prompt to silently replace an unrecognized credential or re-run the build.
+
+The previous live runtime image itself MUST still be inspectable by exact ID
+before STOP_SOURCE. A retained running container is not sufficient. A present
+image is a necessary precondition, NOT proof of isolated restore or DR. If the
+old image is missing: RELEASE_PREVIOUS_IMAGE_MISSING and STOP. Do not stop the
+Gateway, fabricate a matching image/tag/record or auto-export a live container.
+
+The original Check -Build followed by Apply -Build remains a compatibility
+path that builds twice, and is NOT immutable. The pinned artifact cannot
+authorize an unsafe release, a new set of UNKNOWN UUIDs, or missing rollback.
+After successful Apply, owner live readback, Backup and Promote remain separate
+mandatory operations; an uncertain attempt requires the original record and
+UC-GW-006, never blind retry.
+
 ## Normal releases after adoption
 
 `Manage-Integrations.ps1 -Action Apply` retains the exact source, stages a
