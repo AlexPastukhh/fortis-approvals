@@ -901,8 +901,11 @@ $Old=Container $Source.runtime.pilotId;Admit $Old $Source.runtime
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
 Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+Step 'SOURCE_STATE_PREFLIGHT_COMPLETE'
 $Baseline=Release-Production-Baseline
+Step 'PRODUCTION_BASELINE_CAPTURED'
 $RunId=[Guid]::NewGuid().ToString('N');$Directory=Join-Path $ReleaseBase $RunId;Protect-Directory $Directory
+Step 'RELEASE_DIRECTORY_PROTECTED'
 $script:RecordPath=Join-Path $Directory 'record.json'
 $ConfigObject=ConvertFrom-Json -InputObject $ConfigText
 $CompactConfig=ConvertTo-Json -InputObject $ConfigObject -Compress -Depth 20
@@ -922,7 +925,10 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
     activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''}
-Save;Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
+Save
+Step 'PREPARED_RECORD_SAVED'
+Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
+Step 'ATTEMPT_POINTER_SAVED'
 try {
     Step 'PUBLIC_ENV_PREFLIGHT'
     $EnvFile=Join-Path $Directory 'public.env'
