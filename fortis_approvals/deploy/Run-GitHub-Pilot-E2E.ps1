@@ -43,12 +43,34 @@ function Private-Process {
     $Info.UseShellExecute=$false; $Info.CreateNoWindow=$true
     $Info.RedirectStandardInput=$true; $Info.RedirectStandardOutput=$true; $Info.RedirectStandardError=$true
     $Process=[Diagnostics.Process]::new(); $Process.StartInfo=$Info
+    $Started=$false
     try {
         if (-not $Process.Start()) { throw 'PILOT_PRIVATE_PROCESS_START_FAILED' }
+        $Started=$true
         $OutputTask=$Process.StandardOutput.ReadToEndAsync()
         $ErrorTask=$Process.StandardError.ReadToEndAsync()
-        $Process.StandardInput.Write($InputText); $Process.StandardInput.Close()
+        # Docker may exit early or stop reading stdin. A synchronous Write can
+        # block before WaitForExit's timeout is reached. Bound that phase too.
+        $StdinFailed=$false
+        try {
+            $WriteTask=$Process.StandardInput.WriteAsync($InputText)
+            if (-not $WriteTask.Wait(30000)) {
+                throw 'PILOT_PRIVATE_STDIN_TIMEOUT'
+            }
+        } catch {
+            if ($_.Exception.Message -ceq 'PILOT_PRIVATE_STDIN_TIMEOUT') { throw }
+            # Keep stderr and exit code private until the standard classifier
+            # below; Docker 125 must not surface an unredacted IOException.
+            $StdinFailed=$true
+        }
+        try { $Process.StandardInput.Close() }
+        catch {
+            if (-not $Process.HasExited) { throw 'PILOT_PRIVATE_STDIN_CLOSE_FAILED' }
+        }
         if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PILOT_PRIVATE_PROCESS_TIMEOUT' }
+        if (-not $OutputTask.Wait(15000) -or -not $ErrorTask.Wait(15000)) {
+            throw 'PILOT_PRIVATE_OUTPUT_PIPE_TIMEOUT'
+        }
         $Output=$OutputTask.Result; $Diagnostic=$ErrorTask.Result
         if ($Process.ExitCode -ne 0) {
             # Only the credential-free state-clone call may expose a bounded,
@@ -70,8 +92,16 @@ function Private-Process {
             if ($Diagnostic -match '"error"\s*:\s*"([A-Z][A-Z0-9_]+)"') { $Codes += $Matches[1] }
             throw ('PILOT_PRIVATE_PROCESS_FAILED:' + $Process.ExitCode + ':' + ($Codes -join ','))
         }
+        if ($StdinFailed) { throw 'PILOT_PRIVATE_STDIN_WRITE_FAILED' }
         return $Output.Trim()
-    } finally { $Process.Dispose() }
+    } finally {
+        if ($Started) {
+            try {
+                if (-not $Process.HasExited) { $Process.Kill() }
+            } catch {}
+        }
+        $Process.Dispose()
+    }
 }
 function Code64 {
     param([string]$Text)
