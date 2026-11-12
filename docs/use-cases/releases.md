@@ -40,6 +40,18 @@ Owner выполняет `SelfTest → Check -Build → Apply -Build` по **о�
 использовать original attempt record и UC-GW-006, не повторять Apply.
 Исходный Gateway и backup сохраняются для контролируемого возврата.
 
+**Однократная сборка (новый source-контракт, не live до owner release):**
+после READY от Check -Build можно передать только точные checkedImageId и
+owner-protected checkedImageRecord в Apply -Image <sha256:id>
+-CheckedImageRecord <record> -SourceSha <merged-main-sha>, без -Build.
+Оба этапа должны использовать идентичные config/probes, полные UUID scopes
+и свежую owner quiescence attestation. Перед STOP_SOURCE контроллер повторно
+сверяет защищённые records и SHA256 состояния, привязку образа и наличие
+прежнего runtime image; после остановки старого writer повторяет проверку
+неизменности receipt перед копированием состояния. При его отсутствии или неподтверждённом восстановлении
+остаётся STOP. Путь не отменяет Backup/Promote и проверку Owner Shell.
+См. [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md).
+
 **Несколько чатов:** если работы совместимы и PR приняты, можно включить
 их в **один** проверенный source `main` SHA и **один логический релиз**
 Gateway вместо релиза на каждый PR. Сводить Docker images или SQLite

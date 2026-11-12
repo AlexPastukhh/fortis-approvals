@@ -54,7 +54,7 @@ class ReleaseOptInSourceTests(unittest.TestCase):
         self.assertIn('$script:PreserveUncertainRequests=$Stored',script)
         self.assertIn('$script:PreserveUncertainExact=$false',script)
         self.assertIn('if(-not $script:PreserveUncertainExact){',script)
-        self.assertIn("-or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest)",script)
+        self.assertIn("-or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)",script)
         self.assertIn('PILOT_REVIEW_HAS_UNREVIEWED_UNCERTAIN',self.helper)
         self.assertIn('PILOT_REVIEW_UNCERTAIN_SET_CHANGED',self.helper)
         self.assertIn('PILOT_REVIEW_HAS_UNFINISHED_REQUESTS',self.helper)

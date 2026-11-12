@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest')][string]$Action='Check',
-    [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CurrentRecord='',
+    [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CheckedImageRecord='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
@@ -421,6 +421,101 @@ function Get-SourceRecord {
     }
     return @{path=$Path;hash=$Hash;runtime=$P}
 }
+
+# Checked source SHA and protected receipt authorize reuse of the exact Check-built
+# Docker image, never a tag. Recheck source/inputs/state before stopping Gateway.
+function Checked-Image-Binding {
+    param($Source,$Report)
+    $ConfigHash=(Get-FileHash -LiteralPath $Config -Algorithm SHA256).Hash
+    $ProbeHash=''
+    if($Probes){$ProbeHash=(Get-FileHash -LiteralPath $Probes -Algorithm SHA256).Hash}
+    $CurrentHash=''
+    if(Test-Path -LiteralPath $Pointer){$CurrentHash=(Get-FileHash -LiteralPath $Pointer -Algorithm SHA256).Hash}
+    $PrimaryHash=''
+    if(Test-Path -LiteralPath $PrimaryPointer){$PrimaryHash=(Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash}
+    $AttemptHash=''
+    if(Test-Path -LiteralPath $AttemptPointer){$AttemptHash=(Get-FileHash -LiteralPath $AttemptPointer -Algorithm SHA256).Hash}
+    $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
+    $BackupHash=''
+    if(Test-Path -LiteralPath $BackupPointer){$BackupHash=(Get-FileHash -LiteralPath $BackupPointer -Algorithm SHA256).Hash}
+    [ordered]@{
+        image=$script:Image;sourceSha=$SourceSha
+        sourceRecord=$Source.path;sourceHash=$Source.hash
+        sourceContainerId=$Source.runtime.pilotId
+        sourceImage=$Source.runtime.image
+        sourceStateVolume=$Source.runtime.stateVolume
+        sourceRunId=$Source.runtime.runId
+        currentPointerHash=$CurrentHash;primaryPointerHash=$PrimaryHash
+        attemptPointerHash=$AttemptHash;backupPointerHash=$BackupHash
+        publicConfigHash=$ConfigHash;probeHash=$ProbeHash
+        configurationDigest=$Report.configurationDigest
+        vaultVolume=$VaultVolume
+        enableDynamicGitHubRepositories=[bool]$EnableDynamicGitHubRepositories
+        enableOwnerShell=[bool]$EnableOwnerShell
+        ciControlRepositories=$CiControlRepositories
+        preserveUncertainRequests=$script:PreserveUncertainRequests
+        preserveClaimedJobs=$script:PreserveClaimedJobs
+        preserveApprovedRequest=$script:PreserveApprovedRequest
+        requireExactUncertain=$script:PreserveUncertainExact
+        requireExactClaimed=$script:PreserveClaimedExact
+        requireExactApproved=$script:PreserveApprovedExact
+        confirmWorkerQuiescent=[bool]$ConfirmWorkerQuiescent
+    }
+}
+function Save-Checked-Image {
+    param($Source,$Report,$Receipt)
+    if(-not $Build -or $Action -cne 'Check'){throw 'RELEASE_CHECKED_IMAGE_BUILD_REQUIRED'}
+    $Id=[Guid]::NewGuid().ToString('N')
+    $Directory=Join-Path $ReleaseBase ('image-check-'+$Id)
+    Protect-Directory $Directory
+    $Path=Join-Path $Directory 'record.json'
+    Write-Private $Path ([ordered]@{
+        schema='fortis-extension-image-check-v1';phase='Ready'
+        binding=(Checked-Image-Binding $Source $Report);sourceReceipt=$Receipt
+    })
+    return $Path
+}
+function Assert-Checked-Image-Binding {
+    param($Stored,$Expected)
+    if(-not (Same-Json $Stored $Expected)){
+        throw 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'
+    }
+}
+function Verify-Checked-Image {
+    param($Source,$Report)
+    if(-not $CheckedImageRecord){return}
+    $Record=Read-Private $CheckedImageRecord
+    if($Record.schema -cne 'fortis-extension-image-check-v1' -or $Record.phase -cne 'Ready' -or
+       $null -eq $Record.binding -or $null -eq $Record.sourceReceipt){
+        throw 'RELEASE_CHECKED_IMAGE_RECORD_INVALID'
+    }
+    $Expected=Checked-Image-Binding $Source $Report
+    Assert-Checked-Image-Binding $Record.binding $Expected
+    $Now=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+    if(-not (Same-Json $Record.sourceReceipt $Now)){
+        throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
+    }
+}
+function Assert-Checked-Source-Receipt {
+    param($Receipt)
+    if(-not $CheckedImageRecord){return}
+    $Stored=Read-Private $CheckedImageRecord
+    if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready' -or
+       $null -eq $Stored.sourceReceipt -or
+       -not (Same-Json $Stored.sourceReceipt $Receipt)){
+        throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
+    }
+}
+function Assert-Previous-Image-Retained {
+    param($Source)
+    # This necessary pre-stop guard does not itself prove an isolated restore.
+    try{$Info=@(Docker-Json @('image','inspect',$Source.runtime.image))[0]}
+    catch{throw 'RELEASE_PREVIOUS_IMAGE_MISSING'}
+    if($null -eq $Info -or $Info.Id -cne $Source.runtime.image){
+        throw 'RELEASE_PREVIOUS_IMAGE_MISSING'
+    }
+}
+
 function Admit {
     param($C,$P,[switch]$AllowUnhealthy)
     if($P.pilotId -and $C.Id -cne $P.pilotId){throw 'RELEASE_CONTAINER_ID_CHANGED'}
@@ -706,19 +801,37 @@ if($Action -eq 'SelfTest'){
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
     if($Forwarded.Count -ne 3 -or $Forwarded -cnotcontains '-Build' -or $Index -lt 0 -or
        $Forwarded[$Index+1] -cne 'a value with spaces'){throw 'RELEASE_NATIVE_ARGUMENT_SELFTEST_FAILED'}
+    $Binding=@{image=('sha256:'+('a'*64));sourceSha=('b'*40);confirmWorkerQuiescent=$true}
+    Assert-Checked-Image-Binding $Binding $Binding
+    $WrongBinding=@{image=('sha256:'+('c'*64));sourceSha=('b'*40);confirmWorkerQuiescent=$true}
+    $Rejected=$false
+    try{Assert-Checked-Image-Binding $Binding $WrongBinding}
+    catch{if($_.Exception.Message -cne 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_CHECKED_IMAGE_BINDING_SELFTEST_FAILED'}
+    $WrongQuiescence=@{image=('sha256:'+('a'*64));sourceSha=('b'*40);confirmWorkerQuiescent=$false}
+    $Rejected=$false
+    try{Assert-Checked-Image-Binding $Binding $WrongQuiescence}
+    catch{if($_.Exception.Message -cne 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_CHECKED_IMAGE_QUIESCENCE_SELFTEST_FAILED'}
     Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
-if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+if($CheckedImageRecord -and ($Action -cne 'Apply' -or $Build -or $Pull -or $CurrentRecord -or
+    $AttemptRecord -or $Image -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$')){
+    throw 'RELEASE_CHECKED_IMAGE_APPLY_ARGUMENTS_INVALID'
+}
+$ApprovedImageSource=($Build -or [bool]$CheckedImageRecord)
+if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
 }
-if($EnableOwnerShell -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+if($EnableOwnerShell -and ($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_OWNER_SHELL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
-if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $Build -or
+if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
@@ -728,14 +841,14 @@ if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][
 }
 if($PreserveUncertainRequests){
     $ScopeIds=@(Parse-PreservedUncertainRequests $PreserveUncertainRequests)
-    if($Action -cnotin @('Apply','Check') -or -not $Build -or
+    if($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
        $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord){
         throw 'RELEASE_UNCERTAIN_REQUIRES_APPROVED_SOURCE_BUILD'
     }
 }
 if($PreserveApprovedRequest){
     if(@(Parse-PreservedUncertainRequests $PreserveApprovedRequest).Count -lt 1 -or
-        $Action -cnotin @('Check','Apply') -or -not $Build -or
+        $Action -cnotin @('Check','Apply') -or -not $ApprovedImageSource -or
         $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
         -not $ConfirmWorkerQuiescent){
         throw 'RELEASE_APPROVED_REQUIRES_EXACT_OWNER_BUILD_AND_QUIESCENCE'
@@ -748,7 +861,7 @@ if($PreserveClaimedJobs){
     # CLOSED_UNCONFIRMED claim requires an independently audited closure.
     # Do not strand already-closed claims during the next Backup/release.
     if($ClaimIds.Count -gt 3 -or
-        $Action -cnotin @('Apply','Check') -or -not $Build -or
+        $Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
         $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
         -not $ConfirmWorkerQuiescent){throw 'RELEASE_CLAIMED_REQUIRES_OWNER_REVIEW_AND_QUIESCENCE'}
 }
@@ -756,7 +869,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -785,6 +898,19 @@ if($Build){
     $null=Docker-Text @('build','--label',('org.opencontainers.image.revision='+$SourceSha),'-f',
         (Join-Path $Context 'fortis_approvals\deploy\Dockerfile-Gateway-Modularized-Candidate'),'-t',$Tag,$Context)
     $script:Image=@(Docker-Json @('image','inspect',$Tag))[0].Id
+}
+if($CheckedImageRecord){
+    # Pinned Apply cannot rely on a different Windows checkout than Check.
+    $Git=(Get-Command git.exe -CommandType Application).Source
+    if((Private-Process @('-C',$SourceRoot,'status','--porcelain') '' $Git)){
+        throw 'RELEASE_WINDOWS_SOURCE_DIRTY'
+    }
+    if((Private-Process @('-C',$SourceRoot,'branch','--show-current') '' $Git) -cne 'main'){
+        throw 'RELEASE_WINDOWS_MAIN_REQUIRED'
+    }
+    if((Private-Process @('-C',$SourceRoot,'rev-parse','HEAD') '' $Git) -cne $SourceSha){
+        throw 'RELEASE_WINDOWS_SHA_MISMATCH'
+    }
 }
 if($Action -eq 'Return' -or $AttemptRecord){
     if(-not $AttemptRecord){$AttemptRecord=(Read-Private $AttemptPointer).record}
@@ -857,17 +983,27 @@ $ConfigText=Get-Content -LiteralPath $Config -Raw
 Step 'CONFIG_AND_CREDENTIAL_PREFLIGHT'
 $Report=Image-CLI @('check') $ConfigText
 if($Action -eq 'Apply'){
+    if($CheckedImageRecord -and @($Report.missingCredentials).Count){
+        throw 'RELEASE_CHECKED_IMAGE_CREDENTIAL_CHANGED'
+    }
     foreach($Alias in @($Report.missingCredentials)){Put-Credential $Alias}
     $Report=Image-CLI @('check') $ConfigText
 }
 if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
+if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report}
 if($Action -eq 'Check'){
-    if($script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
+    $CheckReceipt=$null
+    if($Build -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
         $Source=Get-SourceRecord
         if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
             -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
         Step 'SOURCE_STATE_PREFLIGHT_READ_ONLY'
-        $null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+        $CheckReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+    }
+    if($Build){
+        $Path=Save-Checked-Image $Source $Report $CheckReceipt
+        $Report|Add-Member -NotePropertyName checkedImageId -NotePropertyValue $script:Image
+        $Report|Add-Member -NotePropertyName checkedImageRecord -NotePropertyValue $Path
     }
     $Report|ConvertTo-Json -Depth 12;return
 }
@@ -899,6 +1035,8 @@ if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
     -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
 $Old=Container $Source.runtime.pilotId;Admit $Old $Source.runtime
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
+Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'
+Assert-Previous-Image-Retained $Source
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
 Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
 Step 'SOURCE_STATE_PREFLIGHT_COMPLETE'
@@ -947,10 +1085,15 @@ try {
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
     Assert-PublicEnvFile $EnvFile $EnvLines
     Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
+    if($CheckedImageRecord){Verify-Checked-Image $Source $Report}
+    Assert-Previous-Image-Retained $Source
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
     $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact;Save
+    # Close the final race: recheck the frozen source AFTER the old writer stops.
+    # On mismatch, the guarded failure path returns the retained source.
+    if($CheckedImageRecord){Assert-Checked-Source-Receipt $script:R.sourceReceipt}
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
