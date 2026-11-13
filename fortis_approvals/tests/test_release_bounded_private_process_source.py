@@ -42,9 +42,9 @@ class BoundedReleaseProcessSourceTests(unittest.TestCase):
             "Step 'PRODUCTION_BASELINE_CAPTURED'",
             "Step 'RELEASE_DIRECTORY_PROTECTED'",
             "Step 'PREPARED_RECORD_SAVED'",
-            "Step 'ATTEMPT_POINTER_SAVED'",
             "Step 'PUBLIC_ENV_PREFLIGHT'",
             "Step 'STOP_SOURCE'",
+            "Step 'ATTEMPT_POINTER_SAVED'",
         )
         offsets = [source.index(marker) for marker in markers]
         self.assertEqual(offsets, sorted(offsets))

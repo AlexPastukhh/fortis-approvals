@@ -112,6 +112,35 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertLess(post_stop, clone)
         self.assertIn("RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED", SCRIPT)
 
+    def test_own_attempt_pointer_is_published_only_after_final_binding_audit(self):
+        """Regression: applying a checked image cannot invalidate its own
+        attemptPointerHash before the pre-stop binding verification. Owner
+        incident stopped at STOP_SOURCE with RELEASE_CHECKED_IMAGE_BINDING_CHANGED
+        because ATTEMPT_POINTER_SAVED previously preceded that recheck.
+        """
+        admission = SCRIPT.index("Step 'SOURCE_ADMISSION'")
+        prepared = SCRIPT.index("Step 'PREPARED_RECORD_SAVED'", admission)
+        public_env = SCRIPT.index("Step 'PUBLIC_ENV_PREFLIGHT'", prepared)
+        stop_step = SCRIPT.index("Step 'STOP_SOURCE'", public_env)
+        frozen = SCRIPT.index("if($CheckedImageRecord){Verify-Checked-Image $Source $Report}", stop_step)
+        old_image = SCRIPT.index("Assert-Previous-Image-Retained $Source", frozen)
+        save_attempt = SCRIPT.index("Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}", frozen)
+        attempt_marker = SCRIPT.index("Step 'ATTEMPT_POINTER_SAVED'", save_attempt)
+        docker_stop = SCRIPT.index("Docker-Text @('stop','--timeout','20',$Old.Id)", attempt_marker)
+        self.assertLess(prepared, public_env)
+        self.assertLess(public_env, stop_step)
+        self.assertLess(stop_step, frozen)
+        self.assertLess(frozen, old_image)
+        self.assertLess(old_image, save_attempt)
+        self.assertLess(save_attempt, attempt_marker)
+        self.assertLess(attempt_marker, docker_stop)
+        self.assertNotIn("Write-Private $AttemptPointer", SCRIPT[prepared:frozen])
+        # Full protected binding still includes the old attempt-pointer hash,
+        # and the source state receipt is independently checked AFTER stop.
+        self.assertIn("attemptPointerHash=$AttemptHash", SCRIPT)
+        assert_frozen = SCRIPT.index("Assert-Checked-Source-Receipt $script:R.sourceReceipt", docker_stop)
+        self.assertLess(docker_stop, assert_frozen)
+
     def test_no_second_build_on_checked_apply(self):
         build = SCRIPT.index("if($Build){\n    Step 'BUILD_IMAGE'")
         pinned = SCRIPT.index("if($CheckedImageRecord){\n    # Pinned Apply")

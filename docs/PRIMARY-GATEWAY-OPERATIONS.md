@@ -244,6 +244,26 @@ No Projects mutations or unattended publisher are activated by
 this release. Technical method schemas belong in UC-GW-011; this
 runbook deliberately does not duplicate them.
 
+## Checked-image attempt pointer ordering (controller source repair)
+
+The protected Check binding includes the SHA256 of the **previous**
+`attempt.json` pointer, along with current/primary/backup hashes, source
+identity, public config/probes, scope and immutable checked image. A new
+Apply must validate that complete binding **before** writing its own
+`attempt.json`, or it would invalidate the binding itself. The controller
+must persist the new attempt pointer after the final pre-stop Check binding
+verification and **before** the first `docker stop` effect. After the stop,
+compare the frozen source state receipt separately before cloning.
+
+An older Apply that prints `RELEASE_CHECKED_IMAGE_BINDING_CHANGED` after
+`ATTEMPT_POINTER_SAVED` must **not** be retried, and neither protected
+record nor pointer may be edited to bypass the check. Inspect the original
+attempt record, `current.json`, `attempt.json` and healthy original Gateway
+read-only. Source fix requires reviewed PR, Windows Mirror Pull, Windows
+PowerShell 5.1 SelfTest and a **new** source-SHA-bound Check artifact before
+a separately authorized owner-controlled Apply. An untested restore remains
+an explicitly accepted risk, never proof that restoration is available.
+
 ## Checked image: one build, exact image reuse (source pending merge/release)
 
 The source-side controller now supports an owner-protected Check artifact to avoid

@@ -1344,8 +1344,9 @@ $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';sourc
 Step 'PREPARE_RECORD_MODEL_READY'
 Save
 Step 'PREPARED_RECORD_SAVED'
-Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
-Step 'ATTEMPT_POINTER_SAVED'
+# Keep the original attempt pointer stable through the final pinned Check
+# comparison. Its SHA256 is part of the Check binding; publishing our own
+# new attempt pointer first would invalidate that binding before docker stop.
 try {
     Step 'PUBLIC_ENV_PREFLIGHT'
     $EnvFile=Join-Path $Directory 'public.env'
@@ -1366,6 +1367,10 @@ try {
     Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
     if($CheckedImageRecord){Verify-Checked-Image $Source $Report}
     Assert-Previous-Image-Retained $Source
+    # Durable recovery pointer must exist before the first source effect,
+    # but it is intentionally written AFTER the frozen Check binding audit.
+    Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
+    Step 'ATTEMPT_POINTER_SAVED'
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
