@@ -1,6 +1,9 @@
-# Own API diagnosis & typed READ acceptance — source candidate
+# Own API diagnosis & typed READ acceptance — accepted tools
 
-Canonical policy: UC-GW-012; source manifest rules stay in
+Canonical procedure: [UC-GW-012](../../use-cases/own-api.md).
+The tools are merged in `fortis-approvals/main` (PR #86); they only
+assist a particular approved provider, not register a new one.
+Public input schema and field rules stay in
 \`scripts/check-own-api-manifest.py\`. These tools are diagnostic/acceptance
 clients, not new Gateway endpoints, credential providers, deployers, or host
 installers. They do not replace owner-controlled Check/Apply/Backup/Promote.
@@ -18,6 +21,9 @@ Opt-in authenticated reads (no upstream call, no Gateway state changes):
 \`CATALOG_READY_READ_NOT_TESTED\` is NOT live upstream acceptance.
 The Doctor cannot prove Windows listener, TLS, isolated restore, exact
 production container image or worker quiescence from the Repo machine alone.
+For Windows listener reachability, use the upstream's owner runbook with a
+real TCP/TLS probe from the actual Gateway network; OS socket-listing alone
+may be misleading. No test should suppress TLS hostname/CA verification.
 An incomplete Core inventory must be labelled incomplete, never interpreted as
 no unresolved requests. Avoid printing catalog raw responses or secrets.
 

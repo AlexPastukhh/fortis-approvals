@@ -34,7 +34,12 @@ ID и GraphQL token scope; **никаких живых Project writes сейча
 
 ## P0 — Подключение собственных API через Gateway: ПЕРВОЕ В ОЧЕРЕДИ (2026-11-10)
 
-**Статус:** PLANNED / TOP PRIORITY. **Рабочий подробный план:**
+**Статус на 2026-11-14:** Mirror pilot **LIVE TYPED READ VERIFIED**;
+специализированный [UC-GW-012](use-cases/own-api.md#uc-gw-012), manifest/lint,
+Doctor, одноразовый Acceptance и шаблоны **приняты в main**. Второй
+DOCKER-HTTPS API — только offline fixture, его реальный релиз НЕ выполнен.
+Ранее этот P0 был `PLANNED`; следующая задача — использовать UC для новых API,
+а не заново проектировать общую процедуру. **Рабочий подробный план:**
 [Fortis → API: onboarding, UC, безопасность, автоматизация](/workspace/repo/Workfiles/fortis-api-onboarding-priority-20261110/PLAN.md)
 (локальный Workfiles в постоянном Fortis workspace; путь не является GitHub-ссылкой).
 
@@ -53,13 +58,13 @@ actor/target/policy, credential lifecycle, idempotency/receipts, тесты, ш�
 PR/CI/owner release и независимая live приёмка. Не строить новый универсальный
 HTTP/PowerShell канал и второй Docker/release controller.
 
-**Очередность внутри P0:** актуализировать устаревшие статусы Gateway/PS-V1
-по owner evidence; уточнить действующий [UC-GW-002](use-cases/integrations.md#uc-gw-002)
-без дублирования технического owner; выбрать один безопасный реальный API,
-провести intake/transport-fit и typed provider; пройти CI, owner-managed install
-и live readback; только по результатам пилота решить, какие onboarding checks
-имеет смысл автоматизировать. Пока API не выбран, возможна документационная
-часть; нельзя объявлять интеграцию готовой или изменять runtime.
+**Следующий шаг P0:** применять [UC-GW-012](use-cases/own-api.md#uc-gw-012)
+к следующему реальному API: intake → фиксированный transport/provider →
+source tests/PR/CI → отдельный owner release → live typed READ. Из готовой
+автоматизации использовать существующие [manifest/linter и Doctor/Acceptance](templates/own-api/TOOLS.md),
+не создавать дублирующие Gateway/vault/deployment controllers.
+Все rights/target/scope — только по новому reviewed API; offline фикстура
+не означает live deployment.
 
 **Направление «внешнее приложение → Fortis Gateway»:**
 **ACKNOWLEDGED — DEFERRED**, не входит в P0, не требует нового route, actor/grant
@@ -69,6 +74,49 @@ HTTP/PowerShell канал и второй Docker/release controller.
 **Граница:** первенство в backlog не является разрешением на production-изменения:
 owner credentials и WebAuthn, live release admission, backup/rollback,
 сохранение UNCERTAIN/CLAIMED и stop-on-unknown остаются обязательными.
+
+## Mirror follow-up: READ всех Windows-клонов и будущий ASK Pull (2026-11-14)
+
+**Сейчас:** принятый отдельный Windows GET-only listener, Script Center
+launcher и live Gateway `mirror.get_repository` разрешают **только** target
+`fortis-approvals`. Это был scope первого пилота, **не** требование
+ограничивать доступ ИИ к остальным зарегистрированным Windows-клонам.
+Первый typed Mirror READ живой, но GitHub verification остаётся `NOT_CHECKED`,
+а Windows↔Docker relation может быть `unknown`. Browser Pull — независимая
+ручная owner-local операция; **Gateway ASK Pull отсутствует**.
+
+1. **MIR-READ-ALL — безопасный просмотр зарегистрированных Windows-клонов.**
+   После отдельного source review расширить Windows listener allowlist,
+   Script Center launcher и trusted Gateway actor/target policy согласованно:
+   получать read-only инвентарь **всех зарегистрированных Mirror репозиториев**,
+   по возможности одним bounded/paginated typed READ, плюс адресный GET.
+   Разрешённый набор выводить из проверенного registry, а не `*`, arbitrary
+   path или каталога файлов по запросу AI. Для каждого клона проецировать
+   `exists/branch/HEAD/clean/originValid/checkedAt`, сравнение с Docker
+   только при наличии доказательств; GitHub READ проверять **отдельно**.
+   Никаких fetch/Pull/WRITE из GET; тесты wrong actor/target, leakage,
+   large inventory/timeout, отказов и полного Windows↔Gateway E2E.
+   **До owner merge + контролируемого Gateway/Windows rollout — NOT ENABLED.**
+2. **MIR-PULL-ASK — разрешённый владельцем Pull Windows через Gateway.**
+   Спроектировать **отдельную typed эффектную операцию** для конкретного
+   зарегистрированного repo, по [UC-GW-003](use-cases/integrations.md#uc-gw-003),
+   с policy `ASK` и Owner Portal WebAuthn, **не** расширяя READ до WRITE.
+   Preview должен замораживать repo/origin, чистоту Windows+Docker `main`,
+   проверенное актуальное GitHub `main` (через штатный Gateway), ожидаемые
+   SHA и scope эффекта; перед выполнением перепроверить frozen conditions.
+   Windows выполняет только guarded fetch/`--ff-only` по принятому Mirror
+   workflow, выдаёт durable receipt и точный readback. Для timeout,
+   потерянного ACK и `UNCERTAIN` — сверить исходный UUID/upstream receipt,
+   **никакого автоматического повторного Pull**; отдельно тестировать
+   конкуренцию, недоступность Windows, отказ owner, dirty/diverged/ahead.
+   Ручной Browser Pull не превращать в machine authorization и не ломать.
+   **Никакой ASK Pull сейчас не зарегистрирован и не разрешён.**
+
+Обе задачи — **backlog**, не новые права текущего Gateway, не разрешение
+на Windows/Gateway production update и не основание менять vault/Owner Shell.
+Текущий общий маршрут подключения нового собственного API остаётся
+[UC-GW-012](use-cases/own-api.md#uc-gw-012); реализация этих улучшений имеет
+собственные source/CI/owner release gates.
 
 ## UNCERTAIN: административно закрыты; расследование и worker остаются (2026-11-09)
 
