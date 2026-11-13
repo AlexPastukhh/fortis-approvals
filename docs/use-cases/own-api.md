@@ -15,6 +15,15 @@
 credential, отрицательными тестами и подтверждённым реальным READ.
 Source/tests/CI, owner release и живой результат — разные уровни доказательств.
 
+**Граница применимости:** это UC для **подключения собственного upstream API
+к существующему Gateway**, а не инструкция расширить права конкретного API.
+Состав разрешённых операций, actors и targets определяется отдельно для
+каждого сервиса. У Mirror первый live-пилот разрешает READ только
+`fortis-approvals`; это **не** обязательное ограничение будущих сервисов.
+Расширение Mirror на все зарегистрированные Windows-клоны и отдельный
+owner-approved ASK Pull находятся в [backlog](../BACKLOG-IMPROVEMENTS.md);
+до отдельного source review и owner release новые права не действуют.
+
 **Как:** последовательно выбрать проверенный upstream transport, описать
 только публичные источники и READ scopes, проверить source негативными
 тестами, затем отдельно принять owner release и живой typed API.
@@ -106,7 +115,24 @@ Source/tests/CI, owner release и живой результат — разные
    начинает с этого UC, owner сервиса и actual Gateway status, не с прошлой
    положительной фикстуры.
 
-Автоматизация source-only Doctor и явного typed READ acceptance: [тонкие инструменты](../templates/own-api/TOOLS.md). Это не новый release controller или host listener.
+### Минимальная автоматизация (без второго контроллера)
+
+| Когда | Что запускать/заполнять | Чего это **не** подтверждает |
+| --- | --- | --- |
+| API intake и проверка публичного контракта | [Manifest и строгий offline lint](../templates/own-api/README.md) | TLS, живой provider, права владельца |
+| Перед выпуском и при диагностике | [Own API Doctor](../templates/own-api/TOOLS.md#doctor-default-offline-no-network) с явно разрешёнными live catalog/Core reads | Host TLS, recovery, отсутствие работающих workers |
+| После owner release, с отдельным разрешением на READ | [One-shot Acceptance](../templates/own-api/TOOLS.md#one-shot-acceptance): новый UUID, точный config digest, приватный журнал **до** call, validation и `result(reconcile=False)` | Работоспособность иных targets/операций, итог старых `UNCERTAIN` |
+| Передача другому исполнителю | [Evidence](../templates/own-api/evidence.template.md) и [handoff](../templates/own-api/handoff.template.md) со статусами PASS/PENDING/UNKNOWN | Не заменяет protected Gateway records и owner approval |
+
+Детали параметров и команд — **только** в [TOOLS.md](../templates/own-api/TOOLS.md),
+HTTP/схемы — в [extension owner](../INTEGRATION-EXTENSIONS.md), lifecycle
+секретов — [UC-GW-004](credential-lifecycle.md#uc-gw-004), релиз —
+[UC-GW-005](releases.md#uc-gw-005), восстановление —
+[UC-GW-006](recovery.md#uc-gw-006). Не создавать второй installer,
+credential controller, автоматический Apply/Backup/Promote или fallback на HTTP.
+Любая новая эффектная операция (включая Windows Pull) требует отдельного
+[UC-GW-003](integrations.md#uc-gw-003), ASK/owner WebAuthn, receipt и
+неповторения эффекта при `UNCERTAIN` по [UC-GW-009](incidents.md#uc-gw-009).
 
 ### Второй независимый контрольный пример
 
