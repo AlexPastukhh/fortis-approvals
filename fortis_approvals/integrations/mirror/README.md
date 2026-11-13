@@ -42,3 +42,5 @@ and negative acceptance. Never activate old WRITE from this task.
 
 Canonical contracts: docs/INTEGRATION-EXTENSIONS.md; Gateway UC-GW-002;
 docke-windows-mirror/docs/API-FIRST.md and UC-MIR-005.
+
+The Windows Mirror raw `docker.worktrees` is the complete registered Git worktree inventory and includes its `docker.primary` exactly once. The Gateway READ projection checks that the primary entry matches the separate raw primary object and omits only that verified entry from the projected ordinary worktrees; missing, mismatched or duplicate primaries fail closed. This does not authorize Mirror or Gateway WRITE, change TLS/credentials, or deploy a runtime.
