@@ -51,6 +51,22 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         self.assertLess(ready, saved)
         self.assertLess(saved, stop)
 
+    def test_exact_long_visual_receipt_sha256_key_is_only_scoped_exception(self):
+        # Inspect_state hashes every file, including canonical visual-media
+        # paths of 131 characters. The general release JSON limit is 128.
+        from fortis_approvals.deploy.github_pilot_helpers import VISUAL_MEDIA_DIR
+        name=(VISUAL_MEDIA_DIR + '/248affc3-536f-4100-b4bc-bd166c3989be'
+              + '-0-' + 'a'*64 + '.png')
+        self.assertEqual(len(name),131)
+        self.assertIn("if ($Name.Length -le 128) { return $true }", MANAGER)
+        self.assertIn("$Scope -ceq 'receipt-hashes' -and $Name.Length -eq 131", MANAGER)
+        self.assertIn("-Scope $NextScope", MANAGER)
+        self.assertIn("-Scope 'root'", MANAGER)
+        self.assertIn("RELEASE_VISUAL_KEY_SCOPE_SELFTEST_FAILED", MANAGER)
+        self.assertIn("RELEASE_VISUAL_KEY_PATTERN_SELFTEST_FAILED", MANAGER)
+        self.assertIn("RELEASE_VISUAL_RECEIPT_PERSIST_SELFTEST_FAILED", MANAGER)
+        self.assertIn("$Prop.MemberType -ne [Management.Automation.PSMemberTypes]::NoteProperty", MANAGER)
+
     def test_actual_receipt_serialization_is_proved_before_stop_and_pointer_write(self):
         """Fail closed on untrusted PSObject receipt members before any source effect.
 
@@ -95,6 +111,10 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
             "RELEASE_RECORD_JSON_SIZE_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_TYPE_SELFTEST_FAILED",
             "RELEASE_REAL_RECEIPT_SHAPE_SELFTEST_FAILED",
+            "RELEASE_VISUAL_RECEIPT_KEY_LENGTH_SELFTEST_FAILED",
+            "RELEASE_VISUAL_KEY_SCOPE_SELFTEST_FAILED",
+            "RELEASE_VISUAL_KEY_PATTERN_SELFTEST_FAILED",
+            "RELEASE_VISUAL_RECEIPT_PERSIST_SELFTEST_FAILED",
             "RELEASE_RECEIPT_PREFLIGHT_FAIL_CLOSED_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_PERSIST_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_REPLACE_SELFTEST_FAILED",

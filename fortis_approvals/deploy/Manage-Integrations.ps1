@@ -17,8 +17,22 @@ $ForwardParameters=@{}+ $PSBoundParameters
 # Windows PowerShell 5.1 only. Strict JSON DTO for Gateway release records.
 # Never hand arbitrary live PowerShell objects to ConvertTo-Json -Depth 25:
 # adapters and nested members can grow without an effective object budget.
+# The state helper's *verified* visual-media SHA256 map keys are exactly 131
+# characters. Only that one field can exceed the general 128-character limit.
+function Test-Release-Json-Key {
+    param([string]$Name,[string]$Scope)
+    if ($Name.Length -le 128) { return $true }
+    return ($Scope -ceq 'receipt-hashes' -and $Name.Length -eq 131 -and
+        $Name -cmatch '^native-git/visual-media/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-4]-[0-9a-f]{64}\.png\z')
+}
+function Get-Release-Json-ChildScope {
+    param([string]$Scope,[string]$Name)
+    if ($Scope -ceq 'root' -and $Name -ceq 'sourceReceipt') { return 'receipt' }
+    if ($Scope -ceq 'receipt' -and $Name -ceq 'sha256') { return 'receipt-hashes' }
+    return ''
+}
 function ConvertTo-BoundedReleaseValue {
-    param($Value, [hashtable]$Budget, [int]$Depth)
+    param($Value, [hashtable]$Budget, [int]$Depth, [string]$Scope='')
 
     if ($Depth -gt 20) { throw 'RELEASE_RECORD_JSON_DEPTH_EXCEEDED' }
     $Budget.nodes = [int]$Budget.nodes + 1
@@ -50,12 +64,15 @@ function ConvertTo-BoundedReleaseValue {
         if ($Value.Count -gt 256) { throw 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE' }
         $Map = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
         foreach ($Key in $Value.Keys) {
-            if ($Key -isnot [string] -or $Key.Length -gt 128 -or $Map.ContainsKey($Key)) {
+            if ($Key -isnot [string] -or
+                -not (Test-Release-Json-Key -Name $Key -Scope $Scope) -or
+                $Map.ContainsKey($Key)) {
                 throw 'RELEASE_RECORD_JSON_INVALID_KEY'
             }
             $Budget.chars = [int]$Budget.chars + $Key.Length
             if ($Budget.chars -gt 524288) { throw 'RELEASE_RECORD_JSON_CHAR_BUDGET_EXCEEDED' }
-            $Map.Add($Key,(ConvertTo-BoundedReleaseValue -Value $Value[$Key] -Budget $Budget -Depth ($Depth+1)))
+            $NextScope=Get-Release-Json-ChildScope -Scope $Scope -Name $Key
+            $Map.Add($Key,(ConvertTo-BoundedReleaseValue -Value $Value[$Key] -Budget $Budget -Depth ($Depth+1) -Scope $NextScope))
         }
         return ,$Map
     }
@@ -65,12 +82,14 @@ function ConvertTo-BoundedReleaseValue {
         $Map = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
         foreach ($Prop in $Props) {
             if ($Prop.MemberType -ne [Management.Automation.PSMemberTypes]::NoteProperty -or
-                $Prop.Name.Length -gt 128 -or $Map.ContainsKey($Prop.Name)) {
+                -not (Test-Release-Json-Key -Name $Prop.Name -Scope $Scope) -or
+                $Map.ContainsKey($Prop.Name)) {
                 throw 'RELEASE_RECORD_JSON_INVALID_PROPERTY'
             }
             $Budget.chars = [int]$Budget.chars + $Prop.Name.Length
             if ($Budget.chars -gt 524288) { throw 'RELEASE_RECORD_JSON_CHAR_BUDGET_EXCEEDED' }
-            $Map.Add($Prop.Name,(ConvertTo-BoundedReleaseValue -Value $Prop.Value -Budget $Budget -Depth ($Depth+1)))
+            $NextScope=Get-Release-Json-ChildScope -Scope $Scope -Name $Prop.Name
+            $Map.Add($Prop.Name,(ConvertTo-BoundedReleaseValue -Value $Prop.Value -Budget $Budget -Depth ($Depth+1) -Scope $NextScope))
         }
         return ,$Map
     }
@@ -78,7 +97,8 @@ function ConvertTo-BoundedReleaseValue {
         if ($Value.Count -gt 8192) { throw 'RELEASE_RECORD_JSON_ARRAY_TOO_LARGE' }
         $Items = New-Object 'System.Collections.Generic.List[object]'
         foreach ($Item in $Value) {
-            $Items.Add((ConvertTo-BoundedReleaseValue -Value $Item -Budget $Budget -Depth ($Depth+1)))
+            # An array never inherits the special receipt SHA256 map-key scope.
+            $Items.Add((ConvertTo-BoundedReleaseValue -Value $Item -Budget $Budget -Depth ($Depth+1) -Scope ''))
         }
         return ,$Items.ToArray()
     }
@@ -104,7 +124,7 @@ function ConvertTo-BoundedReleaseJson {
     param($Value)
 
     $Budget = @{ nodes=0; chars=0; watch=[Diagnostics.Stopwatch]::StartNew() }
-    $Tree = ConvertTo-BoundedReleaseValue -Value $Value -Budget $Budget -Depth 0
+    $Tree = ConvertTo-BoundedReleaseValue -Value $Value -Budget $Budget -Depth 0 -Scope 'root'
     if ($Tree -isnot [Collections.IDictionary]) { throw 'RELEASE_RECORD_JSON_ROOT_INVALID' }
 
     # JavaScriptSerializer receives *only* a newly built, depth/size-bounded
@@ -157,7 +177,9 @@ function Assert-BoundedReleaseJsonSelfTest {
     # Real shape: State-Helper emits sha256 and summary JSON dictionaries.
     # Deserialize to the very PSCustomObject graph used in production, rather
     # than only a synthetic hashtable with a large string.
-    $ReceiptText='{"sha256":{"native-git/workflow.sqlite":"'+('f'*64)+'"},"summary":{"requests":9,"requestStates":{"UNCERTAIN":3,"APPROVED":2},"native":{"jobStates":{"CLAIMED":1},"preservedClaimedIds":["'+$Claimed+'"]}}}'
+    $VisualKey='native-git/visual-media/248affc3-536f-4100-b4bc-bd166c3989be-0-'+('a'*64)+'.png'
+    if ($VisualKey.Length -ne 131) { throw 'RELEASE_VISUAL_RECEIPT_KEY_LENGTH_SELFTEST_FAILED' }
+    $ReceiptText='{"sha256":{"native-git/workflow.sqlite":"'+('f'*64)+'","'+$VisualKey+'":"'+('e'*64)+'"},"summary":{"requests":9,"requestStates":{"UNCERTAIN":3,"APPROVED":2},"native":{"jobStates":{"CLAIMED":1},"preservedClaimedIds":["'+$Claimed+'"]}}}'
     $LiveLikeReceipt=ConvertFrom-Json -InputObject $ReceiptText
     $OriginalReceipt=$Fixture.sourceReceipt
     Assert-Release-Receipt-Serializable $Fixture $LiveLikeReceipt
@@ -168,10 +190,30 @@ function Assert-BoundedReleaseJsonSelfTest {
     $LiveJson=ConvertTo-BoundedReleaseJson $Fixture
     $LiveRoundTrip=ConvertFrom-Json -InputObject $LiveJson
     if ($LiveRoundTrip.sourceReceipt.summary.native.jobStates.CLAIMED -ne 1 -or
-        $LiveRoundTrip.sourceReceipt.sha256.'native-git/workflow.sqlite' -cne ('f'*64)) {
+        $LiveRoundTrip.sourceReceipt.sha256.'native-git/workflow.sqlite' -cne ('f'*64) -or
+        $LiveRoundTrip.sourceReceipt.sha256.PSObject.Properties[$VisualKey].Value -cne ('e'*64)) {
         throw 'RELEASE_REAL_RECEIPT_SHAPE_SELFTEST_FAILED'
     }
     $Fixture.sourceReceipt=$OriginalReceipt
+
+    # The exception is NOT a global 131-char name bypass. Reject the very
+    # same path under summary, and a forged .bin path under the sha256 field.
+    $BadSummary=ConvertFrom-Json -InputObject $ReceiptText
+    $BadSummary.summary | Add-Member -NotePropertyName $VisualKey -NotePropertyValue ('e'*64)
+    $Rejected=$false
+    try { Assert-Release-Receipt-Serializable $Fixture $BadSummary }
+    catch { if($_.Exception.Message -cne 'RELEASE_RECORD_JSON_INVALID_PROPERTY'){throw};$Rejected=$true }
+    if (-not $Rejected -or -not [object]::ReferenceEquals($OriginalReceipt,$Fixture.sourceReceipt)) {
+        throw 'RELEASE_VISUAL_KEY_SCOPE_SELFTEST_FAILED'
+    }
+    $BadFile=ConvertFrom-Json -InputObject $ReceiptText
+    $BadFile.sha256 | Add-Member -NotePropertyName ($VisualKey.Replace('.png','.bin')) -NotePropertyValue ('e'*64)
+    $Rejected=$false
+    try { Assert-Release-Receipt-Serializable $Fixture $BadFile }
+    catch { if($_.Exception.Message -cne 'RELEASE_RECORD_JSON_INVALID_PROPERTY'){throw};$Rejected=$true }
+    if (-not $Rejected -or -not [object]::ReferenceEquals($OriginalReceipt,$Fixture.sourceReceipt)) {
+        throw 'RELEASE_VISUAL_KEY_PATTERN_SELFTEST_FAILED'
+    }
 
     # An adapted ScriptProperty must not be read, evaluated, or admitted into
     # a release record. The pre-stop proof must fail closed *and* restore the
@@ -207,6 +249,13 @@ function Assert-BoundedReleaseJsonSelfTest {
     try {
         Protect-Directory $TestDirectory
         $script:RecordPath=Join-Path $TestDirectory 'record.json'
+        # Exercise atomic NTFS persistence with actual long visual receipt key,
+        # not only the earlier synthetic large-string receipt.
+        Save-Record -SerializedJson $LiveJson
+        $LiveSaved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
+        if ($LiveSaved.sourceReceipt.sha256.PSObject.Properties[$VisualKey].Value -cne ('e'*64)) {
+            throw 'RELEASE_VISUAL_RECEIPT_PERSIST_SELFTEST_FAILED'
+        }
         Save-Record -SerializedJson $Json
         $Saved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
         if ($Saved.phase -cne 'Prepared' -or

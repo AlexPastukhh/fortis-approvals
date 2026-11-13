@@ -244,6 +244,30 @@ No Projects mutations or unattended publisher are activated by
 this release. Technical method schemas belong in UC-GW-011; this
 runbook deliberately does not duplicate them.
 
+## Exact visual-media receipt SHA256 keys in bounded release records
+
+`github_pilot_helpers.inspect_state` returns `sha256` keyed by relative file
+paths. The canonical visual media file is named
+`native-git/visual-media/<UUID>-<index>-<64-hex-sha>.png`, **131 characters**.
+The original Windows bounded serializer allowed at most 128 characters for
+*every* PSCustomObject property, causing `RELEASE_RECORD_JSON_INVALID_PROPERTY`
+when a release `sourceReceipt.sha256` contained such a file. This explains the
+observed after-stop Save failure if that visual file was present; independently
+confirm the incident's actual long-key inventory before treating the match as
+forensic proof.
+
+The hardened serializer now allows exactly the canonical 131-character PNG
+file hash key in **only** `root.sourceReceipt.sha256`. All other dictionary and
+PSCustomObject fields keep the <=128 character key constraint. The release
+record still forbids arbitrary PSCustomObject members (`NoteProperty` only),
+excessive objects, unexpected value types, depth, size, and work budgets.
+Windows PowerShell 5.1 SelfTest requires positive roundtrip and protected-
+temporary-file persistence of the long key, and negative rejection in the
+wrong field or with a forged extension. This complements the fail-closed
+pre-stop proof added in PR #83; neither authorizes Apply or manually modifies
+the protected old `Returned` attempt. Owner must check the exact merged source,
+independent Windows tests, fresh Check/image, and separate GO before deployment.
+
 ## Source receipt serializability gate before Docker stop (source-only safety repair)
 
 A 2026-11-13 pinned owner Apply with image and Check record verified
