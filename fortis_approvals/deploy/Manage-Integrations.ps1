@@ -85,6 +85,21 @@ function ConvertTo-BoundedReleaseValue {
     throw 'RELEASE_RECORD_JSON_UNSUPPORTED_TYPE'
 }
 
+# The exact, real source state receipt is decoded from JSON by State-Helper.
+# Prove it is serializable in the complete live release DTO while the source
+# container is still running. Never discover an unsupported PSObject member
+# for the first time AFTER docker stop, where even Return's record Save could fail.
+function Assert-Release-Receipt-Serializable {
+    param([Collections.IDictionary]$Record,$Receipt)
+    $Prior=$Record['sourceReceipt']
+    try {
+        $Record['sourceReceipt']=$Receipt
+        $null=ConvertTo-BoundedReleaseJson $Record
+    } finally {
+        $Record['sourceReceipt']=$Prior
+    }
+}
+
 function ConvertTo-BoundedReleaseJson {
     param($Value)
 
@@ -137,6 +152,37 @@ function Assert-BoundedReleaseJsonSelfTest {
         $RoundTrip.runtime.workerQuiescenceOwnerAttested -ne $true -or
         $RoundTrip.emergencyRecovery.isolatedRestoreTested -ne $false) {
         throw 'RELEASE_RECORD_JSON_ROUNDTRIP_SELFTEST_FAILED'
+    }
+
+    # Real shape: State-Helper emits sha256 and summary JSON dictionaries.
+    # Deserialize to the very PSCustomObject graph used in production, rather
+    # than only a synthetic hashtable with a large string.
+    $ReceiptText='{"sha256":{"native-git/workflow.sqlite":"'+('f'*64)+'"},"summary":{"requests":9,"requestStates":{"UNCERTAIN":3,"APPROVED":2},"native":{"jobStates":{"CLAIMED":1},"preservedClaimedIds":["'+$Claimed+'"]}}}'
+    $LiveLikeReceipt=ConvertFrom-Json -InputObject $ReceiptText
+    $OriginalReceipt=$Fixture.sourceReceipt
+    Assert-Release-Receipt-Serializable $Fixture $LiveLikeReceipt
+    if (-not [object]::ReferenceEquals($OriginalReceipt,$Fixture.sourceReceipt)) {
+        throw 'RELEASE_RECEIPT_PREFLIGHT_CHANGED_RECORD'
+    }
+    $Fixture.sourceReceipt=$LiveLikeReceipt
+    $LiveJson=ConvertTo-BoundedReleaseJson $Fixture
+    $LiveRoundTrip=ConvertFrom-Json -InputObject $LiveJson
+    if ($LiveRoundTrip.sourceReceipt.summary.native.jobStates.CLAIMED -ne 1 -or
+        $LiveRoundTrip.sourceReceipt.sha256.'native-git/workflow.sqlite' -cne ('f'*64)) {
+        throw 'RELEASE_REAL_RECEIPT_SHAPE_SELFTEST_FAILED'
+    }
+    $Fixture.sourceReceipt=$OriginalReceipt
+
+    # An adapted ScriptProperty must not be read, evaluated, or admitted into
+    # a release record. The pre-stop proof must fail closed *and* restore the
+    # Prepared in-memory object to its exact original receipt.
+    $PoisonedReceipt=[pscustomobject]@{sha256=[pscustomobject]@{safe=('f'*64)}}
+    $PoisonedReceipt|Add-Member -MemberType ScriptProperty -Name Unsafe -Value { throw 'UNSAFE_RECEIPT_PROPERTY_EVALUATED' }
+    $Rejected=$false
+    try { Assert-Release-Receipt-Serializable $Fixture $PoisonedReceipt }
+    catch { if($_.Exception.Message -cne 'RELEASE_RECORD_JSON_INVALID_PROPERTY'){throw};$Rejected=$true }
+    if (-not $Rejected -or -not [object]::ReferenceEquals($OriginalReceipt,$Fixture.sourceReceipt)) {
+        throw 'RELEASE_RECEIPT_PREFLIGHT_FAIL_CLOSED_SELFTEST_FAILED'
     }
 
     $Bad = @{}
@@ -1312,7 +1358,7 @@ if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'
 Assert-Previous-Image-Retained $Source
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
-Step 'SOURCE_STATE_PREFLIGHT';$null=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+Step 'SOURCE_STATE_PREFLIGHT';$PreStopReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
 Step 'SOURCE_STATE_PREFLIGHT_COMPLETE'
 $Baseline=Release-Production-Baseline
 Step 'PRODUCTION_BASELINE_CAPTURED'
@@ -1342,6 +1388,13 @@ $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';sourc
         rescueImage=$EmergencyRescueImage;archiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
         isolatedRestoreTested=$false}}
 Step 'PREPARE_RECORD_MODEL_READY'
+# A 2026-11-13 owner Apply passed the Prepared Save but failed when
+# sourceReceipt first entered the bounded serializer after docker stop.
+# Prove the actual pre-stop receipt against this exact runtime/source DTO;
+# on denial, leave the production source running and attempt.json untouched.
+Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT'
+Assert-Release-Receipt-Serializable $script:R $PreStopReceipt
+Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT_PASS'
 Save
 Step 'PREPARED_RECORD_SAVED'
 # Keep the original attempt pointer stable through the final pinned Check

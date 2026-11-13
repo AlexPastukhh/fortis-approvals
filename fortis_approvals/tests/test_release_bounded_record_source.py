@@ -51,6 +51,35 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         self.assertLess(ready, saved)
         self.assertLess(saved, stop)
 
+    def test_actual_receipt_serialization_is_proved_before_stop_and_pointer_write(self):
+        """Fail closed on untrusted PSObject receipt members before any source effect.
+
+        Production 42873eb... stopped the old Gateway then first attempted to
+        serialize its real sourceReceipt; INVALID_PROPERTY blocked both failure
+        recording and durable Return. The static gate protects the live source.
+        """
+        source_probe=MANAGER.index("Step 'SOURCE_STATE_PREFLIGHT';$PreStopReceipt=Receipt")
+        model=MANAGER.index("Step 'PREPARE_RECORD_MODEL_READY'", source_probe)
+        proof=MANAGER.index("Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT'", model)
+        actual=MANAGER.index("Assert-Release-Receipt-Serializable $script:R $PreStopReceipt", proof)
+        passed=MANAGER.index("Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT_PASS'", actual)
+        saved=MANAGER.index("Step 'PREPARED_RECORD_SAVED'", passed)
+        stopped=MANAGER.index("Step 'STOP_SOURCE'", saved)
+        pointer=MANAGER.index("Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}", stopped)
+        docker_stop=MANAGER.index("Docker-Text @('stop','--timeout','20',$Old.Id)", stopped)
+        self.assertLess(source_probe, model)
+        self.assertLess(model, proof)
+        self.assertLess(proof, actual)
+        self.assertLess(actual, passed)
+        self.assertLess(passed, saved)
+        self.assertLess(saved, stopped)
+        self.assertLess(stopped, pointer)
+        self.assertLess(pointer, docker_stop)
+        self.assertIn("$Record['sourceReceipt']=$Prior", MANAGER)
+        self.assertIn("$null=ConvertTo-BoundedReleaseJson $Record", MANAGER)
+        self.assertIn("$PoisonedReceipt|Add-Member -MemberType ScriptProperty", MANAGER)
+        self.assertIn("RELEASE_RECEIPT_PREFLIGHT_FAIL_CLOSED_SELFTEST_FAILED", MANAGER)
+
     def test_windows_51_selftest_with_large_fixture_negative_guards(self):
         self.assertIn("if($Action -eq 'SelfTest'){", MANAGER)
         self.assertIn("Assert-BoundedReleaseJsonSelfTest", MANAGER)
@@ -65,6 +94,8 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
             "RELEASE_RECORD_JSON_CYCLE_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_SIZE_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_TYPE_SELFTEST_FAILED",
+            "RELEASE_REAL_RECEIPT_SHAPE_SELFTEST_FAILED",
+            "RELEASE_RECEIPT_PREFLIGHT_FAIL_CLOSED_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_PERSIST_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_REPLACE_SELFTEST_FAILED",
             "Save-Record -SerializedJson $Json",

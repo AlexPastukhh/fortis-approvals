@@ -244,6 +244,34 @@ No Projects mutations or unattended publisher are activated by
 this release. Technical method schemas belong in UC-GW-011; this
 runbook deliberately does not duplicate them.
 
+## Source receipt serializability gate before Docker stop (source-only safety repair)
+
+A 2026-11-13 pinned owner Apply with image and Check record verified
+successfully reached `ATTEMPT_POINTER_SAVED` and stopped the old source, but
+the FIRST bounded record serialization containing the actual `sourceReceipt`
+failed with `RELEASE_RECORD_JSON_INVALID_PROPERTY`. Its error-record Save and
+Return's record Save then failed. The owner independently verified the original
+Gateway physically `running/healthy`, old `current.phase=Complete`, and
+`attempt.phase=Prepared` (`42873eb790a04861a1b9b977bb9dbab8`, no on-disk
+receipt, not activated). That is incomplete durable recovery, NOT a new release
+and NOT an accepted `Returned` record. Do not retry Apply/Return or manually
+edit protected records/pointers/volumes; keep the old healthy Gateway alive.
+
+The safe source guard now captures the **actual** pre-stop state-helper receipt
+and executes the same bounded release-record serializer against the fully
+prepared release DTO, *before* even saving Prepared or writing `attempt.json`.
+The original in-memory `sourceReceipt` is restored in `finally`, including
+when an unsupported member fails closed. Windows PowerShell 5.1 SelfTest also
+checks realistic nested JSON-decoded receipt shape and negative ScriptProperty
+injection: it must reject arbitrary adapted members without evaluating them.
+This prevents this class of post-stop serialization failure from first being
+discovered after source stop. It does **not** establish the exact offending
+property of the owner incident, guarantee no post-stop race, or authorize
+another release. A separate reviewed incident-recovery procedure is required
+for the outstanding protected `Prepared` attempt. A new owner-approved source
+Check and separate explicit Apply GO are required after that recovery.
+
+
 ## Checked-image attempt pointer ordering (controller source repair)
 
 The protected Check binding includes the SHA256 of the **previous**
