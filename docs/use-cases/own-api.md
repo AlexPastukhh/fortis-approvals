@@ -106,6 +106,8 @@ Source/tests/CI, owner release и живой результат — разные
    начинает с этого UC, owner сервиса и actual Gateway status, не с прошлой
    положительной фикстуры.
 
+Автоматизация source-only Doctor и явного typed READ acceptance: [тонкие инструменты](../templates/own-api/TOOLS.md). Это не новый release controller или host listener.
+
 ### Второй независимый контрольный пример
 
 [Манифест Mirror WIN-HTTPS](../templates/own-api/mirror-read.example.json)
