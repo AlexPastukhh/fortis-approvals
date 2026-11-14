@@ -10,7 +10,7 @@ param(
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
-    [string]$VaultVolume='fortis-review-secrets', [string]$Probes=''
+    [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
 )
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
@@ -697,13 +697,28 @@ function Get-SourceRecord {
     return @{path=$Path;hash=$Hash;runtime=$P}
 }
 
+# SHA is of the exact UTF-8 business JSON, never of a temporary copy.
+function Sha256-Utf8 {
+    param([string]$Value)
+    if($null -eq $Value){throw 'RELEASE_AUTO_CONFIG_INVALID'}
+    $Hasher=[Security.Cryptography.SHA256]::Create()
+    try {return ([BitConverter]::ToString($Hasher.ComputeHash(
+        [Text.Encoding]::UTF8.GetBytes($Value))).Replace('-',''))}
+    finally {$Hasher.Dispose()}
+}
+
 # Checked source SHA and protected receipt authorize reuse of the exact Check-built
 # Docker image, never a tag. Recheck source/inputs/state before stopping Gateway.
 function Checked-Image-Binding {
     param($Source,$Report)
-    $ConfigHash=(Get-FileHash -LiteralPath $Config -Algorithm SHA256).Hash
-    $ProbeHash=''
-    if($Probes){$ProbeHash=(Get-FileHash -LiteralPath $Probes -Algorithm SHA256).Hash}
+    $ConfigHash='';$ProbeHash=''
+    if($Auto -and $Action -cin @('Check','Apply')){
+        $ConfigHash=Sha256-Utf8 $script:AutoConfigText
+        $ProbeHash=Sha256-Utf8 $script:AutoProbeText
+    } else {
+        $ConfigHash=(Get-FileHash -LiteralPath $Config -Algorithm SHA256).Hash
+        if($Probes){$ProbeHash=(Get-FileHash -LiteralPath $Probes -Algorithm SHA256).Hash}
+    }
     $CurrentHash=''
     if(Test-Path -LiteralPath $Pointer){$CurrentHash=(Get-FileHash -LiteralPath $Pointer -Algorithm SHA256).Hash}
     $PrimaryHash=''
@@ -1174,6 +1189,161 @@ if($Action -eq 'SelfTest'){
     Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
+# Owner-local convenience only. All effects still pass the SAME protected
+# Check / checked-image Apply / Backup / Promote controller state machine.
+# Never turn a Core UNCERTAIN or CLAIMED job into a retry or completion.
+$script:AutoCheckPointer=Join-Path $ReleaseBase 'auto-check.json'
+$script:AutoConfigText=$null;$script:AutoProbeText=$null
+if($Auto){
+    if($Action -cnotin @('Check','Apply','Backup','Promote') -or
+        $Config -or $Probes -or $Image -or $CheckedImageRecord -or $SourceSha -or
+        $Build -or $Pull -or $CurrentRecord -or $AttemptRecord -or
+        $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or
+        $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or
+        $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
+        $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
+        $VaultVolume -cne 'fortis-review-secrets'){
+        throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
+    }
+    if($Action -cin @('Check','Apply')){
+        $Git=(Get-Command git.exe -CommandType Application).Source
+        if((Private-Process @('-C',$SourceRoot,'status','--porcelain') '' $Git)){
+            throw 'RELEASE_WINDOWS_SOURCE_DIRTY'
+        }
+        if((Private-Process @('-C',$SourceRoot,'branch','--show-current') '' $Git) -cne 'main'){
+            throw 'RELEASE_WINDOWS_MAIN_REQUIRED'
+        }
+        $LocalSha=Private-Process @('-C',$SourceRoot,'rev-parse','HEAD') '' $Git
+        if($LocalSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_AUTO_SOURCE_INVALID'}
+        if($Action -eq 'Check'){
+            $SourceSha=$LocalSha
+            $Build=[switch]$true
+        } else {
+            if(-not (Test-Path -LiteralPath $script:AutoCheckPointer)){
+                throw 'RELEASE_AUTO_CHECK_NOT_READY'
+            }
+            $Selection=Read-Private $script:AutoCheckPointer
+            if($Selection.schema -cne 'fortis-auto-check-v1' -or
+                $Selection.sourceSha -cne $LocalSha -or
+                $Selection.image -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+                -not $Selection.record){throw 'RELEASE_AUTO_CHECK_BINDING_INVALID'}
+            $CheckedImageRecord=[string]$Selection.record
+            $SavedCheck=Read-Private $CheckedImageRecord
+            if($SavedCheck.schema -cne 'fortis-extension-image-check-v1' -or
+                $SavedCheck.phase -cne 'Ready' -or
+                $SavedCheck.binding.image -cne $Selection.image -or
+                $SavedCheck.binding.sourceSha -cne $LocalSha){
+                throw 'RELEASE_AUTO_CHECK_BINDING_INVALID'
+            }
+            $SourceSha=$LocalSha;$Image=[string]$Selection.image
+            $script:Image=$Image
+        }
+        # Check remote merge identity and read global unresolved evidence via
+        # existing machine TLS/typed READ, never via GitHub token or direct API.
+        $ReadCode=@'
+import json
+from fortis_approvals.workflow.client import default_client
+c=default_client()
+sha='__EXACT_HEAD_SHA__'
+branches=c.github.list_branches('fortis-approvals',page=1,per_page=100)['items']
+assert len(branches)<100 and sum(b['name']=='main' and b['sha']==sha for b in branches)==1, 'RELEASE_REMOTE_MAIN_MISMATCH'
+caps=c.gateway.post('/v1/workspace/capabilities',{})
+assert caps.get('globalRequestInventory',{}).get('crossActorDetails') is True, 'RELEASE_GLOBAL_INVENTORY_REQUIRED'
+records=[];offset=0
+for _ in range(20):
+    d=c.list_requests(offset=offset,limit=100,unresolved_only=True)
+    assert d['offset']==offset and d['unresolvedOnly'] is True and type(d['items']) is list, 'RELEASE_INVENTORY_INVALID'
+    records.extend(d['items'])
+    if d['nextOffset'] is None:
+        assert not d['truncated'] and d['total']==len(records), 'RELEASE_INVENTORY_INCOMPLETE'
+        break
+    assert d['nextOffset']==offset+len(d['items']) and len(d['items'])>0, 'RELEASE_INVENTORY_OFFSET_INVALID'
+    offset=d['nextOffset']
+else: raise RuntimeError('RELEASE_INVENTORY_PAGE_LIMIT')
+assert len(records)==len({r['requestId'] for r in records}), 'RELEASE_INVENTORY_DUPLICATE'
+states={x:sorted(r['requestId'] for r in records if r['state']==x)
+        for x in ('UNCERTAIN','APPROVED','PENDING','DISPATCHED')}
+assert len(records)==sum(len(x) for x in states.values()), 'RELEASE_INVENTORY_STATE_UNKNOWN'
+activity=[];offset=0
+for _ in range(20):
+    d=c.activity(offset=offset,limit=100)
+    assert d['offset']==offset and type(d['items']) is list, 'RELEASE_ACTIVITY_INVALID'
+    activity.extend(d['items'])
+    if d['nextOffset'] is None:
+        assert not d['truncated'] and d['total']==len(activity), 'RELEASE_ACTIVITY_INCOMPLETE'
+        break
+    assert d['nextOffset']==offset+len(d['items']) and len(d['items'])>0, 'RELEASE_ACTIVITY_OFFSET_INVALID'
+    offset=d['nextOffset']
+else: raise RuntimeError('RELEASE_ACTIVITY_PAGE_LIMIT')
+assert all(x['jobState']=='CLAIMED' for x in activity), 'RELEASE_ACTIVITY_UNEXPECTED_JOB'
+claims=sorted(x['requestId'] for x in activity)
+assert len(claims)==len(set(claims)),'RELEASE_CLAIMED_DUPLICATE'
+assert len(states['UNCERTAIN'])<=20 and len(states['APPROVED'])<=20 and len(claims)<=3, 'RELEASE_SCOPE_TOO_LARGE'
+print(json.dumps({'schema':1,'sourceSha':sha,'uncertain':states['UNCERTAIN'],
+    'approved':states['APPROVED'],'pending':states['PENDING'],
+    'dispatched':states['DISPATCHED'],'claimed':claims},sort_keys=True))
+'@
+        $ReadCode=$ReadCode.Replace('__EXACT_HEAD_SHA__',$SourceSha)
+        $Snapshot=Repo-JSON $ReadCode
+        if($Snapshot.schema -ne 1 -or $Snapshot.sourceSha -cne $SourceSha -or
+            $null -eq $Snapshot.uncertain -or $null -eq $Snapshot.approved -or
+            $null -eq $Snapshot.pending -or $null -eq $Snapshot.dispatched -or
+            $null -eq $Snapshot.claimed){throw 'RELEASE_AUTO_READBACK_INVALID'}
+        if(@($Snapshot.pending).Count -or @($Snapshot.dispatched).Count -or
+            @($Snapshot.approved).Count){
+            # Approved needs a separate owner-reviewed exact scope, not an
+            # automatic blanket carryover. Existing manual controller remains.
+            throw 'RELEASE_AUTO_OWNER_REVIEW_REQUIRED'
+        }
+        $script:PreserveUncertainRequests=@($Snapshot.uncertain) -join ','
+        $script:PreserveUncertainExact=($script:PreserveUncertainRequests -ne '')
+        $script:PreserveClaimedJobs=@($Snapshot.claimed) -join ','
+        $script:PreserveClaimedExact=($script:PreserveClaimedJobs -ne '')
+        $Source=Get-SourceRecord  # ACL checked, validates prior scopes
+        # Check must not manufacture a READY release while a previous
+        # attempt remains unresolved or its rollback image is missing.
+        if(Test-Path -LiteralPath $AttemptPointer){
+            $PriorPointer=Read-Private $AttemptPointer
+            $Prior=Read-Private $PriorPointer.record
+            if($Prior.phase -cnotin @('Complete','Returned')){
+                throw 'RELEASE_PRIOR_ATTEMPT_REQUIRES_RESUME_OR_RETURN'
+            }
+        }
+        Assert-Previous-Image-Retained $Source
+        # Preserve the currently installed trusted vault identity; never
+        # synthesize another vault or fall back to an unrelated credential.
+        if($Source.runtime.vaultVolume -isnot [string] -or
+            $Source.runtime.vaultVolume -cnotmatch '^fortis-review-secrets(?:-[a-z0-9-]{1,48})?$'){
+            throw 'RELEASE_AUTO_VAULT_INVALID'
+        }
+        $VaultVolume=$Source.runtime.vaultVolume
+        $script:AutoConfigText=[string]$Source.runtime.extensionsConfig
+        $SourceRecord=Read-Private $Source.path
+        $script:AutoProbeText=$SourceRecord.probes
+        if(-not $script:AutoConfigText -or
+            $script:AutoConfigText.Length -gt 262144 -or
+            $script:AutoProbeText -isnot [string] -or
+            -not $script:AutoProbeText){throw 'RELEASE_AUTO_CONFIG_NOT_RETAINED'}
+        Write-Host ('FORTIS_RELEASE_AUTO_SCOPE_READY sha='+$SourceSha+
+            ' uncertain='+@($Snapshot.uncertain).Count+
+            ' claimed='+@($Snapshot.claimed).Count)
+    }
+    $OwnerQuiescence=Read-Host 'Independently verified no active workers? Type QUIESCENT'
+    if($OwnerQuiescence -cne 'QUIESCENT'){
+        throw 'RELEASE_AUTO_QUIESCENCE_NOT_ATTESTED'
+    }
+    $ConfirmWorkerQuiescent=[switch]$true
+    if($Action -eq 'Apply'){
+        $OwnerGo=Read-Host ('Apply checked Gateway image for '+$SourceSha+'? Type APPLY')
+        if($OwnerGo -cne 'APPLY'){throw 'RELEASE_AUTO_OWNER_GO_REQUIRED'}
+    }
+    if($Action -cin @('Backup','Promote')){
+        $OwnerGo=Read-Host ('Run protected '+$Action+'? Type '+$Action.ToUpperInvariant())
+        if($OwnerGo -cne $Action.ToUpperInvariant()){
+            throw 'RELEASE_AUTO_OWNER_GO_REQUIRED'
+        }
+    }
+}
 if($Pull -and -not $Build){throw 'RELEASE_PULL_REQUIRES_BUILD'}
 $EmergencyRequested=([bool]$EmergencyRescueImage -or [bool]$EmergencyRescueArchiveSha256 -or [bool]$AcceptUnverifiedRestore)
 if($EmergencyRequested -and (-not $AcceptUnverifiedRestore -or
@@ -1340,14 +1510,15 @@ if($Action -eq 'Return' -or $AttemptRecord){
     if($script:R.phase -cnotin @('Created','Staged')){throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'}
     Resume-Target;return
 }
-if(-not $Config){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
+if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
 $OwnerShellEnabled=((Read-OwnerShellFlag $SourceForOwnerShell.runtime) -or [bool]$EnableOwnerShell)
 if($OwnerShellEnabled){
     Step 'OWNER_SHELL_MATERIAL_PREFLIGHT'
     Image-OwnerShell-Preflight
 }
-$ConfigText=Get-Content -LiteralPath $Config -Raw
+if($Auto){$ConfigText=$script:AutoConfigText}
+else {$ConfigText=Get-Content -LiteralPath $Config -Raw}
 Step 'CONFIG_AND_CREDENTIAL_PREFLIGHT'
 $Report=Image-CLI @('check') $ConfigText
 if($Action -eq 'Apply'){
@@ -1373,6 +1544,13 @@ if($Action -eq 'Check'){
         $Path=Save-Checked-Image $Source $Report $CheckReceipt
         $Report|Add-Member -NotePropertyName checkedImageId -NotePropertyValue $script:Image
         $Report|Add-Member -NotePropertyName checkedImageRecord -NotePropertyValue $Path
+        if($Auto){
+            # Only protected READY result can become the next owner-GO target.
+            Write-Private $script:AutoCheckPointer ([ordered]@{
+                schema='fortis-auto-check-v1';sourceSha=$SourceSha;
+                image=$script:Image;record=$Path
+            })
+        }
     }
     $Report|ConvertTo-Json -Depth 12;return
 }
@@ -1418,6 +1596,7 @@ $script:RecordPath=Join-Path $Directory 'record.json'
 $ConfigObject=ConvertFrom-Json -InputObject $ConfigText
 $CompactConfig=ConvertTo-Json -InputObject $ConfigObject -Compress -Depth 20
 $ProbeText='[]';if($Probes){$ProbeText=Get-Content -LiteralPath $Probes -Raw}
+if($Auto){$ProbeText=$script:AutoProbeText}
 $Nonce=[Guid]::NewGuid().ToString('D')
 $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$script:Image
     stateVolume=('fortis-github-pilot-state-'+$RunId);tokenVolume=$Source.runtime.tokenVolume

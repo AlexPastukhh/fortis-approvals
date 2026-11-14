@@ -52,6 +52,18 @@ owner-protected checkedImageRecord в Apply -Image <sha256:id>
 остаётся STOP. Путь не отменяет Backup/Promote и проверку Owner Shell.
 См. [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md).
 
+**Упрощение управления выпуском (PR4b, source candidate, до owner merge
+не доступно в Windows):** штатный контроллер получает `-Auto` для
+`Check`, `Apply`, `Backup`, `Promote`. Он сам восстанавливает публичный config
+и probes из защищённого текущего Complete record, делает полный typed
+read-only сбор `UNCERTAIN/CLAIMED`, использует обычный точный state receipt,
+собирает один образ и защищённо связывает его с последующим Apply. Владелец
+подтверждает worker quiescence и отдельно запускает/подтверждает Apply.
+При `PENDING/DISPATCHED/APPROVED`, неполном чтении, изменившемся SHA или
+состоянии, отсутствующем проверенном старом образе — STOP. Обычный ручной
+контракт остаётся доступен; автоматического production-deploy, owner
+WebAuthn bypass, worker retry и удаления Issue нет. [Короткая owner-процедура](../PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b-source-candidate--not-yet-installed).
+
 **Несколько чатов:** если работы совместимы и PR приняты, можно включить
 их в **один** проверенный source `main` SHA и **один логический релиз**
 Gateway вместо релиза на каждый PR. Сводить Docker images или SQLite

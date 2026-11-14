@@ -55,6 +55,7 @@ tests=(
   test_dynamic_github_release_source.py
   test_release_bounded_record_source.py
   test_release_checked_image_source.py
+  test_release_auto_owner.py
   test_release_emergency_image_source.py
   test_analysis_review.py
   test_extensions.py
