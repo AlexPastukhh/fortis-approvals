@@ -16,6 +16,7 @@ from ..integrations.github.repo_client.client import GitHubClient
 from .common import require
 from .ingress import NATIVE_PATHS
 from .incident_read import IncidentInspector
+from .git_delivery import GitDelivery
 from .worker import Worker
 
 
@@ -34,6 +35,7 @@ class WorkflowClient:
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
         self.worker_observability=worker_observability is True
         self.incidents=IncidentInspector(self)
+        self.git_delivery=GitDelivery(self)
 
     def diagnostic_capabilities(self):
         """Read existing actor-scoped Gateway capabilities; no new request/WRITE.

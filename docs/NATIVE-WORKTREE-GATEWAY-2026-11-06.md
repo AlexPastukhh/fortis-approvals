@@ -237,6 +237,53 @@ automatic stash/reset/clean. Both main-update routes also require clean primary.
 The client/API change procedure belongs to
 [UC-GW-003](use-cases/integrations.md#uc-gw-003).
 
+## PR3: Repo-side Git/PR delivery facade (source candidate)
+
+The client-side `default_client().git_delivery` composes the existing native
+`publish()` (real Git bundle, exact SHA and server-side `--force-with-lease`)
+with the existing typed GitHub PR creation. It needs **no new Gateway endpoint,
+credential, capability, policy or production image change**. `inspect()` only
+reads bounded GitHub branch and PR inventories (open **and** closed); it returns
+`DONE` if the open PR already points at the intended commit, `CONTINUE` if a
+push or PR is needed, and `STOP` on inconclusive/inconsistent evidence. A
+complete list is required before an absence-based decision. Existing PRs on
+closed/merged branches are never silently duplicated.
+
+```python
+from uuid import uuid4
+from fortis_approvals.workflow.client import default_client
+
+c = default_client()
+repo, task = 'my-repo', 'my-task'  # registered worktree and authorized repo
+sha = '0' * 40                    # replace with the actual committed task HEAD
+view = c.git_delivery.inspect(repo, task, sha)  # READ-only, no UUID created
+if view['status'] == 'CONTINUE':
+    # Preserve these two real UUIDs in the task record before submit.
+    # Include the repository's exact-head Release Impact YAML block in body.
+    result = c.git_delivery.submit(
+        repo, task, sha, title='Reviewed change', body='PR body with releaseImpact',
+        draft=False, push_request_id=str(uuid4()), pr_request_id=str(uuid4()),
+        reason='Authorized task publication and review PR')
+```
+
+`submit()` performs **at most one push and one PR creation** per call, with
+separate immutable request IDs and a provider READ after each stage. It
+computes the actual remote `expectedHeadSha`: **`None` when the branch does
+not exist**, the exact remote SHA when updating. It never treats the local
+`main` SHA as the remote task ref precondition. It validates the registered,
+clean local worktree and committed HEAD before pushing. If the branch is
+already published, it skips the push; if the exact open PR already exists,
+it skips both WRITE calls. A lost response can resolve as goal-state `DONE`
+without fabricating an original Core receipt. `STOP` means **do not call the
+facade again blindly**: inspect the preserved UUID(s) with `details()` /
+`incidents.inspect()` and compare fresh exact GitHub state. It does not issue
+retries automatically; the bounded budget of up to three logical mutation
+attempts, fresh ALLOW/ASK/DENY and new UUIDs for genuinely new intents remain
+under [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
+`PENDING` requires owner approval before further work. Owner merges the PR
+only through GitHub UI; this facade does **not** merge, sync primary `main`,
+manage Issues/PNG, deploy Gateway or bypass any existing policy.
+
 ## Task worktree cleanup
 
 Use `WorkflowClient.cleanup_task(repository, task, expected_head_sha, request_id=...,
