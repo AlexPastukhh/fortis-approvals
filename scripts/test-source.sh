@@ -81,6 +81,7 @@ tests=(
   test_pr1g_artifact_validation_phase.py
   test_pr1h_final_contract.py
   test_pr2_incident_inspector.py
+  test_pr3_git_delivery.py
   test_release_storage_source.py
 )
 for test in "${tests[@]}"; do
