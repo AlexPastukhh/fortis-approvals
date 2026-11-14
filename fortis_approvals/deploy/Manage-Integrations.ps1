@@ -61,7 +61,20 @@ function ConvertTo-BoundedReleaseValue {
     }
 
     if ($Value -is [Collections.IDictionary]) {
-        if ($Value.Count -gt 256) { throw 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE' }
+        # sourceReceipt.sha256 has one entry per retained state file.
+        # Visual-media rows are bounded at 5,000; native artifact bundles also
+        # contribute entries. Permit a larger map only at this exact scope.
+        # Global node/character/output budgets remain in force; every other
+        # object stays capped at 256.
+        $ObjectLimit=256
+        if($Scope -ceq 'receipt-hashes'){
+            $ObjectLimit=8192
+            Write-Host ('FORTIS_RELEASE_RECEIPT_HASH_MAP_COUNT='+$Value.Count)
+        }
+        if ($Value.Count -gt $ObjectLimit) {
+            Write-Host ('FORTIS_RELEASE_JSON_OBJECT_LIMIT scope='+$Scope+' count='+$Value.Count+' limit='+$ObjectLimit)
+            throw 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE'
+        }
         $Map = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
         foreach ($Key in $Value.Keys) {
             if ($Key -isnot [string] -or
@@ -78,7 +91,17 @@ function ConvertTo-BoundedReleaseValue {
     }
     if ($Value -is [pscustomobject]) {
         $Props = @($Value.PSObject.Properties)
-        if ($Props.Count -gt 256) { throw 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE' }
+        # ConvertFrom-Json materializes sourceReceipt.sha256 as a PSCustomObject.
+        # Keep the same narrow per-file-map exception as IDictionary above.
+        $ObjectLimit=256
+        if($Scope -ceq 'receipt-hashes'){
+            $ObjectLimit=8192
+            Write-Host ('FORTIS_RELEASE_RECEIPT_HASH_MAP_COUNT='+$Props.Count)
+        }
+        if ($Props.Count -gt $ObjectLimit) {
+            Write-Host ('FORTIS_RELEASE_JSON_OBJECT_LIMIT scope='+$Scope+' count='+$Props.Count+' limit='+$ObjectLimit)
+            throw 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE'
+        }
         $Map = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
         foreach ($Prop in $Props) {
             if ($Prop.MemberType -ne [Management.Automation.PSMemberTypes]::NoteProperty -or
@@ -196,6 +219,48 @@ function Assert-BoundedReleaseJsonSelfTest {
     }
     $Fixture.sourceReceipt=$OriginalReceipt
 
+    # Native state receipts hash every retained file. The sha256 map can
+    # legitimately exceed 256 properties (for example, retained artifact
+    # bundles or visual media), while remaining bounded by the serializer's
+    # aggregate node/character/output budgets.
+    $LargeHashMap=[ordered]@{}
+    for($Index=0;$Index -lt 300;$Index++){
+        $Digest=('{0:x64}' -f $Index)
+        $LargeHashMap.Add(('native-git/artifacts/'+$Digest+'.bundle'),$Digest)
+    }
+    $LargeReceiptText=ConvertTo-Json -InputObject @{sha256=$LargeHashMap;summary=@{requests=0}} -Compress -Depth 5
+    $LargeReceipt=ConvertFrom-Json -InputObject $LargeReceiptText
+    $LargeOriginalReceipt=$Fixture.sourceReceipt
+    Assert-Release-Receipt-Serializable $Fixture $LargeReceipt
+    $Fixture.sourceReceipt=$LargeReceipt
+    $LargeJson=ConvertTo-BoundedReleaseJson $Fixture
+    $LargeRoundTrip=ConvertFrom-Json -InputObject $LargeJson
+    $LargeProbeDigest=('{0:x64}' -f 299)
+    $LargeProbeKey='native-git/artifacts/'+$LargeProbeDigest+'.bundle'
+    if(@($LargeRoundTrip.sourceReceipt.sha256.PSObject.Properties).Count -ne 300 -or
+        $LargeRoundTrip.sourceReceipt.sha256.PSObject.Properties[$LargeProbeKey].Value -cne $LargeProbeDigest){
+        throw 'RELEASE_LARGE_RECEIPT_HASH_MAP_SELFTEST_FAILED'
+    }
+    $Fixture.sourceReceipt=$LargeOriginalReceipt
+
+    # The larger limit is ONLY for root.sourceReceipt.sha256. An unrelated
+    # summary object with the same number of fields must still fail closed.
+    $OversizedSummary=[ordered]@{}
+    for($Index=0;$Index -lt 257;$Index++){$OversizedSummary.Add(('field'+$Index),$Index)}
+    $OutOfScopeReceipt=[pscustomobject]@{
+        sha256=[pscustomobject]@{'native-git/workflow.sqlite'=('f'*64)}
+        summary=[pscustomobject]$OversizedSummary
+    }
+    $Rejected=$false
+    try { Assert-Release-Receipt-Serializable $Fixture $OutOfScopeReceipt }
+    catch {
+        if($_.Exception.Message -cne 'RELEASE_RECORD_JSON_OBJECT_TOO_LARGE'){throw}
+        $Rejected=$true
+    }
+    if(-not $Rejected -or -not [object]::ReferenceEquals($LargeOriginalReceipt,$Fixture.sourceReceipt)){
+        throw 'RELEASE_RECEIPT_OBJECT_LIMIT_SCOPE_SELFTEST_FAILED'
+    }
+
     # The exception is NOT a global 131-char name bypass. Reject the very
     # same path under summary, and a forged .bin path under the sha256 field.
     $BadSummary=ConvertFrom-Json -InputObject $ReceiptText
@@ -255,6 +320,14 @@ function Assert-BoundedReleaseJsonSelfTest {
         $LiveSaved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
         if ($LiveSaved.sourceReceipt.sha256.PSObject.Properties[$VisualKey].Value -cne ('e'*64)) {
             throw 'RELEASE_VISUAL_RECEIPT_PERSIST_SELFTEST_FAILED'
+        }
+        # Persist the >256-entry per-file hash map through the same atomic
+        # NTFS writer used by production release records.
+        Save-Record -SerializedJson $LargeJson
+        $LargeSaved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json
+        if(@($LargeSaved.sourceReceipt.sha256.PSObject.Properties).Count -ne 300 -or
+            $LargeSaved.sourceReceipt.sha256.PSObject.Properties[$LargeProbeKey].Value -cne $LargeProbeDigest){
+            throw 'RELEASE_LARGE_RECEIPT_PERSIST_SELFTEST_FAILED'
         }
         Save-Record -SerializedJson $Json
         $Saved=Get-Content -LiteralPath $script:RecordPath -Raw | ConvertFrom-Json

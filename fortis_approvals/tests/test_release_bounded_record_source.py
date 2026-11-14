@@ -1,4 +1,4 @@
-"""Offline source gates for incident: PowerShell >6GB before PREPARED_RECORD_SAVED.
+"""Offline source gates for the >256-entry per-file receipt hash map.
 
 Windows PowerShell 5.1 executes the real bounded JSON fixture via
 Manage-Integrations.ps1 -Action SelfTest in source-ci.yml.
@@ -35,6 +35,7 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         self.assertIn("System.Web.Script.Serialization.JavaScriptSerializer", BOUNDED)
         self.assertIn("$Encoder.MaxJsonLength = 1048576", BOUNDED)
         self.assertIn("$Encoder.RecursionLimit = 32", BOUNDED)
+        self.assertGreaterEqual(BOUNDED.count("$ObjectLimit=8192"), 2)
         self.assertNotIn("ConvertTo-Json -InputObject $script:R", BOUNDED)
 
     def test_before_source_stop_mandatory_markers(self):
@@ -111,6 +112,9 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
             "RELEASE_RECORD_JSON_SIZE_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_TYPE_SELFTEST_FAILED",
             "RELEASE_REAL_RECEIPT_SHAPE_SELFTEST_FAILED",
+            "RELEASE_LARGE_RECEIPT_HASH_MAP_SELFTEST_FAILED",
+            "RELEASE_LARGE_RECEIPT_PERSIST_SELFTEST_FAILED",
+            "RELEASE_RECEIPT_OBJECT_LIMIT_SCOPE_SELFTEST_FAILED",
             "RELEASE_VISUAL_RECEIPT_KEY_LENGTH_SELFTEST_FAILED",
             "RELEASE_VISUAL_KEY_SCOPE_SELFTEST_FAILED",
             "RELEASE_VISUAL_KEY_PATTERN_SELFTEST_FAILED",
@@ -118,7 +122,10 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
             "RELEASE_RECEIPT_PREFLIGHT_FAIL_CLOSED_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_PERSIST_SELFTEST_FAILED",
             "RELEASE_RECORD_JSON_REPLACE_SELFTEST_FAILED",
+            "Save-Record -SerializedJson $LargeJson",
             "Save-Record -SerializedJson $Json",
+            "FORTIS_RELEASE_RECEIPT_HASH_MAP_COUNT",
+            "FORTIS_RELEASE_JSON_OBJECT_LIMIT",
             "Assert-RecordAcl",
         ):
             with self.subTest(marker=marker):
