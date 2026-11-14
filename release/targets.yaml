@@ -76,6 +76,8 @@ noDeploymentPaths:
   # WorkflowClient is a Repo-side machine client; the Primary image COPY
   # includes only the native workflow server modules and not this file.
   - fortis_approvals/workflow/client.py
+  # Repo-only inspector is imported by client.py, not by the Gateway image.
+  - fortis_approvals/workflow/incident_inspector.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md

@@ -15,6 +15,7 @@ from .error_diagnostics import category, evidence, ERROR_CODES
 from ..integrations.github.repo_client.client import GitHubClient
 from .common import require
 from .ingress import NATIVE_PATHS
+from .incident_inspector import IncidentInspector
 from .worker import Worker
 
 
@@ -32,6 +33,7 @@ class WorkflowClient:
         # against old Primary. Old /finish rejects a fifth diagnostic field.
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
         self.worker_observability=worker_observability is True
+        self.incidents=IncidentInspector(self)
 
     def diagnostic_capabilities(self):
         """Read existing actor-scoped Gateway capabilities; no new request/WRITE.

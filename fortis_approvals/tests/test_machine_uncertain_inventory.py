@@ -83,11 +83,14 @@ class InventoryTests(unittest.TestCase):
         claim='SENSITIVE-WORKER-CLAIM-NEVER-TO-EXPOSE'
         self.adapter.store=SimpleNamespace(job=lambda request_id: {
             'actor':'agent-b', 'state':'CLAIMED', 'claim':claim,
-            'result':None, 'error':None, 'diagnostic':None})
+            'result':None, 'error':None, 'diagnostic':None,
+            'claimed_at':1700000000,'heartbeat_at':1700000010})
         before=self.core._read(foreign)
         full=self.core.machine_request_details('secret-a',foreign)
         self.assertTrue(full['worker']['hasClaim'])
         self.assertEqual(full['worker']['state'],'CLAIMED')
+        self.assertEqual(full['worker']['claimedAt'],1700000000)
+        self.assertEqual(full['worker']['lastHeartbeatAt'],1700000010)
         self.assertNotIn('claim',full['worker'])
         self.assertNotIn(claim,json.dumps(full))
         self.assertIsNone(full['receipt'])
