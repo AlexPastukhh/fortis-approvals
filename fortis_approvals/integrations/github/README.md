@@ -116,12 +116,27 @@ for the exact target's runtime policy. **Only `visual-workspace`** is authorized
 run ID is used for each distinct published result; the Gateway reserves each
 repository/run pair and refuses conflicting requests.
 
-After the **installed Gateway is updated**, this exact-target action uses
-`ALLOW` (no Owner Portal ASK) **only for `visual-workspace`**; the generic
-`publish_visual_review` policy stays `DENY`, other GitHub writes keep their
-existing ASK/ALLOW restrictions. The existing installed Gateway still uses
-ASK until its owner-gated release is completed. A controlled auto-publication
-request remains a real GitHub side effect: do not publish every draft.
+Live capabilities on 2026-11-14 advertise `visualReview.publishPolicy=ALLOW`
+**only for `visual-workspace`**; the generic `publish_visual_review`
+policy remains `DENY`. Check current live capabilities on every task; source
+and installed versions can differ. An `ALLOW` policy does not prove GitHub
+Issues write permission. A publication is a real GitHub side effect:
+do not publish every draft. No automatic retry or duplicate scan is implied.
+
+**Optional local preview, before publishing (no Gateway request):**
+`c.github.prepare_visual_review(repository='visual-workspace', run_id=...,
+title=..., description=..., media=[{'path': '/workspace/repo/Workfiles/...',
+'name': 'Preview'}], qa_summary=..., duration_seconds=...)`
+returns `payloadSha256` and a list of PNG sizes and SHA-256 hashes without
+uploading or creating an Issue. Generate and preserve **one** `run_id` and
+**one** `request_id` before the actual publication. Pass the same business
+fields and `expected_payload_sha256=preview['payloadSha256']` to
+`publish_visual_review(...)`; if any file or metadata changed, the client
+raises `GITHUB_VISUAL_REVIEW_PREVIEW_CHANGED` **before staging bytes**.
+This is an optional safety preview, **not** a blocking Issues GET preflight.
+The existing publisher still performs the one-shot reservation and actual
+typed stage/action. Do not invent another UUID for a lost HTTP response or
+an incomplete PNG upload.
 
 The Gateway creates one private Issue, uploads bounded PNG user attachments
 to the pinned GitHub upload host, updates the Issue and reads it back. The
@@ -129,14 +144,34 @@ final URL is returned by `WorkflowClient.result(request_id)` after EXECUTED.
 `GitHubClient.list_issues(repo, state='all', page=1, per_page=30)`,
 `get_issue(repo, number)` and `list_issue_comments(repo, number)` provide
 read-only, paginated, exact-repository issue/comment views. `list_issues`
-filters Pull Requests (the GitHub Issues endpoint includes PRs). Exact
-`get_issue` and comments return recognized `github.com/user-attachments`
+filters Pull Requests (the GitHub Issues endpoint includes PRs). In this
+source revision `get_issue(repo, number)` also returns `found=False` for a
+**PR number**, rather than a misleading `GITHUB_ISSUE_RESPONSE_INVALID`.
+This only means "not an ordinary Issue", **not** that the number is unused.
+Exact `get_issue` and comments return recognized `github.com/user-attachments`
 Markdown **references** and body: these do **not** independently prove
 that attachment bytes are still accessible. `find_visual_review_run(repo,
 run_id)` scans bounded pages for the Fortis *claim marker*, and requires an
 exact Issue readback; a manually inserted marker is not authoritative proof
 of a GitHub effect. No match or a 404 never authorizes re-sending an
 UNCERTAIN/CLOSED_UNCONFIRMED request.
+
+**Manual duplicate check immediately after successful creation.** The
+agent (not the publisher) makes a short typed READ: page through
+`c.github.list_issues('visual-workspace',state='all',page=...,per_page=30)`
+and filter `items[*].runIdMarker == run_id`. For any candidate compare
+`c.github.get_issue('visual-workspace',number)['issue']` title/body and the
+leading `<!-- fortis-visual-review:RUN_ID -->` marker. If no run marker
+exists, use the exact title and a characteristic body fragment, not title
+alone. Include open **and** closed Issues; when more than one matches, give
+both issue URLs and identify a canonical one, **do not auto-delete**. A
+single ordinary successful CREATE needs **no pre-creation Issue scan**.
+Incomplete pagination or unavailable GET means `DUPLICATE_CHECK_PENDING`,
+not an instruction to recreate the Issue. Existing
+`find_visual_review_run()` finds the first occurrence for incident
+readback; it is **not** a duplicate count. The canonical full checking
+recipe is in
+[UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
 
 `WorkflowClient.details(request_id)` now attaches durable `visualReview`
 evidence from the separate publisher reservation store for a correctly
@@ -158,6 +193,16 @@ with owner-owned secure diagnostics; do not print, copy or replace any token
 in this Repo client. In addition to valid JSON metadata, a live positive
 E2E must verify an actual Issue and browser-visible PNGs before declaring
 success. No read method validates the remote media bytes.
+
+**PR4 live baseline, 2026-11-14:** safe `list_issues(state='all')` and
+`get_issue(1)` returned `FORTIS_HTTP_500` on both `visual-workspace` and
+`fortis-approvals`. Installed capabilities did **not** advertise diagnostic
+contract v2, so the actual upstream response (`403`, rate limit, malformed
+payload, etc.) remains **unproved**. This is not a reason to change a PAT,
+bypass Gateway, or run a test Issue WRITE. After an owner-approved Gateway
+release, repeat typed READ and inspect bounded diagnostic evidence first.
+When Issue READ is restored, a controlled Issue+PNG E2E can be approved
+separately; the attachment must be opened by the owner to verify the bytes.
 
 The running Gateway must be separately released; a source-only client cannot
 enable these changes. Preserve exact UNCERTAIN, CLAIMED and worker activity

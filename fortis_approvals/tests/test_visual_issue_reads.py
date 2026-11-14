@@ -39,6 +39,11 @@ class FakeGitHub:
                 return [pr,issue()]
             return []
         if path==ROOT+'/issues/42':return issue()
+        if path==ROOT+'/issues/12':
+            return {**issue(12),
+                    'html_url':'https://github.com/PilotOwner/visual-workspace/pull/12',
+                    'pull_request':{
+                        'url':'https://api.github.com/repos/PilotOwner/visual-workspace/pulls/12'}}
         if path==ROOT+'/issues/44' and allow_not_found:return {'_httpStatus':404}
         if path==ROOT+'/issues/42/comments':
             return [dict(id=65,body='Revised PNG: ![v2]('+PNG_URL+')',created_at='2026-11-11T01:01:00Z',
@@ -76,6 +81,26 @@ class Tests(unittest.TestCase):
         self.assertEqual(data['issue']['body'],BODY)
         self.assertEqual(self.client.get_issue('visual-workspace',44),{'operation':'get_issue','found':False,'issue':None})
         self.assertFalse(any(action!='GET' for action,*_ in self.transport.calls))
+
+    def test_get_issue_pull_request_number_is_not_an_issue(self):
+        # The GitHub Issues REST endpoint also resolves PR numbers.
+        # This typed API means ordinary Issues, so a PR is a non-match.
+        response=self.client.get_issue('visual-workspace',12)
+        self.assertEqual(response,{'operation':'get_issue','found':False,'issue':None})
+        self.assertEqual(self.transport.calls[-1][1],ROOT+'/issues/12')
+        # A non-match is not evidence that GitHub number 12 is unused.
+        self.assertFalse(any(action!='GET' for action,*_ in self.transport.calls))
+
+    def test_malformed_pr_not_misreported_as_absent_issue(self):
+        original=self.transport.request
+        def invalid(method,path,**kwargs):
+            row=original(method,path,**kwargs)
+            if path==ROOT+'/issues/12':
+                row['number']=13
+            return row
+        self.transport.request=invalid
+        with self.assertRaisesRegex(Denied,'GITHUB_ISSUE_RESPONSE_INVALID'):
+            self.client.get_issue('visual-workspace',12)
 
     def test_typed_comment_reads_for_future_same_issue_versions(self):
         data=self.client.list_issue_comments('visual-workspace',42)
