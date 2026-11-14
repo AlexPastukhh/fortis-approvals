@@ -354,6 +354,55 @@ After successful Apply, owner live readback, Backup and Promote remain separate
 mandatory operations; an uncertain attempt requires the original record and
 UC-GW-006, never blind retry.
 
+## Lightweight owner release path (PR4b source candidate — not yet installed)
+
+**After this PR is owner-merged and Windows `main` is verified at the exact
+GitHub merge SHA**, use the same protected `Manage-Integrations.ps1` controller,
+not a second coordinator or new trust boundary. Run in **interactive owner
+Windows PowerShell 5.1**, never by an AI through a remote shell:
+
+```powershell
+$manager = Join-Path $HOME 'Repos\fortis-approvals\fortis_approvals\deploy\Manage-Integrations.ps1'
+& $manager -Action Check -Auto
+# Review exact source SHA, read-only scope count, READY and checked-image ID.
+# Only after owner approves this exact release window:
+& $manager -Action Apply -Auto
+# After activation and accepted owner/machine readback:
+& $manager -Action Backup -Auto
+& $manager -Action Promote -Auto
+```
+
+This mode **does not deploy automatically**. Check builds once and writes the
+same protected, immutable checked-image binding used by manual Check. Auto
+Apply selects only its protected `auto-check.json` pointer, revalidates exact
+clean Windows main vs typed GitHub `main`, source SHA, config/probe hashes,
+owner records, current state receipt, and previous image retention. No
+second Docker build, remote script download, PAT, ad hoc config file or manual
+UUID string is required. The public config and probes are recovered only
+from the protected **current** Complete release record. Missing or invalid
+prior values are `STOP`, never replaced with a guessed template.
+
+The Repo machine grant performs **read-only** global request/worker activity
+inventory. `PENDING`, `DISPATCHED` or any live `APPROVED` demand STOP/owner
+review; full and bounded pagination is mandatory. Exact current
+`UNCERTAIN/CLAIMED` IDs are passed to the **existing** read-only Docker volume
+receipt checker with equality requirements; the Repo inventory cannot expand
+unapproved worker actions or serve as its own preservation proof. Existing
+`CLAIMED` worker is never resumed/closed. The owner must **independently**
+verify quiescence and type `QUIESCENT` again at each phase. Applying requires
+separate explicit `APPLY`, Backup and Promote their own confirmation. Failed
+or ambiguous Apply is handled via protected attempt record and Return/UC-GW-006,
+not retry of `Apply -Auto`.
+
+**Important:** after a Check, record the reported source SHA, `checkedImageId`,
+`checkedImageRecord` in owner-local evidence; do not paste private record
+content or tokens in chats. Any state change between Check and Apply can
+produce a valid STOP; rerun preflight rather than bypassing the binding.
+Do not use `-Auto` against an older Windows source revision: owner Merge/Pull
+and PowerShell SelfTest must precede this workflow. The explicit manual
+controller path remains available for incident handling and exact reviewed
+`APPROVED` carryovers.
+
 ## Normal releases after adoption
 
 `Manage-Integrations.ps1 -Action Apply` retains the exact source, stages a
