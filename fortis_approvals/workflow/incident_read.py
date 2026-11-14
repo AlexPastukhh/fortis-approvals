@@ -151,3 +151,47 @@ def diagnose(details):
                 receiptPresent=receipt is not None,
                 dispatchToUncertainSeconds=duration,
                 note='Read-only evidence classification; not an effect verdict or retry permission.')
+
+
+def diagnose_v2(details):
+    # One bounded, read-only incident projection for AI clients. The V1
+    # projection is preserved byte-for-byte for older clients, and no raw
+    # payload, error text, claim, provider URL or credential is copied here.
+    legacy=diagnose(details)
+    if legacy is None:
+        return None
+    row=details.get('request')
+    ident=row.get('requestId') if type(row) is dict else None
+    if type(ident) is not str:
+        raise Denied('INCIDENT_DIAGNOSTIC_REQUEST_ID_INVALID')
+    code='UNDETERMINED'
+    origin='CORE_STATE'
+    phase=legacy['phase']
+    core_error=legacy.get('coreError')
+    worker_error=legacy.get('workerError')
+    if _bounded_core_error(core_error):
+        origin=core_error['stage']
+        code=core_error['code']
+        phase=core_error.get('phase',phase)
+    elif (type(worker_error) is dict and
+          set(worker_error)=={'stage','code'} and
+          type(worker_error['stage']) is str and
+          worker_error['stage'] in ERROR_STAGES and
+          type(worker_error['code']) is str and
+          worker_error['code'] in ERROR_CODES):
+        origin=worker_error['stage']
+        code=worker_error['code']
+    events=details.get('events')
+    total=details.get('eventTotal')
+    offset=details.get('eventOffset')
+    complete=(type(events) is list and type(total) is int and
+              type(offset) is int and offset==0 and total==len(events))
+    return {
+        'schemaVersion':2,
+        'requestId':ident,
+        'origin':origin,
+        'phase':phase,
+        'code':code,
+        'effectAssessment':'UNCONFIRMED',
+        'evidenceScope':'FULL_AUDIT_PAGE' if complete else 'PARTIAL_AUDIT_PAGE',
+    }

@@ -15,7 +15,10 @@ from urllib import error, request
 from urllib.parse import urlsplit
 
 from ..core import Denied
-from ..integrations.github.read_failure_codes import READ_FAILURE_CODES, valid_read_failure_signal
+from ..integrations.github.read_failure_codes import (
+    READ_FAILURE_CODES,valid_read_failure_signal,READ_ROUTE_CLASSES,
+    PROVIDER_ROUTE_CLASS_HEADER,PROVIDER_METHOD_CLASS_HEADER,
+    PROVIDER_RATE_RESET_HEADER)
 from ..diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, compatible_error_header
 from ..workflow.artifact_diagnostics import (
     ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER,
@@ -188,6 +191,26 @@ class GatewayTransport:
                             provider_signal = data.get("signal")
                 except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
                     pass
+            provider_metadata=None
+            if provider_code is not None and compatible_version and header_value=='2':
+                try:
+                    h=exc.headers
+                    route=h.get(PROVIDER_ROUTE_CLASS_HEADER) if h is not None else None
+                    method=h.get(PROVIDER_METHOD_CLASS_HEADER) if h is not None else None
+                    reset=h.get(PROVIDER_RATE_RESET_HEADER) if h is not None else None
+                    if type(route) is str and route in READ_ROUTE_CLASSES and method=='READ':
+                        info={'routeClass':route,'methodClass':'READ'}
+                        if reset is not None:
+                            if (type(reset) is not str or
+                                    not re.fullmatch(r'[0-9]{9,10}',reset) or
+                                    provider_code not in ('GITHUB_HTTP_403','GITHUB_HTTP_429') or
+                                    not 946684800<=int(reset)<=4102444800):
+                                info=None
+                            else:
+                                info['rateLimitReset']=int(reset)
+                        provider_metadata=info
+                except (AttributeError,TypeError,ValueError):
+                    pass
             pre_core_rejected=False
             if method == "POST" and path == "/v1/actions" and status == 403:
                 headers=exc.headers
@@ -219,7 +242,11 @@ class GatewayTransport:
                 raise Denied("FORTIS_PRE_CORE_VALIDATION_REJECTED") from None
             if provider_code is not None:
                 suffix = "_" + provider_signal if provider_signal is not None else ""
-                raise Denied("FORTIS_READ_" + provider_code + suffix) from None
+                diagnostic=Denied("FORTIS_READ_" + provider_code + suffix)
+                # Optional non-authoritative evidence for new clients; legacy
+                # exception code, HTTP status and JSON wire stay intact.
+                diagnostic.provider_metadata=provider_metadata
+                raise diagnostic from None
             if 300 <= status < 400:
                 raise Denied("FORTIS_REDIRECT_DENIED") from None
             raise Denied("FORTIS_HTTP_" + str(status)) from None

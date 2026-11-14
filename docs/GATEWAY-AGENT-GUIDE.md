@@ -166,10 +166,15 @@ POST /v1/workspace/capabilities can advertise diagnosticContract after
 release. New clients must require the exact supported schema; absent, malformed
 or future versions do not authorize new effects or recovery.
 
-- GitHub REST READ failures carry only a fixed provider code and at most a
-  bounded status/header *signal*. HTTP 403 alone is not proof of permission
-  loss or of the original remote outcome. Permission requirement headers do
-  not prove missing token privileges, and Retry-After is a backoff hint.
+- GitHub REST READ failures carry a fixed provider code, a bounded
+  non-authoritative header *signal* and optionally a classified GitHub
+  route/method plus a validated numeric X-RateLimit-Reset epoch. The extra
+  fields are Gateway headers, NOT the upstream raw headers or URL. Legacy
+  JSON error envelopes remain unchanged. HTTP 403 alone is not proof of
+  permission loss, a specific rate-limit category or the original remote
+  outcome. Permission requirement headers do not prove missing token
+  privileges, X-RateLimit-Reset is reset-time evidence only, and
+  Retry-After is a backoff hint — never automatic WRITE retry permission.
 - The native Git artifact staging route may return
   FORTIS_ARTIFACT_<FIXED_CODE> and an optional fixed validation phase
   (SETUP, FETCH_MAIN, READ_REMOTE_REFS, FETCH_TASK, BUNDLE_IDENTITY,
@@ -184,6 +189,17 @@ or future versions do not authorize new effects or recovery.
   START means a POST **might** be sent; ACK means an expected HTTP status was
   observed. **Neither is proof of an attributable, completed PR**. A crash
   before the recorded START can still leave an unknown earlier attempt.
+- When a task branch is expected to be absent (expectedHeadSha=null),
+  an existing GitHub ref fails admission as
+  GIT_EXPECTED_REMOTE_HEAD_MISMATCH at READ_REMOTE_REFS, without
+  overwriting that branch. Preflight failure on this HTTP attempt does
+  not prove the outcome of any earlier operation.
+- Machine details keep the legacy diagnostic field and add optional
+  diagnosticV2 with schemaVersion, requestId, origin, phase, code,
+  effectAssessment, evidenceScope. Evidence scope distinguishes a full
+  audit page from an incomplete page. effectAssessment=UNCONFIRMED is
+  an observation, NOT an Outcome Resolver verdict. Never infer non-execution
+  from a missing event, worker heartbeat or receipt.
 - Any DISPATCHED/UNCERTAIN without verified outcome stays unknown. Never
   create a new UUID to blindly retry; never use reconcile as a pure READ.
 - This source does not include Outcome Resolver, automatic recovery, Owner

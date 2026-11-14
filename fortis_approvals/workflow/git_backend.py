@@ -138,7 +138,12 @@ class GitHubGitBackend:
                 main=self.git.text(['rev-parse','refs/remotes/verify/main'],cwd=bare)
                 _artifact_phase='READ_REMOTE_REFS'
                 refs=self.refs(repo)
-                if refs.get(task['branch'])!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
+                current=refs.get(task['branch'])
+                if old is None and current is not None:
+                    # A caller expecting a new branch found an existing remote
+                    # ref. Fail before provider POST/push and do not overwrite.
+                    raise Stale('GIT_EXPECTED_REMOTE_HEAD_MISMATCH')
+                if current!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
                 if old is not None:
                     _artifact_phase='FETCH_TASK'
                     self._fetch(repo,bare,task['branch'],'refs/remotes/verify/task',config)

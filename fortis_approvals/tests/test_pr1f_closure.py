@@ -185,7 +185,8 @@ class PR1FTests(unittest.TestCase):
                      'test_pr1d_create_pr_phases_precore.py',
                      'test_pr1e_diagnostic_contract.py',
                      'test_pr1f_closure.py',
-                     'test_pr1g_artifact_validation_phase.py'):
+                     'test_pr1g_artifact_validation_phase.py',
+                     'test_pr1h_final_contract.py'):
             self.assertIn(name,ci)
         self.assertIn('python -B -m compileall',(
             root/'.github/workflows/source-ci.yml').read_text())

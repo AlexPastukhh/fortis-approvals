@@ -10,7 +10,7 @@ from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
-from .incident_read import list_uncertain, list_requests, diagnose
+from .incident_read import list_uncertain, list_requests, diagnose, diagnose_v2
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..diagnostic_contract import advertised_diagnostic_capability
 from .artifact_diagnostics import (
@@ -174,6 +174,7 @@ class NativeIngress:
                 credential,body['requestId'],
                 event_offset=body['eventOffset'],event_limit=body['eventLimit'])
             details['diagnostic']=diagnose(details)
+            details['diagnosticV2']=diagnose_v2(details)
             # Core returns a request *record* containing the nested intent.
             # Reading fields on the outer record silently disabled visual evidence.
             record=details.get('request')

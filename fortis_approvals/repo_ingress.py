@@ -14,7 +14,11 @@ from .core import ApprovalError, Conflict, Denied
 from .repo_action_contract import validate_intent
 from .integrations.github.contract import GITHUB_ACTION_OPERATIONS
 from .integrations.github.gateway.transport import GitHubTransportError
-from .integrations.github.read_failure_codes import bounded_read_failure_code, valid_read_failure_signal
+from .integrations.github.read_failure_codes import (
+    bounded_read_failure_code,valid_read_failure_signal,
+    bounded_transport_read_metadata,
+    PROVIDER_ROUTE_CLASS_HEADER,PROVIDER_METHOD_CLASS_HEADER,
+    PROVIDER_RATE_RESET_HEADER,READ_ROUTE_CLASSES,READ_METHOD_CLASSES)
 from .diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, DIAGNOSTIC_VERSION_TEXT
 from .workflow.artifact_diagnostics import (
     ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER,
@@ -101,7 +105,8 @@ class RepoIngress:
 
     @staticmethod
     def _reply(start, code, content, *, pre_core_validation=False,
-               diagnostic_contract=False, artifact_diagnostic=None, artifact_phase=None):
+               diagnostic_contract=False, artifact_diagnostic=None, artifact_phase=None,
+               provider_read_metadata=None):
         body = json.dumps(content,ensure_ascii=False,separators=(',',':'),
                           allow_nan=False).encode('utf-8')
         label = {200:'OK',202:'Accepted',400:'Bad Request',401:'Unauthorized',
@@ -128,6 +133,25 @@ class RepoIngress:
                     artifact_phase not in ARTIFACT_VALIDATION_PHASES):
                 raise ValueError('ARTIFACT_PHASE_INVALID')
             headers.append((ARTIFACT_PHASE_HEADER,artifact_phase))
+        if provider_read_metadata is not None:
+            if (type(provider_read_metadata) is not dict or
+                    set(provider_read_metadata) not in (
+                        {'routeClass','methodClass'},
+                        {'routeClass','methodClass','rateLimitReset'})):
+                raise ValueError('GITHUB_READ_METADATA_INVALID')
+            # Revalidate at wire edge, no repo/URL/provider text.
+            route=provider_read_metadata['routeClass']
+            method=provider_read_metadata['methodClass']
+            if (type(route) is not str or route not in READ_ROUTE_CLASSES or
+                    type(method) is not str or method not in READ_METHOD_CLASSES):
+                raise ValueError('GITHUB_READ_METADATA_INVALID')
+            headers.append((PROVIDER_ROUTE_CLASS_HEADER,route))
+            headers.append((PROVIDER_METHOD_CLASS_HEADER,method))
+            if 'rateLimitReset' in provider_read_metadata:
+                reset=provider_read_metadata['rateLimitReset']
+                if type(reset) is not int or not 946684800<=reset<=4102444800:
+                    raise ValueError('GITHUB_READ_RESET_INVALID')
+                headers.append((PROVIDER_RATE_RESET_HEADER,str(reset)))
         if pre_core_validation or diagnostic_contract:
             headers.append((DIAGNOSTIC_VERSION_HEADER,DIAGNOSTIC_VERSION_TEXT))
         start(f'{code} {label}',headers)
@@ -252,7 +276,8 @@ class RepoIngress:
                 signal=getattr(exc,'signal',None)
                 if valid_read_failure_signal(provider_code,signal):
                     details['signal']=signal
-                return self._reply(start,500,details,diagnostic_contract=True)
+                return self._reply(start,500,details,diagnostic_contract=True,
+                    provider_read_metadata=bounded_transport_read_metadata(exc,provider_code))
             return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})
         except (OSError,RuntimeError):
             return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})

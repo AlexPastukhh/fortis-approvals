@@ -3,6 +3,8 @@
 Wire schema remains unchanged for legacy clients. New clients interpret
 optional fixed version headers; never enable replays or owner decisions.
 """
+from copy import deepcopy
+
 DIAGNOSTIC_VERSION=2
 DIAGNOSTIC_VERSION_TEXT='2'
 DIAGNOSTIC_VERSION_HEADER='X-Fortis-Diagnostic-Contract'
@@ -10,12 +12,15 @@ DIAGNOSTIC_VERSION_HEADER='X-Fortis-Diagnostic-Contract'
 _CAPABILITY={
     'schemaVersion':DIAGNOSTIC_VERSION,
     'githubReadErrors':'bounded-code-and-signal-v1',
+    'githubReadMetadata':'bounded-route-method-reset-v1',
     'preCoreAdmission':'typed-github-validation-v1',
     'githubWriteAudit':{
         'phaseCodes':['push_commits','create_pull_request'],
         'prCreateCheckpoints':'native-core-bound-only',
     },
     'artifactFailure':'bounded-code-and-stage-v2',
+    'newBranchHeadMismatch':'GIT_EXPECTED_REMOTE_HEAD_MISMATCH',
+    'incidentEvidence':'bounded-read-only-projection-v2',
     'effectAssessment':'NOT_AN_OUTCOME_VERDICT',
     'outcomeResolver':'NOT_IMPLEMENTED',
     'automaticRetry':False,
@@ -23,7 +28,7 @@ _CAPABILITY={
 
 def advertised_diagnostic_capability():
     """Safe for the existing machine actor's /workspace/capabilities READ."""
-    return dict(_CAPABILITY)
+    return deepcopy(_CAPABILITY)
 
 def inspect_diagnostic_capability(data):
     """Treat missing/unfamiliar feature declarations as unsupported.

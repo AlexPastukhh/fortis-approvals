@@ -10,7 +10,9 @@ from urllib import error, request
 from urllib.parse import urlencode
 
 from ....core import Denied
-from ..read_failure_codes import classify_read_http_signal
+from ..read_failure_codes import (
+    classify_read_http_signal,bounded_rate_limit_reset,
+    safe_read_route_class,safe_write_route_class)
 
 API_ORIGIN = "https://api.github.com"
 TOKEN_FILE = "/run/github-token/token"
@@ -62,9 +64,13 @@ _QUERY_KEYS = frozenset({"head_sha", "event", "branch", "page", "per_page", "sta
 
 class GitHubTransportError(RuntimeError):
     """Redacted provider failure; carries only a bounded signal, never headers."""
-    def __init__(self, code, *, signal=None):
+    def __init__(self, code, *, signal=None, route_class=None,
+                 method_class=None, rate_limit_reset=None):
         super().__init__(code)
         self.signal=signal
+        self.route_class=route_class
+        self.method_class=method_class
+        self.rate_limit_reset=rate_limit_reset
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -234,13 +240,19 @@ class GitHubHTTPTransport:
                 return result
         except error.HTTPError as exc:
             status = exc.code
-            signal=classify_read_http_signal(status, exc.headers)
+            signal=classify_read_http_signal(status, exc.headers) if method=='GET' else None
+            reset=bounded_rate_limit_reset(status,exc.headers)
+            route_class=(safe_read_route_class(method,path) if method=='GET' else
+                         safe_write_route_class(method,path))
             exc.close()
             if allow_not_found and status == 404:
                 return {"_httpStatus": 404}
             if 300 <= status < 400:
                 raise GitHubTransportError("GITHUB_REDIRECT_DENIED") from None
-            raise GitHubTransportError("GITHUB_HTTP_" + str(status),signal=signal) from None
+            raise GitHubTransportError("GITHUB_HTTP_" + str(status),signal=signal,
+                route_class=route_class,
+                method_class=('READ' if method=='GET' else 'WRITE') if route_class else None,
+                rate_limit_reset=reset if route_class else None) from None
         except GitHubTransportError:
             raise
         except (error.URLError, TimeoutError, OSError, UnicodeError,
