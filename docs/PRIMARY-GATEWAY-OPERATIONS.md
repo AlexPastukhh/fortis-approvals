@@ -339,11 +339,13 @@ PowerShell 5.1 SelfTest and a **new** source-SHA-bound Check artifact before
 a separately authorized owner-controlled Apply. An untested restore remains
 an explicitly accepted risk, never proof that restoration is available.
 
-## Checked image: one build, exact image reuse (source pending merge/release)
+## Checked image: one build, exact image reuse (installed in PR #94 release)
 
-The source-side controller now supports an owner-protected Check artifact to avoid
-building the same mutable source tag twice. It is NOT installed until this task
-PR is accepted/merged and the Windows clone is verified at that source SHA.
+The installed owner controller supports an owner-protected Check artifact to avoid
+building the same mutable source tag twice. PR #94 was owner-merged and the
+owner reported Windows Mirror Pull, SelfTest and a successful -Auto release
+on 2026-11-14; exact current Windows/runtime identity still requires fresh
+host readback before any future release.
 
 After owner approval of a coordinated window and recovery readiness, the owner
 runs SelfTest, then one Check -Build -SourceSha <merged-sha> with -Config,
@@ -377,10 +379,12 @@ After successful Apply, owner live readback, Backup and Promote remain separate
 mandatory operations; an uncertain attempt requires the original record and
 UC-GW-006, never blind retry.
 
-## Lightweight owner release path (PR4b source candidate — not yet installed)
+<a id="lightweight-owner-release-path-pr4b"></a>
 
-**After this PR is owner-merged and Windows `main` is verified at the exact
-GitHub merge SHA**, use the same protected `Manage-Integrations.ps1` controller,
+## Lightweight owner release path (installed owner -Auto workflow)
+
+**For each future owner release, after PR merge and Windows `main` verified at the
+exact GitHub SHA**, use the protected `Manage-Integrations.ps1` controller,
 not a second coordinator or new trust boundary. Run in **interactive owner
 Windows PowerShell 5.1**, never by an AI through a remote shell:
 

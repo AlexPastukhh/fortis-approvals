@@ -199,9 +199,9 @@ Owner Portal — интерфейс решений владельца, а не �
   затем **новую штатную попытку** с новым requestId, новыми preconditions
   и политикой ALLOW/ASK/DENY. При `ASK` требуется новое решение owner.
   Для GitHub branch/ref/push защищённые identity/SHA операции можно
-  повторить после readback, если новая операция разрешена контрактом.
-  До **трёх попыток суммарно** (включая исходную) с короткой паузой и
-  повторным readback после каждой. Все исходные UUID и audit сохранить.
+  продолжить только по общему правилу [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003)
+  (HTTP 500, budget попыток, новый requestId и независимый readback).
+  Все исходные UUID и audit сохранить, без автоматического replay.
 - **GitHub CREATE без однозначного результата:** HTTP POST может быть
   принят GitHub до потери ответа; Fortis сам не переотправляет старый UUID.
   Для PR искать тот же head/base/HEAD; для Issue проверить маркер
