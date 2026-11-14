@@ -1,13 +1,33 @@
 # Fortis Approvals Gateway — текущее состояние
 
-**Срез 2026-11-10, после PR #62.** Последний подтверждённый владельцем
-Windows Gateway release — `8403c63297f78e38294899c6bd094cc9f9eac66f`;
-`Check → Apply → Backup → Promote` завершились, owner `docker inspect`
-показал `fortis-gateway` running/healthy/unless-stopped. Подробности ниже.
-Реальный запуск после перезагрузки Docker Desktop, отдельная проверка
-WebAuthn-кнопки отмены и live межакторный E2E второй machine identity
-**ещё не подтверждены**. Точные runtime IDs всегда брать из защищённых
-записей и свежего host readback.
+**Актуальная на 2026-11-14 owner-reported выпускная цепочка:** PR #94
+принят в GitHub/Docker `main` SHA
+`c473edb88737f773d2f9ec0a9943235ebb18aa3a`. Владелец сообщил о
+Windows Mirror Pull и предоставил результаты PowerShell 5.1
+`FORTIS_INTEGRATIONS_SELFTEST_PASS`, `Check -Auto READY`,
+`FORTIS_INTEGRATIONS_ACTIVATED`, `FORTIS_PRIMARY_BACKUP_PASS` и
+`FORTIS_PRIMARY_PROMOTED`. Проверенный image:
+`sha256:900456ddba50c164de202645f2e3b6859599b5a64383f13d3628665c640a509a`;
+Apply сохранил protected record
+`%LOCALAPPDATA%\Fortis\GatewayReleases\e2e0610bd2f54c268cd06dbba1d57a6c\record.json`,
+`previousRetained=true`; backup:
+`fortis-gateway-backup-2cb0d07e64a149728d0aefd5830302f0`.
+Реальный source receipt из 260 hash entries прошёл serializer preflight.
+Отдельный authenticated Repo machine READ после Promote подтвердил
+доступность typed Gateway, schema v2 и GitHub READ.
+
+**Не подтверждено этим выпуском:** новый host `docker inspect`
+(running/healthy/unless-stopped и точный live image после Promote),
+реальный reboot Docker Desktop, browser WebAuthn/security acceptance
+и provider mutation acceptance (`PENDING_OR_NOT_APPLICABLE` в Apply).
+Не выдавать owner outputs за независимую проверку Windows runtime.
+Точные runtime IDs брать из protected records и свежего host readback.
+
+**Исторический срез 2026-11-10, PR #62:** ранее owner подтвердил
+`Check → Apply → Backup → Promote` для
+`8403c63297f78e38294899c6bd094cc9f9eac66f`; тот
+`docker inspect` показывал running/healthy/unless-stopped.
+Ниже — датированное evidence этого **предыдущего**, а не текущего выпуска.
 [Agent guide](../GATEWAY-AGENT-GUIDE.md) владеет использованием,
 [native contract](../NATIVE-WORKTREE-GATEWAY-2026-11-06.md) — API/policy,
 [backlog](../BACKLOG-IMPROVEMENTS.md) — незавершёнными задачами,
@@ -33,7 +53,7 @@ Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
 | Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
 | Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
-## Текущий Primary — owner-verified PR #62 (2026-11-10)
+## Исторический Primary — owner-verified PR #62 (2026-11-10)
 
 | Факт | Подтверждение |
 | --- | --- |

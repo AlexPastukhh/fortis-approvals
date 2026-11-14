@@ -20,6 +20,8 @@ original attempt record, а не новый произвольный ID. Воз�
 `RECOVERY_REQUIRED`, без потери records и повторного внешнего эффекта.
 
 
+<a id="uc-gw-013"></a>
+
 ## UC-GW-013 — Аварийный image-release при отсутствии прежнего image
 
 **Когда:** единственный активный здоровый Gateway имеет точный runtime
@@ -31,6 +33,11 @@ original attempt record, а не новый произвольный ID. Воз�
 **Цель:** разрешить *один* явно выбранный выпуск без ложного утверждения,
 что старый image можно восстановить. Обычный путь UC-GW-005 остаётся
 fail-closed; отсутствие старого image при обычных флагах — STOP.
+
+**Как:** выполнить только нижеописанный guarded rescue image/TAR
+preflight и отдельный owner-managed Check/Apply с точными SHA,
+действующими credentials и защищёнными records; риск отсутствия
+изолированного restore явно принимает владелец. Никакой auto retry.
 
 **Подготовка до допуска:** сохранённый аварийный `docker commit --pause=false`
 от точно осмотренного running Gateway, отдельный `docker save` TAR;
@@ -45,7 +52,7 @@ SHA256 всех uncompressed layers, совпадение с Docker RootFS и п
 НЕ продолжать. Не вызывать `Backup` ради создания копии, когда
 старый image отсутствует: Backup останавливает Gateway.
 
-**Допуск (source-only до принятого PR/Windows Pull):** `-Action Check
+**Допуск (owner-managed; контроллер на Windows должен соответствовать этому source):** `-Action Check
 -Build -SourceSha <merged-main>` с обычными public `-Config`,
 `-Probes`, точными `-PreserveUncertainRequests` и
 `-PreserveClaimedJobs`, текущими approved UUID (если есть),

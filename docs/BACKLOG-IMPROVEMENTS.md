@@ -279,16 +279,18 @@ Mirror-specific исходники, UI/Windows acceptance и их дальней
 
 ## Улучшение детерминированного релиза (2026-11-07)
 
-- **Build-once (OPEN):** текущие `Check -Build` и `Apply -Build` вызывают
-  Docker build по отдельности; они используют один исходный SHA, но
-  не доказывают проверку **одних и тех же immutable байтов** без
-  повторной сборки. Нужны однократный source build, pinned image digest,
-  отдельные Check/Apply по этому digest, проверка исходного SHA/owner scope
-  и неизменные fail-closed state admission/backup/rollback guards.
-  Не пропускать `Check` ради экономии времени. Группировка PR нескольких
-  чатов — общее направление центрального UC-CONT, не дублировать здесь
-  multi-repo coordinator.
-- Подготовить единый Windows PowerShell 5.1 operator entrypoint: `SelfTest → Check/Build exact SHA → Apply → live READ/Owner Portal → Backup → Promote → readback`, с учётом фазы protected release, кратких PASS-маркеров и остановки без повторного Apply при ambiguity.
+- **Build-once для штатного `-Auto` — OWNER-REPORTED PASS 2026-11-14:**
+  `Check -Auto` создал pinned checkedImageId, `Apply -Auto` использовал
+  его без второй сборки, затем прошли Backup/Promote. Source PR #94 /
+  `c473edb8…`, checked image `sha256:900456dd…`. Legacy `Check -Build` +
+  `Apply -Build` **по-прежнему** собирает дважды; для immutable ручного пути
+  использовать protected checked-image binding по
+  [Primary runbook](PRIMARY-GATEWAY-OPERATIONS.md). Host/reboot acceptance
+  остаются отдельными проверками.
+- **Краткий owner entrypoint — реализован для штатного `-Auto`:**
+  SelfTest → Check/Apply/Backup/Promote по отдельным защищённым фазам;
+  нет автоматического production deploy. Открыта лишь оценка нужности
+  улучшений ручного exception-пути, а не второго release controller.
 - Устранить caller-scope side effects dot-sourced operator helpers: подтверждён
   конфликт типизированного `[string]$Record` с ad-hoc build metadata dictionary.
   Сохранять metadata отдельной переменной, проверять JSON-object round-trip и

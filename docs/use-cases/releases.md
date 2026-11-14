@@ -11,81 +11,65 @@
 
 **Как:** доставить PR/CI/owner merge и проверить точный source SHA по
 [UC-CONT-002](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-002).
-Выбрать [Docker preflight](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/docker.md#uc-cont-021),
-[verified backup](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/docker.md#uc-cont-022)
-и [операционный controller](../../fortis_approvals/deploy/README.md).
-Проверить source/image digest, config, credentials, единственного writer,
-protected record, Owner Portal и machine TLS/READ.
+Если Windows — получатель controller source, сначала выполнить guarded Mirror
+Pull; исходный GitHub/Docker merge сам по себе не обновляет Windows или Primary.
+Для штатного owner-managed выпуска в **Windows PowerShell 5.1** использовать
+существующий контроллер: **SelfTest → Check -Auto → отдельно подтверждённый
+Apply -Auto → live owner/machine readback → Backup -Auto → Promote -Auto →
+host docker inspect**. Полный порядок, вопросы подтверждения и STOP/Return —
+только в [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b).
+ИИ не исполняет эти owner-команды за владельца.
 
-**Незавершённые состояния:** перед выпуском прочитать глобальный реестр
-по [UC-GW-009](incidents.md#uc-gw-009). Если есть `APPROVED`,
-указать *точный, явно рассмотренный владельцем* набор UUID через
-`-PreserveApprovedRequest` (строка через запятую, не wildcard).
-Выпуск разрешён только после независимого подтверждения отсутствия
-активного старого worker и при обязательных preflight-проверках каждого
-UUID: нет `DISPATCHED` в audit, результата, worker job или receipt;
-набор равен всем текущим `APPROVED`. `PENDING/DISPATCHED` блокируют
-state admission. Исторический `CLAIMED` сохранять своим точным
-`-PreserveClaimedJobs` и quiescence attestation; это не Core approval.
-`UNCERTAIN` и непроверенный внешний эффект не перезапускать и не
-редактировать в SQLite. Точные аргументы, ограничения и восстановление —
-в [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md).
+**Что делает -Auto:** Check строит один проверенный image и сохраняет
+owner-protected binding; Apply использует **тот же** immutable image ID, без
+повторной сборки. Публичные config/probes берутся из существующего protected
+Complete record; Gateway READ собирает точные `UNCERTAIN/CLAIMED` scopes.
+При `PENDING/DISPATCHED/APPROVED`, неполных данных, drift SHA/config/state
+или отсутствии сохранённого previous image — STOP/owner review. Владелец
+независимо подтверждает worker quiescence и отдельно даёт GO на Apply.
+Ни inventory, ни исторический `CLAIMED`, ни успешный Check не доказывают
+quiescence. `UNCERTAIN` нельзя повторно исполнять, очищать или подменять
+доказательством отсутствующего эффекта; см. [UC-GW-009](incidents.md#uc-gw-009).
+Ошибочный/неопределённый Apply не повторять: использовать исходный
+protected attempt по [UC-GW-006](recovery.md#uc-gw-006).
 
-Owner выполняет `SelfTest → Check -Build → Apply -Build` по **одному**
-проверенному merged `main` SHA, затем live machine/Owner readback,
-`Backup -ConfirmWorkerQuiescent` и `Promote -ConfirmWorkerQuiescent`,
-а также итоговый host `docker inspect`. `Apply` действительно
-останавливает прежний Gateway и переносит state; `Check` лишь
-проверяет, не обновляет контейнер. Ошибка/неизвестная фаза — STOP,
-использовать original attempt record и UC-GW-006, не повторять Apply.
-Исходный Gateway и backup сохраняются для контролируемого возврата.
+**Состояние:** owner-reported `SelfTest`, `Check -Auto READY`,
+`FORTIS_INTEGRATIONS_ACTIVATED`, `FORTIS_PRIMARY_BACKUP_PASS` и
+`FORTIS_PRIMARY_PROMOTED` для PR #94 / source
+`c473edb88737f773d2f9ec0a9943235ebb18aa3a` (2026-11-14).
+Real sourceReceipt из 260 хешей прошёл serialization preflight; Repo
+machine READ после Promote отвечает. Это **не** заменяет независимый
+host `docker inspect` после Promote, реальный Docker Desktop restart,
+WebAuthn browser acceptance или provider mutation acceptance. Датированная
+и текущая evidence — в [current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
+подробные защищённые записи остаются у владельца.
 
-**Однократная сборка (новый source-контракт, не live до owner release):**
-после READY от Check -Build можно передать только точные checkedImageId и
-owner-protected checkedImageRecord в Apply -Image <sha256:id>
--CheckedImageRecord <record> -SourceSha <merged-main-sha>, без -Build.
-Оба этапа должны использовать идентичные config/probes, полные UUID scopes
-и свежую owner quiescence attestation. Перед STOP_SOURCE контроллер повторно
-сверяет защищённые records и SHA256 состояния, привязку образа и наличие
-прежнего runtime image; после остановки старого writer повторяет проверку
-неизменности receipt перед копированием состояния. При его отсутствии или неподтверждённом восстановлении
-остаётся STOP. Путь не отменяет Backup/Promote и проверку Owner Shell.
-См. [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md).
+**Ручные исключения:** когда `-Auto` не допускается по его предусловиям,
+оператор использует отдельно проверенный полный контракт из runbook:
+точные `-PreserveApprovedRequest`, `-PreserveClaimedJobs`,
+`-PreserveUncertainRequests` и quiescence; затем Check `-Build`,
+Apply с checkedImageId/checkedImageRecord **без** `-Build`.
+Старый вариант Check `-Build` + Apply `-Build` собирает дважды.
+Перенос `APPROVED` требует точного набора, отсутствия dispatch/job/receipt
+и отдельного owner review. Исключения не отключают state admission,
+previous-image retention, Backup/Promote и fail-closed recovery.
 
-**Упрощение управления выпуском (PR4b, source candidate, до owner merge
-не доступно в Windows):** штатный контроллер получает `-Auto` для
-`Check`, `Apply`, `Backup`, `Promote`. Он сам восстанавливает публичный config
-и probes из защищённого текущего Complete record, делает полный typed
-read-only сбор `UNCERTAIN/CLAIMED`, использует обычный точный state receipt,
-собирает один образ и защищённо связывает его с последующим Apply. Владелец
-подтверждает worker quiescence и отдельно запускает/подтверждает Apply.
-При `PENDING/DISPATCHED/APPROVED`, неполном чтении, изменившемся SHA или
-состоянии, отсутствующем проверенном старом образе — STOP. Обычный ручной
-контракт остаётся доступен; автоматического production-deploy, owner
-WebAuthn bypass, worker retry и удаления Issue нет. [Короткая owner-процедура](../PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b-source-candidate--not-yet-installed).
-
-**Несколько чатов:** если работы совместимы и PR приняты, можно включить
-их в **один** проверенный source `main` SHA и **один логический релиз**
-Gateway вместо релиза на каждый PR. Сводить Docker images или SQLite
-разных чатов нельзя. **Важно:** действующий контроллер при
-`Check -Build` и `Apply -Build` запускает Docker build **дважды**;
-повторное использование кэша не является гарантией «build once».
-Для настоящей однократной сборки нужен отдельный контракт
-immutable image digest, связывающий Check, Apply и owner approval,
-без отключения защищённого state admission. Общая Git/CI-доставка —
-UC-CONT-002; межчатовый release coordinator ещё **не внедрён**.
+**Несколько чатов:** совместимые принятые PR можно включить в один
+проверенный merged `main` SHA и один логический owner release;
+смешивать Docker images/SQLite разных чатов нельзя. Межчатовый
+release coordinator не внедрён; см. [единый backlog](../BACKLOG-IMPROVEMENTS.md).
 
 **Готово:** exact source SHA/image digest и protected Complete record;
 owner `FORTIS_INTEGRATIONS_ACTIVATED`, отдельные успешные Backup/Promote,
 host `running/healthy/unless-stopped`, и фактический Repo readback
 включая необходимые live capabilities. Любая `APPROVED` переносится
 без изменения state/audit; последующая отмена — отдельно владельцем.
-Не считать \`Apply\` эквивалентом \`Promote\` или source commit —
+Не считать `Apply` эквивалентом `Promote` или source commit —
 обновлением работающего образа.
 
 **Редкое исключение:** если старый immutable image отсутствует, обычный
 UC-GW-005 останавливается. Допускается только явно owner-accepted
-сценарий [UC-GW-013](recovery.md#uc-gw-013--аварийный-image-release-при-отсутствии-прежнего-image)
+сценарий [UC-GW-013](recovery.md#uc-gw-013)
 с точными rescue image/TAR, локальным offline smoke, protected Check
 binding, новой проверкой source state и задокументированным **непроверенным**
 restore. Согласие на пропуск изолированного restore не означает
