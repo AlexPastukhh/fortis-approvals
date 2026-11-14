@@ -92,6 +92,12 @@ class IncidentCore(Core):
                     # jobs; new evidence is present only when it truly exists.
                     if saved.get('diagnostic') is not None:
                         job['diagnostic']=json.loads(saved['diagnostic'])
+                    # Additive evidence: timestamps may be NULL on legacy jobs.
+                    # A heartbeat is never proof of worker quiescence.
+                    if saved.get('claimed_at') is not None:
+                        job['claimedAt']=saved['claimed_at']
+                    if saved.get('heartbeat_at') is not None:
+                        job['lastHeartbeatAt']=saved['heartbeat_at']
                     if job['state']=='DONE' and type(job['result']) is dict:
                         evidence={'source':'native-worker-job','result':job['result']}
             elif row['request']['service']=='github':

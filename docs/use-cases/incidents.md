@@ -18,18 +18,17 @@
    владельца переписать UUID из Portal. Сопоставляет actor, state,
    service/operation/target, время и контекст исходного действия; при
    необходимости использует прошлые ответы и журнал инструментов для
-   дополнительных доказательств. Для каждого UUID через авторизованный machine TLS
-   `fortis_approvals.workflow.client.default_client().details(uuid)`
-   (серверный `POST /v1/workspace/details`) прочитать полный Core request
-   с исходными params/reason, preview, actor/decision, timestamps,
-   fingerprint, result/failure, постраничный audit, состояние/result/error
-   worker и имеющийся durable receipt. Дополнительные страницы событий —
-   `event_offset`/`event_limit`. С релиза PR #62
-   (`8403c63297f78e38294899c6bd094cc9f9eac66f`) метод доступен
-   **для любого actor**, даже если заявку создал другой AI.
-   Claim token, owner cookie и machine credentials не выдаются.
-   Сырые request/preview могут содержать рабочие данные — не публиковать
-   их без необходимости.
+   дополнительных доказательств. Для известного UUID штатный клиент
+   `default_client().incidents.inspect(uuid)` сам собирает ограниченные страницы
+   Core audit, worker/receipt и разрешённые GitHub READ, возвращая безопасную
+   evidence-проекцию, границы полноты и `retryAuthorization=NONE`.
+   Он использует существующий `details()` (доступный для любого actor с PR #62)
+   и требует live `globalRequestInventory.crossActorDetails=true`.
+   Для углублённой ручной проверки первоисточника остаётся read-only
+   `details(uuid, event_offset=..., event_limit=...)`; его сырые params,
+   preview и worker result не публиковать в отчётах. Ни один вариант не
+   возвращает claim token или owner credentials. Точный контракт inspector —
+   [техническая спецификация](../INCIDENT-INSPECTOR.md).
 2. **Не делать вывод только из `UNCERTAIN` или отсутствующего receipt.**
    Сопоставить operation/target/task, ожидаемые и новые SHA с независимыми
    read-only данными: GitHub branch/PR/CI/commit, локальными Git refs,
@@ -37,9 +36,10 @@
    последующие успешные операции и текущее состояние GitHub. Выдать вывод:
    «выполнение подтверждено», «невыполнение подтверждено» или «недостаточно
    доказательств», с указанием доказательств и границ уверенности.
-   `details()` не запускает effect, worker claim, reconcile или retry.
-   `reconcile` допускается лишь отдельно по контракту и не заменяет
-   расследование.
+   `inspect()` и `details()` не запускают effect, worker claim, reconcile или
+   retry; обнаруженная ветка/PR без привязки к исходному UUID означает только
+   достигнутое состояние. `reconcile` — отдельная потенциально изменяющая Core
+   операция, не часть read-only расследования.
 3. Владелец открывает [Owner Portal](http://localhost:19203),
    входит обычным passkey/WebAuthn, выбирает «Требуют разбора», читает
    карточку и при необходимости нажимает **«Закрыть заявку»**.
@@ -161,18 +161,17 @@ Owner Portal — интерфейс решений владельца, а не �
 
    request_id = 'UUID-из-исходного-ответа-Gateway'  # заменить точным UUID
    client = default_client()
-   row = client.details(request_id)  # только чтение; без claim/replay/reconcile
-   request = row['request']
-   print(request['requestId'], request['state'], request['request'])
-   print(row['worker'], row['receipt'], row['eventTotal'])
-   # Остальные события: details(request_id, event_offset=100, event_limit=100)
+   report = client.incidents.inspect(request_id)
+   print(report['requestId'], report['coreState'], report['outcomeAssessment'])
+   print(report['missingEvidence'], report['retryAuthorization'])
    ```
 
-   `details()` возвращает полную карточку: исходные `params`,
-   причину, решение, историю событий, состояние worker, result/error
-   и receipt **для любого actor**, в том числе не своего. Это read-only:
-   owner cookie/WebAuthn не нужны, а право выполнять чужую заявку
-   не появляется.
+   `inspect()` возвращает безопасную доказательную проекцию без raw payload
+   и выполняет автоматический ограниченный обход audit-страниц. Неуспешный
+   GitHub READ или неполный снимок явно отмечается `missingEvidence`.
+   Для исходных params/preview и отдельных audit-событий используйте
+   `details()` только при необходимости. Оба метода — read-only;
+   право исполнять чужие заявки от этого не возникает.
 3. **Независимо исследовать эффект.** Для GitHub использовать разрешённые
    Gateway READ (ветки, commits, PR, CI, точные SHA); для локальных действий —
    Git refs, worktree и worker journal в разрешённой Repo-среде, только read-only.
@@ -205,9 +204,11 @@ Owner Portal — интерфейс решений владельца, а не �
   положительного доказательства отсутствия исходного эффекта. `CLOSED_UNCONFIRMED`
   только убирает запись из операционного списка, но не устанавливает исход.
 
-**Штатный вызов на новом Primary:** использовать обычный
+**Штатный вызов с обновлённым Repo-клиентом:** использовать обычный
 `default_client()` и проверять **живые** capabilities, а не наличие
-метода в Docker source. Для просмотра списка раздела «Требуют разбора»:
+метода в Docker source. Дополнительные поля `claimedAt`/`lastHeartbeatAt`
+появятся только после отдельного owner-managed Gateway release;
+их отсутствие не является ошибкой и не доказывает quiescence. Для просмотра списка раздела «Требуют разбора»:
 
 ```python
 from fortis_approvals.workflow.client import default_client
@@ -226,9 +227,9 @@ while True:
         if item['state'] in ('APPROVED', 'DISPATCHED', 'UNCERTAIN'):
             print(item['requestId'], item['actor'], item['state'],
                   item['service'], item['operation'], item['target'])
-            full = client.details(item['requestId'])
-            # full['request'], full['events'], full['worker'], full['receipt']
-            # Не печатать целиком payload/preview/worker result в общие логи.
+            report = client.incidents.inspect(item['requestId'])
+            print(report['outcomeAssessment'], report['missingEvidence'])
+            # Не публиковать сырые request/preview/worker result.
     if page['nextOffset'] is None:
         break
     offset = page['nextOffset']
