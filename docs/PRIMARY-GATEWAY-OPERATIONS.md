@@ -291,10 +291,33 @@ injection: it must reject arbitrary adapted members without evaluating them.
 This prevents this class of post-stop serialization failure from first being
 discovered after source stop. It does **not** establish the exact offending
 property of the owner incident, guarantee no post-stop race, or authorize
-another release. A separate reviewed incident-recovery procedure is required
-for the outstanding protected `Prepared` attempt. A new owner-approved source
-Check and separate explicit Apply GO are required after that recovery.
+another release. That earlier `Prepared` attempt is historical: the owner preflight on
+2026-11-14 read the prior attempt as `Complete`. Do not retry or reuse its
+record as authorization; every new release still needs a fresh Check binding
+and separate explicit Apply GO.
 
+## 2026-11-14: oversized per-file source receipt hash map
+
+The owner Apply for PR4b reached `SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT` and
+failed with `RELEASE_RECORD_JSON_OBJECT_TOO_LARGE`. It failed before
+`PREPARED_RECORD_SAVED`, publication of `attempt.json`, and `STOP_SOURCE`;
+this attempt did not stop the previous Gateway. The failed output did not
+include the offending object's count or scope, so the exact count is not
+claimed here.
+
+Code inspection identifies `root.sourceReceipt.sha256` as the legitimate
+variable-sized object: State-Helper returns one path-to-SHA256 entry per
+retained state file, including native artifact bundles and optional
+visual-media. The generic 256-property cap was also applied to this map.
+The controller source repair raises the limit to 8,192 **only** at this exact
+scope; all other objects remain capped at 256. It reports the hash-map
+count and, on a cap failure, only scope, count and limit. Existing depth,
+node, character, string and 1 MiB serialized-output budgets remain unchanged.
+Windows PowerShell 5.1 SelfTest round-trips and atomically persists a
+300-entry hash map, while still rejecting an unrelated 257-property
+summary. This source repair does not authorize deployment: accept the source,
+verify exact Windows SHA and SelfTest, run a fresh Check, then require a
+separate owner Apply GO.
 
 ## Checked-image attempt pointer ordering (controller source repair)
 
