@@ -42,7 +42,7 @@ analysis и не делает owner decision. Native `workflow.client` испо�
 | `workflow/runtime.py`, `workflow/ingress.py`, `workflow/adapters.py` | Native opt-in, operation grants/policies, closed routes, exact-head CI/merge/cleanup checks |
 | `workflow/git_backend.py`, `workflow/common.py` | Git bundle validation/publication and isolated Git execution |
 | `workflow/client.py`, `workflow/worker.py`, `workflow/store.py` | Repo client/worker, local receipts, registered tasks and Gateway native state |
-| `workflow/incident_inspector.py`, `workflow/incident_read.py` | Read-only aggregated incident evidence and bounded Core diagnosis; UC-GW-009 owns decisions |
+| `workflow/incident_read.py` | Read-only aggregated incident evidence and bounded Core diagnosis; UC-GW-009 owns decisions |
 | `repo_action_contract.py` | Закрытый schema/allowlist machine intents |
 | `clients/gateway_transport.py` | Shared Repo→Gateway TLS/machine-grant transport; only typed ingress routes |
 | `integrations/sonarcloud/contract.py` | Sonar-only operation schemas and parameter validation |

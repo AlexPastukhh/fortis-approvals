@@ -15,7 +15,7 @@ from .error_diagnostics import category, evidence, ERROR_CODES
 from ..integrations.github.repo_client.client import GitHubClient
 from .common import require
 from .ingress import NATIVE_PATHS
-from .incident_inspector import IncidentInspector
+from .incident_read import IncidentInspector
 from .worker import Worker
 
 
