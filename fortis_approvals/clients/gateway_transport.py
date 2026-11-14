@@ -18,7 +18,8 @@ from ..core import Denied
 from ..integrations.github.read_failure_codes import READ_FAILURE_CODES, valid_read_failure_signal
 from ..diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, compatible_error_header
 from ..workflow.artifact_diagnostics import (
-    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER)
+    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER,
+    ARTIFACT_VALIDATION_PHASES, ARTIFACT_PHASE_HEADER)
 
 DEFAULT_ENDPOINT = "https://host.docker.internal:19204"
 DEFAULT_CERTIFICATE = "/run/fortis-client/server.crt"
@@ -196,18 +197,24 @@ class GatewayTransport:
                 except (AttributeError,TypeError,ValueError):
                     pass
             artifact_failure=None
+            artifact_phase=None
             if (compatible_version and method=="POST" and
                     path=="/v1/git/artifact" and status==403):
                 try:
                     candidate=(exc.headers.get(ARTIFACT_FAILURE_HEADER)
                         if exc.headers is not None else None)
                     if type(candidate) is str and candidate in ARTIFACT_FAILURE_CODES:
-                        artifact_failure=candidate
+                        phase=exc.headers.get(ARTIFACT_PHASE_HEADER)
+                        if phase is None or (
+                                type(phase) is str and phase in ARTIFACT_VALIDATION_PHASES):
+                            artifact_failure=candidate
+                            artifact_phase=phase
                 except (AttributeError,TypeError,ValueError):
                     pass
             exc.close()
             if artifact_failure is not None:
-                raise Denied("FORTIS_ARTIFACT_"+artifact_failure) from None
+                suffix=('_'+artifact_phase if artifact_phase is not None else '')
+                raise Denied("FORTIS_ARTIFACT_"+artifact_failure+suffix) from None
             if pre_core_rejected and compatible_version:
                 raise Denied("FORTIS_PRE_CORE_VALIDATION_REJECTED") from None
             if provider_code is not None:

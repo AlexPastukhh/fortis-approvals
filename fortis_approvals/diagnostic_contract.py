@@ -15,7 +15,7 @@ _CAPABILITY={
         'phaseCodes':['push_commits','create_pull_request'],
         'prCreateCheckpoints':'native-core-bound-only',
     },
-    'artifactFailure':'bounded-code-v1',
+    'artifactFailure':'bounded-code-and-stage-v2',
     'effectAssessment':'NOT_AN_OUTCOME_VERDICT',
     'outcomeResolver':'NOT_IMPLEMENTED',
     'automaticRetry':False,

@@ -17,7 +17,8 @@ from .integrations.github.gateway.transport import GitHubTransportError
 from .integrations.github.read_failure_codes import bounded_read_failure_code, valid_read_failure_signal
 from .diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, DIAGNOSTIC_VERSION_TEXT
 from .workflow.artifact_diagnostics import (
-    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER)
+    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER,
+    ARTIFACT_VALIDATION_PHASES, ARTIFACT_PHASE_HEADER)
 
 
 _ID_PATH = re.compile(r'/v1/requests/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\Z')
@@ -100,7 +101,7 @@ class RepoIngress:
 
     @staticmethod
     def _reply(start, code, content, *, pre_core_validation=False,
-               diagnostic_contract=False, artifact_diagnostic=None):
+               diagnostic_contract=False, artifact_diagnostic=None, artifact_phase=None):
         body = json.dumps(content,ensure_ascii=False,separators=(',',':'),
                           allow_nan=False).encode('utf-8')
         label = {200:'OK',202:'Accepted',400:'Bad Request',401:'Unauthorized',
@@ -122,6 +123,11 @@ class RepoIngress:
                     artifact_diagnostic not in ARTIFACT_FAILURE_CODES):
                 raise ValueError('ARTIFACT_DIAGNOSTIC_INVALID')
             headers.append((ARTIFACT_FAILURE_HEADER,artifact_diagnostic))
+        if artifact_phase is not None:
+            if (artifact_diagnostic is None or type(artifact_phase) is not str or
+                    artifact_phase not in ARTIFACT_VALIDATION_PHASES):
+                raise ValueError('ARTIFACT_PHASE_INVALID')
+            headers.append((ARTIFACT_PHASE_HEADER,artifact_phase))
         if pre_core_validation or diagnostic_contract:
             headers.append((DIAGNOSTIC_VERSION_HEADER,DIAGNOSTIC_VERSION_TEXT))
         start(f'{code} {label}',headers)

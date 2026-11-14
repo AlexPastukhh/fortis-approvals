@@ -171,9 +171,14 @@ or future versions do not authorize new effects or recovery.
   loss or of the original remote outcome. Permission requirement headers do
   not prove missing token privileges, and Retry-After is a backoff hint.
 - The native Git artifact staging route may return
-  FORTIS_ARTIFACT_<FIXED_CODE> for the new client. This diagnoses one route
-  and **does not prove that a previous action was never submitted**, or that
-  local staging has no side effects. Legacy HTTP error responses remain valid.
+  FORTIS_ARTIFACT_<FIXED_CODE> and an optional fixed validation phase
+  (SETUP, FETCH_MAIN, READ_REMOTE_REFS, FETCH_TASK, BUNDLE_IDENTITY,
+  BUNDLE_IMPORT, COMMIT_INTEGRITY, ANCESTRY, PATH_PROJECTION).
+  A stage names where a local/remote Git validation step failed, **not**
+  a proven GitHub HTTP response or proof that a previous action was never
+  submitted. Local artifact staging can itself have side effects. A 403
+  is insufficient to infer token scope loss or safe replay. Legacy HTTP
+  error responses remain valid.
 - create_pull_request has bounded phases and native Core-bound durable
   PR_CREATE_POST_STARTED / PR_CREATE_POST_ACKNOWLEDGED checkpoints.
   START means a POST **might** be sent; ACK means an expected HTTP status was

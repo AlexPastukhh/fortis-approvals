@@ -78,6 +78,7 @@ tests=(
   test_pr1d_create_pr_phases_precore.py
   test_pr1e_diagnostic_contract.py
   test_pr1f_closure.py
+  test_pr1g_artifact_validation_phase.py
   test_release_storage_source.py
 )
 for test in "${tests[@]}"; do

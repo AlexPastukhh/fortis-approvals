@@ -5,6 +5,17 @@ An HTTP error does not establish that the old request was never dispatched.
 """
 from ..core import Denied, Stale
 
+ARTIFACT_PHASE_HEADER='X-Fortis-Artifact-Phase'
+ARTIFACT_VALIDATION_PHASES=frozenset({
+    'SETUP','FETCH_MAIN','READ_REMOTE_REFS','FETCH_TASK','BUNDLE_IDENTITY',
+    'BUNDLE_IMPORT','COMMIT_INTEGRITY','ANCESTRY','PATH_PROJECTION',
+})
+
+def bounded_artifact_phase(exc):
+    phase=getattr(exc,'artifact_phase',None)
+    return (phase if isinstance(exc,(Denied,Stale)) and
+            type(phase) is str and phase in ARTIFACT_VALIDATION_PHASES else None)
+
 ARTIFACT_FAILURE_HEADER='X-Fortis-Artifact-Diagnostic'
 ARTIFACT_FAILURE_CODES=frozenset({
     'WORKFLOW_PARAMS_INVALID','WORKFLOW_SHA_INVALID','WORKFLOW_TASK_INVALID',
