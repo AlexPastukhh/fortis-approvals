@@ -287,8 +287,24 @@ class GitHubAdapter:
             raw=self._api("GET",base+"/issues/"+str(params["number"]),allow_not_found=True)
             if type(raw) is not dict:
                 raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
-            result={"operation":operation,"found":raw.get("_httpStatus")!=404,
-                    "issue":None if raw.get("_httpStatus")==404 else self._project_issue(repo,raw,with_body=True)}
+            # GitHub /issues/{number} also resolves Pull Request numbers.
+            # This typed method returns only ordinary Issues; a PR is
+            # a non-match, not a malformed upstream response. Verify that
+            # a supposed PR really matches the requested number and URL:
+            # an untrusted/malformed response must not become a false absence.
+            missing = raw.get("_httpStatus") == 404
+            is_pr = 'pull_request' in raw and not missing
+            if is_pr and (type(raw.get('number')) is not int or
+                    raw['number']!=params['number'] or
+                    type(raw['pull_request']) is not dict or
+                    raw.get('html_url') !=
+                    'https://github.com/'+self.owner+'/'+repo+'/pull/'+str(params['number'])):
+                raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
+            if not missing and not is_pr and raw.get('number')!=params['number']:
+                raise Denied("GITHUB_ISSUE_RESPONSE_INVALID")
+            is_issue = not missing and not is_pr
+            result={"operation":operation,"found":is_issue,
+                    "issue":self._project_issue(repo,raw,with_body=True) if is_issue else None}
         elif operation == "list_issue_comments":
             raw=self._api("GET",base+"/issues/"+str(params["number"])+"/comments",
                           params={"page":params["page"],"per_page":params["perPage"]})

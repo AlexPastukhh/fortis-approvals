@@ -114,6 +114,48 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.transport.posts,1)
         self.assertIsNone(self.adapter.visual_evidence(self.id)['issueNumber'])
 
+    def test_create_403_is_classified_and_run_remains_reserved(self):
+        from fortis_approvals.integrations.github.gateway.transport import GitHubTransportError
+        from fortis_approvals.workflow.error_diagnostics import category
+        self.stage()
+        original=self.transport.request
+        def denied(method,path,**kwargs):
+            if method=='POST' and path.endswith('/issues'):
+                raise GitHubTransportError('GITHUB_HTTP_403',
+                    signal='BACKOFF_HEADER_PRESENT')
+            return original(method,path,**kwargs)
+        self.transport.request=denied
+        with self.assertRaises(GitHubTransportError) as caught:
+            self.adapter.apply(self.intent())
+        self.assertEqual(category(caught.exception),'GITHUB_HTTP_403')
+        self.assertEqual(caught.exception.signal,'BACKOFF_HEADER_PRESENT')
+        self.assertIsNone(self.adapter.visual_evidence(self.id)['issueNumber'])
+        self.assertEqual(self.transport.posts,0)
+        # The same runId is a one-shot reservation even after a 403;
+        # owner credentials and a second Issue must not be attempted.
+        with self.assertRaises(Denied):
+            self.adapter.apply(self.intent())
+
+    def test_patch_response_lost_preserves_issue_and_uploaded_png(self):
+        self.stage()
+        original=self.transport.request
+        def patch_lost(method,path,**kwargs):
+            response=original(method,path,**kwargs)
+            if method=='PATCH' and path.endswith('/issues/42'):
+                raise TimeoutError('lost PATCH response')
+            return response
+        self.transport.request=patch_lost
+        with self.assertRaises(TimeoutError):
+            self.adapter.apply(self.intent())
+        evidence=self.adapter.visual_evidence(self.id)
+        self.assertEqual(evidence['issueNumber'],42)
+        self.assertEqual(evidence['uploadedFiles'],1)
+        self.assertEqual(self.transport.posts,1)
+        self.assertEqual(self.transport.uploads,1)
+        with self.assertRaises(Denied):
+            self.adapter.apply(self.intent())
+        self.assertEqual(self.transport.posts,1)
+
     def test_client_stages_bytes_then_submits_one_action(self):
         folder=self.workfiles/RUN;folder.mkdir();file=folder/'preview.png';file.write_bytes(PNG)
         calls=[]
@@ -133,6 +175,65 @@ class Tests(unittest.TestCase):
         self.assertEqual([x[0] for x in calls],['/v1/github/visual-review/stage','/v1/actions'])
         self.assertEqual(calls[1][1]['params']['media'][0]['sha256'],hashlib.sha256(PNG).hexdigest())
         self.assertEqual(calls[1][1]['requestId'],self.id)
+
+    def test_prepare_preview_is_local_and_binds_bytes_and_metadata(self):
+        folder=self.workfiles/RUN;folder.mkdir()
+        file=folder/'preview.png';file.write_bytes(PNG)
+        calls=[]
+        class Gateway:
+            def post(self,path,body,*,accept_202=False):
+                calls.append((path,body))
+                if path.endswith('/stage'):
+                    return {k:body[k] for k in ('index','name','sha256')}|{'size':len(PNG)}
+                return dict(requestId=body['requestId'],state='PENDING')
+        client=GitHubClient(gateway=Gateway())
+        opts=dict(repository=REPO,run_id=RUN,title='Result',description='Caption',
+                  media=[dict(path=str(file),name='Preview')],qa_summary='PASS',
+                  duration_seconds=30)
+        from fortis_approvals.integrations.github.repo_client import client as module
+        with patch.object(module,'WORKFILES_ROOT',self.workfiles):
+            prepared=client.prepare_visual_review(**opts)
+            self.assertEqual(calls,[])  # No staging or GitHub read before create.
+            self.assertEqual(prepared['runId'],RUN)
+            self.assertEqual(prepared['media'][0]['sha256'],hashlib.sha256(PNG).hexdigest())
+            self.assertEqual(prepared,client.prepare_visual_review(**opts))
+            self.assertNotIn('path',prepared['media'][0])
+            # Metadata drift is rejected before any network side effect.
+            with self.assertRaisesRegex(Denied,'GITHUB_VISUAL_REVIEW_PREVIEW_CHANGED'):
+                client.publish_visual_review(**{**opts,'title':'Changed'},
+                    expected_payload_sha256=prepared['payloadSha256'],
+                    request_id=self.id,reason='Publish preview')
+            self.assertEqual(calls,[])
+            file.write_bytes(PNG+b'changed')
+            with self.assertRaisesRegex(Denied,'GITHUB_VISUAL_REVIEW_PREVIEW_CHANGED'):
+                client.publish_visual_review(**opts,
+                    expected_payload_sha256=prepared['payloadSha256'],
+                    request_id=self.id,reason='Publish preview')
+            self.assertEqual(calls,[])
+            file.write_bytes(PNG)
+            result=client.publish_visual_review(**opts,
+                expected_payload_sha256=prepared['payloadSha256'],
+                request_id=self.id,reason='Publish preview')
+        self.assertEqual(result['state'],'PENDING')
+        self.assertEqual([x[0] for x in calls],
+            ['/v1/github/visual-review/stage','/v1/actions'])
+        self.assertEqual(calls[-1][1]['requestId'],self.id)
+
+    def test_partial_png_upload_keeps_issue_number_and_run_reservation(self):
+        self.stage()
+        def failed_upload(*args):
+            raise RuntimeError('GITHUB_VISUAL_UPLOAD_HTTP_403')
+        self.transport.upload_visual_png=failed_upload
+        with self.assertRaisesRegex(RuntimeError,'GITHUB_VISUAL_UPLOAD_HTTP_403'):
+            self.adapter.apply(self.intent())
+        evidence=self.adapter.visual_evidence(self.id)
+        self.assertEqual(evidence['issueNumber'],42)
+        self.assertEqual(evidence['uploadedFiles'],0)
+        self.assertEqual(self.transport.posts,1)
+        with self.assertRaises(Denied):
+            self.adapter.apply(self.intent())
+        self.assertEqual(self.transport.posts,1)
+        # No second Issue to repair an incomplete attachment phase.
 
     def test_fixed_upload_host_and_reject_bad_media(self):
         class Response:

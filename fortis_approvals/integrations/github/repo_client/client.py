@@ -6,7 +6,7 @@ import os
 import stat
 from pathlib import Path
 
-from ....core import Denied
+from ....core import Denied, canonical
 from ....clients.gateway_transport import GatewayTransport
 from ..contract import (
     validate_github_action, validate_github_read, validate_github_read_projection,
@@ -91,12 +91,10 @@ class GitHubClient:
             raise Denied("GITHUB_GATEWAY_STATUS_RESPONSE_INVALID")
         return result
 
-    def publish_visual_review(self, *, repository, run_id, title, description, media,
-                              qa_summary, duration_seconds, request_id, reason):
-        """Stage trusted PNG bytes via machine TLS, then submit one typed ASK action."""
-        if request_id is None:
-            raise Denied('GITHUB_STABLE_REQUEST_ID_REQUIRED')
-        ident=self._request_id(request_id)
+    def _visual_payload(self, *, repository, run_id, title, description, media,
+                        qa_summary, duration_seconds):
+        # Pure local validation; no Gateway request or upstream write.
+        # Always re-read the PNG bytes when publishing to detect changes.
         if repository!='visual-workspace' or type(media) is not list or not 1<=len(media)<=5:
             raise Denied('GITHUB_VISUAL_REVIEW_MEDIA_INVALID')
         root=WORKFILES_ROOT
@@ -143,10 +141,42 @@ class GitHubClient:
                     qaSummary=qa_summary,durationSeconds=duration_seconds,
                     media=[row for row,_ in staged])
         validate_github_action('publish_visual_review',repository,params)
+        return params,staged
+
+    def prepare_visual_review(self, *, repository, run_id, title, description,
+                              media, qa_summary, duration_seconds):
+        """Local read-only PNG preview. Hash binds business data and actual bytes.
+
+        Nothing is staged at Gateway. Preserve stable runId and requestId for
+        later publication; preview alone never authorizes an upstream write.
+        """
+        params,_=self._visual_payload(
+            repository=repository,run_id=run_id,title=title,description=description,
+            media=media,qa_summary=qa_summary,duration_seconds=duration_seconds)
+        return dict(repository=repository,runId=run_id,
+                    media=params['media'],
+                    payloadSha256=hashlib.sha256(canonical(params).encode()).hexdigest())
+
+    def publish_visual_review(self, *, repository, run_id, title, description, media,
+                              qa_summary, duration_seconds, request_id, reason,
+                              expected_payload_sha256=None):
+        """Stage trusted PNG bytes via machine TLS, then submit typed action once."""
+        if request_id is None:
+            raise Denied('GITHUB_STABLE_REQUEST_ID_REQUIRED')
+        ident=self._request_id(request_id)
+        params,staged=self._visual_payload(
+            repository=repository,run_id=run_id,title=title,description=description,
+            media=media,qa_summary=qa_summary,duration_seconds=duration_seconds)
+        if expected_payload_sha256 is not None:
+            if (type(expected_payload_sha256) is not str or
+                    len(expected_payload_sha256)!=64 or
+                    any(ch not in '0123456789abcdef' for ch in expected_payload_sha256) or
+                    hashlib.sha256(canonical(params).encode()).hexdigest()!=expected_payload_sha256):
+                raise Denied('GITHUB_VISUAL_REVIEW_PREVIEW_CHANGED')
         validate_intent(dict(requestId=ident,service='github',operation='publish_visual_review',
                              target=repository,params=params,reason=reason))
-        # Do not stage bytes when the same UUID is already a Core request.
-        # Caller can query the original status/result instead.
+        # No automatic Issue preflight, new UUID or retry here. Stage
+        # only after the caller-provided local preview digest has matched.
         for row,data in staged:
             reply=self.gateway.post('/v1/github/visual-review/stage',dict(
                 requestId=ident,repository=repository,runId=run_id,
