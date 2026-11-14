@@ -239,7 +239,8 @@ The client/API change procedure belongs to
 
 ## PR3: Repo-side Git/PR delivery facade (source candidate)
 
-The client-side `default_client().git_delivery` composes the existing native
+The Repo-side `default_client().git_delivery` (implemented in
+`fortis_approvals/workflow/client.py`) composes the existing native
 `publish()` (real Git bundle, exact SHA and server-side `--force-with-lease`)
 with the existing typed GitHub PR creation. It needs **no new Gateway endpoint,
 credential, capability, policy or production image change**. `inspect()` only

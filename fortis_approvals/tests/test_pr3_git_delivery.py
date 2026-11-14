@@ -2,7 +2,7 @@
 import unittest
 
 from fortis_approvals.core import Denied
-from fortis_approvals.workflow.git_delivery import GitDelivery
+from fortis_approvals.workflow.client import GitDelivery
 
 OLD = 'a' * 40
 NEW = 'b' * 40
