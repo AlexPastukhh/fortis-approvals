@@ -174,6 +174,7 @@ class PR1FTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name,docker)
                 self.assertIn(name,catalog)
+        self.assertIn('  - release/**',catalog)
         ci=(root/'scripts/test-source.sh').read_text()
         for name in ('test_pr1_git_push_audit_phase.py',
                      'test_pr1b_github_read_errors.py',

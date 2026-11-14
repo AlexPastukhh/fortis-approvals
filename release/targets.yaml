@@ -72,6 +72,7 @@ targets:
       - windows-source-exact-sha
       - owner-powershell-selftest
 noDeploymentPaths:
+  - release/**
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md
