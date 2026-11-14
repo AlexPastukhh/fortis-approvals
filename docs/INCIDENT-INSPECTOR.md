@@ -22,7 +22,11 @@ separate read: the final recheck narrows but does not create a global
 transaction. The projection suppresses raw reason, params except whitelisted
 identity, owner proof, worker claim token, bearer, full exception text and
 provider payloads. Optional GitHub READ uses only existing typed methods:
-bounded branch and PR listings or the visual-review Issue run marker.
+bounded branch and PR listings, exact `get_pull_request` for merge/ready
+state, or the visual-review Issue run marker. For create_branch, matching
+remote branch name + exact source SHA is target-state evidence; for
+merge/ready, matching PR number + head SHA + state is target-state evidence.
+Neither is proof of which UUID effected the change.
 A discovered remote object is **not** attributed to the original request UUID.
 
 `worker` includes observed CLAIMED/heartbeat timestamps when the deployed
