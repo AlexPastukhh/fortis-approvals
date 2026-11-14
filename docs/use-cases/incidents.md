@@ -202,14 +202,22 @@ Owner Portal — интерфейс решений владельца, а не �
   продолжить только по общему правилу [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003)
   (HTTP 500, budget попыток, новый requestId и независимый readback).
   Все исходные UUID и audit сохранить, без автоматического replay.
-- **GitHub CREATE без однозначного результата:** HTTP POST может быть
-  принят GitHub до потери ответа; Fortis сам не переотправляет старый UUID.
-  Для PR искать тот же head/base/HEAD; для Issue проверить маркер
-  `runId`, title и body, оба состояния open/closed. Быстрый typed READ
-  рецепт и поиск дубликатов — [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
-  Два одинаковых Issue можно обнаружить и сообщить их номера, не очищая
-  автоматически. Пустой/неполный список не превращать в доказательство
-  неисполнения старой заявки.
+- **GitHub CREATE после UNCERTAIN / HTTP 500 / CLOSED_UNCONFIRMED:**
+  неизвестный исход старого UUID не равен запрету продолжать задачу.
+  Для PR проверить полные `head/base/HEAD`, включая закрытые PR; если
+  нужного PR нет, branch SHA и права совпадают, а исходный job не активен —
+  создать **новый** авторизованный запрос. При конфликте уже созданного
+  PR снова читать GitHub и использовать его, не делать blind retry.
+  Для visual-review Issue допустима новая публикация с **новым `runId`
+  и новым requestId**: Gateway резервирует старый `(repo,runId)`,
+  но дубли Issue возможны и принимаются в этом сценарии. После публикации
+  искать все open/closed Issue по title/body и общему идентификатору
+  задачи, **не только новому `runId`**, сообщить оба URL при дубле;
+  не удалять автоматически. Детальный алгоритм и лимит попыток
+  принадлежат [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
+  `retryAuthorization=NONE` запрещает replay исходной заявки инспектором,
+  **не** новую корректно авторизованную операцию. Риск дубля не отменяет
+  STOP при активном `CLAIMED`, неполном READ или реальном DENY.
 - **Результат неоднозначен:** если `CLAIMED` ещё существует, READ неполон,
   точные SHA изменились, повтор может создать нежелательный эффект или
   Gateway возвращает реальный `DENY` — STOP с конкретным объяснением,
