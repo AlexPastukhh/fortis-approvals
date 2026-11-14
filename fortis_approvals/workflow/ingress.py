@@ -12,6 +12,8 @@ from ..repo_ingress import RepoIngress, _PerActorWindow
 from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
 from .incident_read import list_uncertain, list_requests, diagnose
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
+from ..diagnostic_contract import advertised_diagnostic_capability
+from .artifact_diagnostics import bounded_artifact_error, ARTIFACT_FAILURE_HEADER
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
     '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/list_requests','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
@@ -79,7 +81,8 @@ class NativeIngress:
                     'crossActorDetails':True},
                 workerActivity={'readOnly':True,'actorScoped':True,'maxPageSize':100,
                                 'signal':'heartbeat-observation-v1','quiescenceProof':False},
-                workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False})
+                workerDiagnostics={'codes':'bounded-class-v1','rawExceptionText':False},
+                diagnosticContract=advertised_diagnostic_capability())
         if path=='/v1/github/visual-review/stage':
             require(set(body)=={'requestId','repository','runId','index','name','sha256','data'},
                     'VISUAL_MEDIA_PARAMS_INVALID')
@@ -212,7 +215,12 @@ class NativeIngress:
             result=self._dispatch(path,self._body(env,path),credential,actor)
             return RepoIngress._reply(start,202 if result.get('state')=='PENDING' else 200,result)
         except Conflict:return RepoIngress._reply(start,409,dict(error='WORKFLOW_CONFLICT'))
-        except (Denied,Stale):return RepoIngress._reply(start,403,dict(error='WORKFLOW_DENIED'))
+        except (Denied,Stale) as exc:
+            if path=='/v1/git/artifact':
+                return RepoIngress._reply(start,403,dict(error='WORKFLOW_DENIED'),
+                    diagnostic_contract=True,
+                    artifact_diagnostic=bounded_artifact_error(exc))
+            return RepoIngress._reply(start,403,dict(error='WORKFLOW_DENIED'))
         except (ApprovalError,ValueError,KeyError,TypeError,UnicodeError):
             return RepoIngress._reply(start,400,dict(error='WORKFLOW_REQUEST_INVALID'))
         except (OSError,RuntimeError):

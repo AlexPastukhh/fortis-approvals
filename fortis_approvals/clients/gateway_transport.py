@@ -15,6 +15,10 @@ from urllib import error, request
 from urllib.parse import urlsplit
 
 from ..core import Denied
+from ..integrations.github.read_failure_codes import READ_FAILURE_CODES, valid_read_failure_signal
+from ..diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, compatible_error_header
+from ..workflow.artifact_diagnostics import (
+    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER)
 
 DEFAULT_ENDPOINT = "https://host.docker.internal:19204"
 DEFAULT_CERTIFICATE = "/run/fortis-client/server.crt"
@@ -151,7 +155,64 @@ class GatewayTransport:
                                     object_pairs_hook=_unique_json_pairs)
         except error.HTTPError as exc:
             status = exc.code
+            provider_code = None
+            provider_signal = None
+            # A missing header is the legacy v1 envelope. Unexpected version
+            # markers fail closed to the original HTTP category.
+            try:
+                header_value=(exc.headers.get(DIAGNOSTIC_VERSION_HEADER)
+                              if exc.headers is not None else None)
+            except (AttributeError,TypeError,ValueError):
+                header_value=False
+            compatible_version=compatible_error_header(header_value)
+            if (compatible_version and method == "POST" and
+                    path == "/v1/reads" and status == 500):
+                # Only the bounded, exact server-owned sentinel is trusted.
+                # Never reflect arbitrary response text or headers.
+                try:
+                    raw = exc.read(1025)
+                    if len(raw) <= 1024:
+                        data = json.loads(raw, parse_constant=_reject_nonfinite,
+                                          parse_float=_parse_finite_float,
+                                          object_pairs_hook=_unique_json_pairs)
+                        if (type(data) is dict and
+                                set(data) in ({"error", "providerCode"},
+                                              {"error", "providerCode", "signal"}) and
+                                data["error"] == "REPO_GITHUB_READ_FAILED" and
+                                type(data["providerCode"]) is str and
+                                data["providerCode"] in READ_FAILURE_CODES and
+                                ("signal" not in data or valid_read_failure_signal(
+                                    data["providerCode"],data["signal"]))):
+                            provider_code = data["providerCode"]
+                            provider_signal = data.get("signal")
+                except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
+                    pass
+            pre_core_rejected=False
+            if method == "POST" and path == "/v1/actions" and status == 403:
+                headers=exc.headers
+                try:
+                    pre_core_rejected=(headers is not None and
+                        headers.get("X-Fortis-Admission") == "PRE_CORE_VALIDATION_REJECTED")
+                except (AttributeError,TypeError,ValueError):
+                    pass
+            artifact_failure=None
+            if (compatible_version and method=="POST" and
+                    path=="/v1/git/artifact" and status==403):
+                try:
+                    candidate=(exc.headers.get(ARTIFACT_FAILURE_HEADER)
+                        if exc.headers is not None else None)
+                    if type(candidate) is str and candidate in ARTIFACT_FAILURE_CODES:
+                        artifact_failure=candidate
+                except (AttributeError,TypeError,ValueError):
+                    pass
             exc.close()
+            if artifact_failure is not None:
+                raise Denied("FORTIS_ARTIFACT_"+artifact_failure) from None
+            if pre_core_rejected and compatible_version:
+                raise Denied("FORTIS_PRE_CORE_VALIDATION_REJECTED") from None
+            if provider_code is not None:
+                suffix = "_" + provider_signal if provider_signal is not None else ""
+                raise Denied("FORTIS_READ_" + provider_code + suffix) from None
             if 300 <= status < 400:
                 raise Denied("FORTIS_REDIRECT_DENIED") from None
             raise Denied("FORTIS_HTTP_" + str(status)) from None

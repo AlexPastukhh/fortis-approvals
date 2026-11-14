@@ -6,6 +6,9 @@ it never infers that an unknown remote effect did not occur.
 import json
 
 from ..core import Denied
+from .error_diagnostics import ERROR_CODES, ERROR_STAGES
+from .git_backend import GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
+from ..integrations.github.gateway.pr_create_diagnostic import PR_CREATE_CODES, PR_CREATE_PHASES
 
 
 def list_uncertain(core, credential, *, offset=0, limit=100):
@@ -83,6 +86,22 @@ def list_requests(core, credential, *, offset=0, limit=100, unresolved_only=True
                 items=items, total=total, offset=offset, limit=limit,
                 truncated=next_offset is not None, nextOffset=next_offset)
 
+def _bounded_core_error(value):
+    if type(value) is not dict or set(value) not in (
+            {'stage','code'}, {'stage','code','phase'}):
+        return False
+    if (type(value['stage']) is not str or value['stage'] not in ERROR_STAGES or
+            type(value['code']) is not str or value['code'] not in ERROR_CODES):
+        return False
+    if 'phase' in value:
+        if value['stage']!='GITHUB_ADAPTER' or type(value['phase']) is not str:
+            return False
+        return (
+            value['code'] in GIT_PUSH_FAILURE_CODES and value['phase'] in GIT_PUSH_PHASES or
+            value['code'] in PR_CREATE_CODES and value['phase'] in PR_CREATE_PHASES
+        )
+    return True
+
 
 def diagnose(details):
     """Classify observable stages only, never claim the root cause/effect.
@@ -123,8 +142,7 @@ def diagnose(details):
     # from provider error strings. Pagination can omit the event: return null.
     core_error = next((e.get('detail') for e in reversed(events)
                        if e.get('state')=='ERROR_OBSERVED' and
-                       isinstance(e.get('detail'),dict) and
-                       set(e['detail'])=={'stage','code'}),None)
+                       _bounded_core_error(e.get('detail'))),None)
     worker_error = worker.get('diagnostic') if worker is not None else None
     return dict(schemaVersion=1, phase=phase, rootCause='UNDETERMINED',
                 coreError=core_error, workerError=worker_error,

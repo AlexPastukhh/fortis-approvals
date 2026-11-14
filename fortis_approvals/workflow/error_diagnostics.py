@@ -8,6 +8,9 @@ from functools import wraps
 
 from ..core import Stale, Denied
 from ..integrations.github.gateway.transport import GitHubTransportError
+from .git_backend import GitPushFailure, GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
+from ..integrations.github.gateway.pr_create_diagnostic import (
+    GitHubPRCreateFailure, PR_CREATE_PHASES, PR_CREATE_CODES)
 
 ERROR_CODES = frozenset({
     'TIMEOUT', 'CONNECTION', 'PERMISSION', 'NOT_FOUND', 'DATABASE',
@@ -19,7 +22,7 @@ ERROR_CODES = frozenset({
     'GITHUB_VISUAL_UPLOAD_HTTP_404', 'GITHUB_VISUAL_UPLOAD_HTTP_422',
     'GITHUB_VISUAL_UPLOAD_URL_INVALID', 'GITHUB_VISUAL_UPLOAD_UNCONFIRMED',
     'GITHUB_RESPONSE_TOO_LARGE', 'GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID',
-})
+}) | GIT_PUSH_FAILURE_CODES | PR_CREATE_CODES
 ERROR_STAGES = frozenset({'WORKSPACE_ADAPTER', 'GITHUB_ADAPTER',
                           'WORKER_EXECUTE', 'WORKER_CLIENT'})
 
@@ -35,9 +38,20 @@ def category(exc):
     # GitHub transport creates fixed, redacted codes. Never forward arbitrary
     # provider exception text (including tokens/URLs) to a machine audit event.
     if isinstance(exc, GitHubTransportError):
+        if isinstance(exc, GitHubPRCreateFailure):
+            if (type(exc.phase) is str and exc.phase in PR_CREATE_PHASES and
+                    len(exc.args)==1 and type(exc.args[0]) is str and
+                    exc.args[0] in PR_CREATE_CODES):
+                return exc.args[0]
+            return 'GITHUB_PR_CREATE_STEP_UNCONFIRMED'
         code=exc.args[0] if len(exc.args)==1 else None
         return code if type(code) is str and code in ERROR_CODES else 'GITHUB_TRANSPORT_ERROR'
     # Core subclasses have no external API error-message requirement here.
+    if isinstance(exc, GitPushFailure):
+        if (type(exc.phase) is str and exc.phase in GIT_PUSH_PHASES and
+                type(exc.code) is str and exc.code in GIT_PUSH_FAILURE_CODES):
+            return exc.code
+        return 'GIT_PUSH_STEP_UNCONFIRMED'
     if isinstance(exc, Stale):return 'STALE_PRECONDITION'
     if isinstance(exc, Denied):return 'DOMAIN_REJECTION'
     if isinstance(exc, RuntimeError):return 'RUNTIME_ERROR'
@@ -61,6 +75,15 @@ def record_adapter_failure(core, request_id, stage, exc):
     if core is None or type(request_id) is not str:
         return
     details=evidence(stage, category(exc))
+    if (stage=='GITHUB_ADAPTER' and isinstance(exc, GitPushFailure) and
+            type(exc.phase) is str and exc.phase in GIT_PUSH_PHASES and
+            details['code'] in GIT_PUSH_FAILURE_CODES):
+        # Allowlisted phase only; no raw Git stderr, exception text or secrets.
+        details['phase']=exc.phase
+    if (stage=='GITHUB_ADAPTER' and isinstance(exc, GitHubPRCreateFailure) and
+            type(exc.phase) is str and exc.phase in PR_CREATE_PHASES and
+            details['code'] in PR_CREATE_CODES):
+        details['phase']=exc.phase
     try:
         with core._db() as db:
             db.execute('BEGIN IMMEDIATE')

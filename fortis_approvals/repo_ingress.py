@@ -11,6 +11,13 @@ import threading
 import time
 
 from .core import ApprovalError, Conflict, Denied
+from .repo_action_contract import validate_intent
+from .integrations.github.contract import GITHUB_ACTION_OPERATIONS
+from .integrations.github.gateway.transport import GitHubTransportError
+from .integrations.github.read_failure_codes import bounded_read_failure_code, valid_read_failure_signal
+from .diagnostic_contract import DIAGNOSTIC_VERSION_HEADER, DIAGNOSTIC_VERSION_TEXT
+from .workflow.artifact_diagnostics import (
+    ARTIFACT_FAILURE_CODES, ARTIFACT_FAILURE_HEADER)
 
 
 _ID_PATH = re.compile(r'/v1/requests/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\Z')
@@ -92,19 +99,32 @@ class RepoIngress:
                         seconds=rate_seconds,clock=clock or time.monotonic)
 
     @staticmethod
-    def _reply(start, code, content):
+    def _reply(start, code, content, *, pre_core_validation=False,
+               diagnostic_contract=False, artifact_diagnostic=None):
         body = json.dumps(content,ensure_ascii=False,separators=(',',':'),
                           allow_nan=False).encode('utf-8')
         label = {200:'OK',202:'Accepted',400:'Bad Request',401:'Unauthorized',
                  403:'Forbidden',404:'Not Found',409:'Conflict',
                  413:'Content Too Large',429:'Too Many Requests',
                  500:'Internal Server Error'}[code]
-        start(f'{code} {label}',[('Content-Type','application/json; charset=utf-8'),
+        headers=[('Content-Type','application/json; charset=utf-8'),
              ('Content-Length',str(len(body))),('Cache-Control','no-store'),
              ('Pragma','no-cache'),('X-Content-Type-Options','nosniff'),
              ('Referrer-Policy','no-referrer'),('X-Frame-Options','DENY'),
              ('Content-Security-Policy',"default-src 'none'; frame-ancestors 'none'"),
-             ('Vary','Authorization')])
+             ('Vary','Authorization')]
+        if pre_core_validation:
+            # This HTTP attempt was rejected before calling broker/Core.
+            # NOT proof of any previous attempt with the same requestId.
+            headers.append(('X-Fortis-Admission','PRE_CORE_VALIDATION_REJECTED'))
+        if artifact_diagnostic is not None:
+            if (type(artifact_diagnostic) is not str or
+                    artifact_diagnostic not in ARTIFACT_FAILURE_CODES):
+                raise ValueError('ARTIFACT_DIAGNOSTIC_INVALID')
+            headers.append((ARTIFACT_FAILURE_HEADER,artifact_diagnostic))
+        if pre_core_validation or diagnostic_contract:
+            headers.append((DIAGNOSTIC_VERSION_HEADER,DIAGNOSTIC_VERSION_TEXT))
+        start(f'{code} {label}',headers)
         return [body]
 
     def _environment(self, env):
@@ -159,6 +179,7 @@ class RepoIngress:
             raise Denied('REPO_JSON_DENIED') from None
 
     def __call__(self, env, start):
+        is_github_read=False
         try:
             if not self._environment(env):
                 return self._reply(start,404,{'error':'ROUTE_NOT_FOUND'})
@@ -174,6 +195,7 @@ class RepoIngress:
                 if action is None:
                     return self._reply(start,413,{'error':'REPO_BODY_TOO_LARGE'})
                 if path == '/v1/reads':
+                    is_github_read=(type(action) is dict and action.get('service')=='github')
                     out = self.broker.read(credential, action)
                     raw = json.dumps(out, ensure_ascii=False, separators=(',', ':'),
                                      allow_nan=False).encode('utf-8')
@@ -181,6 +203,21 @@ class RepoIngress:
                         return self._reply(start,413,
                                            {'error':'REPO_READ_RESPONSE_TOO_LARGE'})
                     return self._reply(start,200,out)
+                # Only known GitHub ACTION schemas receive this additive
+                # attempt-level marker. Unknown operations and READ sent on
+                # WRITE routes retain their established rejection behavior.
+                typed_github_action=(type(action) is dict and
+                    type(action.get('service')) is str and
+                    type(action.get('operation')) is str and
+                    (action['service'],action['operation']) in GITHUB_ACTION_OPERATIONS)
+                if typed_github_action:
+                    try:
+                        validate_intent(action)
+                    except Denied:
+                        # Keep legacy 403 body unchanged. This HTTP attempt
+                        # was never passed to broker.submit.
+                        return self._reply(start,403,{'error':'REPO_DENIED'},
+                            pre_core_validation=True)
                 out = self.broker.submit(credential,action)
                 return self._reply(start,202 if out['state']=='PENDING' else 200,out)
             # The Python wsgiref server synthesizes CONTENT_TYPE='text/plain'
@@ -199,5 +236,17 @@ class RepoIngress:
             return self._reply(start,code,{'error':'REPO_UNAUTHORIZED' if code==401 else 'REPO_DENIED'})
         except (ApprovalError,ValueError,TypeError,KeyError,UnicodeError):
             return self._reply(start,400,{'error':'REPO_REQUEST_INVALID'})
+        except GitHubTransportError as exc:
+            if is_github_read:
+                # Additive bounded READ-only envelope. Keep HTTP 500 so older
+                # Repo clients retain their previous FORTIS_HTTP_500 behavior.
+                # Do not confuse this with a local policy 403 or WRITE outcome.
+                provider_code=bounded_read_failure_code(exc)
+                details={'error':'REPO_GITHUB_READ_FAILED','providerCode':provider_code}
+                signal=getattr(exc,'signal',None)
+                if valid_read_failure_signal(provider_code,signal):
+                    details['signal']=signal
+                return self._reply(start,500,details,diagnostic_contract=True)
+            return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})
         except (OSError,RuntimeError):
             return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})

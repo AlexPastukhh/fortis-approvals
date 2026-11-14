@@ -10,6 +10,7 @@ from urllib import error, request
 from urllib.parse import urlencode
 
 from ....core import Denied
+from ..read_failure_codes import classify_read_http_signal
 
 API_ORIGIN = "https://api.github.com"
 TOKEN_FILE = "/run/github-token/token"
@@ -60,7 +61,10 @@ _QUERY_KEYS = frozenset({"head_sha", "event", "branch", "page", "per_page", "sta
 
 
 class GitHubTransportError(RuntimeError):
-    """Redacted provider failure; never carries headers or response body."""
+    """Redacted provider failure; carries only a bounded signal, never headers."""
+    def __init__(self, code, *, signal=None):
+        super().__init__(code)
+        self.signal=signal
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -230,12 +234,13 @@ class GitHubHTTPTransport:
                 return result
         except error.HTTPError as exc:
             status = exc.code
+            signal=classify_read_http_signal(status, exc.headers)
             exc.close()
             if allow_not_found and status == 404:
                 return {"_httpStatus": 404}
             if 300 <= status < 400:
                 raise GitHubTransportError("GITHUB_REDIRECT_DENIED") from None
-            raise GitHubTransportError("GITHUB_HTTP_" + str(status)) from None
+            raise GitHubTransportError("GITHUB_HTTP_" + str(status),signal=signal) from None
         except GitHubTransportError:
             raise
         except (error.URLError, TimeoutError, OSError, UnicodeError,

@@ -157,6 +157,37 @@ routine incident investigation; reconcile may change Core state.
 Owner Portal is for decisions, not mandatory technical investigation.
 See [UC-GW-009](use-cases/incidents.md#uc-gw-009) for the complete sequence.
 
+## Diagnostic contract v2 — source candidate, not deployed
+
+This PR1 source candidate adds bounded machine diagnostic evidence; it is
+**not a production capability until the owner has approved a separate Gateway
+deployment**. The existing authenticated native
+POST /v1/workspace/capabilities can advertise diagnosticContract after
+release. New clients must require the exact supported schema; absent, malformed
+or future versions do not authorize new effects or recovery.
+
+- GitHub REST READ failures carry only a fixed provider code and at most a
+  bounded status/header *signal*. HTTP 403 alone is not proof of permission
+  loss or of the original remote outcome. Permission requirement headers do
+  not prove missing token privileges, and Retry-After is a backoff hint.
+- The native Git artifact staging route may return
+  FORTIS_ARTIFACT_<FIXED_CODE> for the new client. This diagnoses one route
+  and **does not prove that a previous action was never submitted**, or that
+  local staging has no side effects. Legacy HTTP error responses remain valid.
+- create_pull_request has bounded phases and native Core-bound durable
+  PR_CREATE_POST_STARTED / PR_CREATE_POST_ACKNOWLEDGED checkpoints.
+  START means a POST **might** be sent; ACK means an expected HTTP status was
+  observed. **Neither is proof of an attributable, completed PR**. A crash
+  before the recorded START can still leave an unknown earlier attempt.
+- Any DISPATCHED/UNCERTAIN without verified outcome stays unknown. Never
+  create a new UUID to blindly retry; never use reconcile as a pure READ.
+- This source does not include Outcome Resolver, automatic recovery, Owner
+  Attention Gate, or a production release. Normal ALLOW/ASK/DENY policies,
+  per-actor grants, owner WebAuthn and authorized GitHub routes remain unchanged.
+
+For active incident investigations follow UC-GW-009 and always distinguish
+original request attribution from current GitHub state and later operations.
+
 ## One owner approval per ASK effect
 
 Within an assigned task the user authorizes the AI to submit the necessary

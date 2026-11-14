@@ -71,6 +71,13 @@ tests=(
   test_smoke_locked_backup.py
   test_review_repo_get.py
   test_modularized_candidate_manifest.py
+  # PR1 diagnostics are part of mandatory source CI, not optional ad-hoc tests.
+  test_pr1_git_push_audit_phase.py
+  test_pr1b_github_read_errors.py
+  test_pr1c_github_http_signals.py
+  test_pr1d_create_pr_phases_precore.py
+  test_pr1e_diagnostic_contract.py
+  test_pr1f_closure.py
   test_release_storage_source.py
 )
 for test in "${tests[@]}"; do
