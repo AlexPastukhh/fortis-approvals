@@ -214,7 +214,7 @@ def _safe_identity(intent):
         value = p.get(key)
         if type(value) is str and len(value) <= 120 and re.fullmatch(r'[A-Za-z0-9_./-]+', value):
             out[key] = value
-    for key in ('expectedHeadSha', 'newSha', 'baseSha', 'artifactSha256'):
+    for key in ('expectedHeadSha', 'newSha', 'baseSha', 'sourceSha', 'artifactSha256'):
         value = p.get(key)
         if type(value) is str and (_SHA.fullmatch(value) or (key == 'artifactSha256' and re.fullmatch(r'[0-9a-f]{64}', value))):
             out[key] = value
@@ -404,6 +404,54 @@ class IncidentInspector:
                                     provider['branchReadComplete'] = branch_done
                                     if not branch_done:
                                         missing.append('PROVIDER_BRANCH_LIMIT')
+                        elif op == 'create_branch':
+                            branch = identity.get('branch')
+                            expected = identity.get('sourceSha')
+                            if (type(branch) is str and type(expected) is str and
+                                    re.fullmatch(r'task/[a-z0-9][a-z0-9-]{0,99}', branch)):
+                                observed_sha = None
+                                complete = False
+                                for page in range(1, _MAX_PAGES+1):
+                                    rows = self.client.github.list_branches(
+                                        repo, page=page, per_page=100)['items']
+                                    for item in rows:
+                                        if item['name'] == branch:
+                                            observed_sha = item['sha']
+                                    if len(rows) < 100:
+                                        complete = True
+                                        break
+                                provider = {
+                                    'status': 'OBSERVED' if complete else 'PARTIAL',
+                                    'scope': 'BOUNDED_BRANCH_LIST',
+                                    'remoteBranchSha': observed_sha,
+                                    'desiredHeadObserved': observed_sha == expected,
+                                    'branchReadComplete': complete,
+                                    'effectAttribution': 'UNKNOWN',
+                                }
+                                if not complete:
+                                    missing.append('PROVIDER_BRANCH_LIMIT')
+                        elif op in ('merge_pull_request', 'mark_pr_ready'):
+                            number = identity.get('number')
+                            expected = identity.get('expectedHeadSha')
+                            if type(number) is int and type(expected) is str:
+                                pr = self.client.github.get_pull_request(
+                                    repo, number)['pullRequest']
+                                matching = pr['head']['sha'] == expected
+                                desired = (pr['merged'] is True and
+                                           pr['state'] == 'closed' and matching
+                                           if op == 'merge_pull_request' else
+                                           pr['draft'] is False and
+                                           pr['state'] == 'open' and matching)
+                                provider = {
+                                    'status': 'OBSERVED',
+                                    'scope': 'EXACT_PULL_REQUEST_READ',
+                                    'pullNumber': number,
+                                    'pullState': pr['state'],
+                                    'headShaMatches': matching,
+                                    'mergedObserved': pr['merged'],
+                                    'desiredStateObserved': desired,
+                                    'effectAttribution': 'UNKNOWN',
+                                }
                         elif op == 'publish_visual_review':
                             run_id = identity.get('runId')
                             if run_id:
@@ -422,8 +470,9 @@ class IncidentInspector:
                     provider = {'status':'INVALID_TARGET'}
                     missing.append('PROVIDER_TARGET_INVALID')
         # A confirmed remote target state is not proof of which UUID caused it.
-        target_reached = (provider.get('desiredHeadObserved') is True and
-                          provider.get('branchReadComplete') is True)
+        target_reached = ((provider.get('desiredHeadObserved') is True and
+                           provider.get('branchReadComplete') is True) or
+                          provider.get('desiredStateObserved') is True)
         partial_issue = (core_state in ('UNCERTAIN','DISPATCHED','CLOSED_UNCONFIRMED') and
                          visual_evidence is not None and receipt is None and
                          visual_evidence['issueNumber'] is not None and

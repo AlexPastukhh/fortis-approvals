@@ -161,6 +161,54 @@ class IncidentInspectorTests(unittest.TestCase):
         self.assertEqual(r['visualReview']['issueNumber'],44)
         self.assertEqual(r['retryAuthorization'],'NONE')
 
+    def test_create_branch_exact_sha_is_target_state_not_uuid_receipt(self):
+        c,g=self.flow()
+        g.operation='create_branch'
+        g.params={'branch':'task/one','sourceSha':'a'*40}
+        observed=c.incidents.inspect(UUID)
+        self.assertEqual(observed['outcomeAssessment'],
+                         'TARGET_STATE_CONFIRMED_ATTRIBUTION_UNKNOWN')
+        self.assertEqual(observed['provider']['remoteBranchSha'],'a'*40)
+        self.assertEqual(observed['assessment'],'UNCONFIRMED')
+        self.assertEqual(observed['retryAuthorization'],'NONE')
+        self.assertEqual({path for path,_ in g.calls},
+                         {'/v1/workspace/capabilities','/v1/workspace/details'})
+        g.params['sourceSha']='b'*40
+        missing=c.incidents.inspect(UUID)
+        self.assertEqual(missing['outcomeAssessment'],'OUTCOME_UNCONFIRMED')
+        self.assertFalse(missing['provider']['desiredHeadObserved'])
+
+    def test_merge_and_ready_exact_pr_readback_do_not_attrib_to_uuid(self):
+        c,g=self.flow()
+        class Pull:
+            def __init__(self, *, merged, draft, state, head):
+                self.merged=merged;self.draft=draft;self.state=state;self.head=head
+                self.calls=[]
+            def get_pull_request(self, repo, number):
+                self.calls.append((repo,number))
+                return {'pullRequest':{'number':number,
+                    'head':{'sha':self.head},
+                    'state':self.state,'merged':self.merged,'draft':self.draft}}
+        g.operation='merge_pull_request'
+        g.params={'number':89,'expectedHeadSha':'a'*40}
+        c.github=Pull(merged=True,draft=False,state='closed',head='a'*40)
+        result=c.incidents.inspect(UUID)
+        self.assertEqual(result['outcomeAssessment'],
+                         'TARGET_STATE_CONFIRMED_ATTRIBUTION_UNKNOWN')
+        self.assertEqual(result['assessment'],'UNCONFIRMED')
+        self.assertEqual(result['retryAuthorization'],'NONE')
+        self.assertEqual(c.github.calls,[('test-repo',89)])
+        c.github=Pull(merged=False,draft=False,state='open',head='a'*40)
+        result=c.incidents.inspect(UUID)
+        self.assertEqual(result['outcomeAssessment'],'OUTCOME_UNCONFIRMED')
+        g.operation='mark_pr_ready'
+        result=c.incidents.inspect(UUID)
+        self.assertEqual(result['outcomeAssessment'],
+                         'TARGET_STATE_CONFIRMED_ATTRIBUTION_UNKNOWN')
+        c.github=Pull(merged=False,draft=True,state='open',head='a'*40)
+        result=c.incidents.inspect(UUID)
+        self.assertEqual(result['outcomeAssessment'],'OUTCOME_UNCONFIRMED')
+
     def test_pr_create_pre_ack_checkpoint_is_not_nonexecution_proof(self):
         c,g=self.flow(state='UNCERTAIN',count=4)
         g.operation='create_pull_request'
