@@ -21,6 +21,7 @@ from ..contract import (
     validate_github_read_projection,
 )
 from .transport import GitHubHTTPTransport, GitHubTransportError
+from .pr_create_diagnostic import pr_create_phase
 from ..release_label_contract import (managed, checked_names, names_hash, label_definition, MAX_LABELS)
 
 
@@ -673,7 +674,12 @@ class GitHubAdapter:
         prior = self.receipt(request_id)
         if prior is not None:
             return prior
-        snapshot = self.prepare(request)
+        operation = request["operation"]
+        if operation == "create_pull_request":
+            with pr_create_phase("revalidate"):
+                snapshot = self.prepare(request)
+        else:
+            snapshot = self.prepare(request)
         operation, repo, params = request["operation"], request["target"], request["params"]
         base = self._path(repo)
         if operation=="create_release_label":
@@ -764,27 +770,41 @@ class GitHubAdapter:
                       "repository": repo, "branch": params["branch"], "sha": new_sha,
                       "paths": snapshot["paths"]}
         elif operation == "create_pull_request":
-            latest = self.prepare(request)
-            if canonical(latest) != canonical(snapshot):
-                raise Stale("GITHUB_PR_BRANCH_CHANGED")
-            pr = self._api("POST", base + "/pulls", body={
-                "title": params["title"], "body": params["body"],
-                "head": params["head"], "base": params["base"],
-                "draft": params["draft"]}, expected=(201,))
-            if type(pr) is not dict or type(pr.get("number")) is not int or pr["number"] <= 0:
-                raise GitHubTransportError("GITHUB_PR_READBACK_UNCONFIRMED")
-            number = pr["number"]
-            readback = self._api("GET", base + "/pulls/" + str(number))
-            projected = self._project_pull(readback)
-            if (type(number) is not int or number <= 0 or
-                    projected["number"] != number or
-                    projected["head"]["ref"] != params["head"] or
-                    projected["base"]["ref"] != params["base"] or
-                    projected["head"]["sha"] != snapshot["headSha"] or
-                    projected["base"]["sha"] != snapshot["baseSha"]):
-                raise GitHubTransportError("GITHUB_PR_READBACK_UNCONFIRMED")
-            result = {"requestId": request_id, "operation": operation,
-                      "repository": repo, "pullRequest": projected}
+            with pr_create_phase("revalidate"):
+                latest = self.prepare(request)
+                if canonical(latest) != canonical(snapshot):
+                    raise Stale("GITHUB_PR_BRANCH_CHANGED")
+            with pr_create_phase("post"):
+                # This audit checkpoint is durable BEFORE the request is made
+                # on native Core-bound adapters. A recorded START means only
+                # that a provider effect became possible, not that it occurred.
+                checkpoint=getattr(self,'pr_create_checkpoint',None)
+                if callable(checkpoint):
+                    checkpoint(request_id,'PR_CREATE_POST_STARTED')
+                pr = self._api("POST", base + "/pulls", body={
+                    "title": params["title"], "body": params["body"],
+                    "head": params["head"], "base": params["base"],
+                    "draft": params["draft"]}, expected=(201,))
+                # The API returned an expected HTTP status. The PR object
+                # and independent readback have NOT been verified yet.
+                if callable(checkpoint):
+                    checkpoint(request_id,'PR_CREATE_POST_ACKNOWLEDGED')
+            with pr_create_phase("post_response"):
+                if type(pr) is not dict or type(pr.get("number")) is not int or pr["number"] <= 0:
+                    raise GitHubTransportError("GITHUB_PR_READBACK_UNCONFIRMED")
+                number = pr["number"]
+            with pr_create_phase("readback"):
+                readback = self._api("GET", base + "/pulls/" + str(number))
+                projected = self._project_pull(readback)
+                if (type(number) is not int or number <= 0 or
+                        projected["number"] != number or
+                        projected["head"]["ref"] != params["head"] or
+                        projected["base"]["ref"] != params["base"] or
+                        projected["head"]["sha"] != snapshot["headSha"] or
+                        projected["base"]["sha"] != snapshot["baseSha"]):
+                    raise GitHubTransportError("GITHUB_PR_READBACK_UNCONFIRMED")
+                result = {"requestId": request_id, "operation": operation,
+                          "repository": repo, "pullRequest": projected}
         elif operation == "update_pull_request":
             latest = self.prepare(request)
             if canonical(latest) != canonical(snapshot):
@@ -892,5 +912,9 @@ class GitHubAdapter:
                       "repository": repo, "runId": params["runId"], "approved": True}
         else:
             raise Denied("GITHUB_ACTION_NOT_IMPLEMENTED")
-        self._save_receipt(request_id, result)
+        if operation == "create_pull_request":
+            with pr_create_phase("receipt"):
+                self._save_receipt(request_id, result)
+        else:
+            self._save_receipt(request_id, result)
         return result

@@ -125,57 +125,78 @@ class GitHubGitBackend:
 
     @serialized
     def validate(self,repo,task,old,new,data):
-        sha(old,optional=True);sha(new);branch(task['branch'])
-        require(type(data) is bytes and 0<len(data)<=MAX_BUNDLE,'GIT_BUNDLE_LIMIT')
-        with tempfile.TemporaryDirectory(prefix='git-validate-',dir=self.root) as folder,self.credentials(repo) as config:
-            bare=self._init(folder);p=Path(folder)/'input.bundle';p.write_bytes(data);p.chmod(0o600)
-            # Fetch trusted main first. Any bundle prerequisites must already be in this bare quarantine.
-            self._fetch(repo,bare,'main','refs/remotes/verify/main',config)
-            main=self.git.text(['rev-parse','refs/remotes/verify/main'],cwd=bare)
-            refs=self.refs(repo)
-            if refs.get(task['branch'])!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
-            if old is not None:
-                self._fetch(repo,bare,task['branch'],'refs/remotes/verify/task',config)
-                if self.git.text(['rev-parse','refs/remotes/verify/task'],cwd=bare)!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
-            heads=self.git.text(['bundle','list-heads',p],cwd=bare).splitlines()
-            require(heads==[new+' refs/heads/'+task['branch']],'GIT_BUNDLE_REF_MISMATCH')
-            self.git.run(['bundle','verify',p],cwd=bare)
-            self.git.run(['-c','protocol.file.allow=always','fetch','--no-tags','--no-write-fetch-head',
-                          p,'refs/heads/'+task['branch']+':refs/heads/candidate'],cwd=bare,
-                          protocols='file')
-            require(self.git.text(['cat-file','-t',new],cwd=bare)=='commit','GIT_COMMIT_REQUIRED')
-            self.git.run(['fsck','--strict','--full','--no-reflogs'],cwd=bare)
-            objects=self.git.text(['cat-file','--batch-check','--batch-all-objects'],cwd=bare).splitlines()
-            require(len(objects)<=100000 and sum(int(x.rsplit(' ',1)[1]) for x in objects)<=256*1024*1024,'GIT_OBJECT_LIMIT')
-            base=old or task['baseSha'];sha(base)
-            code,_=self.git.run(['merge-base','--is-ancestor',base,new],cwd=bare,ok=(0,1))
-            require(code==0,'GIT_NON_FAST_FORWARD_DENIED')
-            commits=self.git.text(['rev-list',new,'^'+base],cwd=bare).splitlines()
-            require(0<len(commits)<=MAX_NEW_COMMITS,'GIT_COMMIT_RANGE_LIMIT')
-            paths=set();sensitive=set()
-            for commit in commits:
-                # Inspect every new commit and every merge parent, including reverted intermediate changes.
-                raw=self.git.run(['diff-tree','--root','-m','-r','--no-commit-id','--name-only','-z',commit],cwd=bare)[1]
-                for item in raw.split(b'\0'):
-                    if not item:continue
-                    name=file_path(item.decode('utf-8','strict'));paths.add(name)
-                    if name=='.github/workflows' or name.startswith('.github/workflows/'):sensitive.add(name)
-            require(len(paths)<=1000,'GIT_CHANGED_PATH_LIMIT')
-            diff=self.git.run(['diff','--no-ext-diff','--binary',base,new],cwd=bare)[1]
-            preview=[]
-            for name in sorted(sensitive):
-                # Git object reads never check out files or invoke filters.
-                code,blob=self.git.run(['show',new+':'+name],cwd=bare,ok=(0,128))
-                if code:content=None
-                else:
-                    require(len(blob)<=64000,'GIT_WORKFLOW_PREVIEW_LIMIT')
-                    content=blob.decode('utf-8','strict')
-                preview.append(dict(path=name,after=content))
-            require(len(canonical(preview).encode())<=200000,'GIT_WORKFLOW_PREVIEW_LIMIT')
-            return dict(repository=repo,task=task['task'],branch=task['branch'],baseSha=task['baseSha'],
-                expectedHeadSha=old,newSha=new,bundleSha256=hashlib.sha256(data).hexdigest(),commits=commits,
-                paths=sorted(paths),sensitivePaths=sorted(sensitive),sensitivePreview=preview,
-                diffSha256=hashlib.sha256(diff).hexdigest())
+        _artifact_phase=None
+        try:
+            sha(old,optional=True);sha(new);branch(task['branch'])
+            require(type(data) is bytes and 0<len(data)<=MAX_BUNDLE,'GIT_BUNDLE_LIMIT')
+            _artifact_phase='SETUP'
+            with tempfile.TemporaryDirectory(prefix='git-validate-',dir=self.root) as folder,self.credentials(repo) as config:
+                bare=self._init(folder);p=Path(folder)/'input.bundle';p.write_bytes(data);p.chmod(0o600)
+                # Fetch trusted main first. Any bundle prerequisites must already be in this bare quarantine.
+                _artifact_phase='FETCH_MAIN'
+                self._fetch(repo,bare,'main','refs/remotes/verify/main',config)
+                main=self.git.text(['rev-parse','refs/remotes/verify/main'],cwd=bare)
+                _artifact_phase='READ_REMOTE_REFS'
+                refs=self.refs(repo)
+                current=refs.get(task['branch'])
+                if old is None and current is not None:
+                    # A caller expecting a new branch found an existing remote
+                    # ref. Fail before provider POST/push and do not overwrite.
+                    raise Stale('GIT_EXPECTED_REMOTE_HEAD_MISMATCH')
+                if current!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
+                if old is not None:
+                    _artifact_phase='FETCH_TASK'
+                    self._fetch(repo,bare,task['branch'],'refs/remotes/verify/task',config)
+                    if self.git.text(['rev-parse','refs/remotes/verify/task'],cwd=bare)!=old:raise Stale('GIT_REMOTE_HEAD_CHANGED')
+                _artifact_phase='BUNDLE_IDENTITY'
+                heads=self.git.text(['bundle','list-heads',p],cwd=bare).splitlines()
+                require(heads==[new+' refs/heads/'+task['branch']],'GIT_BUNDLE_REF_MISMATCH')
+                self.git.run(['bundle','verify',p],cwd=bare)
+                _artifact_phase='BUNDLE_IMPORT'
+                self.git.run(['-c','protocol.file.allow=always','fetch','--no-tags','--no-write-fetch-head',
+                              p,'refs/heads/'+task['branch']+':refs/heads/candidate'],cwd=bare,
+                              protocols='file')
+                _artifact_phase='COMMIT_INTEGRITY'
+                require(self.git.text(['cat-file','-t',new],cwd=bare)=='commit','GIT_COMMIT_REQUIRED')
+                self.git.run(['fsck','--strict','--full','--no-reflogs'],cwd=bare)
+                objects=self.git.text(['cat-file','--batch-check','--batch-all-objects'],cwd=bare).splitlines()
+                require(len(objects)<=100000 and sum(int(x.rsplit(' ',1)[1]) for x in objects)<=256*1024*1024,'GIT_OBJECT_LIMIT')
+                _artifact_phase='ANCESTRY'
+                base=old or task['baseSha'];sha(base)
+                code,_=self.git.run(['merge-base','--is-ancestor',base,new],cwd=bare,ok=(0,1))
+                require(code==0,'GIT_NON_FAST_FORWARD_DENIED')
+                commits=self.git.text(['rev-list',new,'^'+base],cwd=bare).splitlines()
+                require(0<len(commits)<=MAX_NEW_COMMITS,'GIT_COMMIT_RANGE_LIMIT')
+                _artifact_phase='PATH_PROJECTION'
+                paths=set();sensitive=set()
+                for commit in commits:
+                    # Inspect every new commit and every merge parent, including reverted intermediate changes.
+                    raw=self.git.run(['diff-tree','--root','-m','-r','--no-commit-id','--name-only','-z',commit],cwd=bare)[1]
+                    for item in raw.split(b'\0'):
+                        if not item:continue
+                        name=file_path(item.decode('utf-8','strict'));paths.add(name)
+                        if name=='.github/workflows' or name.startswith('.github/workflows/'):sensitive.add(name)
+                require(len(paths)<=1000,'GIT_CHANGED_PATH_LIMIT')
+                diff=self.git.run(['diff','--no-ext-diff','--binary',base,new],cwd=bare)[1]
+                preview=[]
+                for name in sorted(sensitive):
+                    # Git object reads never check out files or invoke filters.
+                    code,blob=self.git.run(['show',new+':'+name],cwd=bare,ok=(0,128))
+                    if code:content=None
+                    else:
+                        require(len(blob)<=64000,'GIT_WORKFLOW_PREVIEW_LIMIT')
+                        content=blob.decode('utf-8','strict')
+                    preview.append(dict(path=name,after=content))
+                require(len(canonical(preview).encode())<=200000,'GIT_WORKFLOW_PREVIEW_LIMIT')
+                return dict(repository=repo,task=task['task'],branch=task['branch'],baseSha=task['baseSha'],
+                    expectedHeadSha=old,newSha=new,bundleSha256=hashlib.sha256(data).hexdigest(),commits=commits,
+                    paths=sorted(paths),sensitivePaths=sorted(sensitive),sensitivePreview=preview,
+                    diffSha256=hashlib.sha256(diff).hexdigest())
+
+        except (Denied,Stale) as exc:
+            if _artifact_phase is not None:
+                exc.artifact_phase=_artifact_phase
+            raise
 
     @serialized
     def push(self,repo,task,old,new,data):

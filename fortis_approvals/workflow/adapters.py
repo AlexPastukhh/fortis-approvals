@@ -14,6 +14,39 @@ from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
 
 class NativeGitHubAdapter(AnalysisGitHubAdapter):
+    _PR_CREATE_CHECKPOINTS=frozenset({
+        'PR_CREATE_POST_STARTED','PR_CREATE_POST_ACKNOWLEDGED'
+    })
+
+    def pr_create_checkpoint(self, request_id, checkpoint):
+        """Mandatory Core journal for native PR-create around the effect edge.
+
+        Never claim nonexecution from an absent ACK; never use an ordinary
+        heartbeat or a response code as proof of the original effect.
+        """
+        if checkpoint not in self._PR_CREATE_CHECKPOINTS or type(request_id) is not str:
+            raise Denied('GITHUB_PR_CREATE_CHECKPOINT_INVALID')
+        core=self.observation_core
+        if core is None:
+            # Native publish must have a trusted Core state store. No silent
+            # best-effort skip when the journal binding is missing.
+            raise Denied('GITHUB_PR_CREATE_CHECKPOINT_CORE_REQUIRED')
+        with core._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT state,payload FROM requests WHERE id=?',
+                (request_id,)).fetchone()
+            if row is None or row['state']!='DISPATCHED':
+                raise Denied('GITHUB_PR_CREATE_CHECKPOINT_STATE_INVALID')
+            payload=json.loads(row['payload'])
+            if (payload.get('service'),payload.get('operation'))!=(
+                    'github','create_pull_request'):
+                raise Denied('GITHUB_PR_CREATE_CHECKPOINT_OPERATION_INVALID')
+            core._event(db,request_id,checkpoint,{
+                'origin':'GITHUB_ADAPTER',
+                'effectAssessment':'OUTCOME_UNCONFIRMED',
+                'providerAcknowledged':checkpoint=='PR_CREATE_POST_ACKNOWLEDGED',
+            })
+
     def __init__(self,transport,*,config,root,actor,backend,store,observation_core=None):
         self.config=config;self.actor=actor;self.backend=backend;self.workflow=store
         self.observation_core=observation_core

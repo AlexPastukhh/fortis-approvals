@@ -9,6 +9,7 @@ import time
 import uuid
 
 from ..clients.gateway_transport import GatewayTransport
+from ..diagnostic_contract import inspect_diagnostic_capability
 from ..core import Denied
 from .error_diagnostics import category, evidence, ERROR_CODES
 from ..integrations.github.repo_client.client import GitHubClient
@@ -31,6 +32,17 @@ class WorkflowClient:
         # against old Primary. Old /finish rejects a fifth diagnostic field.
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
         self.worker_observability=worker_observability is True
+
+    def diagnostic_capabilities(self):
+        """Read existing actor-scoped Gateway capabilities; no new request/WRITE.
+
+        Missing/unknown versions are NOT authorization for effect recovery.
+        Transport errors propagate, rather than being mislabeled legacy.
+        """
+        caps=self.gateway.post('/v1/workspace/capabilities',{})
+        if type(caps) is not dict:
+            raise Denied('WORKFLOW_CAPABILITIES_RESPONSE_INVALID')
+        return inspect_diagnostic_capability(caps.get('diagnosticContract'))
 
     def result(self,ident,reconcile=False):
         return self.gateway.post('/v1/workspace/'+('reconcile' if reconcile else 'result'),dict(requestId=ident),accept_202=True)

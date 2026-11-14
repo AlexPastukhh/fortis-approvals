@@ -6,6 +6,9 @@ it never infers that an unknown remote effect did not occur.
 import json
 
 from ..core import Denied
+from .error_diagnostics import ERROR_CODES, ERROR_STAGES
+from .git_backend import GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
+from ..integrations.github.gateway.pr_create_diagnostic import PR_CREATE_CODES, PR_CREATE_PHASES
 
 
 def list_uncertain(core, credential, *, offset=0, limit=100):
@@ -83,6 +86,22 @@ def list_requests(core, credential, *, offset=0, limit=100, unresolved_only=True
                 items=items, total=total, offset=offset, limit=limit,
                 truncated=next_offset is not None, nextOffset=next_offset)
 
+def _bounded_core_error(value):
+    if type(value) is not dict or set(value) not in (
+            {'stage','code'}, {'stage','code','phase'}):
+        return False
+    if (type(value['stage']) is not str or value['stage'] not in ERROR_STAGES or
+            type(value['code']) is not str or value['code'] not in ERROR_CODES):
+        return False
+    if 'phase' in value:
+        if value['stage']!='GITHUB_ADAPTER' or type(value['phase']) is not str:
+            return False
+        return (
+            value['code'] in GIT_PUSH_FAILURE_CODES and value['phase'] in GIT_PUSH_PHASES or
+            value['code'] in PR_CREATE_CODES and value['phase'] in PR_CREATE_PHASES
+        )
+    return True
+
 
 def diagnose(details):
     """Classify observable stages only, never claim the root cause/effect.
@@ -123,8 +142,7 @@ def diagnose(details):
     # from provider error strings. Pagination can omit the event: return null.
     core_error = next((e.get('detail') for e in reversed(events)
                        if e.get('state')=='ERROR_OBSERVED' and
-                       isinstance(e.get('detail'),dict) and
-                       set(e['detail'])=={'stage','code'}),None)
+                       _bounded_core_error(e.get('detail'))),None)
     worker_error = worker.get('diagnostic') if worker is not None else None
     return dict(schemaVersion=1, phase=phase, rootCause='UNDETERMINED',
                 coreError=core_error, workerError=worker_error,
@@ -133,3 +151,47 @@ def diagnose(details):
                 receiptPresent=receipt is not None,
                 dispatchToUncertainSeconds=duration,
                 note='Read-only evidence classification; not an effect verdict or retry permission.')
+
+
+def diagnose_v2(details):
+    # One bounded, read-only incident projection for AI clients. The V1
+    # projection is preserved byte-for-byte for older clients, and no raw
+    # payload, error text, claim, provider URL or credential is copied here.
+    legacy=diagnose(details)
+    if legacy is None:
+        return None
+    row=details.get('request')
+    ident=row.get('requestId') if type(row) is dict else None
+    if type(ident) is not str:
+        raise Denied('INCIDENT_DIAGNOSTIC_REQUEST_ID_INVALID')
+    code='UNDETERMINED'
+    origin='CORE_STATE'
+    phase=legacy['phase']
+    core_error=legacy.get('coreError')
+    worker_error=legacy.get('workerError')
+    if _bounded_core_error(core_error):
+        origin=core_error['stage']
+        code=core_error['code']
+        phase=core_error.get('phase',phase)
+    elif (type(worker_error) is dict and
+          set(worker_error)=={'stage','code'} and
+          type(worker_error['stage']) is str and
+          worker_error['stage'] in ERROR_STAGES and
+          type(worker_error['code']) is str and
+          worker_error['code'] in ERROR_CODES):
+        origin=worker_error['stage']
+        code=worker_error['code']
+    events=details.get('events')
+    total=details.get('eventTotal')
+    offset=details.get('eventOffset')
+    complete=(type(events) is list and type(total) is int and
+              type(offset) is int and offset==0 and total==len(events))
+    return {
+        'schemaVersion':2,
+        'requestId':ident,
+        'origin':origin,
+        'phase':phase,
+        'code':code,
+        'effectAssessment':'UNCONFIRMED',
+        'evidenceScope':'FULL_AUDIT_PAGE' if complete else 'PARTIAL_AUDIT_PAGE',
+    }
