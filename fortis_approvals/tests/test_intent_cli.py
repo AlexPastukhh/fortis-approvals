@@ -52,5 +52,17 @@ class CLITests(unittest.TestCase):
                 with self.assertRaises(SystemExit):main()
                 create.assert_not_called()
 
+    def test_visual_publication_uses_coordinated_public_method_without_uuid(self):
+        client=MagicMock()
+        client.github.publish_visual_review.return_value={
+            'status':'DONE','manualDuplicateCheckRequired':True}
+        client,result=self.invoke(['publish_visual_review','--repository','visual-workspace'],
+            json.dumps(dict(run_id='review',title='Review',description='Result',media=[],
+                            qa_summary='Checked',duration_seconds=1)),client=client)
+        self.assertTrue(result['manualDuplicateCheckRequired'])
+        self.assertIsNone(client.github.publish_visual_review.call_args.kwargs['request_id'])
+        self.assertEqual(client.github.publish_visual_review.call_args.kwargs['repository'],'visual-workspace')
+        client.command.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()

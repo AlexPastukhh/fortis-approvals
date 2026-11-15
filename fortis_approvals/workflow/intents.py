@@ -491,7 +491,8 @@ class IntentClient:
                         answer = self._answer(record, 'WAITING', 'INTENT_BACKOFF_REQUIRED', target=target)
                         answer['retryAfterSeconds'] = delay
                         return answer
-                    self.policy.sleep(delay); waited += delay
+                    if delay > 0:
+                        self.policy.sleep(delay); waited += delay
                     # Re-read after waiting before allocating a fresh attempt.
                     refreshed = self._observations(record) if delay > 0 else observations
                     if any(s in _ACTIVE or w in ('CLAIMED', 'QUEUED') for s, w, _ in refreshed):

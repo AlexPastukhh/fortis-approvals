@@ -383,6 +383,7 @@ CLI uses the same coordinator:
 python3 -B -m fortis_approvals.workflow.client create_task < task.json
 python3 -B -m fortis_approvals.workflow.client publish < publish.json
 python3 -B -m fortis_approvals.workflow.client git-delivery < delivery.json
+python3 -B -m fortis_approvals.workflow.client publish_visual_review --repository visual-workspace < visual-review.json
 python3 -B -m fortis_approvals.workflow.client retry --intent-id INTENT_ID
 ```
 

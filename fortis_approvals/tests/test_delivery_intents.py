@@ -129,5 +129,23 @@ class DeliveryIntentTests(unittest.TestCase):
         self.assertEqual(response['code'],'INTENT_PR_HEAD_CHANGED',response)
         self.assertEqual(self.client.github.posts,[])
 
+    def test_reported_git_rate_limit_retains_backoff_across_manual_retry(self):
+        now=[100]
+        self.client.intent.policy.clock=lambda:now[0]
+        self.client.intent.policy.max_wait=1
+        self.error='GIT_RATE_LIMIT_REPORTED';self.push_outcomes=['uncertain']
+        first=self.submit()
+        self.assertEqual(first['status'],'WAITING',first)
+        self.assertEqual(first['nextAction']['kind'],'WAIT_BACKOFF')
+        self.assertEqual(first['retryAfterSeconds'],60)
+        now[0]=150
+        waiting=self.client.intents.retry(first['intentId'])
+        self.assertEqual(waiting['status'],'WAITING',waiting)
+        self.assertEqual(waiting['retryAfterSeconds'],10)
+        self.assertEqual(len(self.pushes),1)
+        self.error=None;now[0]=161
+        self.assertEqual(self.client.intents.retry(first['intentId'])['status'],'DONE')
+        self.assertEqual(len(set(self.pushes)),2)
+
 
 if __name__=='__main__':unittest.main()

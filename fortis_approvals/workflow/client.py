@@ -470,7 +470,7 @@ def main():
             parser.error('retry requires --intent-id and does not accept --request-id')
     elif args.intent_id:
         parser.error('--intent-id is only used with retry')
-    if not retry and args.operation not in WORKSPACE_COMMANDS | GITHUB_COMMANDS | {'publish','git-delivery'} and not args.request_id:
+    if not retry and args.operation not in WORKSPACE_COMMANDS | GITHUB_COMMANDS | {'publish','git-delivery','publish_visual_review'} and not args.request_id:
         parser.error('this operation requires --request-id')
     if args.operation=='git-delivery' and args.request_id:
         parser.error('git-delivery uses a parent intent; legacy push/pr IDs belong in its JSON body')
@@ -494,6 +494,9 @@ def main():
         result=client.git_delivery.submit(args.repository,body['task'],body['newSha'],
             title=body['title'],body=body['body'],draft=body.get('draft',False),
             push_request_id=body.get('pushRequestId'),pr_request_id=body.get('prRequestId'),reason=args.reason)
+    elif args.operation=='publish_visual_review':
+        result=client.github.publish_visual_review(repository=args.repository,**body,
+            request_id=args.request_id,reason=args.reason)
     elif args.operation in GITHUB_COMMANDS:
         result=client.github.action(args.operation,args.repository,body,
                                    request_id=args.request_id,reason=args.reason)
