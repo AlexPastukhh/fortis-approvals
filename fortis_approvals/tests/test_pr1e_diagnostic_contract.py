@@ -63,7 +63,7 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             grant=Path(d)/'grant';cert=Path(d)/'cert'
             grant.write_text(GRANT);grant.chmod(0o600);cert.write_text('offline')
-            cli=GatewayTransport(endpoint='http://localhost:19899',
+            cli=GatewayTransport(read_attempts=1,endpoint='http://localhost:19899',
                 grant_path=str(grant),certificate_path=str(cert),
                 opener=FakeFail(body,headers,status))
             with self.assertRaises(Denied) as caught:
@@ -166,7 +166,7 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             grant=Path(d)/'grant';cert=Path(d)/'cert'
             grant.write_text(GRANT);grant.chmod(0o600);cert.write_text('offline')
-            cli=GatewayTransport(endpoint='http://localhost:19899',
+            cli=GatewayTransport(read_attempts=1,endpoint='http://localhost:19899',
                 grant_path=str(grant),certificate_path=str(cert),
                 opener=FakeFail(b'{}',{},500))
             with self.assertRaisesRegex(Denied,'FORTIS_GATEWAY_ROUTE_DENIED'):

@@ -110,7 +110,7 @@ class GitArtifactPhaseTests(unittest.TestCase):
                 with self.subTest(phase=phase):
                     copied=dict(headers)
                     copied[ARTIFACT_PHASE_HEADER]=phase
-                    client=WorkflowTransport(endpoint='http://localhost:19915',
+                    client=WorkflowTransport(read_attempts=1,endpoint='http://localhost:19915',
                         grant_path=str(grant),certificate_path=str(cert),
                         opener=HTTPFail(403,copied,body))
                     with self.assertRaises(Denied) as caught:

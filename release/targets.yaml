@@ -76,6 +76,7 @@ noDeploymentPaths:
   # WorkflowClient is a Repo-side machine client; the Primary image COPY
   # includes only the native workflow server modules and not this file.
   - fortis_approvals/workflow/client.py
+  - fortis_approvals/workflow/intents.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md
