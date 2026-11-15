@@ -9,6 +9,7 @@ from functools import wraps
 from ..core import Stale, Denied
 from ..integrations.github.gateway.transport import GitHubTransportError
 from .git_backend import GitPushFailure, GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
+from .artifact_diagnostics import ARTIFACT_VALIDATION_PHASES
 from ..integrations.github.gateway.pr_create_diagnostic import (
     GitHubPRCreateFailure, PR_CREATE_PHASES, PR_CREATE_CODES)
 
@@ -80,6 +81,9 @@ def record_adapter_failure(core, request_id, stage, exc):
             details['code'] in GIT_PUSH_FAILURE_CODES):
         # Allowlisted phase only; no raw Git stderr, exception text or secrets.
         details['phase']=exc.phase
+        if (type(exc.validation_phase) is str and
+                exc.validation_phase in ARTIFACT_VALIDATION_PHASES):
+            details['gitPhase']=exc.validation_phase
     if (stage=='GITHUB_ADAPTER' and isinstance(exc, GitHubPRCreateFailure) and
             type(exc.phase) is str and exc.phase in PR_CREATE_PHASES and
             details['code'] in PR_CREATE_CODES):

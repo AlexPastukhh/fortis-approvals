@@ -58,7 +58,7 @@ class DiagnosticTests(unittest.TestCase):
     def test_revalidation_timeout_identifies_phase(self):
         with tempfile.TemporaryDirectory() as name:
             backend = self._backend(Path(name))
-            with patch.object(backend, 'validate', side_effect=RuntimeError('GIT_OUTCOME_TIMEOUT')):
+            with patch.object(backend, '_validated', side_effect=RuntimeError('GIT_OUTCOME_TIMEOUT')):
                 with self.assertRaises(GitPushFailure) as caught:
                     backend.push('repo', {}, None, '0'*40, b'fixture')
             self.assertEqual((caught.exception.phase, caught.exception.code),
@@ -73,7 +73,7 @@ class DiagnosticTests(unittest.TestCase):
                 if args[0] == 'push' and fail_push:
                     raise RuntimeError('GIT_OUTCOME_TIMEOUT')
                 return (0, b'')
-            with patch.object(backend, 'validate', return_value={'ok': True}), \
+            with patch.object(backend, '_validated', return_value=nullcontext(({'ok': True},root,root/'dummy'))), \
                  patch.object(backend, 'credentials', return_value=nullcontext(root / 'dummy')), \
                  patch.object(backend, '_init', return_value=root), \
                  patch.object(backend, '_fetch', return_value=None), \

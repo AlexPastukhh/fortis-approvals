@@ -47,6 +47,7 @@ tests=(
   test_visual_review.py
   test_native_workflow.py
   test_native_git_push_diagnostics.py
+  test_git_transfer_efficiency.py
   test_native_pending_status.py
   test_native_worker_exception.py
   test_native_claim_single_delivery.py

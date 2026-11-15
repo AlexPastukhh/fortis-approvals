@@ -163,6 +163,30 @@ The command-line entrypoint is python3 -B -m fortis_approvals.workflow.client OP
 
 This is a Linux Docker Repo worker, not a Windows shell bridge or a transparent arbitrary git push proxy. The existing Windows Mirror receiver remains a separate established mechanism after approved main update. No new arbitrary Windows-command capability is introduced.
 
+## Git transfer failure evidence and quarantine reuse (source)
+
+The Git runner keeps bounded failure classes for reported authentication/access,
+rate limits, TLS/network, upstream HTTP failures, local resource failures,
+process signals and an unclassified non-zero exit. A subprocess deadline is
+reported as `GIT_OUTCOME_TIMEOUT` only when that deadline actually fires.
+Operator logs contain fixed codes, elapsed milliseconds and exit codes, never
+Git stderr, command arguments or credential configuration. These observations
+are symptoms, not proof of a root cause or of non-execution.
+
+Artifact and fetch errors carry bounded diagnostic/phase headers. New clients
+can distinguish a permanent reported auth/configuration problem from a
+retryable network failure without treating every Git error as policy DENY.
+Core push errors preserve the outer phase and, when known, `gitPhase` within
+validation. Historical generic errors cannot be reconstructed retroactively.
+These server diagnostics require an owner-managed Gateway release.
+
+Within `backend.push`, a fresh validation now retains its private quarantine
+through the lease-protected push and independent remote readback. This removes
+the second main fetch and repeated bundle import inside that push. Artifact
+admission remains a separate validation, so a complete successful publication
+still validates at admission and immediately before effect. SHA/CAS, ancestry,
+object limits and every-new-commit sensitive-path checks remain enforced.
+
 ## Bounds
 
 Bundle: 24 MiB; at most 200 new commits. Edited content: 16 KiB per request,

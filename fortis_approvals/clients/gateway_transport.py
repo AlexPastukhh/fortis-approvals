@@ -238,7 +238,7 @@ class GatewayTransport:
             artifact_failure=None
             artifact_phase=None
             if (compatible_version and method=="POST" and
-                    path=="/v1/git/artifact" and status==403):
+                    path in ("/v1/git/artifact", "/v1/git/fetch") and status in (403,500)):
                 try:
                     candidate=(exc.headers.get(ARTIFACT_FAILURE_HEADER)
                         if exc.headers is not None else None)
@@ -253,7 +253,8 @@ class GatewayTransport:
             exc.close()
             if artifact_failure is not None:
                 suffix=('_'+artifact_phase if artifact_phase is not None else '')
-                raise failure("FORTIS_ARTIFACT_"+artifact_failure+suffix) from None
+                kind="FORTIS_ARTIFACT_" if path=="/v1/git/artifact" else "FORTIS_FETCH_"
+                raise failure(kind+artifact_failure+suffix) from None
             if pre_core_rejected and compatible_version:
                 raise Denied("FORTIS_PRE_CORE_VALIDATION_REJECTED") from None
             if provider_code is not None:

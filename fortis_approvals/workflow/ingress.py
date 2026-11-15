@@ -9,7 +9,8 @@ import uuid
 from threading import BoundedSemaphore
 from ..core import ApprovalError, Conflict, Denied, Stale, canonical, loads_strict
 from ..repo_ingress import RepoIngress, _PerActorWindow
-from .common import MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug
+from .common import (MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug,
+                     GitCommandFailure, GitCommandTimeout)
 from .incident_read import list_uncertain, list_requests, diagnose, diagnose_v2
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..diagnostic_contract import advertised_diagnostic_capability
@@ -222,6 +223,14 @@ class NativeIngress:
             result=self._dispatch(path,self._body(env,path),credential,actor)
             return RepoIngress._reply(start,202 if result.get('state')=='PENDING' else 200,result)
         except Conflict:return RepoIngress._reply(start,409,dict(error='WORKFLOW_CONFLICT'))
+        except (GitCommandFailure,GitCommandTimeout) as exc:
+            if path in ('/v1/git/artifact','/v1/git/fetch'):
+                return RepoIngress._reply(start,500,dict(error='WORKFLOW_GIT_FAILED'),
+                    diagnostic_contract=True,
+                    artifact_diagnostic=bounded_artifact_error(exc),
+                    artifact_phase=bounded_artifact_phase(exc),
+                    retry_after_seconds=60 if str(exc)=='GIT_RATE_LIMIT_REPORTED' else None)
+            return RepoIngress._reply(start,500,dict(error='WORKFLOW_OUTCOME_UNCONFIRMED'))
         except (Denied,Stale) as exc:
             if path=='/v1/git/artifact':
                 return RepoIngress._reply(start,403,dict(error='WORKFLOW_DENIED'),
