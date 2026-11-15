@@ -319,5 +319,24 @@ Only that clean linked worktree and its exact local `task/<slug>` branch are
 removed, then its Gateway registration is closed. The remote branch and main
 are unchanged. No `worktree remove --force`, bulk prune or remote deletion is
 exposed. Bootstrap/deployment source still must be retained while protected
-records refer to it. Reuse the UUID only for the same intent; an uncertain
-partial effect goes to reconcile, never a blind new deletion request.
+records refer to it. Reuse the original UUID only for readback of its
+original intent; neither an HTTP 500 nor an unknown historical receipt alone
+blocks safe completion of cleanup. **Decision for a new `cleanup_task`:** read
+current `git worktree list --porcelain`, exact registered repo/task/HEAD,
+branch, ignored/untracked/tracked cleanliness, live capability/policy and
+worker state. If the exact worktree **and** task branch have already gone,
+cleanup is complete (do not repeat). If the exact registered worktree remains
+clean at the expected HEAD, its branch remains, no worker is actively
+executing it, and fresh admission permits deletion, **submit a new typed
+request with a new requestId**; the Core preview and worker revalidate the
+same exact object, so an earlier completed cleanup makes the new attempt
+fail closed rather than silently removing another task. Up to three attempts
+in total, including the original, with fresh readback after each. Missing
+original receipt or `result(UUID)=NOT_FOUND` is not a reason to postpone
+forever; `details(UUID)` returning 403 is not permission to bypass Gateway,
+but use the other authorized readbacks and live preconditions. If the removal
+is partial (missing worktree but lingering branch/registration), the old
+worker is still `CLAIMED`, protected source is still needed, or the exact
+checks cannot be completed, STOP with the concrete discrepancy, **not**
+force-clean/prune/replay. Reconcile is a separate Core-state operation, not
+a prerequisite for every new, safely authorized cleanup intent.
