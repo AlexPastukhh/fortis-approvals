@@ -246,6 +246,8 @@ class IntentClient:
             remoteHeadSha=p['newSha'] if response.get('status') == 'DONE' or push.get('status') == 'DONE' or not view.get('pushRequired', True)
                           else view.get('expectedRemoteSha'),
             expectedRemoteSha=view.get('expectedRemoteSha'),
+            requestId=response.get('requestId') or pr.get('requestId') or push.get('requestId'),
+            lastAttemptId=pr.get('lastAttemptId', pr.get('requestId')) or push.get('lastAttemptId', push.get('requestId')),
             pushRequestId=push.get('requestId'), prRequestId=pr.get('requestId'),
             pullRequestNumber=target.get('pullRequestNumber', response.get('pullRequestNumber')),
             pullRequestUrl=target.get('url', response.get('pullRequestUrl')),

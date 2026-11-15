@@ -15,7 +15,7 @@ from ..core import Denied
 from .error_diagnostics import category, evidence, ERROR_CODES
 from ..integrations.github.repo_client.client import GitHubClient
 from ..integrations.github.contract import validate_github_action
-from .common import require
+from .common import require, repository_lock
 from .ingress import NATIVE_PATHS
 from .incident_read import IncidentInspector
 from .worker import Worker
@@ -209,6 +209,14 @@ class WorkflowClient:
     def _publish_once(self,repository,task,expected_old,new_sha,*,request_id,reason,package_id=None):
         # Existing local commit objects are bundled, never reconstructed from file contents.
         data=self.worker.publish_package(repository,task,expected_old,new_sha,package_id or request_id,reason)
+        if package_id is not None:
+            # A frozen package can outlive local edits. Recheck the current
+            # worktree after reading it, before any new artifact/WRITE call.
+            root,state,run,text=self.worker._open(repository)
+            with repository_lock(state/'repository.lock'):
+                snapshot=self.worker._snapshot(repository,task,root,run,text)
+            require(snapshot['headSha']==new_sha and snapshot['clean'],
+                    'WORKER_PUBLISH_HEAD_CHANGED')
         artifact=hashlib.sha256(data).hexdigest()
         prior=self.result(request_id)
         if prior['state']!='NOT_FOUND':

@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import uuid
 
 import test_native_workflow as native
 from fortis_approvals.clients.retries import RetryPolicy
@@ -96,6 +97,12 @@ class IntentNativeIntegrationTests(unittest.TestCase):
         self.assertEqual(len(artifacts),2)
         self.assertEqual(len(actions),4)
         self.assertEqual(len(self.case.api.pulls),1)
+        dirty=self.case.fixture.worktrees/'real-cycle'/'untracked-after-publication'
+        dirty.write_text('new local work')
+        with self.assertRaisesRegex(Denied,'WORKER_PUBLISH_HEAD_CHANGED'):
+            flow._publish_once('sandbox','real-cycle',None,head,request_id=str(uuid.uuid4()),
+                reason='Publish exact fixture',package_id=packages[0].stem)
+        dirty.unlink()
         bundle=packages[0];bundle.write_bytes(bundle.read_bytes()+b'tampered')
         with self.assertRaisesRegex(Denied,'WORKER_PUBLISH_BUNDLE_CHANGED'):
             flow.worker.publish_package('sandbox','real-cycle',None,head,bundle.stem,'Publish exact fixture')

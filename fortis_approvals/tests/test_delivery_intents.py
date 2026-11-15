@@ -41,6 +41,8 @@ class DeliveryIntentTests(unittest.TestCase):
             if outcome in ('pending','uncertain','denied'):
                 return {'requestId':request_id,'state':state}
             c.github.head=new
+            for pr in c.github.prs:
+                if pr['state']=='open': pr['head']['sha']=new
             c.rows[request_id]['state']='EXECUTED'
             c.rows[request_id]['result']=dict(requestId=request_id,operation='push_commits',
                 repository=repo,branch='task/'+task,sha=new)
@@ -156,6 +158,18 @@ class DeliveryIntentTests(unittest.TestCase):
         child=self.client.intent.journal.load(result['children']['push']['intentId'])
         self.assertEqual(child['attempts'][0]['callFailureEvidence']['code'],'FORTIS_HTTP_500')
         self.assertEqual(child['attempts'][0]['coreFailureEvidence']['code'],self.error)
+
+    def test_existing_pr_keeps_actual_push_uuid_without_inventing_a_pr_attempt(self):
+        self.client.github.head=OLD
+        self.client.github.prs=[dict(number=1,state='open',merged=False,draft=False,
+            head={'ref':'task/agent','sha':OLD},base={'ref':'main','sha':OLD},
+            url='https://github.com/owner/sandbox/pull/1')]
+        result=self.submit()
+        self.assertEqual(result['status'],'DONE',result)
+        self.assertEqual(result['requestId'],self.pushes[-1])
+        self.assertEqual(result['lastAttemptId'],self.pushes[-1])
+        self.assertIsNone(result['prRequestId'])
+        self.assertEqual(self.client.github.posts,[])
 
 
 if __name__=='__main__':unittest.main()
