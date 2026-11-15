@@ -85,6 +85,10 @@ tests=(
   test_pr3_git_delivery.py
   test_automatic_read_retries.py
   test_command_intents.py
+  test_intent_result_recovery.py
+  test_intent_target_efficiency.py
+  test_delivery_intents.py
+  test_intent_cli.py
   test_workspace_intents.py
   test_intent_native_integration.py
   test_release_storage_source.py

@@ -159,7 +159,7 @@ Fetch also goes through Gateway; Repo imports the returned bundle locally. Neith
 
 Local operations are serialized across worktrees using the common Git directory. Request UUIDs and frozen payload digests prevent duplicate commits and repeat publication. An uncertain effect is stopped and shown as UNCERTAIN; reconciliation reads durable receipts and never blindly repeats a mutation. External ambiguous results without a durable receipt require inspection.
 
-The command-line entrypoint is python3 -B -m fortis_approvals.workflow.client OPERATION --request-id UUID. It reads a typed JSON body on stdin. The WorkflowClient Python interface additionally provides the existing typed GitHub read/PR methods. resume services the same queued local request after an owner decision; it does not create a replacement request.
+The command-line entrypoint is python3 -B -m fortis_approvals.workflow.client OPERATION. Supported coordinated operations accept a typed JSON body on stdin and do not require --request-id; other commands retain their explicit UUID. Use retry --intent-id INTENT_ID to continue an intent without stdin. The WorkflowClient Python interface additionally provides the existing typed GitHub read/PR methods. resume services the same queued local request after an owner decision; it does not create a replacement request.
 
 This is a Linux Docker Repo worker, not a Windows shell bridge or a transparent arbitrary git push proxy. The existing Windows Mirror receiver remains a separate established mechanism after approved main update. No new arbitrary Windows-command capability is introduced.
 
@@ -237,56 +237,43 @@ automatic stash/reset/clean. Both main-update routes also require clean primary.
 The client/API change procedure belongs to
 [UC-GW-003](use-cases/integrations.md#uc-gw-003).
 
-## PR3: Repo-side Git/PR delivery facade (source candidate)
+## Repo-side Git/PR delivery facade (source)
 
-The Repo-side `default_client().git_delivery` (implemented in
-`fortis_approvals/workflow/client.py`) composes the existing native
-`publish()` (real Git bundle, exact SHA and server-side `--force-with-lease`)
-with the existing typed GitHub PR creation. It needs **no new Gateway endpoint,
-credential, capability, policy or production image change**. `inspect()` only
-reads bounded GitHub branch and PR inventories (open **and** closed); it returns
-`DONE` if the open PR already points at the intended commit, `CONTINUE` if a
-push or PR is needed, and `STOP` on inconclusive/inconsistent evidence. A
-complete list is required before an absence-based decision. Existing PRs on
-closed/merged branches are never silently duplicated.
+The default Repo client composes task publication and PR creation through one
+durable parent intent. The child push and PR intents own all effect retries,
+budgets, fresh attempt UUIDs, owner waits and exact-SHA checks.
 
 ```python
-from uuid import uuid4
 from fortis_approvals.workflow.client import default_client
 
 c = default_client()
-repo, task = 'my-repo', 'my-task'  # registered worktree and authorized repo
-sha = '0' * 40                    # replace with the actual committed task HEAD
-view = c.git_delivery.inspect(repo, task, sha)  # READ-only, no UUID created
-if view['status'] == 'CONTINUE':
-    # Preserve these two real UUIDs in the task record before submit.
-    # Include the repository's exact-head Release Impact YAML block in body.
-    result = c.git_delivery.submit(
-        repo, task, sha, title='Reviewed change', body='PR body with releaseImpact',
-        draft=False, push_request_id=str(uuid4()), pr_request_id=str(uuid4()),
-        reason='Authorized task publication and review PR')
+result = c.git_delivery.submit(
+    repo, task, committed_sha, title='Reviewed change',
+    body='PR body with exact-head releaseImpact', draft=False,
+    reason='Authorized task publication and review PR')
+# If the returned nextAction permits continuation:
+result = c.intents.retry(result['intentId'])
 ```
 
-`submit()` invokes the public push and PR commands with separate intent IDs
-and provider READ after each stage. On the default client those commands
-use the bounded intent coordinator described below; directly constructed
-legacy clients retain at most one push and one PR creation. It
-computes the actual remote `expectedHeadSha`: **`None` when the branch does
-not exist**, the exact remote SHA when updating. It never treats the local
-`main` SHA as the remote task ref precondition. It validates the registered,
-clean local worktree and committed HEAD before pushing. If the branch is
-already published, it skips the push; if the exact open PR already exists,
-it skips both WRITE calls. A lost response can resolve as goal-state `DONE`
-without fabricating an original Core receipt. `STOP` means **do not call the
-facade again blindly**: inspect the preserved UUID(s) with `details()` /
-`incidents.inspect()` and compare fresh exact GitHub state. It does not issue
-transport WRITE retries itself. Supported default-client commands delegate
-continuation to the journaled intent coordinator, with fresh ALLOW/ASK/DENY
-and new UUIDs for new attempts under
-[UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
-`PENDING` requires owner approval before further work. Owner merges the PR
-only through GitHub UI; this facade does **not** merge, sync primary `main`,
-manage Issues/PNG, deploy Gateway or bypass any existing policy.
+There is no need to allocate push/pr UUIDs or manually repeat their readbacks.
+An unchanged submit resumes the same parent and does not reset child budgets.
+Explicit retry continues the stage that is waiting or exhausted. A completed
+push is not repeated while continuing PR creation. The result contains the
+parent intentId, stage, children, all attemptIds and actual latest
+pushRequestId/prRequestId. Explicit legacy push/pr IDs remain the first
+attempt IDs; later attempts still receive fresh UUIDs.
+
+The initial READ-only inspect() remains available. It checks an exact branch
+and all PR matches for the same repository/head/base when the new target-READ
+capability is present, with complete legacy inventories as fallback. Closed
+or ambiguous prior PRs, a mismatched draft flag and competing SHAs stop delivery.
+The remote task ref precondition is None for an absent branch and the exact
+remote SHA for an update. The parent pins the requested commit for PR checks;
+a changed branch cannot silently change the intended PR head.
+
+Confirmed child receipts replace facade postflight inventory scans. The facade
+does not merge, update main, publish Issues or deploy Gateway. Owner PENDING
+waits on the existing request; owner merges through GitHub UI.
 
 ## Automatic READ retries and intent continuation (Repo source)
 
@@ -340,11 +327,68 @@ jobs may receive their first authorized delivery after owner approval, never
 an existing CLAIMED token. Reconciliation is restricted to positive bound
 receipts and is an authorized continuation, not a hidden read-only operation.
 
-Results carry `intentId`, actual latest `requestId`, `attemptIds`, `status`
+Results carry `intentId`, result-bound `requestId`, `lastAttemptId`, `attemptIds`, `status`
 (`DONE`, `WAITING`, `STOP`, `RETRY_EXHAUSTED`) and target-state evidence. A goal
 confirmed by READ without the original receipt stays `GOAL_REACHED`, not a
-fabricated EXECUTED result. A matching local worktree without confirmed Gateway
+fabricated EXECUTED result. If an earlier attempt confirms late, requestId and effect.requestId identify that receipt; lastAttemptId still identifies the latest attempted UUID. A matching local worktree without confirmed Gateway
 registration is incomplete and is not silently adopted.
+
+### Results and continuation
+
+Results separate effect.state from verification.state. Once the original
+request has acknowledged EXECUTED, an unavailable receipt READ returns WAITING
+with effect.state=EXECUTED and nextAction.kind=RETRY_READ. Continuation reads
+that original result and cannot submit another effect. A complete receipt must
+match requestId, operation, repository and the target identity/SHA. A later
+unavailable details() or a changed live target does not erase that execution.
+Conflicting receipt identity is STOP. READ-confirmed target success without an
+attributable receipt stays GOAL_REACHED with an unconfirmed original effect.
+
+| nextAction.kind | Caller action |
+| --- | --- |
+| NONE | Intent complete |
+| RETRY_INTENT | Continue the same intentId when another round is intended |
+| RETRY_READ | Continue the same intentId to obtain the acknowledged result |
+| WAIT_BACKOFF | Respect retryAfterSeconds; continuation retains backoff |
+| WAIT_OWNER | Wait for the existing owner ASK |
+| WAIT_EXISTING_REQUEST | Wait for the existing job; no replacement WRITE |
+| FIX_PRECONDITION | Resolve the reported denial, conflict or configuration |
+
+CLI uses the same coordinator:
+```sh
+python3 -B -m fortis_approvals.workflow.client create_task < task.json
+python3 -B -m fortis_approvals.workflow.client publish < publish.json
+python3 -B -m fortis_approvals.workflow.client git-delivery < delivery.json
+python3 -B -m fortis_approvals.workflow.client retry --intent-id INTENT_ID
+```
+
+resume --request-id UUID keeps its existing meaning: service the same queued
+local request after owner approval. It is distinct from intent retry. The
+--request-id compatibility argument does not make a failed attempt replayable.
+
+Capabilities are passed from default_client() into the coordinator once and
+remain advisory. A fresh server admission still checks every WRITE. New
+githubTargetReads version 1 supports repository-access-checked get_branch and
+same-repository head/base find_pull_requests. A branch 404 requires a successful
+repository access check; a search includes open/closed/merged PRs, validates
+repository/ref identity and follows bounded pages. Multiple matches or incomplete
+READ stop. Missing capability uses the old complete lists; a denied new READ
+does not trigger a permission fallback. Source/server deployment is required
+for the new capability. Offline budgets are at most 4 coordinator READs on
+normal PR creation and 10 after one pre-effect 500, excluding one initial
+capabilities READ and counting provider-side reads separately.
+
+Task publication reuses one immutable intent-bound local bundle across new
+attempt UUIDs, with fresh clean worktree/HEAD checks and digest validation.
+Each new effect still gets fresh server artifact admission and Git validation.
+No server artifact lifetime or cross-operation quarantine cache is assumed.
+There is no overall intent deadline. The existing per-call wait budget only
+limits blocking backoff and returns WAITING for a longer required pause.
+
+Automatic retries stop on reported Git auth/access, TLS or resource failures.
+After repairing a transport/configuration failure, explicit retry can recheck
+current conditions under a new UUID. Original failure evidence is retained;
+a real Core denial, active worker, changed SHA or owner ASK cannot be overridden.
 
 For visual-review Issues the duplicate risk is accepted. Before a new attempt,
 the coordinator searches known run markers and stops at the first matching

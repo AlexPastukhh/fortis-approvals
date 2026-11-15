@@ -59,6 +59,8 @@ class NativeIngress:
                      'create_release_label','add_pr_release_labels','remove_pr_release_label']+
                     (['publish_visual_review'] if visual_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
+                githubTargetReads={'version':1,'branch':'repository-access-checked-v1',
+                    'pullRequests':'same-repository-head-base-v1'},
                 githubReleaseLabelReads=['list_repository_labels','list_pr_labels',
                     'get_pr_release_label_context'],
                 githubReleaseImpactReads=['get_pr_release_impact_evidence'],

@@ -42,6 +42,10 @@ class WorkspaceIntentTests(unittest.TestCase):
                          str(self.tasks / params['task']), params['baseSha'])
             else:
                 self.git('merge', '--ff-only', params['expectedMergeSha'])
+            self.client.rows[request_id]['result'] = dict(requestId=request_id,
+                operation=op, repository=repo, data=dict(clean=True,
+                    branch='task/' + params['task'] if op == 'create_task' else 'main',
+                    headSha=(params['adoptHeadSha'] or params['baseSha']) if op == 'create_task' else params['expectedMergeSha']))
             if outcome == 'lost': raise TimeoutError('lost ACK after local effect')
             return {'requestId': request_id, 'state': 'EXECUTED'}
         self.client._command_once = command
@@ -103,7 +107,7 @@ class WorkspaceIntentTests(unittest.TestCase):
     def test_push_retries_keep_exact_old_sha_and_skip_completed_effect(self):
         self.git('worktree', 'add', '-q', '-b', 'task/agent', str(self.tasks / 'agent'), self.base)
         calls = []
-        def publish(repo, task, old, new, *, request_id, reason):
+        def publish(repo, task, old, new, *, request_id, reason, package_id=None):
             calls.append((request_id, old, new))
             if len(calls) == 1: raise Denied('FORTIS_HTTP_500')
             self.branch = new

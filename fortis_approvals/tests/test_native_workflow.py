@@ -85,6 +85,12 @@ class FakeAPI:
         if method=='GET' and path==base+'/branches':
             rows=[dict(name=k,commit={'sha':v},protected=k=='main') for k,v in refs.items()]
             n=(params['page']-1)*params['per_page'];return rows[n:n+params['per_page']]
+        if method=='GET' and path.startswith(base+'/branches/'):
+            name=unquote(path.split('/branches/')[1])
+            if name not in refs:
+                assert allow_not_found
+                return {'_httpStatus':404}
+            return dict(name=name,commit={'sha':refs[name]},protected=name=='main')
         if method=='GET' and path.startswith(base+'/git/ref/heads/'):
             name=unquote(path.split('/git/ref/heads/')[1])
             if name not in refs and allow_not_found:return {'_httpStatus':404}
@@ -114,7 +120,14 @@ class FakeAPI:
             number=int(path.rsplit('/',1)[1]);assert set(body)=={'body'}
             self.pulls[number]['body']=body['body'];self.posts+=1
             return self.pulls[number]
-        if method=='GET' and path==base+'/pulls':return list(self.pulls.values())
+        if method=='GET' and path==base+'/pulls':
+            rows=list(self.pulls.values())
+            if params and 'head' in params:
+                assert params['head'].startswith('PilotOwner:') and params['state']=='all'
+                rows=[r for r in rows if r['head']['ref']==params['head'].split(':',1)[1]
+                      and r['base']['ref']==params['base']]
+                n=(params['page']-1)*params['per_page'];rows=rows[n:n+params['per_page']]
+            return rows
         if method=='GET' and path.startswith(base+'/pulls/'):return self.pulls[int(path.rsplit('/',1)[1])]
         if method=='GET' and path==base+'/actions/runs':
             return dict(total_count=1,workflow_runs=[dict(id=888,workflow_id=101,head_sha=params['head_sha'],

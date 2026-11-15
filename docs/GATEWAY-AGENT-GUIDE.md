@@ -87,7 +87,7 @@ Use the [Repo intent coordinator](NATIVE-WORKTREE-GATEWAY-2026-11-06.md#automati
 for supported command retries. It keeps one logical intentId, allocates a
 fresh requestId for every new attempt and performs the operation-specific
 readbacks/precondition checks. An explicit `client.intents.retry(intentId)`
-continues without asking the AI to invent another UUID. Shared semantic READ
+continues without asking the AI to invent another UUID. Git delivery returns one parent intentId for push and PR; CLI uses retry --intent-id. An acknowledged EXECUTED with temporarily unavailable receipt returns WAITING / RETRY_READ and cannot send another WRITE. Shared semantic READ
 retries handle bounded throttling/network/5xx backoff without effect inspection.
 Visual-review Issue retries accept duplicate risk; their required post-success
 duplicate check remains manual, indicated in the returned result.
@@ -184,8 +184,8 @@ or future versions do not authorize new effects or recovery.
   outcome. Permission requirement headers do not prove missing token
   privileges, X-RateLimit-Reset is reset-time evidence only, and
   Retry-After is a backoff hint — never automatic WRITE retry permission.
-- The native Git artifact staging route may return
-  FORTIS_ARTIFACT_<FIXED_CODE> and an optional fixed validation phase
+- The native Git artifact staging and fetch routes may return
+  FORTIS_ARTIFACT_<FIXED_CODE> / FORTIS_FETCH_<FIXED_CODE> and an optional fixed validation phase
   (SETUP, FETCH_MAIN, READ_REMOTE_REFS, FETCH_TASK, BUNDLE_IDENTITY,
   BUNDLE_IMPORT, COMMIT_INTEGRITY, ANCESTRY, PATH_PROJECTION).
   A stage names where a local/remote Git validation step failed, **not**
@@ -211,7 +211,7 @@ or future versions do not authorize new effects or recovery.
   from a missing event, worker heartbeat or receipt.
 - Any DISPATCHED/UNCERTAIN without verified outcome stays unknown. Never
   create a new UUID to blindly retry; never use reconcile as a pure READ.
-- This source does not include Outcome Resolver, automatic recovery, Owner
+- These server diagnostics do not provide an Outcome Resolver, server-side automatic recovery, Owner
   Attention Gate, or a production release. Normal ALLOW/ASK/DENY policies,
   per-actor grants, owner WebAuthn and authorized GitHub routes remain unchanged.
 

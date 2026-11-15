@@ -19,7 +19,7 @@ from .common import require
 from .ingress import NATIVE_PATHS
 from .incident_read import IncidentInspector
 from .worker import Worker
-from .intents import IntentClient, WORKSPACE_COMMANDS
+from .intents import IntentClient, WORKSPACE_COMMANDS, GITHUB_COMMANDS
 
 
 class WorkflowTransport(GatewayTransport):
@@ -32,10 +32,13 @@ class WorkflowTransport(GatewayTransport):
 
 class WorkflowClient:
     def __init__(self,*,gateway,worker,worker_observability=False,
-                 automatic_recovery=False, intent_root=None):
+                 automatic_recovery=False, intent_root=None, capabilities=None):
         # Critical version gate: after a source merge Repo may run new client
         # against old Primary. Old /finish rejects a fifth diagnostic field.
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
+        require(capabilities is None or type(capabilities) is dict,
+                'WORKFLOW_CAPABILITIES_RESPONSE_INVALID')
+        self._capabilities=capabilities
         self.worker_observability=worker_observability is True
         self.incidents=IncidentInspector(self)
         self.git_delivery=GitDelivery(self)
@@ -43,13 +46,21 @@ class WorkflowClient:
         self.intents=IntentClient(self, **({'root':intent_root} if intent_root is not None else {}))
         self.github.intent_client=self.intents if self.automatic_recovery else None
 
+    def capabilities(self, *, refresh=False):
+        """Advisory protocol features; each WRITE still has fresh server admission."""
+        if refresh or self._capabilities is None:
+            caps=self.gateway.post('/v1/workspace/capabilities',{})
+            require(type(caps) is dict,'WORKFLOW_CAPABILITIES_RESPONSE_INVALID')
+            self._capabilities=caps
+        return self._capabilities
+
     def diagnostic_capabilities(self):
         """Read existing actor-scoped Gateway capabilities; no new request/WRITE.
 
         Missing/unknown versions are NOT authorization for effect recovery.
         Transport errors propagate, rather than being mislabeled legacy.
         """
-        caps=self.gateway.post('/v1/workspace/capabilities',{})
+        caps=self.capabilities(refresh=True)
         if type(caps) is not dict:
             raise Denied('WORKFLOW_CAPABILITIES_RESPONSE_INVALID')
         return inspect_diagnostic_capability(caps.get('diagnosticContract'))
@@ -195,9 +206,9 @@ class WorkflowClient:
         return self._publish_once(repository,task,expected_old,new_sha,
                                   request_id=request_id,reason=reason)
 
-    def _publish_once(self,repository,task,expected_old,new_sha,*,request_id,reason):
+    def _publish_once(self,repository,task,expected_old,new_sha,*,request_id,reason,package_id=None):
         # Existing local commit objects are bundled, never reconstructed from file contents.
-        data=self.worker.publish_package(repository,task,expected_old,new_sha,request_id,reason)
+        data=self.worker.publish_package(repository,task,expected_old,new_sha,package_id or request_id,reason)
         artifact=hashlib.sha256(data).hexdigest()
         prior=self.result(request_id)
         if prior['state']!='NOT_FOUND':
@@ -276,12 +287,18 @@ class GitDelivery:
         branch = _identity(repository, task, new_sha)
         require(draft is None or type(draft) is bool, 'GIT_DELIVERY_DRAFT_INVALID')
         try:
-            branches = _read_pages(
-                lambda page, size: self.client.github.list_branches(
-                    repository, page=page, per_page=size), page_size=100)
-            prs = _read_pages(
-                lambda page, size: self.client.github.list_pull_requests(
-                    repository, state='all', page=page, per_page=size), page_size=50)
+            if getattr(self.client, 'automatic_recovery', False):
+                coordinator = self.client.intents
+                remote = coordinator._branch(repository, branch)
+                branches = [{'name': branch, 'sha': remote}] if remote is not None else []
+                prs = coordinator._pulls(repository, branch, 'main')
+            else:
+                branches = _read_pages(
+                    lambda page, size: self.client.github.list_branches(
+                        repository, page=page, per_page=size), page_size=100)
+                prs = _read_pages(
+                    lambda page, size: self.client.github.list_pull_requests(
+                        repository, state='all', page=page, per_page=size), page_size=50)
         except Exception:
             # Preserve any original UUID and fail closed on GET, bad payload,
             # truncated pages or transport errors; never guess non-execution.
@@ -319,13 +336,16 @@ class GitDelivery:
                             expected_remote_sha=remote_sha, pr=pr)
 
     def submit(self, repository, task, new_sha, *, title, body, draft=False,
-               push_request_id, pr_request_id, reason):
-        """At most 1 typed push and 1 typed PR POST; never merge/retry.
+               push_request_id=None, pr_request_id=None, reason):
+        """Publish through one continuation handle and the existing coordinators.
 
-        On a lost response inspect remote target state, without fabricating
-        an EXECUTED receipt for the original UUID. The caller decides whether
-        any *new* authorized intent is appropriate after STOP.
+        Explicit legacy clients retain the original single-attempt behavior.
+        No facade-specific mutation retry loop or merge is introduced.
         """
+        if getattr(self.client, 'automatic_recovery', False):
+            return self.client.intents.delivery(repository, task, new_sha,
+                title=title, body=body, draft=draft, push_request_id=push_request_id,
+                pr_request_id=pr_request_id, reason=reason)
         branch = _identity(repository, task, new_sha)
         _request_id(push_request_id)
         _request_id(pr_request_id)
@@ -433,19 +453,35 @@ def default_client(endpoint='https://host.docker.internal:19204'):
               obs.get('readOnly') is True and
               type(diagnostics) is dict and diagnostics.get('codes')=='bounded-class-v1')
     return WorkflowClient(gateway=gateway,worker=worker,worker_observability=accepted,
-                          automatic_recovery=True)
+                          automatic_recovery=True,capabilities=capabilities)
 
 
 def main():
     parser=argparse.ArgumentParser(description='Typed worktree workflow; no direct GitHub credential/helper.')
     parser.add_argument('operation')
-    parser.add_argument('--request-id',required=True)
+    parser.add_argument('--request-id')
+    parser.add_argument('--intent-id')
     parser.add_argument('--repository',default='fortis-approvals')
     parser.add_argument('--reason',default='Authorized task worktree workflow')
     args=parser.parse_args()
-    body=json.load(sys.stdin)
+    retry=args.operation=='retry'
+    if retry:
+        if not args.intent_id or args.request_id:
+            parser.error('retry requires --intent-id and does not accept --request-id')
+    elif args.intent_id:
+        parser.error('--intent-id is only used with retry')
+    if not retry and args.operation not in WORKSPACE_COMMANDS | GITHUB_COMMANDS | {'publish','git-delivery'} and not args.request_id:
+        parser.error('this operation requires --request-id')
+    if args.operation=='git-delivery' and args.request_id:
+        parser.error('git-delivery uses a parent intent; legacy push/pr IDs belong in its JSON body')
+    if retry or args.operation in ('resume','result'):
+        body={}
+    else:
+        raw=sys.stdin.read()
+        body=json.loads(raw) if raw.strip() else {}
     client=default_client()
-    if args.operation=='resume':result=client.resume(args.request_id)
+    if retry:result=client.intents.retry(args.intent_id)
+    elif args.operation=='resume':result=client.resume(args.request_id)
     elif args.operation=='publish':
         result=client.publish(args.repository,body['task'],body['expectedHeadSha'],body['newSha'],
             request_id=args.request_id,reason=args.reason)
@@ -454,6 +490,13 @@ def main():
         result=client.details(args.request_id,
             event_offset=body.get('eventOffset',0),
             event_limit=body.get('eventLimit',100))
+    elif args.operation=='git-delivery':
+        result=client.git_delivery.submit(args.repository,body['task'],body['newSha'],
+            title=body['title'],body=body['body'],draft=body.get('draft',False),
+            push_request_id=body.get('pushRequestId'),pr_request_id=body.get('prRequestId'),reason=args.reason)
+    elif args.operation in GITHUB_COMMANDS:
+        result=client.github.action(args.operation,args.repository,body,
+                                   request_id=args.request_id,reason=args.reason)
     else:
         result=client.command(args.operation,args.repository,body,request_id=args.request_id,reason=args.reason)
     print(json.dumps(result,sort_keys=True))

@@ -337,6 +337,10 @@ print(len(files))
         metadata=dict(repository=repo,task=task,expectedHeadSha=old,newSha=new,reason=reason)
         with repository_lock(state/'repository.lock'):
             record=folder/(ident+'.json');bundle=folder/(ident+'.bundle')
+            target=self._target(repo,task,root,run,text)
+            snapshot=self._snapshot(repo,task,root,run,text)
+            require(snapshot['headSha']==new and snapshot['clean'],
+                    'WORKER_PUBLISH_HEAD_CHANGED')
             if record.exists():
                 require(not record.is_symlink() and not bundle.is_symlink(),'WORKER_PUBLISH_JOURNAL_INVALID')
                 saved=json.loads(record.read_text())
@@ -344,8 +348,6 @@ print(len(files))
                 data=bundle.read_bytes()
                 require(hashlib.sha256(data).hexdigest()==saved['bundleSha256'],'WORKER_PUBLISH_BUNDLE_CHANGED')
                 return data
-            target=self._target(repo,task,root,run,text)
-            require(text(['rev-parse','HEAD'],target)==new,'WORKER_PUBLISH_HEAD_CHANGED')
             require(not bundle.exists(),'WORKER_PARTIAL_PUBLISH_PACKAGE_INSPECT')
             run(['bundle','create',bundle,'refs/heads/task/'+task],target)
             bundle.chmod(0o600)

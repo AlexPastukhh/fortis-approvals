@@ -90,6 +90,23 @@ class IntentClient:
         self.client = client
         self.journal = IntentJournal(root)
         self.policy = retry_policy or RetryPolicy()
+        self._capability_snapshot = None
+
+    def _capabilities(self):
+        reader = getattr(self.client, 'capabilities', None)
+        if callable(reader):
+            return reader()
+        if self._capability_snapshot is None:
+            value = self.client.gateway.post('/v1/workspace/capabilities', {})
+            require(type(value) is dict, 'WORKFLOW_CAPABILITIES_RESPONSE_INVALID')
+            self._capability_snapshot = value
+        return self._capability_snapshot
+
+    def _target_reads(self):
+        value = self._capabilities().get('githubTargetReads')
+        return (type(value) is dict and type(value.get('version')) is int and
+                value['version'] == 1 and value.get('branch') == 'repository-access-checked-v1' and
+                value.get('pullRequests') == 'same-repository-head-base-v1')
 
     def command(self, operation, repository, params, *, request_id=None,
                 reason='Authorized workspace intent', wait_owner=False):
@@ -117,22 +134,26 @@ class IntentClient:
         return self._start('visual', 'publish_visual_review', kwargs['repository'],
                            kwargs, request_id, reason)
 
-    def _start(self, kind, operation, repository, params, ident, reason, **options):
+    def _start(self, kind, operation, repository, params, ident, reason, *,
+               _intent_id=None, _seed=None, **options):
         intent = json.loads(canonical(dict(kind=kind, operation=operation,
             repository=repository, params=params, reason=reason, options=options)))
         endpoint = getattr(self.client.gateway, 'endpoint', '')
         # Identical calls without a supplied ID resume the same logical intent.
         # It is separate from the UUIDs of the individual Gateway attempts.
         first_request_id = _uuid(ident) if ident else None
-        ident = _uuid(ident) if ident else str(uuid.uuid5(uuid.NAMESPACE_URL,
+        ident = _uuid(_intent_id) if _intent_id else _uuid(ident) if ident else str(uuid.uuid5(uuid.NAMESPACE_URL,
             endpoint + '|' + canonical(intent)))
         with self.journal.locked(ident):
             record = self.journal.load(ident)
             if record is None:
                 record = dict(intentId=ident, endpoint=endpoint, intent=intent,
                               attempts=[], budget=3, round=0, firstRequestId=first_request_id)
+                record.update(_seed or {})
                 self.journal.save(record)
             require(record['intent'] == intent and record['endpoint'] == endpoint,
+                    'INTENT_PAYLOAD_CHANGED')
+            require(all(record.get(k) == v for k, v in (_seed or {}).items()),
                     'INTENT_PAYLOAD_CHANGED')
             return self._run(record)
 
@@ -143,25 +164,215 @@ class IntentClient:
             require(record is not None, 'INTENT_NOT_FOUND')
             require(record['endpoint'] == getattr(self.client.gateway, 'endpoint', ''),
                     'INTENT_ENDPOINT_CHANGED')
+            if record['attempts']:
+                # Explicit continuation can test a repaired transport/config.
+                # Keep the original evidence; Core DENY/ASK still wins below.
+                record['manualRetryAfterAttempt'] = record['attempts'][-1]['requestId']
             if len(record['attempts']) >= record['budget']:
                 record['budget'] += 3
                 record['round'] += 1
                 self.journal.save(record)
-            return self._run(record)
+            self.journal.save(record)
+            return self._run(record, manual_retry=True)
+
+    def delivery(self, repository, task, new_sha, *, title, body, draft=False,
+                 push_request_id=None, pr_request_id=None, reason):
+        from .client import _identity
+        branch = _identity(repository, task, new_sha)
+        for ident in (push_request_id, pr_request_id):
+            if ident is not None: _uuid(ident)
+        require(push_request_id is None or pr_request_id is None or
+                push_request_id != pr_request_id, 'GIT_DELIVERY_UUID_REUSE')
+        require(type(reason) is str and bool(reason.strip()), 'GIT_DELIVERY_REASON_REQUIRED')
+        from ..integrations.github.contract import validate_github_action
+        validate_github_action('create_pull_request', repository,
+            dict(head=branch, base='main', title=title, body=body, draft=draft))
+        return self._start('delivery', 'publish_task_pr', repository,
+            dict(task=task, newSha=new_sha, title=title, body=body, draft=draft,
+                 pushRequestId=push_request_id, prRequestId=pr_request_id), None, reason)
+
+    def _delivery_child(self, record, stage, kind, operation, params, request_id, manual_retry):
+        children = record.setdefault('children', {})
+        child = children.get(stage)
+        if child is None:
+            child = {'intentId': str(uuid.uuid5(uuid.UUID(record['intentId']), stage))}
+            children[stage] = child
+            self.journal.save(record)
+        ident = child['intentId']
+        if manual_retry and self.journal.load(ident) is not None and child.get('status') != 'DONE':
+            result = self.retry(ident)
+        else:
+            result = self._start(kind, operation, record['intent']['repository'], params,
+                request_id, record['intent']['reason'], _intent_id=ident,
+                _seed={'expectedPrHead': record['intent']['params']['newSha']} if stage == 'pr' else None)
+        children[stage] = result
+        self.journal.save(record)
+        return result
+
+    def _delivery_answer(self, record, response, stage):
+        p = record['intent']['params']; children = record.get('children', {})
+        push = children.get('push', {}); pr = children.get('pr', {})
+        answer = dict(response)
+        target = pr.get('targetState') or {}
+        view = record.get('deliveryPlan', {})
+        answer.update(intentId=record['intentId'], stage=stage, children=children,
+            repository=record['intent']['repository'], branch='task/' + p['task'], desiredHeadSha=p['newSha'],
+            remoteHeadSha=p['newSha'] if response.get('status') == 'DONE' or push.get('status') == 'DONE' or not view.get('pushRequired', True)
+                          else view.get('expectedRemoteSha'),
+            expectedRemoteSha=view.get('expectedRemoteSha'),
+            pushRequestId=push.get('requestId'), prRequestId=pr.get('requestId'),
+            pullRequestNumber=target.get('pullRequestNumber', response.get('pullRequestNumber')),
+            pullRequestUrl=target.get('url', response.get('pullRequestUrl')),
+            attemptIds=list(dict.fromkeys(push.get('attemptIds', []) + pr.get('attemptIds', []))))
+        answer['nextAction'] = {**answer.get('nextAction', {}), 'intentId': record['intentId']}
+        return answer
+
+    def _run_delivery(self, record, manual_retry):
+        intent = record['intent']; p = intent['params']; repo = intent['repository']
+        try:
+            if 'deliveryPlan' not in record:
+                view = self.client.git_delivery.inspect(repo, p['task'], p['newSha'], draft=p['draft'])
+                if view['status'] != 'CONTINUE':
+                    response = self._answer(record, view['status'], view['code'], target=view)
+                    response.update(pullRequestNumber=view.get('pullRequestNumber'),
+                                    pullRequestUrl=view.get('pullRequestUrl'))
+                    return self._delivery_answer(record, response, 'inspect')
+                record['deliveryPlan'] = {'expectedRemoteSha': view['expectedRemoteSha'],
+                    'pushRequired': view['code'] == 'GIT_DELIVERY_PUSH_REQUIRED'}
+                self.journal.save(record)
+            plan = record['deliveryPlan']
+            if plan['pushRequired']:
+                push = self._delivery_child(record, 'push', 'publish', 'push_commits',
+                    dict(task=p['task'], expectedHeadSha=plan['expectedRemoteSha'], newSha=p['newSha']),
+                    p['pushRequestId'], manual_retry)
+                if push['status'] != 'DONE':
+                    return self._delivery_answer(record, push, 'push')
+            pr = self._delivery_child(record, 'pr', 'github', 'create_pull_request',
+                dict(head='task/' + p['task'], base='main', title=p['title'], body=p['body'], draft=p['draft']),
+                p['prRequestId'], manual_retry)
+            return self._delivery_answer(record, pr, 'pr')
+        except (Denied, OSError, ValueError, KeyError, TypeError) as exc:
+            code = exc.args[0] if len(exc.args) == 1 else None
+            if type(code) is not str or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,119}', code):
+                code = 'INTENT_READBACK_OR_PRECONDITION_FAILED'
+            return self._delivery_answer(record, self._answer(record, 'STOP', code), 'inspect')
 
     def _answer(self, record, status, code, *, target=None, response=None):
         attempts = record['attempts']
         answer = dict(response or {})
+        latest = attempts[-1]['requestId'] if attempts else None
+        response_id = response.get('requestId') if response else None
+        request_id = response_id if any(a['requestId'] == response_id for a in attempts) else latest
         answer.update(intentId=record['intentId'], status=status, code=code,
-            requestId=attempts[-1]['requestId'] if attempts else None,
+            requestId=request_id, lastAttemptId=latest,
             attemptIds=[a['requestId'] for a in attempts], targetState=target,
             retryRound=record['round'])
         if 'state' not in answer:
             answer['state'] = 'GOAL_REACHED' if status == 'DONE' else status
+        executed = next((a for a in reversed(attempts) if a.get('observedState') == 'EXECUTED'), None)
+        answer['effect'] = {'state': 'EXECUTED' if executed else 'UNCONFIRMED' if attempts else 'NOT_ATTEMPTED',
+                            'requestId': executed['requestId'] if executed else answer['requestId']}
+        answer['verification'] = {'state': 'CONFIRMED' if status == 'DONE' else 'UNCONFIRMED'}
+        next_kind = ('NONE' if status == 'DONE' else
+                     'FIX_PRECONDITION' if status == 'STOP' else
+                     'RETRY_INTENT' if status == 'RETRY_EXHAUSTED' else
+                     'WAIT_BACKOFF' if code == 'INTENT_BACKOFF_REQUIRED' else
+                     'RETRY_READ' if executed else
+                     'WAIT_OWNER' if response and response.get('state') == 'PENDING' else
+                     'WAIT_EXISTING_REQUEST' if status == 'WAITING' else 'FIX_PRECONDITION')
+        answer['nextAction'] = {'kind': next_kind, 'intentId': record['intentId']}
+        if attempts and attempts[-1].get('failureEvidence'):
+            answer['failureEvidence'] = attempts[-1]['failureEvidence']
         if record['intent']['kind'] == 'visual':
             answer['runIds'] = [a['runId'] for a in attempts]
             answer['manualDuplicateCheckRequired'] = True
         return answer
+
+    def _confirmed_target(self, record, attempt, receipt):
+        """Use a Core-confirmed, UUID-bound receipt; never re-scan inventories."""
+        intent = record['intent']; p = intent['params']; op = intent['operation']
+        require(type(receipt) is dict and receipt.get('requestId') == attempt['requestId'] and
+                receipt.get('operation') == op and receipt.get('repository') == intent['repository'],
+                'INTENT_RECEIPT_BINDING_INVALID')
+        if intent['kind'] == 'workspace':
+            data = receipt.get('data')
+            require(type(data) is dict and data.get('clean') is True, 'INTENT_RECEIPT_BINDING_INVALID')
+            if op == 'create_task':
+                wanted = p['adoptHeadSha'] or p['baseSha']
+                require(data.get('branch') == 'task/' + p['task'] and data.get('headSha') == wanted,
+                        'INTENT_RECEIPT_BINDING_INVALID')
+                return {'task': p['task'], 'headSha': wanted}
+            wanted = p.get('expectedMergeSha') or record.get('expectedTargetHead')
+            if wanted is None:
+                merge = self.client.result(p['mergeRequestId'])
+                require(merge['state'] == 'EXECUTED' and merge['result']['merged'],
+                        'INTENT_MERGE_RECEIPT_REQUIRED')
+                wanted = merge['result']['sha']
+            require(data.get('branch') == 'main' and data.get('headSha') == wanted,
+                    'INTENT_RECEIPT_BINDING_INVALID')
+            return {'branch': 'main', 'headSha': wanted}
+        if intent['kind'] == 'publish' or op == 'create_branch':
+            branch = 'task/' + p['task'] if intent['kind'] == 'publish' else p['branch']
+            wanted = p['newSha'] if intent['kind'] == 'publish' else p['sourceSha']
+            require(receipt.get('branch') == branch and receipt.get('sha') == wanted,
+                    'INTENT_RECEIPT_BINDING_INVALID')
+            return {'branch': branch, 'sha': wanted}
+        if op in ('create_pull_request', 'mark_pr_ready'):
+            pr = receipt.get('pullRequest')
+            require(type(pr) is dict and type(pr.get('number')) is int and pr['number'] > 0 and
+                    type(pr.get('head')) is dict and type(pr.get('base')) is dict,
+                    'INTENT_RECEIPT_BINDING_INVALID')
+            if op == 'create_pull_request':
+                require(pr.get('head', {}).get('ref') == p['head'] and
+                        pr.get('head', {}).get('sha') == record.get('expectedPrHead') and
+                        pr.get('base', {}).get('ref') == p['base'] and pr.get('draft') is p['draft'],
+                        'INTENT_RECEIPT_BINDING_INVALID')
+            else:
+                require(pr['number'] == p['number'] and
+                        pr.get('head', {}).get('sha') == p['expectedHeadSha'] and pr.get('draft') is False,
+                        'INTENT_RECEIPT_BINDING_INVALID')
+            return {'pullRequestNumber': pr['number'], 'url': pr.get('url')}
+        if op == 'publish_visual_review':
+            require(receipt.get('runId') == attempt['runId'] and
+                    type(receipt.get('issueNumber')) is int and receipt['issueNumber'] > 0 and
+                    receipt.get('uploadedFiles') == len(p['media']), 'INTENT_RECEIPT_BINDING_INVALID')
+            return {'issueNumber': receipt['issueNumber'], 'runId': attempt['runId'], 'url': receipt.get('url')}
+        require(receipt.get('number') == p['number'] and receipt.get('headSha') == p['expectedHeadSha'],
+                'INTENT_RECEIPT_BINDING_INVALID')
+        if op == 'update_pull_request':
+            wanted = hashlib.sha256(p['body'].encode()).hexdigest()
+            require(receipt.get('bodySha256') == wanted, 'INTENT_RECEIPT_BINDING_INVALID')
+            return {'bodySha256': wanted}
+        labels = receipt.get('labels')
+        require(type(labels) is list and all(type(x) is str for x in labels), 'INTENT_RECEIPT_BINDING_INVALID')
+        require(all(x in labels for x in p['labels']) if op == 'add_pr_release_labels' else p['name'] not in labels,
+                'INTENT_RECEIPT_BINDING_INVALID')
+        return {'labels': labels}
+
+    def _finish_confirmed(self, record, attempt, response=None):
+        """Once execution was acknowledged, every continuation is READ-only."""
+        try:
+            result = self.client.result(attempt['requestId']) if response is None else response
+            require(type(result) is dict and result.get('state') in _STATES, 'INTENT_STATE_INVALID')
+            require(result.get('requestId') == attempt['requestId'], 'INTENT_RESULT_BINDING_INVALID')
+            if result.get('state') != 'EXECUTED' or result.get('result') is None:
+                answer = self._answer(record, 'WAITING', 'INTENT_EXECUTED_DETAILS_UNAVAILABLE')
+                answer['verification'] = {'state': 'UNAVAILABLE', 'code': 'INTENT_RECEIPT_NOT_AVAILABLE'}
+                return answer
+            target = self._confirmed_target(record, attempt, result['result'])
+            return self._answer(record, 'DONE', 'INTENT_EXECUTED', target=target, response=result)
+        except Denied as exc:
+            code = exc.args[0] if len(exc.args) == 1 else None
+            if type(code) is str and code in ('INTENT_RECEIPT_BINDING_INVALID', 'INTENT_RESULT_BINDING_INVALID', 'INTENT_STATE_INVALID'):
+                return self._answer(record, 'STOP', code)
+            safe = code if type(code) is str and re.fullmatch(r'FORTIS_[A-Z0-9_]{1,100}', code) else 'INTENT_READ_UNAVAILABLE'
+            answer = self._answer(record, 'WAITING', 'INTENT_EXECUTED_DETAILS_UNAVAILABLE')
+            answer['verification'] = {'state': 'UNAVAILABLE', 'code': safe}
+            return answer
+        except (OSError, ValueError, KeyError, TypeError, TimeoutError):
+            answer = self._answer(record, 'WAITING', 'INTENT_EXECUTED_DETAILS_UNAVAILABLE')
+            answer['verification'] = {'state': 'UNAVAILABLE', 'code': 'INTENT_READ_UNAVAILABLE'}
+            return answer
 
     def _observations(self, record):
         """Check exact attempts only; no scans through the entire Core history."""
@@ -191,6 +402,20 @@ class IntentClient:
                         'INTENT_DETAILS_BINDING_INVALID')
             else:
                 require(params.get('runId') == attempt['runId'], 'INTENT_DETAILS_BINDING_INVALID')
+            if intent['operation'] == 'push_commits' and row.get('state') == 'UNCERTAIN':
+                diagnostic = details.get('diagnostic')
+                error = diagnostic.get('coreError') if type(diagnostic) is dict else None
+                permanent = {'GIT_AUTH_FAILURE_REPORTED', 'GIT_REMOTE_ACCESS_DENIED',
+                    'GIT_TLS_FAILURE_REPORTED', 'GIT_RESOURCE_FAILURE_REPORTED'}
+                if (type(error) is dict and error.get('stage') == 'GITHUB_ADAPTER' and
+                        error.get('code') in permanent | {'GIT_RATE_LIMIT_REPORTED'} and
+                        not attempt.get('failureEvidence')):
+                    attempt['failureEvidence'] = {'stage': error['stage'], 'code': error['code']}
+                    if error['code'] in permanent:
+                        attempt['permanentFailure'] = error['code']
+                    else:
+                        attempt['notBefore'] = max(attempt.get('notBefore', 0), self.policy.clock() + 60)
+                    self.journal.save(record)
             worker = details.get('worker')
             worker_state = worker.get('state') if type(worker) is dict else None
             require(row.get('state') in _STATES and
@@ -219,11 +444,17 @@ class IntentClient:
             observations.append((row.get('state'), worker_state, result))
         return observations
 
-    def _run(self, record):
+    def _run(self, record, *, manual_retry=False):
+        if record['intent']['kind'] == 'delivery':
+            return self._run_delivery(record, manual_retry)
         waited = 0
         while True:
             try:
-                cap = self.client.gateway.post('/v1/workspace/capabilities', {})
+                confirmed = next((a for a in reversed(record['attempts'])
+                                  if a.get('observedState') == 'EXECUTED'), None)
+                if confirmed is not None:
+                    return self._finish_confirmed(record, confirmed)
+                cap = self._capabilities()
                 require((cap.get('globalRequestInventory') or {}).get('crossActorDetails') is True,
                         'INTENT_DETAILS_UNSUPPORTED')
                 observations = self._observations(record)
@@ -232,6 +463,11 @@ class IntentClient:
                         # A still executing/approved request is not a failed attempt.
                         return self._answer(record, 'WAITING', 'INTENT_AWAITING_EXISTING_REQUEST',
                                             response=response)
+                for attempt, (state, _, response) in zip(record['attempts'], observations):
+                    if state == 'EXECUTED':
+                        attempt['observedState'] = 'EXECUTED'
+                        self.journal.save(record)
+                        return self._finish_confirmed(record, attempt, response)
                 target, complete = self._goal(record, observations)
                 if complete:
                     response = observations[-1][2] if observations and observations[-1][0] == 'EXECUTED' else None
@@ -247,7 +483,8 @@ class IntentClient:
                     return self._answer(record, 'RETRY_EXHAUSTED', 'INTENT_RETRY_BUDGET_EXHAUSTED', target=target)
                 if record['attempts']:
                     last = record['attempts'][-1]
-                    if last.get('permanentFailure'):
+                    if (last.get('permanentFailure') and
+                            record.get('manualRetryAfterAttempt') != last['requestId']):
                         return self._answer(record, 'STOP', last['permanentFailure'], target=target)
                     delay = max(0, last.get('notBefore', 0) - self.policy.clock())
                     if waited + delay > self.policy.max_wait:
@@ -256,12 +493,18 @@ class IntentClient:
                         return answer
                     self.policy.sleep(delay); waited += delay
                     # Re-read after waiting before allocating a fresh attempt.
-                    refreshed = self._observations(record)
+                    refreshed = self._observations(record) if delay > 0 else observations
                     if any(s in _ACTIVE or w in ('CLAIMED', 'QUEUED') for s, w, _ in refreshed):
                         return self._answer(record, 'WAITING', 'INTENT_AWAITING_EXISTING_REQUEST')
                     if any(s in _FINAL_DENIAL for s, _, _ in refreshed):
                         return self._answer(record, 'STOP', 'INTENT_ADMISSION_STOP')
-                    target, complete = self._goal(record, refreshed)
+                    for previous, (state, _, response) in zip(record['attempts'], refreshed):
+                        if state == 'EXECUTED':
+                            previous['observedState'] = 'EXECUTED'
+                            self.journal.save(record)
+                            return self._finish_confirmed(record, previous, response)
+                    if delay > 0:
+                        target, complete = self._goal(record, refreshed)
                     if complete:
                         return self._answer(record, 'DONE', 'INTENT_TARGET_REACHED', target=target)
                     if target.get('partialPublication'):
@@ -276,6 +519,7 @@ class IntentClient:
                 self.journal.save(record)
                 try:
                     response = self._once(record, attempt)
+                    require(response.get('requestId') == attempt['requestId'], 'INTENT_RESULT_BINDING_INVALID')
                     attempt['observedState'] = response.get('state')
                     self.journal.save(record)
                     if response.get('state') in _ACTIVE:
@@ -283,14 +527,7 @@ class IntentClient:
                     if response.get('state') in _FINAL_DENIAL:
                         return self._answer(record, 'STOP', 'INTENT_ADMISSION_STOP', response=response)
                     if response.get('state') == 'EXECUTED':
-                        # Provider adapters already bind receipt and effect readback.
-                        # In particular: no second-Issue search after publication.
-                        if record['intent']['kind'] == 'visual':
-                            return self._answer(record, 'DONE', 'INTENT_EXECUTED', response=response)
-                        final, confirmed = self._goal(record, self._observations(record))
-                        return self._answer(record, 'DONE' if confirmed else 'STOP',
-                            'INTENT_EXECUTED' if confirmed else 'INTENT_TARGET_CHANGED_AFTER_EXECUTION',
-                            response=response, target=final)
+                        return self._finish_confirmed(record, attempt)
                 except Exception as exc:
                     attempt['delay'] = self.policy.delay(exc, len(record['attempts']) - 1)
                     attempt['notBefore'] = self.policy.clock() + attempt['delay']
@@ -313,7 +550,7 @@ class IntentClient:
                 request_id=ident, reason=reason, **intent['options'])
         if intent['kind'] == 'publish':
             return self.client._publish_once(repo, p['task'], p['expectedHeadSha'], p['newSha'],
-                                             request_id=ident, reason=reason)
+                                             request_id=ident, reason=reason, package_id=record['intentId'])
         if intent['kind'] == 'github':
             return self.client.github._action_once(intent['operation'], repo, p,
                                                    request_id=ident, reason=reason)
@@ -339,6 +576,33 @@ class IntentClient:
             repo, page=page, per_page=size), 100)
         require(len({r['name'] for r in rows}) == len(rows), 'INTENT_REFS_CHANGED')
         return {r['name']: r['sha'] for r in rows}
+
+    def _branch(self, repo, branch):
+        if not self._target_reads():
+            return self._refs(repo).get(branch)
+        result = self.client.github.get_branch(repo, branch)
+        require(type(result.get('found')) is bool, 'INTENT_READ_INVALID')
+        row = result.get('branch')
+        if result['found'] is False:
+            require(row is None, 'INTENT_READ_INVALID')
+            return None
+        require(type(row) is dict and row.get('name') == branch and
+                type(row.get('sha')) is str and re.fullmatch('[0-9a-f]{40}', row['sha']),
+                'INTENT_READ_INVALID')
+        return row['sha']
+
+    def _pulls(self, repo, head, base):
+        if self._target_reads():
+            rows = self._pages(lambda page, size: self.client.github.find_pull_requests(
+                repo, head, base, page=page, per_page=size), 50)
+            require(all(r['head']['ref'] == head and r['base']['ref'] == base for r in rows),
+                    'INTENT_PR_SEARCH_CHANGED')
+        else:
+            rows = self._pages(lambda page, size: self.client.github.list_pull_requests(
+                repo, state='all', page=page, per_page=size), 50)
+            rows = [r for r in rows if r['head']['ref'] == head and r['base']['ref'] == base]
+        require(len({r['number'] for r in rows}) == len(rows), 'INTENT_PR_SEARCH_CHANGED')
+        return rows
 
     def _goal(self, record, observations):
         intent = record['intent']; p = intent['params']; repo = intent['repository']
@@ -367,10 +631,9 @@ class IntentClient:
                             'partialPublication': not complete}, complete
             return {'issueFound': False}, False
         if kind == 'publish' or op == 'create_branch':
-            refs = self._refs(repo)
             branch = 'task/' + p['task'] if kind == 'publish' else p['branch']
             wanted = p['newSha'] if kind == 'publish' else p['sourceSha']
-            actual = refs.get(branch)
+            actual = self._branch(repo, branch)
             if actual == wanted:
                 return {'branch': branch, 'sha': actual}, True
             require(actual == p.get('expectedHeadSha'), 'INTENT_REMOTE_HEAD_CHANGED')
@@ -383,17 +646,14 @@ class IntentClient:
                         'INTENT_LOCAL_HEAD_CHANGED')
             return {'branch': branch, 'sha': actual}, False
         if op == 'create_pull_request':
-            refs = self._refs(repo)
-            head = refs.get(p['head'])
+            head = self._branch(repo, p['head'])
             require(head is not None, 'INTENT_BRANCH_NOT_PUBLISHED')
             expected = record.get('expectedPrHead')
             if expected is None:
                 record['expectedPrHead'] = head; self.journal.save(record)
             else:
                 require(head == expected, 'INTENT_PR_HEAD_CHANGED')
-            prs = self._pages(lambda page, size: self.client.github.list_pull_requests(
-                repo, state='all', page=page, per_page=size), 50)
-            matches = [r for r in prs if r['head']['ref'] == p['head'] and r['base']['ref'] == p['base']]
+            matches = self._pulls(repo, p['head'], p['base'])
             require(len(matches) <= 1, 'INTENT_PR_AMBIGUOUS')
             if matches:
                 pr = self.client.github.get_pull_request(repo, matches[0]['number'])['pullRequest']
@@ -435,9 +695,9 @@ class IntentClient:
                         require(row is None or row[0] != 'DISPATCHED', 'INTENT_WORKER_STILL_ACTIVE')
             primary = worker._snapshot(repo, None, root, run, text)
             require(primary['clean'], 'INTENT_DIRTY_MAIN')
-            refs = self._refs(repo)
+            remote_main = self._branch(repo, 'main')
             if intent['operation'] == 'create_task':
-                require(refs.get('main') == p['baseSha'], 'INTENT_BASE_CHANGED')
+                require(remote_main == p['baseSha'], 'INTENT_BASE_CHANGED')
                 target = worker._target(repo, p['task'], root, run, text, existing=False)
                 present = target.exists() or bool(text(['branch', '--list', 'task/' + p['task']]))
                 if present:
@@ -461,7 +721,10 @@ class IntentClient:
                 require(merge['state'] == 'EXECUTED' and merge['result']['merged'],
                         'INTENT_MERGE_RECEIPT_REQUIRED')
                 wanted = merge['result']['sha']
-            require(refs.get('main') == wanted, 'INTENT_REMOTE_MAIN_CHANGED')
+            require(remote_main == wanted, 'INTENT_REMOTE_MAIN_CHANGED')
+            if record.get('expectedTargetHead') is None:
+                record['expectedTargetHead'] = wanted
+                self.journal.save(record)
             if primary['headSha'] == wanted:
                 return {'branch': 'main', 'headSha': wanted}, True
             require(primary['headSha'] == p['expectedHeadSha'], 'INTENT_LOCAL_MAIN_CHANGED')
