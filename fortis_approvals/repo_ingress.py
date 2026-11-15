@@ -74,6 +74,13 @@ class _PerActorWindow:
             self.records[actor] = current
             return True
 
+    def retry_after(self, actor):
+        import math
+        now = self.clock()
+        with self.lock:
+            current = [n for n in self.records.get(actor, ()) if now - n < self.seconds]
+            return max(1, math.ceil(self.seconds - (now - current[0]))) if current else 1
+
 
 class RepoIngress:
     """No direct Core/owner HTTP dispatch; broker actions/status/typed reads.
@@ -106,7 +113,7 @@ class RepoIngress:
     @staticmethod
     def _reply(start, code, content, *, pre_core_validation=False,
                diagnostic_contract=False, artifact_diagnostic=None, artifact_phase=None,
-               provider_read_metadata=None):
+               provider_read_metadata=None, retry_after_seconds=None):
         body = json.dumps(content,ensure_ascii=False,separators=(',',':'),
                           allow_nan=False).encode('utf-8')
         label = {200:'OK',202:'Accepted',400:'Bad Request',401:'Unauthorized',
@@ -152,6 +159,8 @@ class RepoIngress:
                 if type(reset) is not int or not 946684800<=reset<=4102444800:
                     raise ValueError('GITHUB_READ_RESET_INVALID')
                 headers.append((PROVIDER_RATE_RESET_HEADER,str(reset)))
+        if type(retry_after_seconds) is int and 1 <= retry_after_seconds <= 604800:
+            headers.append(('Retry-After', str(retry_after_seconds)))
         if pre_core_validation or diagnostic_contract:
             headers.append((DIAGNOSTIC_VERSION_HEADER,DIAGNOSTIC_VERSION_TEXT))
         start(f'{code} {label}',headers)
@@ -219,7 +228,8 @@ class RepoIngress:
                 return self._reply(start,404,{'error':'ROUTE_NOT_FOUND'})
             credential, actor = self._credential(env)
             if not self.limiter.take(actor):
-                return self._reply(start,429,{'error':'REPO_RATE_LIMITED'})
+                return self._reply(start,429,{'error':'REPO_RATE_LIMITED'},
+                                   retry_after_seconds=self.limiter.retry_after(actor))
             if method == 'POST':
                 action = self._body(env)
                 if action is None:
@@ -277,7 +287,8 @@ class RepoIngress:
                 if valid_read_failure_signal(provider_code,signal):
                     details['signal']=signal
                 return self._reply(start,500,details,diagnostic_contract=True,
-                    provider_read_metadata=bounded_transport_read_metadata(exc,provider_code))
+                    provider_read_metadata=bounded_transport_read_metadata(exc,provider_code),
+                    retry_after_seconds=getattr(exc,'retry_after_seconds',None))
             return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})
         except (OSError,RuntimeError):
             return self._reply(start,500,{'error':'REPO_OUTCOME_UNCONFIRMED'})

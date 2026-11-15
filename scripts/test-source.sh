@@ -83,6 +83,10 @@ tests=(
   test_pr1h_final_contract.py
   test_pr2_incident_inspector.py
   test_pr3_git_delivery.py
+  test_automatic_read_retries.py
+  test_command_intents.py
+  test_workspace_intents.py
+  test_intent_native_integration.py
   test_release_storage_source.py
 )
 for test in "${tests[@]}"; do

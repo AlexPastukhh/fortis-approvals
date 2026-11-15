@@ -15,6 +15,7 @@ from urllib import error, request
 from urllib.parse import urlsplit
 
 from ..core import Denied
+from .retries import READ_POST_PATHS, RetryPolicy, seconds_header
 from ..integrations.github.read_failure_codes import (
     READ_FAILURE_CODES,valid_read_failure_signal,READ_ROUTE_CLASSES,
     PROVIDER_ROUTE_CLASS_HEADER,PROVIDER_METHOD_CLASS_HEADER,
@@ -83,7 +84,8 @@ class GatewayTransport:
     """POST only to the two typed ingress routes; GET only actor status."""
     def __init__(self, *, endpoint=DEFAULT_ENDPOINT, grant_path=DEFAULT_GRANT,
                  certificate_path=DEFAULT_CERTIFICATE, opener=None, timeout=12,
-                 max_response_bytes=MAX_RESPONSE_BYTES, allow_test_endpoint=False):
+                 max_response_bytes=MAX_RESPONSE_BYTES, allow_test_endpoint=False,
+                 read_attempts=3, retry_policy=None):
         parsed = urlsplit(endpoint)
         if type(allow_test_endpoint) is not bool:
             raise Denied("FORTIS_GATEWAY_ENDPOINT_DENIED")
@@ -110,8 +112,17 @@ class GatewayTransport:
         self.opener = opener
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
+        self.read_retry = retry_policy or RetryPolicy(read_attempts)
 
     def _open(self, method, path, payload=None, *, accept_202=False):
+        call = lambda: self._open_once(method, path, payload, accept_202=accept_202)
+        if ((method == 'POST' and path in READ_POST_PATHS) or
+                (method == 'GET' and _STATUS_PATH.fullmatch(path))):
+            service = payload.get('service') if type(payload) is dict else None
+            return self.read_retry.read(call, key=(method, path, service))
+        return call()
+
+    def _open_once(self, method, path, payload=None, *, accept_202=False):
         if method == "POST":
             if path not in self.post_paths or type(payload) is not dict:
                 raise Denied("FORTIS_GATEWAY_ROUTE_DENIED")
@@ -159,6 +170,11 @@ class GatewayTransport:
                                     object_pairs_hook=_unique_json_pairs)
         except error.HTTPError as exc:
             status = exc.code
+            retry_after = seconds_header(exc.headers)
+            def failure(code):
+                problem = Denied(code)
+                problem.retry_after_seconds = retry_after
+                return problem
             provider_code = None
             provider_signal = None
             # A missing header is the legacy v1 envelope. Unexpected version
@@ -237,24 +253,29 @@ class GatewayTransport:
             exc.close()
             if artifact_failure is not None:
                 suffix=('_'+artifact_phase if artifact_phase is not None else '')
-                raise Denied("FORTIS_ARTIFACT_"+artifact_failure+suffix) from None
+                raise failure("FORTIS_ARTIFACT_"+artifact_failure+suffix) from None
             if pre_core_rejected and compatible_version:
                 raise Denied("FORTIS_PRE_CORE_VALIDATION_REJECTED") from None
             if provider_code is not None:
                 suffix = "_" + provider_signal if provider_signal is not None else ""
-                diagnostic=Denied("FORTIS_READ_" + provider_code + suffix)
+                diagnostic=failure("FORTIS_READ_" + provider_code + suffix)
                 # Optional non-authoritative evidence for new clients; legacy
                 # exception code, HTTP status and JSON wire stay intact.
                 diagnostic.provider_metadata=provider_metadata
                 raise diagnostic from None
             if 300 <= status < 400:
                 raise Denied("FORTIS_REDIRECT_DENIED") from None
-            raise Denied("FORTIS_HTTP_" + str(status)) from None
+            raise failure("FORTIS_HTTP_" + str(status)) from None
         except Denied:
             raise
-        except (error.URLError, TimeoutError, OSError, UnicodeError, ValueError,
-                RecursionError):
-            raise Denied("FORTIS_UPSTREAM_UNAVAILABLE_OR_INVALID") from None
+        except (error.URLError, TimeoutError, OSError):
+            problem = Denied("FORTIS_UPSTREAM_UNAVAILABLE_OR_INVALID")
+            problem.retryable_transport = True
+            raise problem from None
+        except (UnicodeError, ValueError, RecursionError):
+            problem = Denied("FORTIS_UPSTREAM_UNAVAILABLE_OR_INVALID")
+            problem.retryable_transport = False
+            raise problem from None
         if type(result) is not dict:
             raise Denied("FORTIS_RESPONSE_INVALID")
         return result

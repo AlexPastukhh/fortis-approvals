@@ -81,7 +81,7 @@ class FinalContractTests(unittest.TestCase):
             p=Path(tmp)
             grant=p/'grant';cert=p/'cert'
             grant.write_text(GRANT);grant.chmod(0o600);cert.write_text('offline')
-            client=GatewayTransport(endpoint='http://localhost:19713',
+            client=GatewayTransport(read_attempts=1,endpoint='http://localhost:19713',
                 grant_path=str(grant),certificate_path=str(cert),
                 opener=GatewayFail(headers,body))
             with self.assertRaises(Denied) as caught:

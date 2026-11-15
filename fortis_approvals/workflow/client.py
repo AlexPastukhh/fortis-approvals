@@ -19,6 +19,7 @@ from .common import require
 from .ingress import NATIVE_PATHS
 from .incident_read import IncidentInspector
 from .worker import Worker
+from .intents import IntentClient, WORKSPACE_COMMANDS
 
 
 class WorkflowTransport(GatewayTransport):
@@ -30,13 +31,17 @@ class WorkflowTransport(GatewayTransport):
 
 
 class WorkflowClient:
-    def __init__(self,*,gateway,worker,worker_observability=False):
+    def __init__(self,*,gateway,worker,worker_observability=False,
+                 automatic_recovery=False, intent_root=None):
         # Critical version gate: after a source merge Repo may run new client
         # against old Primary. Old /finish rejects a fifth diagnostic field.
         self.gateway=gateway;self.worker=worker;self.github=GitHubClient(gateway=gateway)
         self.worker_observability=worker_observability is True
         self.incidents=IncidentInspector(self)
         self.git_delivery=GitDelivery(self)
+        self.automatic_recovery=automatic_recovery is True
+        self.intents=IntentClient(self, **({'root':intent_root} if intent_root is not None else {}))
+        self.github.intent_client=self.intents if self.automatic_recovery else None
 
     def diagnostic_capabilities(self):
         """Read existing actor-scoped Gateway capabilities; no new request/WRITE.
@@ -125,7 +130,14 @@ class WorkflowClient:
         # Lost finish ACK still propagates. No retry or claim re-delivery.
         self.gateway.post('/v1/workspace/finish',body)
 
-    def command(self,operation,repository,params,*,request_id,reason,wait_owner=False):
+    def command(self,operation,repository,params,*,request_id=None,reason,wait_owner=False):
+        if self.automatic_recovery and operation in WORKSPACE_COMMANDS:
+            return self.intents.command(operation,repository,params,request_id=request_id,
+                reason=reason,wait_owner=wait_owner)
+        return self._command_once(operation,repository,params,request_id=request_id,
+                                  reason=reason,wait_owner=wait_owner)
+
+    def _command_once(self,operation,repository,params,*,request_id,reason,wait_owner=False):
         response={};failure=[]
         def submit():
             try:response.update(self.gateway.post('/v1/workspace/submit',
@@ -163,7 +175,7 @@ class WorkflowClient:
         return self.result(ident,reconcile=True)
 
     def update_main_from_pr(self,repository,*,expected_head_sha,number,
-                            expected_pr_head_sha,expected_merge_sha,request_id,reason):
+                            expected_pr_head_sha,expected_merge_sha,request_id=None,reason):
         """Owner-merged GitHub PR: prove exact remote PR/main, then local ff-only."""
         return self.command('update_main_from_pr',repository,
             dict(expectedHeadSha=expected_head_sha,number=number,
@@ -176,7 +188,14 @@ class WorkflowClient:
             dict(task=task,expectedHeadSha=expected_head_sha),
             request_id=request_id,reason=reason,wait_owner=wait_owner)
 
-    def publish(self,repository,task,expected_old,new_sha,*,request_id,reason):
+    def publish(self,repository,task,expected_old,new_sha,*,request_id=None,reason):
+        if self.automatic_recovery:
+            return self.intents.publish(repository,task,expected_old,new_sha,
+                                       request_id=request_id,reason=reason)
+        return self._publish_once(repository,task,expected_old,new_sha,
+                                  request_id=request_id,reason=reason)
+
+    def _publish_once(self,repository,task,expected_old,new_sha,*,request_id,reason):
         # Existing local commit objects are bundled, never reconstructed from file contents.
         data=self.worker.publish_package(repository,task,expected_old,new_sha,request_id,reason)
         artifact=hashlib.sha256(data).hexdigest()
@@ -413,7 +432,8 @@ def default_client(endpoint='https://host.docker.internal:19204'):
     accepted=(type(obs) is dict and obs.get('signal')=='heartbeat-observation-v1' and
               obs.get('readOnly') is True and
               type(diagnostics) is dict and diagnostics.get('codes')=='bounded-class-v1')
-    return WorkflowClient(gateway=gateway,worker=worker,worker_observability=accepted)
+    return WorkflowClient(gateway=gateway,worker=worker,worker_observability=accepted,
+                          automatic_recovery=True)
 
 
 def main():

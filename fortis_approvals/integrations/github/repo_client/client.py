@@ -20,6 +20,7 @@ WORKFILES_ROOT = Path('/workspace/repo/Workfiles')
 class GitHubClient:
     def __init__(self, gateway=None, *, endpoint=None, grant_path=None,
                  certificate_path=None, opener=None):
+        self.intent_client = None
         if gateway is not None:
             self.gateway = gateway
         else:
@@ -61,7 +62,16 @@ class GitHubClient:
         validate_github_read_projection(operation, result["data"])
         return result["data"]
 
-    def action(self, operation, target, params, *, request_id, reason):
+    def action(self, operation, target, params, *, request_id=None, reason):
+        if self.intent_client is not None:
+            from ....workflow.intents import GITHUB_COMMANDS
+            if operation in GITHUB_COMMANDS:
+                validate_github_action(operation, target, params)
+                return self.intent_client.github_action(operation, target, params,
+                                                        request_id=request_id, reason=reason)
+        return self._action_once(operation, target, params, request_id=request_id, reason=reason)
+
+    def _action_once(self, operation, target, params, *, request_id, reason):
         if request_id is None:
             raise Denied("GITHUB_STABLE_REQUEST_ID_REQUIRED")
         body = {
@@ -158,8 +168,19 @@ class GitHubClient:
                     payloadSha256=hashlib.sha256(canonical(params).encode()).hexdigest())
 
     def publish_visual_review(self, *, repository, run_id, title, description, media,
-                              qa_summary, duration_seconds, request_id, reason,
+                              qa_summary, duration_seconds, request_id=None, reason,
                               expected_payload_sha256=None):
+        kwargs=dict(repository=repository,run_id=run_id,title=title,description=description,
+                    media=media,qa_summary=qa_summary,duration_seconds=duration_seconds,
+                    expected_payload_sha256=expected_payload_sha256)
+        if self.intent_client is not None:
+            return self.intent_client.publish_visual_review(**kwargs,
+                request_id=request_id,reason=reason)
+        return self._publish_visual_review_once(**kwargs,request_id=request_id,reason=reason)
+
+    def _publish_visual_review_once(self, *, repository, run_id, title, description, media,
+                              qa_summary, duration_seconds, request_id, reason,
+                              expected_payload_sha256=None, publication_run_id=None):
         """Stage trusted PNG bytes via machine TLS, then submit typed action once."""
         if request_id is None:
             raise Denied('GITHUB_STABLE_REQUEST_ID_REQUIRED')
@@ -173,18 +194,19 @@ class GitHubClient:
                     any(ch not in '0123456789abcdef' for ch in expected_payload_sha256) or
                     hashlib.sha256(canonical(params).encode()).hexdigest()!=expected_payload_sha256):
                 raise Denied('GITHUB_VISUAL_REVIEW_PREVIEW_CHANGED')
+        if publication_run_id is not None:
+            params['runId']=publication_run_id
         validate_intent(dict(requestId=ident,service='github',operation='publish_visual_review',
                              target=repository,params=params,reason=reason))
-        # No automatic Issue preflight, new UUID or retry here. Stage
-        # only after the caller-provided local preview digest has matched.
+        # Retry policy lives in IntentClient; this primitive stages/submits once.
         for row,data in staged:
             reply=self.gateway.post('/v1/github/visual-review/stage',dict(
-                requestId=ident,repository=repository,runId=run_id,
+                requestId=ident,repository=repository,runId=params['runId'],
                 index=row['index'],name=row['name'],sha256=row['sha256'],
                 data=base64.b64encode(data).decode('ascii')))
             if reply != row:
                 raise Denied('GITHUB_VISUAL_REVIEW_STAGE_RESPONSE_INVALID')
-        return self.action('publish_visual_review',repository,params,
+        return self._action_once('publish_visual_review',repository,params,
                            request_id=ident,reason=reason)
 
     def list_repositories(self, owner):
@@ -220,7 +242,7 @@ class GitHubClient:
 
     def add_pr_release_labels(self, repo, number, expected_head_sha, expected_base_sha,
                               expected_body_sha256, expected_labels_sha256, labels,
-                              *, request_id, reason):
+                              *, request_id=None, reason):
         """ASK: additive GitHub labels; never replaces human label list."""
         return self.action("add_pr_release_labels",repo,{
             "number":number,"expectedHeadSha":expected_head_sha,
@@ -231,7 +253,7 @@ class GitHubClient:
 
     def remove_pr_release_label(self, repo, number, expected_head_sha, expected_base_sha,
                                 expected_body_sha256, expected_labels_sha256, name,
-                                *, request_id, reason):
+                                *, request_id=None, reason):
         """ASK: remove one managed label, never sticky owner-review marker."""
         return self.action("remove_pr_release_label",repo,{
             "number":number,"expectedHeadSha":expected_head_sha,
@@ -347,7 +369,7 @@ class GitHubClient:
             workflowId=workflow_id,ref=ref,expectedHeadSha=expected_head_sha),
             request_id=request_id,reason=reason)
 
-    def create_branch(self, repo, branch, source_sha, *, request_id, reason):
+    def create_branch(self, repo, branch, source_sha, *, request_id=None, reason):
         return self.action("create_branch", repo,
                            {"branch": branch, "sourceSha": source_sha},
                            request_id=request_id, reason=reason)
@@ -360,7 +382,7 @@ class GitHubClient:
         }, request_id=request_id, reason=reason)
 
     def create_pull_request(self, repo, head, base, title, body="", draft=False,
-                            *, request_id, reason):
+                            *, request_id=None, reason):
         return self.action("create_pull_request", repo, {
             "head": head, "base": base, "title": title,
             "body": body, "draft": draft,
@@ -370,11 +392,11 @@ class GitHubClient:
         return self.action("push_commits",repo,dict(task=task,artifactSha256=artifact_sha256,
             expectedHeadSha=expected_head_sha,newSha=new_sha),request_id=request_id,reason=reason)
 
-    def mark_pr_ready(self, repo, number, expected_head_sha, *, request_id, reason):
+    def mark_pr_ready(self, repo, number, expected_head_sha, *, request_id=None, reason):
         return self.action("mark_pr_ready",repo,dict(number=number,expectedHeadSha=expected_head_sha),
             request_id=request_id,reason=reason)
 
-    def update_pull_request(self, repo, number, expected_head_sha, body, *, request_id, reason):
+    def update_pull_request(self, repo, number, expected_head_sha, body, *, request_id=None, reason):
         """ASK to replace only the description of an open, registered PR."""
         return self.action("update_pull_request", repo, {
             "number": number, "expectedHeadSha": expected_head_sha,

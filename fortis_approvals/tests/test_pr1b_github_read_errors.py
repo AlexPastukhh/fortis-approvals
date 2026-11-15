@@ -51,7 +51,7 @@ class ReadErrorBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); grant=root/'grant';cert=root/'server.crt'
             grant.write_text(GRANT);grant.chmod(0o600);cert.write_text('test-only')
-            client=GatewayTransport(endpoint='http://localhost:19123',
+            client=GatewayTransport(read_attempts=1,endpoint='http://localhost:19123',
                 grant_path=str(grant),certificate_path=str(cert),
                 opener=FailureOpener(payload,status=status))
             with self.assertRaises(Denied) as cm:

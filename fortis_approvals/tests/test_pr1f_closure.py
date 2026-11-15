@@ -147,7 +147,7 @@ class PR1FTests(unittest.TestCase):
                 with self.subTest(version=version,path=path):
                     opener=HTTPFail(403,{'X-Fortis-Diagnostic-Contract':version,
                          ARTIFACT_FAILURE_HEADER:'WORKFLOW_SHA_INVALID'})
-                    c=WorkflowTransport(endpoint='http://localhost:19828',
+                    c=WorkflowTransport(read_attempts=1,endpoint='http://localhost:19828',
                         grant_path=str(grant),certificate_path=str(cert),
                         opener=opener)
                     with self.assertRaises(Denied) as caught:
@@ -158,7 +158,7 @@ class PR1FTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             grant=Path(td)/'grant';cert=Path(td)/'cert'
             grant.write_text(GRANT);grant.chmod(0o600);cert.write_text('offline')
-            old_client=GatewayTransport(endpoint='http://localhost:19828',
+            old_client=GatewayTransport(read_attempts=1,endpoint='http://localhost:19828',
                 grant_path=str(grant),certificate_path=str(cert),
                 opener=HTTPFail(403,{'X-Fortis-Diagnostic-Contract':'2',
                     ARTIFACT_FAILURE_HEADER:'WORKFLOW_SHA_INVALID'}))

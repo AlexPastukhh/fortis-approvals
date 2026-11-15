@@ -178,7 +178,7 @@ class PR1DTests(unittest.TestCase):
                 ('/v1/reads',{'X-Fortis-Admission':'PRE_CORE_VALIDATION_REJECTED'},'FORTIS_HTTP_403'),
             ):
                 with self.subTest(path=path,header=header):
-                    cli=GatewayTransport(endpoint='http://localhost:19025',
+                    cli=GatewayTransport(read_attempts=1,endpoint='http://localhost:19025',
                        grant_path=str(grant),certificate_path=str(cert),
                        opener=HTTPFail(header))
                     with self.assertRaises(Denied) as caught:

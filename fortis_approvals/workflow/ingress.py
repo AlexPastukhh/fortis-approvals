@@ -208,12 +208,15 @@ class NativeIngress:
             # the configured Repo actor (including claim/result/reconcile).
             global_read=path in ('/v1/workspace/list_requests','/v1/workspace/details')
             require(actor==self.actor or global_read,'WORKFLOW_ACTOR_DENIED')
-            if not self.limiter.take(actor):return RepoIngress._reply(start,429,dict(error='WORKFLOW_RATE_LIMIT'))
+            if not self.limiter.take(actor):return RepoIngress._reply(start,429,dict(error='WORKFLOW_RATE_LIMIT'),
+                retry_after_seconds=self.limiter.retry_after(actor))
             if path in ('/v1/git/artifact','/v1/github/visual-review/stage') and not self.upload_limiter.take(actor):
-                return RepoIngress._reply(start,429,dict(error='WORKFLOW_UPLOAD_RATE_LIMIT'))
+                return RepoIngress._reply(start,429,dict(error='WORKFLOW_UPLOAD_RATE_LIMIT'),
+                    retry_after_seconds=self.upload_limiter.retry_after(actor))
             if path.startswith('/v1/git/'):
                 acquired=self.git_slot.acquire(blocking=False)
-                if not acquired:return RepoIngress._reply(start,429,dict(error='WORKFLOW_GIT_BUSY'))
+                if not acquired:return RepoIngress._reply(start,429,dict(error='WORKFLOW_GIT_BUSY'),
+                    retry_after_seconds=1)
             result=self._dispatch(path,self._body(env,path),credential,actor)
             return RepoIngress._reply(start,202 if result.get('state')=='PENDING' else 200,result)
         except Conflict:return RepoIngress._reply(start,409,dict(error='WORKFLOW_CONFLICT'))

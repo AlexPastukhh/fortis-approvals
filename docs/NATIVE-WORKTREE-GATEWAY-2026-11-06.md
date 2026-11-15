@@ -267,8 +267,10 @@ if view['status'] == 'CONTINUE':
         reason='Authorized task publication and review PR')
 ```
 
-`submit()` performs **at most one push and one PR creation** per call, with
-separate immutable request IDs and a provider READ after each stage. It
+`submit()` invokes the public push and PR commands with separate intent IDs
+and provider READ after each stage. On the default client those commands
+use the bounded intent coordinator described below; directly constructed
+legacy clients retain at most one push and one PR creation. It
 computes the actual remote `expectedHeadSha`: **`None` when the branch does
 not exist**, the exact remote SHA when updating. It never treats the local
 `main` SHA as the remote task ref precondition. It validates the registered,
@@ -278,12 +280,85 @@ it skips both WRITE calls. A lost response can resolve as goal-state `DONE`
 without fabricating an original Core receipt. `STOP` means **do not call the
 facade again blindly**: inspect the preserved UUID(s) with `details()` /
 `incidents.inspect()` and compare fresh exact GitHub state. It does not issue
-retries automatically; the bounded budget of up to three logical mutation
-attempts, fresh ALLOW/ASK/DENY and new UUIDs for genuinely new intents remain
-under [UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
+transport WRITE retries itself. Supported default-client commands delegate
+continuation to the journaled intent coordinator, with fresh ALLOW/ASK/DENY
+and new UUIDs for new attempts under
+[UC-CONT-003](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/delivery.md#uc-cont-003).
 `PENDING` requires owner approval before further work. Owner merges the PR
 only through GitHub UI; this facade does **not** merge, sync primary `main`,
 manage Issues/PNG, deploy Gateway or bypass any existing policy.
+
+## Automatic READ retries and intent continuation (Repo source)
+
+The shared Repo transport retries semantic READ routes up to three times for
+HTTP 429, transient 5xx and network errors. GitHub 403 is retried only with a
+rate-limit/backoff signal; permission, authentication and validation failures
+stop. READs do not inspect effect receipts or create new mutation intents.
+The client respects bounded `Retry-After` and primary reset evidence, with a
+120-second wait budget. Older local 429 responses without a header wait 60
+seconds. Longer backoff is returned to the caller without an early retry.
+New Gateway source supplies bounded Retry-After for its own throttles and
+for GitHub READ backoff. Source changes require separate Gateway deployment;
+the Repo client's fallback also works with older Gateway images.
+
+`default_client()` enables the Repo-side `client.intents` coordinator for
+`create_task`, `update_main`, `update_main_from_pr`, task commit publication,
+PR creation, branch creation, mark-ready, PR-description update, managed PR
+label add/remove and visual-review Issue publication. Existing public command
+methods delegate to it; unsupported effects, merge and workflow dispatch are
+not given generic HTTP retries. Directly constructed WorkflowClient keeps
+single-attempt behavior unless `automatic_recovery=True` is explicitly set.
+Gateway `diagnosticContract.automaticRetry=false` describes server-side effect
+recovery; it does not disable this separately implemented Repo coordinator.
+
+```python
+c = default_client()
+# A request_id can be omitted for supported commands. Identical inputs select
+# the same durable logical intent; the machine grant is never journaled.
+r = c.command('create_task', 'my-repo',
+    {'task': 'my-task', 'baseSha': verified_main_sha, 'adoptHeadSha': None},
+    reason='Create the task worktree')
+if r['status'] == 'RETRY_EXHAUSTED':
+    r = c.intents.retry(r['intentId'])
+```
+
+**intentId is not an attempt requestId.** The first supplied request_id remains
+the first Gateway UUID for compatibility. Every genuinely NEW attempt uses a
+fresh UUID, written durably before staging/submit. The journal preserves all
+attempt IDs for status/readback; it never overwrites their payloads or replays
+UNCERTAIN claims. Without an explicit ID, identical typed inputs derive a
+stable logical intent. Changing input under a supplied intent ID is rejected.
+The journal is Repo-local private coordination, not authorization or a receipt.
+
+One automatic round permits three attempts. An unchanged ordinary call resumes
+the same journal and cannot silently reset that budget. Explicit
+`client.intents.retry(intentId)` permits the next bounded round and generates
+new attempt IDs internally. It rechecks current results and preconditions;
+it does not bypass a real denial, changed SHA, dirty/partial worktree, incomplete
+READ, existing owner PENDING or potentially active worker. Exact queued local
+jobs may receive their first authorized delivery after owner approval, never
+an existing CLAIMED token. Reconciliation is restricted to positive bound
+receipts and is an authorized continuation, not a hidden read-only operation.
+
+Results carry `intentId`, actual latest `requestId`, `attemptIds`, `status`
+(`DONE`, `WAITING`, `STOP`, `RETRY_EXHAUSTED`) and target-state evidence. A goal
+confirmed by READ without the original receipt stays `GOAL_REACHED`, not a
+fabricated EXECUTED result. A matching local worktree without confirmed Gateway
+registration is incomplete and is not silently adopted.
+
+For visual-review Issues the duplicate risk is accepted. Before a new attempt,
+the coordinator searches known run markers and stops at the first matching
+publication. A new attempt has a new requestId and runId, while unchanged PNG
+bytes remain bound to the original preview. The coordinator does not treat an initial Issue
+without its final expected preview links as a complete visual publication;
+such a partial result stops with the Issue number for separate recovery.
+After a complete publication it
+does **not** perform an automatic second-Issue/duplicate scan. The result always
+returns `manualDuplicateCheckRequired=true` and all attempt/run IDs. A separate
+manual check must inspect open/closed Issues for all markers and the common
+task identity, report any copies and identify the canonical Issue; do not
+automatically delete/close them. Provider support is visual-review Issue
+publication, not an invented generic create_issue operation.
 
 ## Task worktree cleanup
 

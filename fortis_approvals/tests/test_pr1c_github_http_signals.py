@@ -63,7 +63,7 @@ class HeaderSignalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);g=root/'grant';c=root/'server.crt'
             g.write_text(GRANT);g.chmod(0o600);c.write_text('offline-cert')
-            transport=GatewayTransport(endpoint='http://localhost:19001',
+            transport=GatewayTransport(read_attempts=1,endpoint='http://localhost:19001',
                 grant_path=str(g),certificate_path=str(c),
                 opener=GatewayErrorOpener(500,payload))
             with self.assertRaises(Denied) as caught:

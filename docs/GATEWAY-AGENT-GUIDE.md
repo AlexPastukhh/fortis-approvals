@@ -83,7 +83,16 @@ entry point or the existing `sonar_review_scenario` compatibility CLI. Its
 normal default becomes Primary 19204 once the accepted client source is installed.
 Reads inspect existing analysis; they do not start a scan. Source/CLI usage is in the [package map](../fortis_approvals/README.md).
 
-Keep stable request IDs. `PENDING` means wait for the owner, not an error or a
+Use the [Repo intent coordinator](NATIVE-WORKTREE-GATEWAY-2026-11-06.md#automatic-read-retries-and-intent-continuation-repo-source)
+for supported command retries. It keeps one logical intentId, allocates a
+fresh requestId for every new attempt and performs the operation-specific
+readbacks/precondition checks. An explicit `client.intents.retry(intentId)`
+continues without asking the AI to invent another UUID. Shared semantic READ
+retries handle bounded throttling/network/5xx backoff without effect inspection.
+Visual-review Issue retries accept duplicate risk; their required post-success
+duplicate check remains manual, indicated in the returned result.
+
+Preserve actual attempt IDs for their original records. `PENDING` means wait for the owner, not an error or a
 reason to submit another request. Follow the native contract's HTTP 202 caveat
 when using the client version currently in main. For local ASK operations,
 keep a worker available or resume the same request after the owner decision;
