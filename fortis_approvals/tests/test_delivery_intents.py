@@ -37,6 +37,7 @@ class DeliveryIntentTests(unittest.TestCase):
             state='PENDING' if outcome=='pending' else 'DENIED' if outcome=='denied' else 'UNCERTAIN'
             c.rows[request_id]={'state':state,'request':dict(requestId=request_id,
                 operation='push_commits',target=repo,params=params)}
+            if outcome=='uncertain-error':raise Denied('FORTIS_HTTP_500')
             if outcome in ('pending','uncertain','denied'):
                 return {'requestId':request_id,'state':state}
             c.github.head=new
@@ -146,6 +147,15 @@ class DeliveryIntentTests(unittest.TestCase):
         self.error=None;now[0]=161
         self.assertEqual(self.client.intents.retry(first['intentId'])['status'],'DONE')
         self.assertEqual(len(set(self.pushes)),2)
+
+    def test_core_reason_is_not_hidden_by_preceding_http_500_evidence(self):
+        self.error='GIT_AUTH_FAILURE_REPORTED';self.push_outcomes=['uncertain-error']
+        result=self.submit()
+        self.assertEqual((result['status'],result['code']),('STOP',self.error),result)
+        self.assertEqual(len(self.pushes),1)
+        child=self.client.intent.journal.load(result['children']['push']['intentId'])
+        self.assertEqual(child['attempts'][0]['callFailureEvidence']['code'],'FORTIS_HTTP_500')
+        self.assertEqual(child['attempts'][0]['coreFailureEvidence']['code'],self.error)
 
 
 if __name__=='__main__':unittest.main()

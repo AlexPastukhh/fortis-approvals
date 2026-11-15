@@ -12,11 +12,13 @@ import re
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import uuid
 
 from ..core import Denied, canonical
 from ..clients.retries import RetryPolicy, transient
 from .common import require, secure_dir, repository_lock
+from .artifact_diagnostics import ARTIFACT_FAILURE_CODES, ARTIFACT_VALIDATION_PHASES
 
 WORKSPACE_COMMANDS = frozenset({'create_task', 'update_main', 'update_main_from_pr'})
 GITHUB_COMMANDS = frozenset({'create_pull_request', 'create_branch', 'mark_pr_ready',
@@ -35,6 +37,30 @@ def _uuid(value):
     except (ValueError, AttributeError):
         raise Denied('INTENT_ID_INVALID') from None
     return value
+
+
+def _call_failure(exc, request_id, elapsed_ms):
+    """Fixed evidence tied to the local attempt, including pre-Core failures."""
+    evidence = dict(requestId=request_id, origin='REPO_CALL',
+                    code='INTENT_CALL_FAILED', elapsedMs=elapsed_ms)
+    code = exc.args[0] if len(exc.args) == 1 else None
+    allowed = {'FORTIS_HTTP_' + str(n) for n in (400, 401, 403, 409, 422, 429, 500, 502, 503, 504)}
+    allowed |= {'FORTIS_UPSTREAM_UNAVAILABLE_OR_INVALID', 'FORTIS_PRE_CORE_VALIDATION_REJECTED',
+                'WORKFLOW_WORKER_WAIT_TIMEOUT'}
+    if isinstance(exc, TimeoutError): evidence['code'] = 'TRANSPORT_TIMEOUT'
+    elif isinstance(exc, ConnectionError): evidence['code'] = 'TRANSPORT_CONNECTION_FAILED'
+    elif type(code) is str and code in allowed: evidence['code'] = code
+    elif type(code) is str:
+        for stage in ('ARTIFACT', 'FETCH'):
+            prefix = 'FORTIS_' + stage + '_'
+            if not code.startswith(prefix): continue
+            tail = code[len(prefix):]
+            if tail in ARTIFACT_FAILURE_CODES:
+                evidence.update(code=code, stage=stage)
+            for phase in ARTIFACT_VALIDATION_PHASES:
+                if tail.endswith('_' + phase) and tail[:-len(phase)-1] in ARTIFACT_FAILURE_CODES:
+                    evidence.update(code=code, stage=stage, phase=phase)
+    return evidence
 
 
 class IntentJournal:
@@ -409,8 +435,10 @@ class IntentClient:
                     'GIT_TLS_FAILURE_REPORTED', 'GIT_RESOURCE_FAILURE_REPORTED'}
                 if (type(error) is dict and error.get('stage') == 'GITHUB_ADAPTER' and
                         error.get('code') in permanent | {'GIT_RATE_LIMIT_REPORTED'} and
-                        not attempt.get('failureEvidence')):
-                    attempt['failureEvidence'] = {'stage': error['stage'], 'code': error['code']}
+                        not attempt.get('coreFailureEvidence')):
+                    attempt['coreFailureEvidence'] = dict(requestId=ident, origin='CORE_DIAGNOSTIC',
+                        stage=error['stage'], code=error['code'])
+                    attempt['failureEvidence'] = attempt['coreFailureEvidence']
                     if error['code'] in permanent:
                         attempt['permanentFailure'] = error['code']
                     else:
@@ -518,8 +546,10 @@ class IntentClient:
                 record['attempts'].append(attempt)
                 # Persist the NEW UUID before any staging, submit, or network I/O.
                 self.journal.save(record)
+                started = time.monotonic()
                 try:
                     response = self._once(record, attempt)
+                    attempt['elapsedMs'] = max(0, int((time.monotonic() - started) * 1000))
                     require(response.get('requestId') == attempt['requestId'], 'INTENT_RESULT_BINDING_INVALID')
                     attempt['observedState'] = response.get('state')
                     self.journal.save(record)
@@ -530,6 +560,9 @@ class IntentClient:
                     if response.get('state') == 'EXECUTED':
                         return self._finish_confirmed(record, attempt)
                 except Exception as exc:
+                    attempt['elapsedMs'] = max(0, int((time.monotonic() - started) * 1000))
+                    attempt['callFailureEvidence'] = _call_failure(exc, attempt['requestId'], attempt['elapsedMs'])
+                    attempt['failureEvidence'] = attempt['callFailureEvidence']
                     attempt['delay'] = self.policy.delay(exc, len(record['attempts']) - 1)
                     attempt['notBefore'] = self.policy.clock() + attempt['delay']
                     if not transient(exc):

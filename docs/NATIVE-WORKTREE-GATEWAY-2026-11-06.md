@@ -359,6 +359,8 @@ registration is incomplete and is not silently adopted.
 
 ### Results and continuation
 
+The private journal binds safe failureEvidence to the exact attempt UUID even when artifact/fetch failed before Core admission. It stores an allowlisted code/phase and elapsedMs, without stderr, URLs or credentials. Core and call evidence remain separate; elapsed time never authorizes a new effect.
+
 Results separate effect.state from verification.state. Once the original
 request has acknowledged EXECUTED, an unavailable receipt READ returns WAITING
 with effect.state=EXECUTED and nextAction.kind=RETRY_READ. Continuation reads

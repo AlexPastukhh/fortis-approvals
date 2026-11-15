@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 import tempfile
 import unittest
+from fortis_approvals.workflow.intents import _call_failure
 
 from fortis_approvals.core import Denied
 from test_command_intents import Client, SHA
@@ -127,6 +128,27 @@ class ResultRecoveryTests(unittest.TestCase):
         self.assertEqual(result['effect']['requestId'],ident)
         self.assertEqual(result['lastAttemptId'],first['attemptIds'][-1])
         self.assertEqual(len(self.client.github.posts),3)
+
+    def test_pre_core_artifact_failure_keeps_attempt_phase_without_raw_error(self):
+        ident='11111111-1111-4111-8111-111111111111'
+        code='FORTIS_ARTIFACT_GIT_COMMAND_FAILED_FETCH_MAIN'
+        evidence=_call_failure(Denied(code),ident,93505)
+        self.assertEqual(evidence,dict(requestId=ident,origin='REPO_CALL',code=code,
+            elapsedMs=93505,stage='ARTIFACT',phase='FETCH_MAIN'))
+        raw=_call_failure(RuntimeError('Bearer SECRET https://private.invalid'),ident,1)
+        self.assertEqual(raw['code'],'INTENT_CALL_FAILED')
+        self.assertNotIn('SECRET',str(raw))
+
+    def test_exhausted_round_reports_its_actual_failed_attempt(self):
+        self.client.github.outcomes=['before']*3
+        result=self.pr()
+        self.assertEqual(result['status'],'RETRY_EXHAUSTED')
+        evidence=result['failureEvidence']
+        self.assertEqual(evidence['requestId'],result['lastAttemptId'])
+        self.assertEqual(evidence['code'],'FORTIS_HTTP_500')
+        self.assertIs(type(evidence['elapsedMs']),int)
+        journal=self.client.intent.journal.load(result['intentId'])
+        self.assertTrue(all(a['failureEvidence']['requestId']==a['requestId'] for a in journal['attempts']))
 
 
 if __name__=='__main__':unittest.main()
