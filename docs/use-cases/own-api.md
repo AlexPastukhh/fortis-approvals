@@ -108,6 +108,46 @@ Source/tests/CI, owner release и живой результат — разные
 
 Автоматизация source-only Doctor и явного typed READ acceptance: [тонкие инструменты](../templates/own-api/TOOLS.md). Это не новый release controller или host listener.
 
+### Существующий локальный клиент и machine client одного API
+
+**Когда:** upstream уже обслуживает локальный UI/клиент, а ИИ требуется
+допустить к закрытым операциям этого же API через Gateway.
+
+**Как:** сохранить один upstream Core и источник данных; local session и
+machine TLS/grant/service identity — разные границы. Не дублировать worker,
+receipt store или business logic ради второго клиента. Topology и browser
+поведение принадлежат API owner, не универсальному UC.
+
+1. Сверить установленный catalog/version и строгую upstream/result schema.
+   Несовместимое расширение получает отдельную версию/route; старый READ
+   сохраняется до live cutover. Mirror-спецификация —
+   [MIRROR_API_CONTRACT_V1][mirror-contract] (P0 proposal, не runtime capability).
+2. Отдельно определить эффект и owner ASK. Текущие ALLOW/ASK/DENY, Core и
+   machine grants сохраняются; независимость бизнес-функций не обещает
+   несуществующих policy toggles и не отменяет ingress authentication.
+3. Для эффекта пройти UC-GW-003: immutable preview/preconditions/UUID,
+   durable receipt/lookup, выбранная и reviewed trust boundary. Один Bearer
+   не доказывает ASK. Если Gateway-only isolation не доказана, нужен
+   проверяемый dispatch proof либо DENY; никаких `approved=true` из payload.
+   Metadata-fetch нельзя объявить повторяемым pure READ.
+4. Reuse V1 manifest/linter, Doctor и Acceptance из [TOOLS](../templates/own-api/TOOLS.md).
+   V1 остаётся GET/READ/ALLOW и отвергает POST/ASK/WRITE. Effect manifest и
+   one-shot ASK driver разрабатываются отдельно; они не принимают WebAuthn
+   за owner, не создают новый effect при неизвестном исходе и по умолчанию offline.
+5. Для WIN/DOCKER применять одну source процедуру и различающиеся owner
+   install/network/TLS/ACL/UID/volume/rollback probes. Не наблюдаемые из Repo
+   свойства помечать UNKNOWN/MANUAL_REQUIRED. Owner release остаётся UC-GW-005,
+   credential lifecycle — UC-GW-004, инциденты — UC-GW-009; нового контроллера нет.
+
+**Готово:** source/CI/owner merge, установленный upstream, Gateway image и
+fresh typed READ подтверждены отдельно. ASK effect имеет отдельную live
+приёмку Reject/Approve/exact receipt/replay/timeout, локальный клиент продолжает
+работать по своей модели. Evidence milestones — labels отчёта, не Core states.
+**STOP:** неизвестная версия/trust/identity, bypass ASK, недоказанный outcome,
+конкурирующие writers или попытка считать fixture живой интеграцией.
+
+[mirror-contract]: https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/MIRROR_API_CONTRACT_V1.md
+
 ### Второй независимый контрольный пример
 
 [Манифест Mirror WIN-HTTPS](../templates/own-api/mirror-read.example.json)
@@ -132,7 +172,9 @@ Gateway READ и отрицательных проверках; до этого �
 STOP при недостающем старом Gateway image, непроверенном restore,
 конкурирующем Apply, открытом Core/worker effect без сохранения, неверной
 TLS цепочке, неизвестном upstream credential scope, wildcard target,
-любом POST/Owner Shell proxy или неподтверждённом host→Gateway READ.
+непредусмотренном READ-профилем POST/Owner Shell proxy или неподтверждённом
+host→Gateway READ. Отдельный reviewed effect-профиль проходит UC-GW-003;
+это не ослабляет V1 READ checker.
 
 Граница стадий:
 `SOURCE_MANIFEST_VALID` (только структура) →
@@ -142,6 +184,6 @@ TLS цепочке, неизвестном upstream credential scope, wildcard t
 `LIVE_API_VERIFIED` (fresh typed READ и отрицательные проверки).
 Для Mirror финальный marker — `MIRROR_LIVE_READ_VERIFIED`; для
 универсальной процедуры — `OWN_API_ONBOARDING_REPRODUCIBLE_VERIFIED`
-**только после** положительного независимого второго tabletop и owner
-review полного шаблона. Не считать локальный lint или source CI
+**только после** проверки второго реального API другого профиля и owner
+review evidence. Независимый tabletop/fixture подтверждает лишь source-перенос. Не считать локальный lint или source CI
 доказательством этих последних стадий.

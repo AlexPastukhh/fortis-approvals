@@ -11,6 +11,30 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Mirror unified API — P0 security/contract review (2026-11-15)
+
+[P0 Mirror contract][mirror-unified] — PROPOSED; accepted provider остаётся
+только strict READ v1. Новое дополнение UC-GW-012 не регистрирует capabilities.
+
+- До P1: owner review узкого делегирования UC-CONT-003 и модели B; отдельный
+  security review signing-key lifecycle, trusted execute-only signer и pinned
+  verifier. Core policy toggles и новый vault/release controller не требуются.
+- P3: closed v2 READ без изменения v1; provider/transport/actor/target/negative
+  tests, source PR/CI и отдельные Windows/Gateway owner releases/live probes.
+- P4: preview/ASK/lookup и signed exact UUID/repo/SHA dispatch, deny legacy
+  Bearer-only POST, shared durable receipt и timeout/replay/denial acceptance.
+- Own-API toolkit: отдельный effect manifest и one-shot ASK journal/driver,
+  профильные read-only Doctor probes; V1 GET/READ/ALLOW checker не ослаблять.
+  Второй реальный Docker API нужен для generic reproducibility, не Mirror P3.
+- Согласовать пересечение с открытым PR #87 перед merge: его Windows-only
+  discovery — отдельный scope; GitHub-источник для нового Mirror Pull по
+  этому ТЗ — Windows owner-managed reader, без Gateway GitHub fallback.
+  Не переписывать чужую ветку и не выдавать PR #87 за accepted policy/runtime.
+- P5 cutover/rollback/port/DB и все live gates остаются owner-controlled;
+  source contract, installed Windows, Gateway image и real ASK — разные факты.
+
+[mirror-unified]: https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/MIRROR_API_CONTRACT_V1.md
+
 ## Release Labels / GitHub Projects — Gateway typed API (2026-11-11)
 
 **Status: SOURCE CANDIDATE, НЕ УСТАНОВЛЕНО.** По запросу владельца
