@@ -4,6 +4,7 @@ The artifact route performs local validation and may write an artifact store.
 An HTTP error does not establish that the old request was never dispatched.
 """
 from ..core import Denied, Stale
+from .common import GIT_FAILURE_CODES, GitCommandTimeout
 
 ARTIFACT_PHASE_HEADER='X-Fortis-Artifact-Phase'
 ARTIFACT_VALIDATION_PHASES=frozenset({
@@ -13,11 +14,11 @@ ARTIFACT_VALIDATION_PHASES=frozenset({
 
 def bounded_artifact_phase(exc):
     phase=getattr(exc,'artifact_phase',None)
-    return (phase if isinstance(exc,(Denied,Stale)) and
+    return (phase if isinstance(exc,(Denied,Stale,GitCommandTimeout)) and
             type(phase) is str and phase in ARTIFACT_VALIDATION_PHASES else None)
 
 ARTIFACT_FAILURE_HEADER='X-Fortis-Artifact-Diagnostic'
-ARTIFACT_FAILURE_CODES=frozenset({
+ARTIFACT_FAILURE_CODES=GIT_FAILURE_CODES | frozenset({
     'WORKFLOW_PARAMS_INVALID','WORKFLOW_SHA_INVALID','WORKFLOW_TASK_INVALID',
     'GIT_ARTIFACT_CHANGED','GIT_BUNDLE_LIMIT','GIT_BUNDLE_INVALID',
     'GIT_REPOSITORY_DENIED','GIT_BUNDLE_REF_MISMATCH',
@@ -31,7 +32,7 @@ ARTIFACT_FAILURE_CODES=frozenset({
 
 def bounded_artifact_error(exc):
     """Never forward a raw exception, Git stderr or user-supplied value."""
-    if not isinstance(exc,(Denied,Stale)):
+    if not isinstance(exc,(Denied,Stale,GitCommandTimeout)):
         return 'GIT_ARTIFACT_REJECTION_UNCLASSIFIED'
     code=exc.args[0] if len(exc.args)==1 else None
     if type(code) is str and code in ARTIFACT_FAILURE_CODES:

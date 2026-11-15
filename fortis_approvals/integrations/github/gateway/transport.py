@@ -23,6 +23,7 @@ _ROUTES = (
     ("GET", re.compile(r"/user/repos$")),
     ("GET", re.compile(_BASE + r"$")),
     ("GET", re.compile(_BASE + r"/(branches|commits|pulls|issues|actions/runs)$")),
+    ("GET", re.compile(_BASE + r"/branches/[A-Za-z0-9_.%~-]+$")),
     ("GET", re.compile(_BASE + r"/labels$")),
     ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*/labels$")),
     ("POST", re.compile(_BASE + r"/labels$")),

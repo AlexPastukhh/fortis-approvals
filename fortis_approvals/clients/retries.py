@@ -41,10 +41,16 @@ def transient(exc):
         return code.endswith(('_PRIMARY_RATE_LIMIT_REPORTED', '_BACKOFF_HEADER_PRESENT'))
     if code == 'FORTIS_READ_GITHUB_UPSTREAM_UNAVAILABLE_OR_INVALID':
         return True
+    if re.fullmatch(r'FORTIS_(ARTIFACT|FETCH)_GIT_(OUTCOME_TIMEOUT|NETWORK_FAILURE_REPORTED|UPSTREAM_HTTP_FAILURE)(?:_[A-Z_]+)?',code):
+        return True
+    if re.fullmatch(r'FORTIS_(ARTIFACT|FETCH)_GIT_RATE_LIMIT_REPORTED(?:_[A-Z_]+)?',code):
+        return True
     return code in {
         'FORTIS_ARTIFACT_GIT_COMMAND_FAILED_FETCH_MAIN',
         'FORTIS_ARTIFACT_GIT_COMMAND_FAILED_READ_REMOTE_REFS',
         'FORTIS_ARTIFACT_GIT_COMMAND_FAILED_FETCH_TASK',
+        'FORTIS_FETCH_GIT_COMMAND_FAILED_FETCH_MAIN',
+        'FORTIS_FETCH_GIT_COMMAND_FAILED_FETCH_TASK',
     }
 
 
@@ -74,6 +80,8 @@ class RetryPolicy:
         if str(exc).startswith('FORTIS_READ_GITHUB_HTTP_403_') and hint is None:
             delay = max(delay, 60)
         if str(exc).startswith('FORTIS_READ_GITHUB_HTTP_429') and hint is None:
+            delay = max(delay, 60)
+        if '_GIT_RATE_LIMIT_REPORTED' in str(exc) and hint is None:
             delay = max(delay, 60)
         return max(0, delay)
 

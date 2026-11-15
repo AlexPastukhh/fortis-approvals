@@ -234,6 +234,24 @@ class GitHubAdapter:
                     "name", "full_name", "private", "default_branch",
                     "archived", "disabled", "html_url", "pushed_at")
             }}
+        elif operation == "get_branch":
+            raw = self._api("GET", base + "/branches/" + quote(params["branch"], safe="-._~"),
+                            allow_not_found=True)
+            if type(raw) is not dict:
+                raise Denied("GITHUB_BRANCH_RESPONSE_INVALID")
+            if raw.get("_httpStatus") == 404:
+                # GitHub masks inaccessible private resources with 404. A ref
+                # 404 alone is never evidence that publication may create it.
+                repository = self._api("GET", base)
+                if (type(repository) is not dict or type(repository.get("full_name")) is not str or
+                        repository.get("full_name", "").casefold() != (self.owner + "/" + repo).casefold()):
+                    raise Denied("GITHUB_REPOSITORY_ACCESS_UNCONFIRMED")
+                item = None
+            else:
+                item = self._project_branch(raw)
+                if item["name"] != params["branch"]:
+                    raise Denied("GITHUB_BRANCH_RESPONSE_INVALID")
+            result = {"operation": operation, "found": item is not None, "branch": item}
         elif operation == "list_branches":
             raw = self._api("GET", base + "/branches",
                             params={"page": params["page"], "per_page": params["perPage"]})
@@ -343,6 +361,23 @@ class GitHubAdapter:
                     "page":params["page"],"perPage":params["perPage"],
                     "hasNextPage":len(items)==params["perPage"]}
             if operation=="list_pr_labels":result["number"]=params["number"]
+        elif operation == "find_pull_requests":
+            raw = self._api("GET", base + "/pulls", params={
+                "page": params["page"], "per_page": params["perPage"], "state": "all",
+                "head": self.owner + ":" + params["head"], "base": params["base"]})
+            if type(raw) is not list or len(raw) > params["perPage"]:
+                raise Denied("GITHUB_PULLS_RESPONSE_INVALID")
+            for row in raw:
+                for side in ("head", "base"):
+                    ref = row.get(side) if type(row) is dict else None
+                    origin = ref.get("repo") if type(ref) is dict else None
+                    if (type(origin) is not dict or type(origin.get("full_name")) is not str or
+                            origin["full_name"].casefold() != (self.owner + "/" + repo).casefold() or
+                            ref.get("ref") != params[side]):
+                        raise Denied("GITHUB_PR_SEARCH_IDENTITY_INVALID")
+            result = {"operation": operation, "items": [self._project_pull(x) for x in raw],
+                      "page": params["page"], "perPage": params["perPage"],
+                      "hasNextPage": len(raw) == params["perPage"]}
         elif operation == "list_pull_requests":
             raw = self._api("GET", base + "/pulls",
                             params={"page": params["page"], "per_page": params["perPage"],

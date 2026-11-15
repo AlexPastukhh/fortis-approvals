@@ -47,6 +47,7 @@ tests=(
   test_visual_review.py
   test_native_workflow.py
   test_native_git_push_diagnostics.py
+  test_git_transfer_efficiency.py
   test_native_pending_status.py
   test_native_worker_exception.py
   test_native_claim_single_delivery.py
@@ -85,6 +86,10 @@ tests=(
   test_pr3_git_delivery.py
   test_automatic_read_retries.py
   test_command_intents.py
+  test_intent_result_recovery.py
+  test_intent_target_efficiency.py
+  test_delivery_intents.py
+  test_intent_cli.py
   test_workspace_intents.py
   test_intent_native_integration.py
   test_release_storage_source.py

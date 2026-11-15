@@ -15,7 +15,8 @@ from .analysis_contract import READS as ANALYSIS_READS, ACTIONS as ANALYSIS_ACTI
 
 GITHUB_READ_OPERATIONS = frozenset({
     ("github", "list_repositories"), ("github", "get_repository"),
-    ("github", "list_branches"), ("github", "list_commits"), ("github", "get_file"),
+    ("github", "list_branches"), ("github", "get_branch"),
+    ("github", "find_pull_requests"), ("github", "list_commits"), ("github", "get_file"),
     ("github", "list_pull_requests"), ("github", "get_pull_request"),
     ("github", "list_issues"), ("github", "get_issue"),
     ("github", "list_issue_comments"),
@@ -90,6 +91,17 @@ def validate_github_read(operation, target, params):
     if operation in ("get_repository",):
         if params:
             raise Denied("GITHUB_READ_PARAMS_DENIED")
+    elif operation == "get_branch":
+        if set(params) != {"branch"}:
+            raise Denied("GITHUB_READ_PARAMS_DENIED")
+        _branch(params["branch"])
+    elif operation == "find_pull_requests":
+        if set(params) != {"head", "base", "page", "perPage"}:
+            raise Denied("GITHUB_READ_PARAMS_DENIED")
+        _branch(params["head"]); _branch(params["base"])
+        _page({"page": params["page"], "perPage": params["perPage"]})
+        if params["perPage"] > 50:
+            raise Denied("GITHUB_PR_PAGE_TOO_LARGE")
     elif operation in ("list_branches", "list_commits", "list_workflow_runs"):
         _page(params)
     elif operation in ("list_issues", "list_issue_comments"):
@@ -436,6 +448,15 @@ def validate_github_read_projection(operation, result):
                      type(row["private"]) is bool and text(row["default_branch"], 200) and
                      type(row["archived"]) is bool and type(row["disabled"]) is bool and
                      github_url(row["html_url"]) and text(row["pushed_at"], 80, optional=True))
+    elif operation == "get_branch":
+        valid = (exact(result, ("operation", "found", "branch")) and
+                 type(result["found"]) is bool)
+        if valid:
+            row = result["branch"]
+            valid = ((result["found"] is False and row is None) or
+                     (result["found"] is True and exact(row, ("name", "sha", "protected")) and
+                      text(row["name"], 200) and bool(row["name"]) and sha(row["sha"]) and
+                      type(row["protected"]) is bool))
     elif operation == "list_branches":
         valid = (exact(result, ("operation", "items", "page", "perPage")) and
                  rows("items", ("name", "sha", "protected")) and
@@ -500,12 +521,19 @@ def validate_github_read_projection(operation, result):
                              type(u) is str and re.fullmatch(
                                  r'https://github\.com/user-attachments/assets/[A-Za-z0-9_-]{1,200}',u)
                              for u in x["embeddedMediaUrls"]) for x in result["items"]))
-    elif operation in ("list_pull_requests", "get_pull_request"):
-        if operation == "list_pull_requests":
-            valid_shape = (exact(result, ("operation", "items", "page", "perPage")) and
+    elif operation in ("list_pull_requests", "find_pull_requests", "get_pull_request"):
+        if operation in ("list_pull_requests", "find_pull_requests"):
+            fields = ("operation", "items", "page", "perPage")
+            if operation == "find_pull_requests": fields += ("hasNextPage",)
+            valid_shape = (exact(result, fields) and
                            rows("items", ("number", "title", "state", "draft", "head",
                                           "base", "merged", "url")) and
                            positive(result["page"]) and positive(result["perPage"]))
+            if operation == "find_pull_requests":
+                valid_shape = (valid_shape and result["perPage"] <= 50 and
+                               len(result["items"]) <= result["perPage"] and
+                               type(result["hasNextPage"]) is bool and
+                               result["hasNextPage"] is (len(result["items"]) == result["perPage"]))
             items = result.get("items", [])
         else:
             valid_shape = (exact(result, ("operation", "pullRequest")) and

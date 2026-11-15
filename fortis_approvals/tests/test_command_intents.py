@@ -34,10 +34,12 @@ class GitHub:
         assert any(request_id in [a['requestId'] for a in r['attempts']] for r in saved)
         outcome = self.outcomes.pop(0) if self.outcomes else 'success'
         if outcome == 'before': raise Denied('FORTIS_HTTP_500')
-        if outcome == 'denied': raise Denied('FORTIS_HTTP_403')
         row = {'requestId': request_id, 'target': repo, 'operation': operation,
                'params': copy.deepcopy(params)}
         self.parent.rows[request_id] = {'request': row, 'state': 'UNCERTAIN'}
+        if outcome == 'denied':
+            self.parent.rows[request_id]['state'] = 'DENIED'
+            return {'requestId': request_id, 'state': 'DENIED'}
         if outcome in ('success', 'lost'):
             self.prs.append(dict(number=len(self.prs) + 1, state='open', merged=False, draft=False,
                 head={'ref': params['head'], 'sha': self.head}, base={'ref': 'main', 'sha': OLD},
@@ -50,6 +52,8 @@ class GitHub:
             if outcome == 'claimed': self.parent.workers[request_id] = 'CLAIMED'
             raise TimeoutError('untrusted message')
         self.parent.rows[request_id]['state'] = 'EXECUTED'
+        self.parent.rows[request_id]['result'] = dict(requestId=request_id, operation=operation,
+            repository=repo, pullRequest=copy.deepcopy(self.prs[-1]))
         return {'requestId': request_id, 'state': 'EXECUTED'}
 
     def prepare_visual_review(self, **kwargs): return {'payloadSha256': 'a' * 64}
@@ -68,6 +72,9 @@ class GitHub:
         if outcome == 'missing': raise TimeoutError('unknown effect')
         self.issues[publication_run_id] = {'title': kwargs['title'], 'number': len(self.issues) + 1}
         self.parent.rows[request_id]['state'] = 'EXECUTED'
+        self.parent.rows[request_id]['result'] = dict(requestId=request_id,
+            operation='publish_visual_review', repository=kwargs['repository'], runId=publication_run_id,
+            issueNumber=self.issues[publication_run_id]['number'], uploadedFiles=len(kwargs['media']))
         self.reads_at_success = self.issue_reads
         return {'requestId': request_id, 'state': 'EXECUTED'}
 
@@ -82,7 +89,7 @@ class Client:
 
     def result(self, ident, reconcile=False):
         row = self.rows.get(ident, {'state': 'NOT_FOUND'})
-        return {'requestId': ident, 'state': row['state'], 'result': None}
+        return {'requestId': ident, 'state': row['state'], 'result': copy.deepcopy(row.get('result'))}
 
     def details(self, ident):
         state = self.workers.get(ident)

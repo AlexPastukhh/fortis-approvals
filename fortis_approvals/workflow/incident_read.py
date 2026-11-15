@@ -89,9 +89,16 @@ def list_requests(core, credential, *, offset=0, limit=100, unresolved_only=True
                 truncated=next_offset is not None, nextOffset=next_offset)
 
 def _bounded_core_error(value):
-    if type(value) is not dict or set(value) not in (
-            {'stage','code'}, {'stage','code','phase'}):
+    if (type(value) is not dict or not {'stage','code'} <= set(value)
+            or not set(value) <= {'stage','code','phase','gitPhase'}):
         return False
+    if 'gitPhase' in value:
+        from .artifact_diagnostics import ARTIFACT_VALIDATION_PHASES
+        if (value.get('stage')!='GITHUB_ADAPTER' or
+                value.get('code') not in GIT_PUSH_FAILURE_CODES or
+                type(value['gitPhase']) is not str or
+                value['gitPhase'] not in ARTIFACT_VALIDATION_PHASES or 'phase' not in value):
+            return False
     if (type(value['stage']) is not str or value['stage'] not in ERROR_STAGES or
             type(value['code']) is not str or value['code'] not in ERROR_CODES):
         return False
@@ -233,7 +240,7 @@ def _safe_diagnostic(value, events):
             return None
         if not _bounded_core_error(row):
             return None
-        return {key:row[key] for key in ('stage','phase','code') if key in row}
+        return {key:row[key] for key in ('stage','phase','code','gitPhase') if key in row}
     observed=[clean(e.get('detail')) for e in events if e.get('state')=='ERROR_OBSERVED']
     observed=[row for row in observed if row]
     legacy=clean(value.get('coreError')) if type(value) is dict else None

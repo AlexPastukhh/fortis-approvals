@@ -265,6 +265,21 @@ class GitHubClient:
     def list_branches(self, repo, *, page=1, per_page=100):
         return self.read("list_branches", repo, {"page": page, "perPage": per_page})
 
+    def get_branch(self, repo, branch):
+        result = self.read("get_branch", repo, {"branch": branch})
+        if result["found"] and result["branch"]["name"] != branch:
+            raise Denied("GITHUB_BRANCH_RESPONSE_INVALID")
+        return result
+
+    def find_pull_requests(self, repo, head, base="main", *, page=1, per_page=50):
+        result = self.read("find_pull_requests", repo,
+            {"head": head, "base": base, "page": page, "perPage": per_page})
+        if (result["page"] != page or result["perPage"] != per_page or
+                any(row["head"]["ref"] != head or row["base"]["ref"] != base
+                    for row in result["items"])):
+            raise Denied("GITHUB_PR_SEARCH_IDENTITY_INVALID")
+        return result
+
     def get_file(self, repo, path, ref):
         return self.read("get_file", repo, {"path": path, "ref": ref})
 
