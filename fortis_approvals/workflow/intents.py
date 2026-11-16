@@ -148,9 +148,17 @@ class IntentClient:
             dict(task=task, expectedHeadSha=expected_old, newSha=new_sha), request_id, reason)
 
     def github_action(self, operation, repository, params, *, request_id=None,
-                      reason='Authorized GitHub intent'):
+                      reason='Authorized GitHub intent', journal_evidence=None):
         require(operation in GITHUB_COMMANDS, 'INTENT_OPERATION_UNSUPPORTED')
-        return self._start('github', operation, repository, params, request_id, reason)
+        # Caller evidence is private journal data, never Gateway authorization.
+        # Existing intent identity and attempt/receipt machinery are unchanged.
+        seed = None
+        if journal_evidence is not None:
+            require(type(journal_evidence) is dict and
+                    len(canonical(journal_evidence).encode()) <= 65536,
+                    'INTENT_JOURNAL_EVIDENCE_INVALID')
+            seed = {'callerEvidence': json.loads(canonical(journal_evidence))}
+        return self._start('github', operation, repository, params, request_id, reason, _seed=seed)
 
     def publish_visual_review(self, *, request_id=None, reason, **kwargs):
         preview = self.client.github.prepare_visual_review(**{
