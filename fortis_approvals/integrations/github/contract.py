@@ -31,7 +31,7 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "merge_pull_request"), ("github", "update_pull_request"), ("github", "update_workflow_file"),
     ("github", "dispatch_workflow"), ("github", "rerun_workflow"),
     ("github", "cancel_workflow"), ("github", "approve_workflow_run"),
-    ("github", "publish_visual_review"),
+    ("github", "publish_visual_review"), ("github", "append_visual_revision"),
     ("github", "create_release_label"), ("github", "add_pr_release_labels"),
     ("github", "remove_pr_release_label"),
 })
@@ -231,6 +231,36 @@ def validate_github_action(operation, target, params):
             indices.add(item["index"])
         if indices != set(range(len(media))):
             raise Denied("GITHUB_VISUAL_REVIEW_MEDIA_INVALID")
+    elif operation == "append_visual_revision":
+        keys={"issueNumber","baseRunId","assetId","revision","runId","sourceSha",
+              "description","qaSummary","durationSeconds","media"}
+        if target!="visual-workspace" or set(params)!=keys:
+            raise Denied("GITHUB_VISUAL_REVISION_SCOPE_DENIED")
+        for field in ("runId","baseRunId","assetId"):
+            if (type(params[field]) is not str or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}",params[field])):
+                raise Denied("GITHUB_VISUAL_REVISION_ID_INVALID")
+        if params["runId"] == params["baseRunId"]:
+            raise Denied("GITHUB_VISUAL_REVISION_ID_INVALID")
+        if (type(params["issueNumber"]) is not int or
+            not 1<=params["issueNumber"]<=1_000_000 or
+            type(params["revision"]) is not int or
+            not 2<=params["revision"]<=1000 or
+            type(params["sourceSha"]) is not str or
+            not re.fullmatch(r"[0-9a-f]{40}",params["sourceSha"])):
+            raise Denied("GITHUB_VISUAL_REVISION_ID_INVALID")
+        for field,maximum in (("description",12000),("qaSummary",2000)):
+            if type(params[field]) is not str or not 1<=len(params[field].strip())<=maximum:
+                raise Denied("GITHUB_VISUAL_REVISION_FIELDS_INVALID")
+            _utf8_size(params[field],"GITHUB_VISUAL_REVISION_FIELDS_INVALID")
+        if (type(params["durationSeconds"]) is not int or
+            not 0<=params["durationSeconds"]<=604800):
+            raise Denied("GITHUB_VISUAL_REVISION_FIELDS_INVALID")
+        # Reuse the strict, tested PNG index/size/digest contract.
+        validate_github_action("publish_visual_review",target,{
+            "runId":params["runId"],"title":"Visual revision","description":params["description"],
+            "qaSummary":params["qaSummary"],"durationSeconds":params["durationSeconds"],
+            "media":params["media"]})
     elif operation == "create_branch":
         if set(params) != {"branch", "sourceSha"}:
             raise Denied("GITHUB_CREATE_BRANCH_PARAMS_DENIED")

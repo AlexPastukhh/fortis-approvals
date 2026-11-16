@@ -128,6 +128,15 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 `PR_MERGED`, `IMAGE_ACTIVATED` и `LIVE_API_VERIFIED`.
 
 
+**Visual iteration source candidate (not live):** the closed
+`github.append_visual_revision` action adds an owner-ASK PNG revision comment
+to the *same* verified Fortis-created private Issue; it has a distinct Core
+policy (no inherited v1 publish ALLOW) and one-shot, durable run/revision
+reservation. No per-draft PR; source PR only after owner accepts the asset.
+Technical contract, limitations and negative tests:
+[integrations/github/README.md](../../fortis_approvals/integrations/github/README.md#append-visual-revision-to-an-existing-issue--source-candidate-not-live).
+The older `publish_visual_review` contract remains unchanged.
+
 **P3.2 source candidate:** новый `list_head_workflow_runs` и scoped publisher
 согласованы в [техническом проекте P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md#p32-source-candidate--disabled-by-default).
 Client/schema/server меняются вместе; операция исключена из legacy auto-grants.

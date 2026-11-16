@@ -178,6 +178,61 @@ class GitHubClient:
                 request_id=request_id,reason=reason)
         return self._publish_visual_review_once(**kwargs,request_id=request_id,reason=reason)
 
+    def prepare_visual_revision(self, *, repository, issue_number, base_run_id,
+                                asset_id, revision, run_id, source_sha, description,
+                                media, qa_summary, duration_seconds):
+        """Read-only local preview binding version metadata to exact PNG bytes."""
+        old,rows=self._visual_payload(repository=repository,run_id=run_id,
+            title='Visual revision',description=description,media=media,
+            qa_summary=qa_summary,duration_seconds=duration_seconds)
+        params=dict(issueNumber=issue_number,baseRunId=base_run_id,assetId=asset_id,
+                    revision=revision,runId=run_id,sourceSha=source_sha,
+                    description=description,qaSummary=qa_summary,
+                    durationSeconds=duration_seconds,media=old['media'])
+        validate_github_action('append_visual_revision',repository,params)
+        return dict(repository=repository,runId=run_id,issueNumber=issue_number,
+                    revision=revision,media=params['media'],
+                    payloadSha256=hashlib.sha256(canonical(params).encode()).hexdigest())
+
+    def append_visual_revision(self, *, repository, issue_number, base_run_id,
+                               asset_id, revision, run_id, source_sha, description,
+                               media, qa_summary, duration_seconds, request_id,
+                               reason, expected_payload_sha256=None):
+        """Stage PNGs and send one owner-policy-controlled GitHub comment intent.
+
+        Never automatically retry a lost comment POST: the Gateway permanently
+        reserves the logical revision before the first upstream side effect.
+        """
+        ident=self._request_id(request_id)
+        # Re-read actual bytes, exactly like the existing PNG publisher.
+        old,staged=self._visual_payload(repository=repository,run_id=run_id,
+            title='Visual revision',description=description,media=media,
+            qa_summary=qa_summary,duration_seconds=duration_seconds)
+        params=dict(issueNumber=issue_number,baseRunId=base_run_id,assetId=asset_id,
+                    revision=revision,runId=run_id,sourceSha=source_sha,
+                    description=description,qaSummary=qa_summary,
+                    durationSeconds=duration_seconds,media=old['media'])
+        validate_github_action('append_visual_revision',repository,params)
+        payload_digest=hashlib.sha256(canonical(params).encode()).hexdigest()
+        if expected_payload_sha256 is not None and (
+                type(expected_payload_sha256) is not str or
+                expected_payload_sha256!=payload_digest):
+            raise Denied('GITHUB_VISUAL_REVISION_PREVIEW_CHANGED')
+        validate_intent(dict(requestId=ident,service='github',
+            operation='append_visual_revision',target=repository,params=params,
+            reason=reason))
+        for row,data in staged:
+            reply=self.gateway.post('/v1/github/visual-review/stage',dict(
+                requestId=ident,repository=repository,runId=run_id,
+                index=row['index'],name=row['name'],sha256=row['sha256'],
+                data=base64.b64encode(data).decode('ascii')))
+            if reply != row:
+                raise Denied('GITHUB_VISUAL_REVISION_STAGE_RESPONSE_INVALID')
+        # Do not send through a generic operation-retry loop. ASK still requires
+        # owner WebAuthn; no Core grant => explicit DENY.
+        return self._action_once('append_visual_revision',repository,params,
+                                 request_id=ident,reason=reason)
+
     def _publish_visual_review_once(self, *, repository, run_id, title, description, media,
                               qa_summary, duration_seconds, request_id, reason,
                               expected_payload_sha256=None, publication_run_id=None):

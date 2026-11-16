@@ -107,6 +107,7 @@ class NativeIngress:
                 return self.publisher.capabilities(self.github.config.owner, self.actor, available=available)
             pr_policy=core._policy(actor,dict(service='github',operation='create_pull_request',target=self.github.config.repository))
             visual_policy=core._policy(actor,dict(service='github',operation='publish_visual_review',target='visual-workspace'))
+            revision_policy=core._policy(actor,dict(service='github',operation='append_visual_revision',target='visual-workspace'))
             dynamic=getattr(self.github.config,'dynamic_repositories',False)
             require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
@@ -115,7 +116,8 @@ class NativeIngress:
                     (['publish_visual_review'] if visual_policy=='ALLOW' else []),
                 askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file',
                      'create_release_label','add_pr_release_labels','remove_pr_release_label']+
-                    (['publish_visual_review'] if visual_policy=='ASK' else []),
+                    (['publish_visual_review'] if visual_policy=='ASK' else [])+
+                    (['append_visual_revision'] if revision_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
                 githubTargetReads={'version':1,'branch':'repository-access-checked-v1',
                     'pullRequests':'same-repository-head-base-v1'},
@@ -129,7 +131,9 @@ class NativeIngress:
                 githubIssueMaxPageSize=30,
                 visualReview={'repository':'visual-workspace','publishPolicy':visual_policy,
                               'media':'png-only','maxFiles':5,'maxBytesPerFile':10*1024*1024,
-                              'attachmentReadback':'markdown-links-only','retryUnknown':'STOP'},
+                              'attachmentReadback':'markdown-links-only','retryUnknown':'STOP',
+                              'appendRevisionPolicy':revision_policy,
+                              'appendRevision':'issue-comments-v1-source-gated'},
                 sensitivePush='ASK',gitHubCredentialInRepo=False,
                 cleanupTask={'merged':'ALLOW','unmerged':'ASK','proof':'github-main-v1'},
                 githubCiReads=sorted(CI_READ_NAMES),
