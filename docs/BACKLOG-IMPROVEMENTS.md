@@ -191,6 +191,10 @@ PowerShell и Docker image/record pointer. Для GitHub отсутствие в
 
 ## PowerShell — единый план первой версии для Repo AI и будущих улучшений
 
+**Порядок уточнён:** сначала самостоятельный `fortis-powershell-executor`,
+затем machine ASK и настраиваемые ограничения. Перенос принят в план,
+реализация и Windows cutover ещё не выполнены.
+
 Актуализировано **2026-11-17** по исходникам, истории и решениям владельца
 в текущей задаче. Это **план**, не новая machine capability и не разрешение
 активировать Windows/Gateway. Выполнение из Repo пока не реализовано.
@@ -242,7 +246,7 @@ ASK не отменяет ограничения. ИИ не меняет пра�
 | Владелец | Ответственность |
 | --- | --- |
 | `fortis-approvals` | Typed machine API/client, Core ASK/WebAuthn, policy editor и версии, preview, transport, общий audit/receipt readback |
-| Windows PowerShell Executor | Local enforcement, процесс/identity, durable receipt DB и совместимая миграция; исходники сейчас в `docke-windows-mirror` |
+| `fortis-powershell-executor` (планируемый repo) | Windows Executor, launcher, tests/CI, API, process/identity и durable receipt DB; до завершения переноса действующий source находится в `docke-windows-mirror` |
 | `script-control-center` | Удобный owner-controlled запуск и настройки путей; не второй executor, policy store или approval queue |
 | `fortis-container` / `tunnel` | Общая изоляция Repo и worker/Guard boundaries; отдельный будущий container-control broker |
 
@@ -260,6 +264,47 @@ PowerShell POST/ASK/execute. Нужен reviewed effect-профиль и transp
 Windows PowerShell Executor. Browser Mirror, Mirror API и Git Pull в ней не
 участвуют. Название `docke-windows-mirror` здесь обозначает только нынешний
 репозиторий исходников Executor, не зависимость от функций зеркалирования.
+
+### Первый этап: выделение Windows Executor
+
+**PS-AI-V1-00 — обязательный первый этап, PLANNED.** Перенести Windows
+исполнитель в отдельный репозиторий **`fortis-powershell-executor`**.
+В рамках обновления плана новый repo/clone не создан, исходники не перенесены,
+Windows-процессы и credentials не изменены. Создание/публикация repo и Windows
+переключение — будущие действия этапа, не выполненные факты.
+
+Задача переноса — сохранить существующее owner-only поведение и API.
+Machine ASK и ограничения команд реализуются следующими этапами; перенос
+не открывает новый AI-доступ и не меняет разрешения существующего клиента.
+
+| Шаг | Что сделать | Критерий готовности |
+| --- | --- | --- |
+| MOVE-01 | Зафиксировать baseline | Точные source SHA/хеши Executor, launcher и тестов; installed source/identity/bind/TLS и существующая receipt DB; текущие unresolved/in-flight эффекты. Читать только безопасные metadata |
+| MOVE-02 | Подготовить самостоятельный source repo | Перенести `mirror_api/owner_shell.py`, `Start-OwnerPowerShellExecutor.ps1`, профильные тесты и документацию; нейтральное имя Python package, отдельный Windows release target/CI и provenance к исходному commit. Сохранить лицензию/авторство; секреты и DB остаются вне Git |
+| MOVE-03 | Проверить API compatibility | Те же `/owner-shell/v1/*`, request/result schema, digest/UUID semantics, loopback `127.0.0.1:10443`, mTLS/Bearer и process privileges. Меняются расположение source и module/launcher references; функциональных расширений и DB migration в этом этапе нет |
+| MOVE-04 | Перепривязать Script Center | Launcher/resolver проверяет новый clean/synchronized Windows clone `%USERPROFILE%\Repos\fortis-powershell-executor` и его origin/main; прежняя зависимость от Mirror path и `Get-FortisMirrorWindowsMain` устранена. Сохранены non-admin, ACL, port и source-change preflight |
+| MOVE-05 | Сохранить установленные данные | Использовать те же cert/key/CA/secret files, protected config и **ту же существующую receipt DB**. Отдельно проверить paths/ACL; не создавать пустую DB, не перевыпускать credentials и не заставлять владельца настраивать все пути заново |
+| MOVE-06 | Доставить source и подготовить Windows переключение | Exact-head tests/CI, owner merge и новый Windows clone по общему guarded workflow; согласованный rollback и recovery copy. Старый установленный вариант доступен до приёмки, source-перенос не считается Windows cutover |
+| MOVE-07 | Переключить один Windows listener | После owner-controlled quiescence остановить старый Executor и запустить новый на прежнем endpoint с прежними данными; одновременно два исполнителя не запускаются. Неизвестные эффекты/дочерние процессы сначала расследовать, не сбрасывать blocking |
+| MOVE-08 | Принять работу и отвязать старый source | Gateway capabilities/owner-only вызов и bound receipt подтверждены; старые UUID читаются из той же DB, replay/conflict/auth/timeout/restart negatives проверены. После приёмки удалить/retire старую реализацию по отдельному source change; не оставлять два независимо развиваемых Executor |
+
+**Проверки переноса:** существующие Executor tests плюс проверки нового
+module/launcher, Script Center resolver, чтения старой квитанции, конфликта
+UUID/command и сохранения blocking после controlled restart. Owner Windows
+acceptance включает Gateway → Executor по прежнему TLS endpoint и новую
+безопасную команду с новым UUID из существующего owner-only Portal.
+Старую команду не повторять ради проверки; machine API в этом этапе отсутствует.
+
+**Rollback:** сначала остановить новый listener, затем вернуть прежний source/
+launcher с **той же актуальной DB** и TLS/config. Нельзя откатывать DB на более
+раннюю копию и терять новые UUID/receipts. При несовместимости schema или
+неизвестном эффекте — STOP и reviewed recovery, не автоматическая подмена DB.
+
+Gateway использует HTTPS-контракт и не импортирует Windows package.
+При доказанно неизменных API/config для самого source-переноса новый Gateway
+image не требуется; это подтвердить compatibility/readback. Следующий
+machine ASK release проходит отдельно по PS-AI-V1-02…10.
+Функции Mirror и Browser Pull не становятся зависимостями нового компонента.
 
 ### Обязательный контракт Repo AI V1
 
@@ -338,7 +383,8 @@ AST/allowlist не являются OS sandbox: разрешённый cmdlet/mo
 
 | ID | Шаг / владелец | Проверяемый результат |
 | --- | --- | --- |
-| PS-AI-V1-01 | Сверка baseline; Gateway + Executor + Script Center | Точные source/installed версии, identity/bind/TLS/DB metadata без секретов; список незавершённых эффектов; сохранён recovery path. Не запускать release или старую команду повторно |
+| PS-AI-V1-00 | Выделение `fortis-powershell-executor`; Executor + Script Center | Выполнены MOVE-01…08: самостоятельный source/CI, новый resolver, совместимый Windows cutover, прежние TLS/config/receipt DB и проверенный rollback; Mirror не нужен для запуска |
+| PS-AI-V1-01 | Повторная сверка baseline после переноса; Gateway + Executor + Script Center | Точные source/installed версии, identity/bind/TLS/DB metadata без секретов; список незавершённых эффектов; сохранён recovery path. Не запускать release или старую команду повторно |
 | PS-AI-V1-02 | Контракт и threat review; Gateway + Executor | Закрытые submit/status/result schemas, actor/target, ASK-only, полный preview, policy/proof versions, dispatch trust и совместимость owner route/DB; owner-reviewed спецификация до activation |
 | PS-AI-V1-03 | Policy model/evaluator; Gateway + Executor | Versioned owner settings, консервативный AST-профиль, fail-closed отрицательные тесты, pre-ASK/pre-execute binding и TOCTOU; нет захардкоженного списка разрешённых команд |
 | PS-AI-V1-04 | Owner settings UI; Approvals | Просмотр/редактирование правил, diff/validation/WebAuthn/audit, stale approval на смене версии; machine policy write и ALLOW execution отклоняются |
@@ -349,7 +395,8 @@ AST/allowlist не являются OS sandbox: разрешённый cmdlet/mo
 | PS-AI-V1-09 | Раздельный owner release | Windows install и Gateway Check/Apply/Backup/Promote по UC-GW-005, свежие TLS/ACL/config/capabilities и сохранённые native/OwnerShell unresolved scopes; один согласованный release window |
 | PS-AI-V1-10 | Windows/Gateway live acceptance | Настройки изменены владельцем; Get-Date: PENDING → WebAuthn → один запуск → bound receipt; Reject, forbidden command, stale rules, replay/conflict, timeout/lost ACK и restart negatives подтверждены |
 
-Dependencies: 01 → 02 → 03/04; 02/03 → 05/06; 04/05/06 → 07 → 08 → 09 → 10.
+Dependencies: 00 (MOVE-01…08) → 01 → 02 → 03/04; 02/03 → 05/06;
+04/05/06 → 07 → 08 → 09 → 10.
 Реализация разных repo может идти независимо после общего контракта;
 shared production release и vault не меняются несколькими задачами одновременно.
 
@@ -388,7 +435,9 @@ Offline PASS, owner-reported baseline и live machine acceptance имеют ра
 | PS-FUT-08 | Ротация ключей/сертификатов и восстановление | Owner-managed lifecycle, revoke/expiry, backup/restore с прежней DB, без повторных эффектов |
 | PS-FUT-09 | Узкие typed Windows операции и container-control broker | Самостоятельные API/scopes; не generic Docker shell/socket. Container lifecycle, mounts/networks/volumes остаются у [Fortis Container][ps-container-plan] |
 | PS-FUT-10 | Наблюдаемость и UX | Поиск заявок/receipts, bounded safe diagnostics, stale settings diff; не создавать вторую историю/очередь или секретные payload logs |
-| PS-FUT-11 | Возможное выделение PowerShell Executor из репозитория Mirror | Предложение по упаковке, не условие V1: отдельный source owner/package с сохранением DB/TLS/launcher compatibility; функции зеркалирования не нужны в runtime цепочке |
+
+Бывший PS-FUT-11 (выделение Executor) перенесён в обязательный
+**PS-AI-V1-00 / MOVE-01…08**; это уже не отложенное улучшение.
 
 Отдельная Windows identity и перенос issuer keys были отложены владельцем
 для функционального baseline. Это решение не означает выполненную изоляцию
@@ -408,7 +457,7 @@ identity/credential boundary: конкретный неприемлемый scop
 | [Container backlog][ps-container-plan], [исторический архив][ps-container-archive], [изоляционный аудит][ps-container-audit] | Identity/AST/deterministic DENY, network/children и Docker broker идеи; PowerShell roadmap теперь здесь, общий container scope остаётся там |
 | [UC-GW-012](use-cases/own-api.md#uc-gw-012), [UC-GW-002/003](use-cases/integrations.md#uc-gw-002) | Reuse Gateway/Core, separate effect/transport review и live acceptance; READ onboarding не расширен на shell |
 | Tunnel G2/G3 документы 2026-10-13…16 | История Windows sessions/launchers/listeners; не контракт этого OwnerShell API и не разрешение Repo → host shell |
-| Решения владельца в этой задаче, 2026-11-17 | Все исполнения из Repo через ASK; ограничения меняются в настройках; консолидировать первую версию и будущие улучшения |
+| Решения владельца в этой задаче, 2026-11-17 | Все исполнения из Repo через ASK; ограничения меняются в настройках; консолидировать первую версию и будущие улучшения; обновить план с выделением Executor в отдельный `fortis-powershell-executor` первым этапом |
 
 Датированные evidence/archives и старые Git revisions сохраняются. Актуальные
 entrypoints ведут сюда; исторические deferred требования не становятся DONE.
