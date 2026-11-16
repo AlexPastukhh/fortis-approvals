@@ -85,6 +85,19 @@ class IncidentInspectorTests(unittest.TestCase):
         self.assertEqual({p for p,_ in g.calls},
                          {'/v1/workspace/capabilities','/v1/workspace/details'})
 
+    def test_approved_inspection_only_reads_and_does_not_authorize_replacement(self):
+        c, g = self.flow(state='APPROVED', count=1)
+        g.event_states = ['APPROVED']
+        result = c.incidents.inspect(UUID, github_reads=False)
+        self.assertEqual(result['coreState'], 'APPROVED')
+        self.assertEqual(result['outcomeAssessment'], 'OUTCOME_UNCONFIRMED')
+        self.assertEqual(result['retryAuthorization'], 'NONE')
+        self.assertFalse(result['audit']['dispatchedObserved'])
+        self.assertFalse(result['receiptPresent'])
+        self.assertEqual(result['missingEvidence'], [])
+        self.assertEqual({path for path, _ in g.calls},
+                         {'/v1/workspace/capabilities', '/v1/workspace/details'})
+
     @staticmethod
     def audit_rows(sequence):
         states=('PENDING','APPROVED','DISPATCHED','EXECUTED')
