@@ -30,6 +30,9 @@ class AnalysisGitHubAdapter(GitHubAdapter):
 
     def _run(self, repo, ident, attempt):
         raw = self._api('GET', self._path(repo, 'actions/runs/' + str(ident) + '/attempts/' + str(attempt)))
+        return self._project_run(repo, ident, attempt, raw)
+
+    def _project_run(self, repo, ident, attempt, raw):
         require(type(raw) is dict and raw.get('id') == ident and raw.get('run_attempt') == attempt)
         require(raw.get('repository', {}).get('full_name') == self.owner + '/' + repo, 'GITHUB_RUN_REPOSITORY_MISMATCH')
         path = raw.get('path')

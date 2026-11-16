@@ -486,3 +486,56 @@ worker is still `CLAIMED`, protected source is still needed, or the exact
 checks cannot be completed, STOP with the concrete discrepancy, **not**
 force-clean/prune/replay. Reconcile is a separate Core-state operation, not
 a prerequisite for every new, safely authorized cleanup intent.
+
+
+## P3.2 scoped Release Label Publisher — source candidate, disabled
+
+The [accepted P3 project](RELEASE-LABEL-PUBLISHER-P3-REVIEW.md#p32-source-candidate--disabled-by-default)
+owns this bounded source scope and its later P3.3/P3.4 gates. Existing native
+Repo grants/global AI read-only investigation are preserved. This does not
+install a second principal, worker, credential, trigger or live policy.
+
+`install(..., publisher_profile=None)` defaults to a disabled profile. The fixed
+service actor is `release-label-publisher-v1`, first repo `fortis-approvals`.
+Trusted owner composition must separately supply authentication, exact broker
+read/write grants, policy/validator revisions and registry delegation before
+opting in. Binding a profile never supplies ALLOW/ASK or credentials itself.
+The production environment parser is unchanged; no activation environment flag
+or implicit provisioning was added.
+
+The service grant permits the reviewed repository READ catalogue and two ASK
+operations (`add_pr_release_labels`, `remove_pr_release_label`). Definitions,
+workspace commands/claims, PR writes, CI controls/logs/artifacts, owner routes,
+global inventory and cross-actor details are denied. Native source fetch allows
+only exact-SHA main or an existing Repo-owned registered task with an open ready
+same-repo PR; the service cannot register/adopt tasks or choose a registry owner.
+
+New `list_head_workflow_runs` is versioned by
+`githubHeadWorkflowReads.version=1`: `headSha`, `page` 1–5, `perPage=20`, fixed
+`pull_request` event, at most 100 runs. It defaults DENY, including for existing
+Repo automatic grants. Caller/client/schema/server must agree; absence is STOP.
+The shared CI gate pins both workflows/jobs and workflow source blobs, freezes
+latest runs/attempts/jobs in the approved preview, and checks again before WRITE.
+It has a fixed 18-GET/20-second additional CI budget, plus the existing timeout
+of an in-flight transport call. No repository-history scan or HTTP loopback.
+
+One PENDING/APPROVED/DISPATCHED label request per opted-in repo is enforced across
+actors and label routes, including definitions/case aliases, from `prepare` under
+the existing Core admission transaction. Original UUID replay remains forbidden.
+Core base source/tables are unchanged. The provider reads the actual DISPATCHED
+Core preview and checks current policy/profile/grant/owner binding at the last
+pre-WRITE edge; fresh self-generated previews are not approval authority.
+
+The service advertises `requestEvidence.version=1`, own-release-label scope and
+`crossActorDetails=false`, not global inventory completeness. Use the explicit
+`WorkflowClient.for_release_label_publisher(gateway=..., intent_root=...)` with an
+owner-private transport and absolute journal root; no default Repo credential,
+worker or fallback path. It reuses the existing IntentJournal and recovery rules.
+Known own receipts remain readable after disabling future admission; failed
+current-state READ does not undo known execution. Reconciliation requires a
+positive full original-UUID-bound receipt, not merely matching GitHub labels.
+
+The existing public-action owner-ASK helper remains a legacy Repo caller and
+rejects this new scoped principal. The trusted runner/validator wiring is P3.3;
+actual isolation, credentials, live capabilities/WebAuthn/readback and activation
+remain owner-managed P3.4, MANUAL-PENDING. Source tests/CI do not close those gates.

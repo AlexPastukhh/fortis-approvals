@@ -1,10 +1,10 @@
 # P3 — Trusted Release Label Publisher: security/owner review
 
-**Status: DESIGN_REVIEW_CANDIDATE, 2026-11-16.** This is the concrete P3
-proposal for owner review after P1 live acceptance and P2 source acceptance.
-It does not provision a principal, grant, credential, worker, timer or runtime.
-Merging it accepts a design direction; implementation and activation have the
-separate gates below. P3 is not DONE.
+**Status: DESIGN_ACCEPTED ([owner PR #104](https://github.com/AlexPastukhh/fortis-approvals/pull/104));
+P3.2 SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
+The source below does not provision a principal, grant, credential, worker,
+timer or runtime. Source acceptance and owner activation remain separate
+steps. P3 is not DONE.
 
 The [current roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md)
 owns sequence and status. Classification/catalog semantics stay with the
@@ -15,7 +15,69 @@ client/server scope, [UC-GW-009](use-cases/incidents.md#uc-gw-009) continuation,
 and [UC-GW-005](use-cases/releases.md#uc-gw-005) activation.
 GitHub Deployments/CD Queue remain P4–P6; GitHub Projects is excluded by the roadmap.
 
-## Verified baseline and the actual gaps
+<a id="p32-source-candidate--disabled-by-default"></a>
+
+## P3.2 source candidate — disabled by default
+
+The implementation stays in this Gateway package. The original review baseline
+below records the gaps that motivated it; it is not the current source feature list.
+
+- [Publisher profile](../fortis_approvals/integrations/github/publisher_profile.py)
+  reserves actor `release-label-publisher-v1` and repo `fortis-approvals`.
+  `PublisherProfile()` is disabled. Enabling requires reviewed policy/validator
+  revisions, explicit read-only registry delegation, and separately owner-composed
+  authentication, exact broker grants and ASK/ALLOW policy. `owner_policy_map()`
+  returns a blueprint; registration/binding installs deny guards, never grants.
+  No environment switch, credential loader or provisioning command was added.
+- [Typed contract](../fortis_approvals/integrations/github/contract.py) and
+  [client](../fortis_approvals/integrations/github/repo_client/client.py) add
+  `list_head_workflow_runs(headSha,page,perPage)`: fixed `pull_request` event,
+  page size 20, at most 5 pages/100 runs, explicit complete-page provenance.
+  This operation is excluded from legacy automatic read grants and defaults DENY.
+- [Shared CI admission](../fortis_approvals/integrations/github/release_label_ci.py)
+  binds both reviewed workflow IDs/paths, active workflow definitions and their
+  exact-HEAD blob SHA-256, latest run/attempt, same-repo PR provenance and all
+  successful jobs. A final head inventory detects a later attempt. The additional
+  CI budget is 18 fixed provider GETs and 20 seconds checked before/after each;
+  an already in-flight GET retains the existing transport timeout. UC-GW-011's
+  existing bounded PR/label reads remain separate. There is no public HTTP loopback,
+  repository-history scan or second Release Impact classifier.
+- [Native adapter](../fortis_approvals/workflow/adapters.py) applies this gate to
+  opted-in repo PR-label routes, including legacy callers. Definitions remain a
+  separate owner ASK outside the publisher grant. All three label routes share
+  one active-request guard, including repository case aliases. `prepare` reads
+  existing Core requests while unchanged `Core.submit/execute` hold their existing
+  `BEGIN IMMEDIATE`; competing admissions are serialized. No extra intent table
+  or journal is introduced. The adapter reads the actual immutable DISPATCHED Core
+  row and rechecks its approved preview, owner decision, expiry, current ASK policy,
+  initiating grant and profile immediately before the provider WRITE. Caller
+  preview/approval fields cannot substitute for that row. Base Core bytes stay pinned.
+- [Native ingress](../fortis_approvals/workflow/ingress.py) limits this principal
+  to capabilities, own label result/details/positive receipt reconciliation and
+  guarded source bundles. Fetch requires an exact SHA and fixed repo/main or an
+  existing Repo-owned task with a ready open same-repo PR. It cannot create/adopt
+  registrations, claim workers, inspect other actors or reach global inventory.
+- [Scoped evidence contract](../fortis_approvals/integrations/github/publisher_evidence.py)
+  advertises `requestEvidence.version=1`, `scope=own-release-label-requests`,
+  `crossActorDetails=false`. Existing AI global read-only investigation is preserved.
+  [WorkflowClient](../fortis_approvals/workflow/client.py)'s explicit
+  `for_release_label_publisher(gateway=..., intent_root=...)` uses the supplied
+  owner-private transport/journal and no Repo worker or credential fallback.
+  The existing coordinator/inspector supports this mode. Original own receipts
+  stay readable after future admission is disabled; known execution is preserved
+  when independent current-state READ fails.
+
+[Offline security tests](../fortis_approvals/integrations/github/tests/test_release_label_publisher.py)
+cover cross-actor/restart/concurrent admission, post-approval CI/profile/policy/
+credential races, foreign request denial, source fetch scope, read limits and
+original-UUID receipt recovery. They do not establish live machine admission,
+worker isolation, actual owner WebAuthn or deployment.
+The public action's existing owner-ASK helper remains the legacy Repo path and
+fails closed for this scoped principal. P3.3 must wire the reviewed validator,
+source acquisition and one-shot entrypoint to the versioned client/CI contract;
+P3.4 owns provisioning and the live controlled pilot. No publisher is started here.
+
+## P3.1 verified baseline and gaps
 
 Read-only preflight used clean Docker/GitHub main at:
 
@@ -201,7 +263,7 @@ Neither a label receipt nor any CI result is deployment evidence.
 
 | Slice | Concrete deliverable and required acceptance |
 | --- | --- |
-| P3.1 — this project | Owner review of D1–D7 and the scoped first-pilot boundary; DESIGN_REVIEW_CANDIDATE only |
+| P3.1 — this project | D1–D7 accepted by owner PR #104; implementation/activation gates remain separate |
 | P3.2 — Gateway/client source | Separate publisher profile, truthful own-evidence capabilities/client compatibility, fixed-repo policy, registry delegation, scoped bundle access, bounded head CI lookup, preview/pre-WRITE CI binding and cross-actor active-request guard. Client/schema/server together under UC-GW-003; profile disabled/default DENY |
 | P3.3 — trusted runner source | Owner-private data-only cache and existing coordinator, pinned single validator/config, one-shot preview/request entrypoints and deterministic minimal deltas; no timer or credential bootstrap side effect |
 | P3.4 — owner release/pilot | Accepted exact source pins, owner-managed isolation/credential/policy admission, UC-GW-005 release if server/image changes, then fresh capabilities and a controlled ASK/readback pilot on a fresh registered open PR |
