@@ -160,11 +160,14 @@ Client/schema/server меняются вместе; операция исклю�
 revalidation перед будущим полностью автоматическим publisher.
 
 **P3:** [owner-принятый проект trusted publisher](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
-фиксирует отдельные principal/trigger/scope. P3.2 — `SOURCE_CANDIDATE`:
+фиксирует отдельные principal/trigger/scope. P3.2 — `SOURCE_ACCEPTED` (#107):
 отдельный actor имеет только scoped READ и add/remove через ASK, own-request
 evidence v1, bounded exact-head CI и защиту от конкурирующих label-заявок.
-Default disabled/DENY; выдача grants/credentials, worker и live activation
-остаются отдельным owner-этапом. Последовательность — в
+P3.3 — [trusted one-shot runner](../../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
+`SOURCE_CANDIDATE` с pin public validator, data-only source и существующим
+intent/receipt, без нового сервиса. Default disabled/DENY; выдача
+grants/credentials, worker и live activation остаются отдельным owner-этапом.
+Последовательность — в
 [общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
 
 **Методы (см. закрытый Python-контракт

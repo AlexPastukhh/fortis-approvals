@@ -1,7 +1,8 @@
 # P3 — Trusted Release Label Publisher: security/owner review
 
 **Status: DESIGN_ACCEPTED ([owner PR #104](https://github.com/AlexPastukhh/fortis-approvals/pull/104));
-P3.2 SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
+P3.2 SOURCE_ACCEPTED ([owner PR #107](https://github.com/AlexPastukhh/fortis-approvals/pull/107));
+P3.3 SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
 The source below does not provision a principal, grant, credential, worker,
 timer or runtime. Source acceptance and owner activation remain separate
 steps. P3 is not DONE.
@@ -76,6 +77,18 @@ The public action's existing owner-ASK helper remains the legacy Repo path and
 fails closed for this scoped principal. P3.3 must wire the reviewed validator,
 source acquisition and one-shot entrypoint to the versioned client/CI contract;
 P3.4 owns provisioning and the live controlled pilot. No publisher is started here.
+
+## P3.3 trusted runner — source candidate (disabled)
+
+[Technical owner and one-shot CLI](../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
+cover exact-SHA Gateway bundles, data-only raw Git blobs, pinned public
+validator, bounded double CI admission, one minimal label operation, and
+read-only original receipt/target evidence. The private existing IntentJournal
+stores optional non-authorizing admission evidence. Source tests include
+real pinned public action integration; the runner has **not** been provisioned
+or activated, and CI passing is not a live publisher demonstration.
+P3.4 isolation, credential/grant issuance, runtime activation and owner pilot
+remain **MANUAL-PENDING**. No scheduler, GitHub Projects or CD steps are started.
 
 ## P3.1 verified baseline and gaps
 

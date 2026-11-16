@@ -103,7 +103,7 @@ class API:
             start=(params['page']-1)*params['per_page']
             return [label(n) for n in values[start:start+params['per_page']]]
         if method == 'GET' and suffix == '/actions/runs':
-            assert params['head_sha']==HEAD and params['event']=='pull_request'
+            assert params['head_sha']==self.head and params['event']=='pull_request'
             assert params['per_page']==20
             rows=self.runs();start=(params['page']-1)*params['per_page']
             return dict(total_count=len(rows) if self.total_override is None else self.total_override,
@@ -113,7 +113,7 @@ class API:
             return dict(id=ident, name=self.workflow_name.get(ident,w.name), path=w.path,
                         state=self.workflow_state.get(ident,'active'))
         if method == 'GET' and suffix.startswith('/contents/'):
-            path=suffix[len('/contents/'):];data=self.sources[path];assert params==dict(ref=HEAD)
+            path=suffix[len('/contents/'):];data=self.sources[path];assert params==dict(ref=self.head)
             return dict(path=path,type='file',encoding='base64',size=len(data),
                 content=base64.encodebytes(data).decode(),
                 sha=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest())
@@ -203,7 +203,7 @@ class Fixture:
             publisher_profile=self.profile)
         self.adapter,self.store=installed['adapter'],installed['store']
         self.store.register(REGISTRY_ACTOR,REPOSITORY,'release-pilot',dict(repository=REPOSITORY,
-            task='release-pilot',branch='task/release-pilot',baseSha=BASE))
+            task='release-pilot',branch='task/release-pilot',baseSha=self.api.base))
         self.app=wrap(RepoIngress(self.broker,host='host.docker.internal:19204'),installed)
         self.publisher=Bridge(self.app,'publisher-fixture-credential')
         self.repo=Bridge(self.app,'repo-fixture-credential')
