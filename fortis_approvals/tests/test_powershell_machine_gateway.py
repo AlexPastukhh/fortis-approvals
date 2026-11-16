@@ -205,6 +205,16 @@ class TestMachineGateway(unittest.TestCase):
             ingress._dispatch("/v1/powershell/submit",
                               {**params,"approved":True},"repo-grant",ACTOR)
 
+    def test_r7_machine_opt_in_refuses_non_native_composition(self):
+        from fortis_approvals.r7_unified_candidate import build_r7_unified_candidate
+        with self.assertRaises(Denied):
+            build_r7_unified_candidate(
+                state=self.core.path.parent, owner_origin="http://localhost:19357",
+                ingress_host="host.docker.internal:19358",
+                ingress_grant="g"*40, sonar_transport=object(),
+                organizations=("synthetic-org",), machine_shell=self.adapter,
+                github_pilot=None)
+
     def test_machine_ingress_disabled_without_adapter(self):
         del self.core.adapters["powershell"]
         ingress=object.__new__(NativeIngress)
