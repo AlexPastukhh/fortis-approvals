@@ -4,8 +4,10 @@ Canonical procedure: [UC-GW-012](../../use-cases/own-api.md).
 General extension package creation remains
 [UC-GW-002](../../use-cases/integrations.md#uc-gw-002).
 
-This toolkit consists of a local public JSON manifest, a **read-only**
-standard-library linter, an evidence template and an owner handoff template.
+This toolkit includes a public JSON manifest, a **read-only** standard-library
+linter, Doctor, one-shot typed READ Acceptance, and evidence/handoff templates.
+The [tool commands and limits](TOOLS.md) are part of the normal UC-GW-012
+workflow, not information available only from a chat handoff.
 It is NOT a Docker installer, a credential or CA provisioning tool, a network
 probe, or a proof that the upstream service is installed.
 

@@ -186,3 +186,31 @@ Provisioning/enrollment/client mount не повторять из старого
 [Primary operations](../PRIMARY-GATEWAY-OPERATIONS.md). Не очищать bootstrap,
 retained states и credentials, пока от них зависят owner deployment records.
 Git и image не заменяют backup persistent state и secrets.
+
+
+## Own API operational READ snapshot — 2026-11-16
+
+Canonical onboarding and reusable tools: [UC-GW-012](../use-cases/own-api.md#uc-gw-012),
+[Doctor / one-shot Acceptance](../templates/own-api/TOOLS.md). This snapshot
+is operational evidence, not another onboarding procedure or release approval.
+
+- Repo source reviewed: Approvals main `c52736aec5861c67b7ce2b2a58304a821cf8e413`;
+  Mirror main `109c6e8184c5bfb5293e84127ab1b3e794e85f0e`. These do not prove installed SHAs.
+- Authenticated catalog for the audited machine actor exposed only
+  `mirror.get_repository`, version `1`, target `fortis-approvals`, ALLOW,
+  ready with credential READY. `providerPermissions` still says UNVERIFIED.
+- Fresh typed READ `9fbb988d-fcd8-4fae-ab47-58a55edf36ea` returned EXECUTED;
+  the packaged closed result schema and exact repo identity validated.
+- The accepted Mirror provider fixes HTTPS/443, hostname verification,
+  service-specific pinned CA and separate Bearer. This audit did not independently
+  inspect the installed image, certificate/ACLs, protected release or restore.
+  It does not close the full TLS/negative/owner-host acceptance matrix.
+- This is strict v1 READ, not unified v2, shared-Core cutover or ASK Pull.
+  No Observatory operation was exposed to this actor; other actors are not covered.
+  Its legacy HTTP/18756 adapter is not a current DOCKER-HTTPS admission.
+  The separate direct Repo-to-Observatory client also uses HTTP/18756 in source;
+  its live use was not audited. No retirement or migration was authorized here.
+- Doctor saw 3 UNCERTAIN requests and 1 claimed worker, with owner quiescence
+  unproven. Re-read the global inventory before any shared Gateway release;
+  this dated count is not current clearance. No runtime/config/credential changed.
+- 42 targeted onboarding/tool, Mirror TLS and Observatory definition tests passed.

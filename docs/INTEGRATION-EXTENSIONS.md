@@ -39,6 +39,15 @@ provider → current state → последнее evidence. Будущие за�
 
 ## Подходит ли мой API
 
+Для **собственных** Windows/Docker API профиль UC-GW-012 обязателен:
+HTTPS/443, отдельный scoped credential и проверка из среды Gateway.
+Описанная ниже возможность отдельного trusted transport не разрешает
+активировать исторический HTTP/non-443 provider в обход этого профиля.
+Штатные manifest/Doctor/one-shot READ инструменты перечислены в
+[UC-GW-012](use-cases/own-api.md#что-переиспользовать-при-каждом-подключении)
+и [TOOLS](templates/own-api/TOOLS.md). Они не устанавливают listener,
+сертификаты или Docker network и не заменяют owner release.
+
 Штатный `JSONAPI` покрывает HTTPS на порту 443 с системным доверием TLS,
 фиксированные GET/POST/PUT/PATCH/DELETE маршруты, JSON body/ответ и Bearer либо
 API-key header. Без токена тоже можно. AI реализует небольшой provider и закрытые
