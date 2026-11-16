@@ -51,10 +51,16 @@ def persist_once(path, value):
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     fd = os.open(path, flags, 0o600)
     try:
-        os.write(fd, data)
+        check(os.write(fd, data) == len(data), "JOURNAL_WRITE_INCOMPLETE")
         os.fsync(fd)
     finally:
         os.close(fd)
+    # The new directory entry must also survive a crash before submission.
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
 
 
 def read_intent(path):
@@ -73,9 +79,9 @@ def read_intent(path):
         raise AcceptanceStop("JOURNAL_INVALID") from None
 
 
-def validate_data(manifest, operation, target, data, catalog_version):
+def source_operation(manifest, operation, catalog_version):
     """Use the trusted local packaged provider validator; do not invent schema."""
-    from fortis_approvals.extensions.model import discover, bounded
+    from fortis_approvals.extensions.model import discover
     selected = discover((manifest["serviceId"],))
     check(len(selected) == 1, "PROVIDER_SOURCE_UNAVAILABLE")
     ops = [r for r in selected[0].operations if r.name == operation]
@@ -85,7 +91,16 @@ def validate_data(manifest, operation, target, data, catalog_version):
     check(op.params is not None, "PROVIDER_PARAMS_SCHEMA_UNAVAILABLE")
     try:
         op.params({})
-        bounded(data, 65536)
+    except Exception:
+        raise AcceptanceStop("PROVIDER_PARAMS_SCHEMA_INVALID") from None
+    return op
+
+
+def validate_data(manifest, operation, target, data, catalog_version, max_bytes):
+    from fortis_approvals.extensions.model import bounded
+    op = source_operation(manifest, operation, catalog_version)
+    try:
+        bounded(data, max_bytes)
         op.result(data)
     except Exception:
         raise AcceptanceStop("PROVIDER_RESULT_SCHEMA_INVALID") from None
@@ -119,6 +134,8 @@ def acceptance(manifest, *, operation, target, request_id, expected_digest,
     check(len(rows) == 1 and type(rows[0].get("version")) is str,
           "LIVE_OPERATION_NOT_FOUND")
 
+    # No READY status, journal, or call before the packaged validator matches.
+    source_operation(manifest, operation, rows[0]["version"])
     manifest_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True,
                              separators=(",", ":")).encode()).hexdigest()
     intent = {"schemaVersion": 1, "requestId": request_id,
@@ -155,7 +172,8 @@ def acceptance(manifest, *, operation, target, request_id, expected_digest,
     check(type(reply) is dict and reply.get("requestId") == request_id and
           reply.get("state") == "EXECUTED" and type(reply.get("data")) is dict,
           "EXECUTED_RESULT_NOT_READABLE")
-    size = validate_data(manifest, operation, target, reply["data"], rows[0]["version"])
+    size = validate_data(manifest, operation, target, reply["data"], rows[0]["version"],
+                         choices[0]["maxResponseBytes"])
     check(size <= choices[0]["maxResponseBytes"], "RESULT_EXCEEDS_MANIFEST_LIMIT")
     return {"status": "LIVE_TYPED_READ_VERIFIED", "requestId": request_id,
             "service": manifest["serviceId"], "operation": operation,

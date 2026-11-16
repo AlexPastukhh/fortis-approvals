@@ -23,6 +23,10 @@ no unresolved requests. Avoid printing catalog raw responses or secrets.
 
 ## One-shot Acceptance
 
+This driver qualifies a new connection; it is not a mandatory wrapper around
+every routine READ. After acceptance, normal authorized operations use the
+existing `fortis_approvals.extensions.client` SDK directly.
+
 Get a new UUID and exact **configurationDigest from the protected owner
 release record**, not a hard-coded old Check. Use an **absolute** intent path
 inside an already existing private Workfiles directory; preserve the file
@@ -35,7 +39,11 @@ target and digest; prints READY_FOR_ONE_SHOT_READ without submitting:
 
 A **separate, explicit** \`--submit-read\` performs one typed READ and
 validates the returned data against trusted installed source provider schema.
-The request intent is fsynced **before** calling Gateway. A second invocation
+Before READY or submission, the installed-source operation/version and empty
+params schema must match the catalog. The journal must be written completely;
+both the file and new directory entry are fsynced **before** calling Gateway.
+A short write or sync failure stops before call. Result bounds use the manifest
+limit (within V1's 256 KiB ceiling), then the provider's own closed schema. A second invocation
 with the same journal only calls \`result(uuid,reconcile=False)\`, never
 \`call()\` again, even after a network timeout or UNKNOWN.
 

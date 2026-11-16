@@ -54,10 +54,14 @@ def core_summary(requests, activity):
         raise ValueError("CORE_ACTIVITY_SCHEMA_INVALID")
     # The authenticated inventory is paged. Never equate a single page with
     # the global unresolved set or treat heartbeat as a quiescence proof.
-    partial = requests.get("truncated") is True or activity.get("truncated") is True
+    complete = (requests.get("truncated") is False and
+                activity.get("truncated") is False and
+                type(requests.get("total")) is int and
+                requests["total"] == len(rows) and
+                requests.get("offset") == 0)
     return {
         "unresolvedStatesOnPage": states,
-        "requestInventoryCoverage": "PARTIAL" if partial else "COMPLETE_SNAPSHOT",
+        "requestInventoryCoverage": "COMPLETE_SNAPSHOT" if complete else "PARTIAL",
         "claimed": activity["claimed"],
         "queued": activity["queued"],
         "workerQuiescence": "OWNER_CONFIRMATION_REQUIRED",
