@@ -19,6 +19,7 @@ from ..core import Denied, canonical
 from ..clients.retries import RetryPolicy, transient
 from .common import require, secure_dir, repository_lock
 from .artifact_diagnostics import ARTIFACT_FAILURE_CODES, ARTIFACT_VALIDATION_PHASES
+from ..integrations.github.release_label_evidence import release_label_receipt_matches
 
 WORKSPACE_COMMANDS = frozenset({'create_task', 'update_main', 'update_main_from_pr'})
 GITHUB_COMMANDS = frozenset({'create_pull_request', 'create_branch', 'mark_pr_ready',
@@ -371,11 +372,10 @@ class IntentClient:
             wanted = hashlib.sha256(p['body'].encode()).hexdigest()
             require(receipt.get('bodySha256') == wanted, 'INTENT_RECEIPT_BINDING_INVALID')
             return {'bodySha256': wanted}
-        labels = receipt.get('labels')
-        require(type(labels) is list and all(type(x) is str for x in labels), 'INTENT_RECEIPT_BINDING_INVALID')
-        require(all(x in labels for x in p['labels']) if op == 'add_pr_release_labels' else p['name'] not in labels,
+        require(release_label_receipt_matches(op, intent['repository'], p,
+                                             attempt['requestId'], receipt),
                 'INTENT_RECEIPT_BINDING_INVALID')
-        return {'labels': labels}
+        return {'labels': receipt['labels']}
 
     def _finish_confirmed(self, record, attempt, response=None):
         """Once execution was acknowledged, every continuation is READ-only."""

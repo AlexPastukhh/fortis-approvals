@@ -9,6 +9,8 @@ import time
 
 from ..core import Denied
 from .error_diagnostics import ERROR_CODES, ERROR_STAGES
+from ..integrations.github.release_label_evidence import (LABEL_OPERATIONS, read_release_label_evidence,
+                                     release_label_receipt_matches)
 from .git_backend import GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
 from ..integrations.github.gateway.pr_create_diagnostic import PR_CREATE_CODES, PR_CREATE_PHASES
 
@@ -366,6 +368,14 @@ class IncidentInspector:
             receipt_result.get('requestId') == request_id and
             receipt_result.get('operation') == intent.get('operation') and
             receipt_result.get('repository') == intent.get('target'))
+        label_operation = (intent.get('service') == 'github' and
+                           intent.get('operation') in LABEL_OPERATIONS)
+        if label_operation and receipt_result is not None:
+            bound_receipt = (bound_receipt and receipt_source == 'github-receipts' and
+                release_label_receipt_matches(intent['operation'], intent.get('target'),
+                    intent.get('params'), request_id, receipt_result))
+            if not bound_receipt:
+                missing.append('LABEL_RECEIPT_BINDING_INVALID')
         confirmed_done = (core_state == 'EXECUTED' and bound_receipt and
                           record.get('result') == receipt_result)
         assessment = ('CONFIRMED_EXECUTED' if confirmed_done else
@@ -463,6 +473,9 @@ class IncidentInspector:
                                     'desiredStateObserved': desired,
                                     'effectAttribution': 'UNKNOWN',
                                 }
+                        elif op in LABEL_OPERATIONS:
+                            provider = read_release_label_evidence(self.client.github, repo,
+                                op, intent.get('params'), receipt_result if bound_receipt else None)
                         elif op == 'publish_visual_review':
                             run_id = identity.get('runId')
                             if run_id:
@@ -480,6 +493,18 @@ class IncidentInspector:
                 else:
                     provider = {'status':'INVALID_TARGET'}
                     missing.append('PROVIDER_TARGET_INVALID')
+        if label_operation and github_reads:
+            try:
+                check = self.client.details(request_id, event_offset=0, event_limit=1)
+                if (check.get('eventTotal') != total or
+                        check.get('request', {}).get('fingerprint') != record.get('fingerprint') or
+                        check.get('request', {}).get('state') != record['state'] or
+                        check.get('worker') != first.get('worker') or
+                        check.get('receipt') != first.get('receipt')):
+                    missing.append('EVIDENCE_CHANGED_DURING_READ')
+                    confirmed_none = False
+            except Exception:
+                missing.append('LABEL_CORE_RECHECK_UNAVAILABLE')
         # A confirmed remote target state is not proof of which UUID caused it.
         target_reached = ((provider.get('desiredHeadObserved') is True and
                            provider.get('branchReadComplete') is True) or
@@ -509,7 +534,7 @@ class IncidentInspector:
         protocol=cap.get('diagnosticContract')
         protocol_version=('v2' if type(protocol) is dict and
                           protocol.get('schemaVersion')==2 else 'legacy')
-        return {
+        report = {
             'schemaVersion':2, 'requestId':request_id, 'actor':record.get('actor'),
             'assessedAt':observed_at, 'evidenceFreshness':'OBSERVED_AT_REQUEST_TIME',
             'evidenceScope':{'core':'BOUNDED_PAGINATED_DETAILS',
@@ -546,3 +571,18 @@ class IncidentInspector:
             'retryAuthorization':'NONE',
             'nextAction':'READ_ONLY_REVIEW' if outcome!='ORIGINAL_NOT_EXECUTED_CONFIRMED' else 'NEW_INTENT_REQUIRES_FRESH_AUTHORIZATION',
         }
+        if label_operation:
+            state = 'UNKNOWN_STOP'
+            observed = (provider.get('status') == 'OBSERVED' and
+                        provider.get('requestFingerprintsMatch') is True)
+            if not missing and confirmed_done and observed and (
+                    provider.get('desiredStateObserved') is True and
+                    provider.get('receiptLabelsMatch') is True):
+                state = 'CONFIRMED_APPLIED'
+            elif not missing and confirmed_none and observed and (
+                    provider.get('originalLabelsObserved') is True):
+                state = 'CONFIRMED_NOT_APPLIED'
+            report['releaseLabelReconciliation'] = dict(state=state,
+                requestId=request_id, changed=receipt_result.get('changed') if bound_receipt else None,
+                retryAuthorization='NONE')
+        return report

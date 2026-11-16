@@ -101,9 +101,12 @@ class IncidentInspectorTests(unittest.TestCase):
     def test_p1_sparse_global_audit_ids_are_complete(self):
         c,g=self.bound_audit_flow(self.audit_rows([8665,8672,8673,8674]))
         g.operation='add_pr_release_labels'
-        g.params={'number':76,'expectedHeadSha':'a'*40}
+        from fortis_approvals.integrations.github.release_label_contract import names_hash
+        g.params={'number':76,'expectedHeadSha':'a'*40,'expectedBaseSha':'b'*40,
+                  'expectedBodySha256':'c'*64,'expectedLabelsSha256':names_hash([]),
+                  'labels':['release:no-deployment']}
         g.receipt['result'].update(operation=g.operation,number=76,
-                                  headSha='a'*40,labels=['release:no-deployment'])
+                                  headSha='a'*40,changed=True,labels=['release:no-deployment'])
         report=c.incidents.inspect(UUID,github_reads=False)
         self.assertEqual(report['assessment'],'CONFIRMED_EXECUTED')
         self.assertEqual(report['missingEvidence'],[])
