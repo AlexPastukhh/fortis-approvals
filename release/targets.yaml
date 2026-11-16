@@ -18,6 +18,8 @@ buildUnits:
       - fortis_approvals/owner_auth.py
       - fortis_approvals/owner_portal.py
       - fortis_approvals/owner_shell.py
+      - fortis_approvals/powershell_machine.py
+      - fortis_approvals/powershell_owner_mount.py
       - fortis_approvals/owner_shell_release.py
       - fortis_approvals/owner_shell_portal.py
       - fortis_approvals/incidents.py
@@ -114,6 +116,7 @@ noDeploymentPaths:
   # WorkflowClient is a Repo-side machine client; the Primary image COPY
   # includes only the native workflow server modules and not this file.
   - fortis_approvals/workflow/client.py
+  - fortis_approvals/workflow/powershell_client.py
   - fortis_approvals/workflow/intents.py
   - README.md
   - CONTRIBUTING.md

@@ -74,7 +74,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               organizations, region='eu', actor_grants=None,
                               project_keys=None, github_pilot=None,
                               github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None,
-                              publisher_profile=None, publisher_grant=None):
+                              publisher_profile=None, publisher_grant=None,
+                              machine_shell=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -99,6 +100,13 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         if not isinstance(github_pilot, GitHubPilotConfig):
             raise ValueError('GITHUB_PILOT_CONFIG_REQUIRED')
         github_pilot.check_endpoints(owner_origin, ingress_host)
+    if machine_shell is not None:
+        from .powershell_machine import MachinePowerShellAdapter
+        from .integrations.github.pilot import GitHubPilotConfig
+        if (type(machine_shell) is not MachinePowerShellAdapter or
+                type(github_pilot) is not GitHubPilotConfig or
+                github_pilot.native_worktree is not True):
+            raise Denied('MACHINE_POWERSHELL_NATIVE_COMPOSITION_REQUIRED')
     # A separately mounted owner principal is NEVER part of the legacy actor
     # list: those actors inherit Sonar READ/ASK and optional extension scopes.
     # In particular, accepting a publisher in actor_grants would silently
@@ -137,6 +145,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             any(type(org) is not str for org in organizations) or
             len(set(organizations)) != len(organizations)):
         raise ValueError('R7_ORGANIZATIONS_INVALID')
+    if (machine_shell is not None and
+            machine_shell.actor != grants[ingress_grant]):
+        raise Denied('MACHINE_POWERSHELL_ACTOR_SCOPE_DENIED')
     # Construct adapters *before* modifying state: invalid org/region fail closed.
     reader = SonarReadAdapter(sonar_transport,
                               organization_keys=organizations, region=region,
@@ -177,7 +188,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             from .workflow.runtime import install
             native = install(core=core,portal=portal,broker=broker,config=github_pilot,
                 root=root,actor=grants[ingress_grant],transport=github_transport,
-                publisher_profile=profile)
+                publisher_profile=profile,machine_shell=machine_shell)
         else:
             from .integrations.github.pilot import install_pilot
             install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,
