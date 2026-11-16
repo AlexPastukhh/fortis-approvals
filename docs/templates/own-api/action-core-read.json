@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "serviceId": "action_core",
   "ownerRepository": "feed_and_search_and_bank_and_brain",
-  "sourceSha": "cb22a03591e5c77739e192794d8f1d8323a68c4d",
+  "sourceSha": "ba698d702994f45d8a0740ad58a009b2db48fb27",
   "transport": {
     "profile": "DOCKER-HTTPS",
     "origin": "https://action-core-gw:443",

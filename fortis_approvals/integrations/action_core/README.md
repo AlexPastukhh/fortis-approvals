@@ -39,7 +39,9 @@ This provider does not expose Action creation/version publication, schedules, ru
 run history, source/search APIs or External AI registration. It has no WRITE operation.
 Public config/manifest is not proof of TLS, network isolation, vault readiness or runtime.
 The [source-only own-API manifest](../../../docs/templates/own-api/action-core-read.json)
-pins owner-merged Action Core PR #16 main SHA `cb22a03591e5c77739e192794d8f1d8323a68c4d`.
+pins owner-merged Action Core PR #17 main SHA
+`ba698d702994f45d8a0740ad58a009b2db48fb27`. PR #17 adds the separate
+fail-closed native TLS/443 entrypoint; it does not activate the Windows Compose runtime.
 Its `fortis-actioncore-net` network is a **proposal**, not an existing Gateway
 network, and the HTTP/8000 bypass remains unmitigated until owner acceptance.
 

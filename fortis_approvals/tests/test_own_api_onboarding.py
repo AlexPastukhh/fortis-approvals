@@ -75,7 +75,7 @@ class OwnApiOnboardingTests(unittest.TestCase):
         self.assertFalse(evidence["readyToDeploy"])
         self.assertFalse(evidence["liveVerified"])
         self.assertEqual(
-            "cb22a03591e5c77739e192794d8f1d8323a68c4d",
+            "ba698d702994f45d8a0740ad58a009b2db48fb27",
             manifest["sourceSha"],
         )
         self.assertEqual("feed_and_search_and_bank_and_brain",
