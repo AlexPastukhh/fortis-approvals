@@ -38,7 +38,8 @@ class Fake:
 
 class MirrorReadProviderTests(unittest.TestCase):
     def test_provider_only_read_and_fixed_get(self):
-        self.assertEqual(['get_repository'],[op.name for op in PROVIDER.operations])
+        self.assertEqual('get_repository', PROVIDER.operations[0].name)
+        self.assertTrue(all(op.kind == 'read' for op in PROVIDER.operations))
         self.assertEqual('read',PROVIDER.operations[0].kind)
         self.assertEqual(('get_repo',),PROVIDER.operations[0].routes)
         self.assertEqual('https://host.docker.internal',PROVIDER.api.origin)

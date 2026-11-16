@@ -219,3 +219,11 @@ host→Gateway READ. Отдельный reviewed effect-профиль прох�
 **только после** проверки второго реального API другого профиля и owner
 review evidence. Независимый tabletop/fixture подтверждает лишь source-перенос. Не считать локальный lint или source CI
 доказательством этих последних стадий.
+
+
+Mirror P3a source adds six observation READ v2 definitions alongside unchanged
+v1. [READ-V2 source and gates](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/READ-V2.md)
+own the finite named inventory, revision protocol and remaining P3b principal-bound
+preview/lookup work. No v2 grant, credential, listener or deployment follows from
+source merge. Use the same manifest, Doctor and Acceptance workflow above;
+do not build a separate onboarding path for each API version.
