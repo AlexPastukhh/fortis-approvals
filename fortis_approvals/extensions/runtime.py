@@ -38,10 +38,13 @@ class ExtensionConfig:
 
 class Context:
     """Only named, source-owned routes. Read previews never contact the provider."""
-    def __init__(self, runtime, provider, operation, request, phase):
+    def __init__(self, runtime, provider, operation, request, phase, *, authenticated_actor=None):
         self.runtime, self.provider, self.operation = runtime, provider, operation
         self.target, self.params = request['target'], deepcopy(request['params'])
         self.request_id, self.phase = request['requestId'], phase
+        # Set only by trusted Core submission or by its persisted request row.
+        # A public params/URL actor is never identity evidence.
+        self.authenticated_actor = authenticated_actor
         self._secret = None
         if operation.credential:
             alias = runtime.credentials[provider.name][operation.credential]
@@ -87,10 +90,21 @@ class ExtensionAdapter:
         return self.runtime.operations[(self.provider.name, request['operation'])]
 
     def prepare(self, request):
+        # Backward-compatible direct adapter tests have no trusted actor.
+        return self._prepare(request, authenticated_actor=None)
+
+    def prepare_authenticated(self, request, actor):
+        # Core.client authenticated actor before submit; Core.execute supplies
+        # the immutable persisted row actor. Never extract identity from params.
+        check(type(actor) is str and actor, 'INTEGRATION_PRINCIPAL_UNAVAILABLE')
+        return self._prepare(request, authenticated_actor=actor)
+
+    def _prepare(self, request, *, authenticated_actor):
         op = self.operation(request)
         check(request['expectedVersion'] == 0, 'INTEGRATION_VERSION_DENIED')
         validate_with(op.params, request['params'], limit=32768)
-        ctx = Context(self.runtime, self.provider, op, request, 'preview')
+        ctx = Context(self.runtime, self.provider, op, request, 'preview',
+                      authenticated_actor=authenticated_actor)
         ctx.safe(request['params'])
         try:
             preview = {} if op.preview is None else op.preview(ctx)
@@ -103,10 +117,13 @@ class ExtensionAdapter:
 
     def apply(self, request):
         op = self.operation(request)
-        ctx = Context(self.runtime, self.provider, op, request, 'execute')
         row = self.runtime.core._read(request['requestId'])
+        check(row['state'] == 'DISPATCHED' and row['request'] == request,
+              'INTEGRATION_CORE_IDENTITY_INVALID')
+        ctx = Context(self.runtime, self.provider, op, request, 'execute',
+                      authenticated_actor=row['actor'])
         # Recheck frozen domain inputs and credential generation at the effect boundary.
-        if canonical(self.prepare(request)) != canonical(row['preview']):
+        if canonical(self.prepare_authenticated(request, row['actor'])) != canonical(row['preview']):
             raise Stale('INTEGRATION_PREVIEW_CHANGED')
         check(ctx.generation == row['preview']['credentialGeneration'], 'INTEGRATION_CREDENTIAL_CHANGED')
         try: data = op.execute(ctx)
