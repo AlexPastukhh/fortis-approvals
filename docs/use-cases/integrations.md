@@ -128,6 +128,11 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 `PR_MERGED`, `IMAGE_ACTIVATED` и `LIVE_API_VERIFIED`.
 
 
+**P3.2 source candidate:** новый `list_head_workflow_runs` и scoped publisher
+согласованы в [техническом проекте P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md#p32-source-candidate--disabled-by-default).
+Client/schema/server меняются вместе; операция исключена из legacy auto-grants.
+Профиль выключен, credentials/grants и runtime этим source не создаются.
+
 <a id="uc-gw-011"></a>
 
 ## UC-GW-011 — Typed Release Labels через Fortis Gateway
@@ -154,10 +159,12 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 не попадает в Repo actor. Политика `ASK` не заменяет semantic
 revalidation перед будущим полностью автоматическим publisher.
 
-**P3 security/owner review:** [конкретный проект trusted publisher](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
-фиксирует отдельные principal/trigger/scope и недостающие source gates.
-Статус — `DESIGN_REVIEW_CANDIDATE`: профиль, grant, worker и автоматическая
-публикация этим документом не активируются. Последовательность остаётся в
+**P3:** [owner-принятый проект trusted publisher](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
+фиксирует отдельные principal/trigger/scope. P3.2 — `SOURCE_CANDIDATE`:
+отдельный actor имеет только scoped READ и add/remove через ASK, own-request
+evidence v1, bounded exact-head CI и защиту от конкурирующих label-заявок.
+Default disabled/DENY; выдача grants/credentials, worker и live activation
+остаются отдельным owner-этапом. Последовательность — в
 [общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
 
 **Методы (см. закрытый Python-контракт

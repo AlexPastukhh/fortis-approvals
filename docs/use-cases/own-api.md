@@ -156,7 +156,7 @@ receipt store или business logic ради второго клиента. Topo
 1. Сверить установленный catalog/version и строгую upstream/result schema.
    Несовместимое расширение получает отдельную версию/route; старый READ
    сохраняется до live cutover. Mirror-спецификация —
-   [MIRROR_API_CONTRACT_V1][mirror-contract] (P0 proposal, не runtime capability).
+   [MIRROR_API_CONTRACT_V1][mirror-contract] (принятый P0 contract, не runtime capability).
 2. Отдельно определить эффект и owner ASK. Текущие ALLOW/ASK/DENY, Core и
    machine grants сохраняются; независимость бизнес-функций не обещает
    несуществующих policy toggles и не отменяет ingress authentication.
@@ -222,3 +222,12 @@ host→Gateway READ. Отдельный reviewed effect-профиль прох�
 **только после** проверки второго реального API другого профиля и owner
 review evidence. Независимый tabletop/fixture подтверждает лишь source-перенос. Не считать локальный lint или source CI
 доказательством этих последних стадий.
+
+
+Mirror P3 source adds eight READ v2 definitions alongside unchanged v1,
+including P3b durable principal-bound preview/lookup. [READ-V2 source and gates](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/READ-V2.md)
+own the finite named inventory, revision protocol and trusted Core actor binding.
+P4 must still add signed atomic effect association/reservation; READ assertions
+do not independently prove ASK and never create machine effect bindings. No v2 grant, credential, listener or deployment follows from
+source merge. Use the same manifest, Doctor and Acceptance workflow above;
+do not build a separate onboarding path for each API version.

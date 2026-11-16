@@ -390,6 +390,10 @@ class GitHubAdapter:
         elif operation == "get_pull_request":
             raw = self._api("GET", base + "/pulls/" + str(params["number"]))
             result = {"operation": operation, "pullRequest": self._project_pull(raw)}
+        elif operation == "list_head_workflow_runs":
+            from ..release_label_ci import head_page
+            result = head_page(lambda suffix, query: self._api(
+                "GET", self._path(repo, suffix), params=query), params["headSha"], params["page"])
         elif operation == "list_workflow_runs":
             raw = self._api("GET", base + "/actions/runs",
                             params={"page": params["page"], "per_page": params["perPage"]})
@@ -720,13 +724,27 @@ class GitHubAdapter:
         return (type(result) is dict and result.get("requestId") == request_id and
                 self.receipt(request_id) == result)
 
-    def apply(self, request):
+    def _release_revalidate(self, request, approved_preview):
+        try:
+            return self.prepare(request)
+        except Denied:
+            if approved_preview is not None:
+                raise Stale("GITHUB_RELEASE_ADMISSION_CHANGED") from None
+            raise
+
+    def _before_release_label_write(self, request, snapshot, approved_preview):
+        """Optional native server guard; caller payload never supplies approval."""
+
+    def apply(self, request, *, approved_preview=None):
         request_id = request["requestId"]
         prior = self.receipt(request_id)
         if prior is not None:
             return prior
         operation = request["operation"]
-        if operation == "create_pull_request":
+        if (approved_preview is not None and operation in ("create_release_label",
+                "add_pr_release_labels", "remove_pr_release_label")):
+            snapshot = approved_preview
+        elif operation == "create_pull_request":
             with pr_create_phase("revalidate"):
                 snapshot = self.prepare(request)
         else:
@@ -734,9 +752,10 @@ class GitHubAdapter:
         operation, repo, params = request["operation"], request["target"], request["params"]
         base = self._path(repo)
         if operation=="create_release_label":
-            again=self.prepare(request)
+            again=self._release_revalidate(request, approved_preview)
             if canonical(again)!=canonical(snapshot):
                 raise Stale("GITHUB_RELEASE_LABEL_DEFINITIONS_CHANGED")
+            self._before_release_label_write(request, again, approved_preview)
             created=self._api("POST",base+"/labels",body=snapshot["definition"],expected=(201,))
             if type(created) is not dict or created.get("name")!=params["name"]:
                 raise GitHubTransportError("GITHUB_RELEASE_LABEL_CREATE_UNCONFIRMED")
@@ -746,9 +765,10 @@ class GitHubAdapter:
             result={"requestId":request_id,"operation":operation,
                     "repository":repo,"name":params["name"],"created":True}
         elif operation in ("add_pr_release_labels","remove_pr_release_label"):
-            again=self.prepare(request)
+            again=self._release_revalidate(request, approved_preview)
             if canonical(again)!=canonical(snapshot):
                 raise Stale("GITHUB_RELEASE_PR_LABELS_OR_HEAD_CHANGED")
+            self._before_release_label_write(request, again, approved_preview)
             before=set(snapshot["currentLabels"])
             number=params["number"]
             if operation=="add_pr_release_labels":

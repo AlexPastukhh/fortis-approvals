@@ -1,0 +1,460 @@
+[
+  {
+    "name": "list_repositories_v2",
+    "schema": "list_repositories_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "list_repositories_v2",
+      "target": "mirror-pilot",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "items": [
+          "fortis-approvals"
+        ],
+        "inventoryRevision": "0f7e6ebea0fd879c0cb7dd1e5e612f478088797a8e6914e14622f1c15fc4c90b",
+        "nextOffset": null,
+        "truncated": false
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "get_repository_v2",
+    "schema": "get_repository_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_repository_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "repoId": "fortis-approvals",
+        "docker": {
+          "verification": "VERIFIED",
+          "checkedAt": "2026-11-17T01:00:00+00:00",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "branch": "main",
+          "clean": true,
+          "errorCode": null
+        },
+        "windows": {
+          "verification": "VERIFIED",
+          "checkedAt": "2026-11-17T01:00:00+00:00",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "branch": "main",
+          "clean": true,
+          "errorCode": null
+        },
+        "github": {
+          "verification": "NOT_CHECKED",
+          "checkedAt": null,
+          "head": null,
+          "branch": null,
+          "clean": null,
+          "errorCode": "NOT_CHECKED"
+        },
+        "relation": "unknown",
+        "actions": [
+          {
+            "operation": "list_repositories_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "get_repository_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "list_worktrees_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "get_github_status_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "get_available_actions_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "get_capabilities_v2",
+            "available": true,
+            "blockers": []
+          },
+          {
+            "operation": "check_windows_history_v2",
+            "available": false,
+            "blockers": [
+              "POLICY_DENIED"
+            ]
+          },
+          {
+            "operation": "preview_windows_pull_v2",
+            "available": false,
+            "blockers": [
+              "POLICY_DENIED"
+            ]
+          },
+          {
+            "operation": "execute_windows_pull_v2",
+            "available": false,
+            "blockers": [
+              "POLICY_DENIED"
+            ]
+          },
+          {
+            "operation": "get_windows_pull_result_v2",
+            "available": false,
+            "blockers": [
+              "POLICY_DENIED"
+            ]
+          }
+        ]
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "list_worktrees_v2",
+    "schema": "list_worktrees_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "list_worktrees_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "items": [
+          {
+            "task": "task-0",
+            "branch": "task/0",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "clean": true,
+            "targetEligible": true
+          },
+          {
+            "task": "task-1",
+            "branch": "task/1",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "clean": true,
+            "targetEligible": true
+          },
+          {
+            "task": "task-2",
+            "branch": "task/2",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "clean": true,
+            "targetEligible": true
+          }
+        ],
+        "inventoryRevision": "1708324218159fcb8aeb12cd651722f2dfe46548255aa0bb5603fdd96f1f7385",
+        "nextOffset": null,
+        "truncated": false
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "get_github_status_v2",
+    "schema": "get_github_status_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_github_status_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "main": {
+          "verification": "VERIFIED",
+          "checkedAt": "2026-11-17T01:00:00+00:00",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "branch": "main",
+          "clean": null,
+          "errorCode": null
+        },
+        "pullRequests": [
+          {
+            "number": 12,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "MERGED",
+            "draft": false
+          }
+        ],
+        "runs": [
+          {
+            "id": 10,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "COMPLETED",
+            "conclusion": "SUCCESS"
+          },
+          {
+            "id": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "COMPLETED",
+            "conclusion": "SUCCESS"
+          },
+          {
+            "id": 30,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "COMPLETED",
+            "conclusion": "SUCCESS"
+          }
+        ],
+        "requiredCI": "NOT_VERIFIED",
+        "truncated": false,
+        "nextOffset": null,
+        "inventoryRevision": "4aa99121dc116f42625111546ae41849467fa959ecd09ac4c65578adc62094b9"
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "get_available_actions_v2",
+    "schema": "get_available_actions_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_available_actions_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": [
+        {
+          "operation": "list_repositories_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "get_repository_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "list_worktrees_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "get_github_status_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "get_available_actions_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "get_capabilities_v2",
+          "available": true,
+          "blockers": []
+        },
+        {
+          "operation": "check_windows_history_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ]
+        },
+        {
+          "operation": "preview_windows_pull_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ]
+        },
+        {
+          "operation": "execute_windows_pull_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ]
+        },
+        {
+          "operation": "get_windows_pull_result_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ]
+        }
+      ],
+      "error": null
+    }
+  },
+  {
+    "name": "get_capabilities_v2",
+    "schema": "get_capabilities_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_capabilities_v2",
+      "target": "mirror-pilot",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": [
+        {
+          "operation": "list_repositories_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "get_repository_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "list_worktrees_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "get_github_status_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "get_available_actions_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "get_capabilities_v2",
+          "available": true,
+          "blockers": [],
+          "version": "2"
+        },
+        {
+          "operation": "check_windows_history_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ],
+          "version": "2"
+        },
+        {
+          "operation": "preview_windows_pull_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ],
+          "version": "2"
+        },
+        {
+          "operation": "execute_windows_pull_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ],
+          "version": "2"
+        },
+        {
+          "operation": "get_windows_pull_result_v2",
+          "available": false,
+          "blockers": [
+            "POLICY_DENIED"
+          ],
+          "version": "2"
+        }
+      ],
+      "error": null
+    }
+  },
+  {
+    "name": "preview_windows_pull_v2",
+    "schema": "preview_windows_pull_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "preview_windows_pull_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "repoId": "fortis-approvals",
+        "previewId": "e9d4ab53-68f5-484c-84d8-ab947dc42565",
+        "expectedHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "targetSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dockerHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "originIdentity": "AlexPastukhh/fortis-approvals",
+        "sourceEvidence": {
+          "docker": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "branch": "main",
+            "clean": true,
+            "errorCode": null
+          },
+          "windows": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "branch": "main",
+            "clean": true,
+            "errorCode": null
+          },
+          "github": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "branch": "main",
+            "clean": null,
+            "errorCode": null
+          }
+        },
+        "checkedAt": "2026-11-17T01:00:00+00:00",
+        "expiresAt": "2026-11-17T01:02:00+00:00",
+        "configGeneration": "b27f058cc919d37d16e4f9402ef45aaeed8e44b02ec4dc05aee5f8e1200ec228",
+        "blockers": []
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "get_windows_pull_result_v2",
+    "schema": "get_windows_pull_result_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_windows_pull_result_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "requestId": "2166d435-e811-41d3-a8c8-c7d807942c25",
+        "repoId": "fortis-approvals",
+        "workerState": "EXECUTED",
+        "effect": "CONFIRMED",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedTarget": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checkedAt": "2026-11-17T01:00:00+00:00",
+        "errorCode": null,
+        "evidence": "WORKER_RECEIPT"
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "revision-conflict",
+    "schema": "list_worktrees_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "list_worktrees_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": null,
+      "error": {
+        "code": "INVENTORY_CHANGED",
+        "retryable": false
+      }
+    }
+  }
+]

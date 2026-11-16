@@ -46,6 +46,24 @@ class WorkflowClient:
         self.intents=IntentClient(self, **({'root':intent_root} if intent_root is not None else {}))
         self.github.intent_client=self.intents if self.automatic_recovery else None
 
+    @classmethod
+    def for_release_label_publisher(cls, *, gateway, intent_root):
+        """Explicit owner-private transport/journal, no Repo worker or fallback.
+
+        Actual mounts/isolation/credential delivery require owner verification.
+        A disabled profile can still read its original receipts and journal.
+        """
+        from pathlib import Path
+        from ..integrations.github.publisher_evidence import own_label_evidence
+        require(gateway is not None and callable(getattr(gateway, 'post', None)),
+                'PUBLISHER_EXPLICIT_GATEWAY_REQUIRED')
+        require(isinstance(intent_root, (str, Path)) and Path(intent_root).is_absolute()
+                and Path(intent_root) != Path('/'), 'PUBLISHER_PRIVATE_INTENT_ROOT_REQUIRED')
+        client = cls(gateway=gateway, worker=None, automatic_recovery=True, intent_root=intent_root)
+        require(own_label_evidence(client.capabilities(refresh=True)) is not None,
+                'PUBLISHER_SCOPED_GATEWAY_REQUIRED')
+        return client
+
     def capabilities(self, *, refresh=False):
         """Advisory protocol features; each WRITE still has fresh server admission."""
         if refresh or self._capabilities is None:

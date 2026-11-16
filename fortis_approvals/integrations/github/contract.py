@@ -36,7 +36,9 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "remove_pr_release_label"),
 })
 LEGACY_READ_OPERATIONS = GITHUB_READ_OPERATIONS
-GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS
+# Additive P3 transport. Registration never inherits a legacy actor ALLOW.
+HEAD_READ_OPERATIONS = frozenset({("github", "list_head_workflow_runs")})
+GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS | HEAD_READ_OPERATIONS
 GITHUB_ACTION_OPERATIONS = GITHUB_ACTION_OPERATIONS | ANALYSIS_ACTIONS
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
@@ -102,6 +104,13 @@ def validate_github_read(operation, target, params):
         _page({"page": params["page"], "perPage": params["perPage"]})
         if params["perPage"] > 50:
             raise Denied("GITHUB_PR_PAGE_TOO_LARGE")
+    elif operation == "list_head_workflow_runs":
+        if set(params) != {"headSha", "page", "perPage"}:
+            raise Denied("GITHUB_READ_PARAMS_DENIED")
+        _sha(params["headSha"])
+        _page({"page": params["page"], "perPage": params["perPage"]})
+        if params["perPage"] != 20 or params["page"] > 5:
+            raise Denied("GITHUB_HEAD_RUNS_LIMIT")
     elif operation in ("list_branches", "list_commits", "list_workflow_runs"):
         _page(params)
     elif operation in ("list_issues", "list_issue_comments"):
@@ -545,6 +554,26 @@ def validate_github_read_projection(operation, result):
             x["state"] in ("open", "closed") and type(x["draft"]) is bool and
             ref(x["head"]) and ref(x["base"]) and type(x["merged"]) is bool and
             github_url(x["url"]) for x in items))
+    elif operation == "list_head_workflow_runs":
+        fields = ("id", "name", "event", "status", "conclusion", "headBranch", "headSha",
+                  "runNumber", "runAttempt", "createdAt", "updatedAt", "url",
+                  "workflowId", "workflowPath")
+        valid = (exact(result, ("operation", "items", "totalCount", "headSha",
+                               "page", "perPage", "complete")) and rows("items", fields) and
+                 sha(result["headSha"]) and positive(result["totalCount"], allow_zero=True) and
+                 result["totalCount"] <= 100 and type(result["page"]) is int and
+                 1 <= result["page"] <= 5 and type(result["perPage"]) is int and
+                 result["perPage"] == 20 and type(result["complete"]) is bool and
+                 len(result["items"]) == min(20, max(0, result["totalCount"] - (result["page"]-1)*20)) and
+                 result["complete"] == ((result["page"]-1)*20+len(result["items"]) >= result["totalCount"]) and
+                 len({x["id"] for x in result["items"]}) == len(result["items"]) and
+                 all(positive(x["id"]) and text(x["name"], 200) and x["event"] == "pull_request" and
+                     text(x["status"], 40) and text(x["conclusion"], 40, optional=True) and
+                     text(x["headBranch"], 200) and x["headSha"] == result["headSha"] and
+                     positive(x["runNumber"]) and positive(x["runAttempt"]) and
+                     positive(x["workflowId"]) and text(x["workflowPath"], 180) and
+                     text(x["createdAt"], 80) and text(x["updatedAt"], 80) and
+                     github_url(x["url"]) for x in result["items"]))
     elif operation == "list_workflow_runs":
         valid = (exact(result, ("operation", "items", "totalCount")) and
                  rows("items", ("id", "name", "event", "status", "conclusion",
