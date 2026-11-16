@@ -278,6 +278,20 @@ class OwnApiOnboardingTests(unittest.TestCase):
         self.assertIn("DOCKER-HTTPS", text)
         self.assertIn("Owner Shell", text)
 
+    def test_uc_old_transport_retirement_requires_explicit_owner_question(self):
+        """Docs-only guard: HTTPS rollout must not silently retire legacy consumers."""
+        text = UC.read_text()
+        self.assertIn("Обязательный вопрос перед отключением прежнего транспорта", text)
+        self.assertIn("Используется ли сейчас старый транспорт", text)
+        self.assertIn("фоновыми/периодическими задачами", text)
+        self.assertIn("«Да»:", text)
+        self.assertIn("«Не знаю»", text)
+        self.assertIn("«Нет»:", text)
+        self.assertIn("HTTP_RETIREMENT_STOP", text)
+        self.assertIn("owner-reviewed cutover", text)
+        self.assertIn("доказательством отсутствия старых потребителей", text)
+        self.assertIn("не является разрешением немедленно отключать", text)
+
 
 if __name__ == "__main__":
     unittest.main()
