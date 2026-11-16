@@ -25,7 +25,7 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     reads=(LEGACY_READ_OPERATIONS|CI_READS)-{('github','list_repositories')}
     if config.dynamic_repositories:
         reads=reads|{('github','list_repositories')}
-    writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file','publish_visual_review','create_release_label','add_pr_release_labels','remove_pr_release_label')}
+    writes={('github',x) for x in ('push_commits','create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file','publish_visual_review','append_visual_revision','create_release_label','add_pr_release_labels','remove_pr_release_label')}
     for service,operation in reads:core.policies[(actor,service,operation)]='ALLOW'
     for service,operation in writes:core.policies[(actor,service,operation)]='ASK'
     core.policies[(actor,'github','push_commits')]=adapter.push_policy
@@ -40,6 +40,10 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     # Owner-approved scoped autonomy: visual PNG publication only in the pinned
     # private visual-workspace repository. GitHub merges and other writes stay ASK.
     core.policies[(actor,'github','publish_visual_review','visual-workspace')]='ALLOW'
+    # A draft revision is a NEW owner-controlled comment effect, not a v1
+    # create-Issue retry. Grant ASK only to this exact private repository.
+    core.policies[(actor,'github','append_visual_revision')]='DENY'
+    core.policies[(actor,'github','append_visual_revision','visual-workspace')]='ASK'
     # CI control stays DENY until the operator explicitly pins repositories.
     if config.ci_control_repositories:
         writes=writes|CI_ACTIONS
