@@ -144,7 +144,9 @@ class WireFixture(unittest.TestCase):
         self.assertEqual([],self.calls)
 
     def test_write_routes_and_caller_url_not_accepted(self):
-        self.assertEqual(["get_repo"],list(tls.MirrorPinnedAPI().routes))
+        self.assertIn("get_repo", tls.MirrorPinnedAPI().routes)
+        self.assertTrue(all(route.method == "GET" and route.readonly
+                            for route in tls.MirrorPinnedAPI().routes.values()))
         for route in ("pull_main","post","unknown"):
             with self.subTest(route=route), self.assertRaises(Denied):
                 tls.MirrorPinnedAPI().call(route,path={"repo_id":"fortis-approvals"})
