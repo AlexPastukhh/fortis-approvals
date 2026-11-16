@@ -68,7 +68,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
     def _visual_prepare(self,request):
         p=request['params'];repo=request['target'];ident=request['requestId']
         from ..integrations.github.contract import validate_github_action
-        validate_github_action('publish_visual_review',repo,p)
+        validate_github_action(request['operation'],repo,p)
         require(repo=='visual-workspace','VISUAL_REVIEW_REPOSITORY_DENIED')
         raw=self._api('GET',self._path(repo))
         require(type(raw) is dict and raw.get('full_name')==self.owner+'/'+repo and
@@ -85,11 +85,159 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         """Read-only durable evidence for actor-scoped existing details endpoint."""
         with self._db() as db:
             table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_reviews'").fetchone()
-            if table is None:return None
-            row=db.execute('SELECT repository,run_id,issue_number,uploads FROM visual_reviews WHERE id=?',(ident,)).fetchone()
+            row=(db.execute('SELECT repository,run_id,issue_number,uploads FROM visual_reviews WHERE id=?',
+                            (ident,)).fetchone() if table is not None else None)
+            if row is not None:
+                return dict(repository=row[0],runId=row[1],issueNumber=row[2],
+                            uploadedFiles=len(json.loads(row[3])))
+            table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_revisions'").fetchone()
+            row=(db.execute('SELECT repository,run_id,issue_number,revision,comment_id,uploads '
+                            'FROM visual_revisions WHERE id=?',(ident,)).fetchone()
+                 if table is not None else None)
         if row is None:return None
         return dict(repository=row[0],runId=row[1],issueNumber=row[2],
-                    uploadedFiles=len(json.loads(row[3])))
+                    revision=row[3],commentId=row[4],uploadedFiles=len(json.loads(row[5])))
+
+    def _revision_prepare(self,request):
+        """Bind an append-only revision to the original, private Fortis Issue.
+
+        Never accept an arbitrary issue number, PR, or a marker copied to an
+        unrelated issue. The original published Issue's *durable* reservation
+        and the live GitHub identity must both agree before any media upload.
+        """
+        core=self.observation_core
+        require(core is not None and core._policy(self.actor,request)=='ASK',
+                'GITHUB_REVISION_OWNER_ASK_REQUIRED')
+        p=request['params'];repo=request['target']
+        preview=self._visual_prepare(request)
+        number=p['issueNumber'];base_run=p['baseRunId']
+        with self._db() as db:
+            table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_reviews'").fetchone()
+            require(table is not None,'GITHUB_REVISION_ORIGINAL_NOT_PUBLISHED')
+            first=db.execute('SELECT issue_number FROM visual_reviews WHERE repository=? AND run_id=?',
+                             (repo,base_run)).fetchone()
+            require(first is not None and first[0]==number,
+                    'GITHUB_REVISION_ORIGINAL_NOT_PUBLISHED')
+            # Fail closed after a partially completed earlier revision, including
+            # uploads without a comment receipt. No competing asset may adopt it.
+            table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_revisions'").fetchone()
+            if table is not None:
+                rows=db.execute('SELECT asset_id,revision,run_id,comment_id,comment_sha256 FROM visual_revisions '
+                                'WHERE repository=? AND issue_number=? ORDER BY revision',
+                                (repo,number)).fetchall()
+                require(not rows or all(row[0]==p['assetId'] for row in rows),
+                        'GITHUB_REVISION_ASSET_CONFLICT')
+                require(p['runId']!=base_run and db.execute(
+                    'SELECT 1 FROM visual_revisions WHERE repository=? AND run_id=?',
+                    (repo,p['runId'])).fetchone() is None,'GITHUB_REVISION_RUN_RESERVED')
+                require(p['revision']==(rows[-1][1]+1 if rows else 2),
+                        'GITHUB_REVISION_OUT_OF_ORDER')
+                # An unresolved older revision is not a valid base for another
+                # mutation. Never skip over partially uploaded media/comments.
+                require(all(row[3] is not None for row in rows),
+                        'GITHUB_REVISION_PREVIOUS_UNCONFIRMED')
+            else:
+                rows=[]
+                require(p['revision']==2,'GITHUB_REVISION_OUT_OF_ORDER')
+        if rows:
+            previous=rows[-1]
+            comment=self._api('GET',self._path(repo,'issues/comments/'+str(previous[3])))
+            expected='<!-- fortis-visual-revision:'+p['assetId']+':'+str(previous[1])+':'+previous[2]+' -->'
+            require(type(comment) is dict and comment.get('id')==previous[3] and
+                    type(comment.get('body')) is str and comment['body'].startswith(expected+'\n') and
+                    hashlib.sha256(comment['body'].encode()).hexdigest()==previous[4],
+                    'GITHUB_REVISION_PREVIOUS_COMMENT_CHANGED')
+        issue=self._api('GET',self._path(repo,'issues/'+str(number)))
+        link='https://github.com/'+self.owner+'/'+repo+'/issues/'+str(number)
+        marker='<!-- fortis-visual-review:'+base_run+' -->'
+        require(type(issue) is dict and issue.get('number')==number and
+                issue.get('html_url')==link and issue.get('state')=='open' and
+                'pull_request' not in issue and type(issue.get('body')) is str and
+                issue['body'].startswith(marker+'\n'),
+                'GITHUB_REVISION_ORIGINAL_ISSUE_CHANGED')
+        return {**preview,'issueNumber':number,'baseRunId':base_run,
+                'assetId':p['assetId'],'revision':p['revision'],
+                'sourceSha':p['sourceSha'],'originalIssueUrl':link,
+                'originalBodySha256':hashlib.sha256(issue['body'].encode()).hexdigest()}
+
+    def _revision_apply(self,request):
+        """One-shot append. Reserve before any GitHub effect; never replay on UNKNOWN.
+
+        A failed upload/comment/readback leaves durable evidence and blocks a
+        second request for the same version, even with a new requestId.
+        """
+        ident=request['requestId'];p=request['params'];repo=request['target']
+        preview=self._revision_prepare(request)
+        core=self.observation_core
+        row=core._read(ident)
+        # An ASK snapshot is not a suggestion: revalidate the *exact* owner-
+        # approved request and preview at DISPATCHED, before any remote effect.
+        require(row['state']=='DISPATCHED' and row['decision']=='approve' and
+                type(row['owner']) is str and bool(row['owner']) and
+                int(core.clock()) < row['expiresAt'] and
+                row['policyVersion']==core.policy_version and
+                core.auth.active(row['actor']) and row['actor']==self.actor and
+                core._policy(self.actor,request)=='ASK' and
+                canonical(row['request'])==canonical(request) and
+                canonical(row['preview'])==canonical(preview),
+                'GITHUB_REVISION_OWNER_APPROVAL_REQUIRED')
+        number=p['issueNumber']
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('CREATE TABLE IF NOT EXISTS visual_revisions ('
+                'id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue_number INTEGER NOT NULL, '
+                'base_run_id TEXT NOT NULL, asset_id TEXT NOT NULL, revision INTEGER NOT NULL, '
+                'run_id TEXT NOT NULL, source_sha TEXT NOT NULL, comment_id INTEGER, '
+                'comment_sha256 TEXT, '
+                'uploads TEXT NOT NULL, UNIQUE(repository,run_id), '
+                'UNIQUE(repository,issue_number,revision))')
+            require(db.execute('SELECT 1 FROM visual_reviews WHERE repository=? AND run_id=?',
+                               (repo,p['runId'])).fetchone() is None,
+                    'GITHUB_REVISION_RUN_RESERVED')
+            require(db.execute('SELECT 1 FROM visual_revisions WHERE repository=? AND run_id=?',
+                               (repo,p['runId'])).fetchone() is None,
+                    'GITHUB_REVISION_RUN_RESERVED')
+            db.execute('INSERT INTO visual_revisions VALUES(?,?,?,?,?,?,?,?,NULL,NULL,?)',
+                       (ident,repo,number,p['baseRunId'],p['assetId'],p['revision'],
+                        p['runId'],p['sourceSha'],'{}'))
+        uploads={}
+        for item in p['media']:
+            data=self.workflow.visual_png(self.actor,ident,repo,p['runId'],item)
+            filename='fortis-'+str(item['index'])+'-'+item['sha256'][:16]+'.png'
+            url=self.transport.upload_visual_png(preview['repositoryId'],filename,data)
+            uploads[str(item['index'])]=url
+            with self._db() as db:
+                db.execute('UPDATE visual_revisions SET uploads=? WHERE id=?',
+                           (canonical(uploads),ident))
+        def alt(value):
+            return value.replace('\\','\\\\').replace('[','\\[').replace(']','\\]').replace('\r',' ').replace('\n',' ')
+        marker='<!-- fortis-visual-revision:'+p['assetId']+':'+str(p['revision'])+':'+p['runId']+' -->'
+        text=(marker+'\n\n## '+p['assetId']+' — v'+str(p['revision'])+'\n\n'+
+              p['description']+'\n\n**Source Git SHA:** `'+p['sourceSha']+'`'+
+              '\n\n**QA:** '+p['qaSummary']+'\n\n**Duration:** '+
+              str(p['durationSeconds'])+' seconds\n\n## Preview\n\n'+
+              '\n\n'.join('!['+alt(item['name'])+']('+uploads[str(item['index'])]+')'
+                           for item in p['media']))
+        created=self._api('POST',self._path(repo,'issues/'+str(number)+'/comments'),
+                          body={'body':text},expected=(201,))
+        comment_id=created.get('id') if type(created) is dict else None
+        url= ('https://github.com/'+self.owner+'/'+repo+'/issues/'+str(number)+
+              '#issuecomment-'+str(comment_id))
+        require(type(comment_id) is int and 0<comment_id<2**63 and
+                created.get('html_url')==url and created.get('body')==text,
+                'GITHUB_REVISION_COMMENT_CREATE_UNCONFIRMED')
+        with self._db() as db:
+            db.execute('UPDATE visual_revisions SET comment_id=?,comment_sha256=? WHERE id=?',
+                       (comment_id,hashlib.sha256(text.encode()).hexdigest(),ident))
+        saved=self._api('GET',self._path(repo,'issues/comments/'+str(comment_id)))
+        require(type(saved) is dict and saved.get('id')==comment_id and
+                saved.get('html_url')==url and saved.get('body')==text,
+                'GITHUB_REVISION_COMMENT_READBACK_UNCONFIRMED')
+        result=dict(requestId=ident,operation='append_visual_revision',repository=repo,
+                    issueNumber=number,runId=p['runId'],revision=p['revision'],
+                    commentId=comment_id,url=url,uploadedFiles=len(uploads))
+        self._save_receipt(ident,result)
+        return result
 
     def _visual_apply(self,request):
         """Single Core action; partial GitHub effects are never blindly replayed."""
@@ -336,7 +484,8 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         if request['operation'] in ('create_release_label','add_pr_release_labels','remove_pr_release_label'):
             self.publisher.admission_guard(self, request)
         operation=request['operation'];repo=self._access(request['target']);p=request['params']
-        if operation=='publish_visual_review':return self._visual_prepare(request)
+        if operation in ('publish_visual_review','append_visual_revision'):
+            return self._visual_prepare(request) if operation=='publish_visual_review' else self._revision_prepare(request)
         if operation in CI_ACTION_NAMES:
             return AnalysisGitHubAdapter.prepare(self,request)
         if operation=='push_commits':
@@ -461,6 +610,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             self._access(request['target'])
             return AnalysisGitHubAdapter.apply(self,request)
         if operation=='publish_visual_review':return self._visual_apply(request)
+        if operation=='append_visual_revision':return self._revision_apply(request)
         if operation not in ('push_commits','mark_pr_ready'):
             return GitHubAdapter.apply(self,request)
         snapshot=self.prepare(request);repo=request['target'];p=request['params']

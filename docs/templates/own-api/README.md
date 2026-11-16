@@ -21,6 +21,23 @@ python3 -B scripts/check-own-api-manifest.py --manifest "$PWD/docs/templates/own
 Both fixtures must produce SOURCE_MANIFEST_VALID with
 liveVerified=false and readyToDeploy=false.
 
+The real source-only [Action Core READ manifest](action-core-read.json) pins
+`feed_and_search_and_bank_and_brain/main` at the owner-merged PR #16 SHA.
+It declares only `action_core.read_action` for Actions 3/4 and the **proposed**
+DOCKER-HTTPS network `fortis-actioncore-net`. The owner has **not** installed
+that network, HTTPS/443 ingress, CA or credential. In particular, the Windows
+read-only test reached the local unauthenticated Action Core HTTP/8000 endpoint
+from `fortis-gateway` by two paths. Do not deploy or run live READ acceptance
+without eliminating both bypasses and satisfying UC-GW-009/012 owner release.
+
+**Action Core cutover is HTTPS-first, with no transition compatibility phase.**
+The first Gateway-visible deployment MUST be the final reviewed DOCKER-HTTPS/443
+route with pinned CA, SAN, scoped Bearer and verified ACL. Do not stage an
+HTTP/8000 provider, temporary insecure route, dual HTTP/HTTPS mode,
+compatibility adapter, redirect-to-HTTPS, or fallback to the legacy local API.
+The existing Windows-local API remains unchanged for existing local consumers;
+that continuity does **not** authorize its use as a Gateway transport.
+
 The Mirror example records the reviewed *source* of the WIN-HTTPS READ pilot;
 its SHA is historical and needs fresh review before release. The second
 example is a deliberately fictional DOCKER-HTTPS metricsprobe service,

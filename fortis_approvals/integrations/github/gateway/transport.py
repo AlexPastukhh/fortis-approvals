@@ -46,6 +46,8 @@ _ROUTES = (
     ("PATCH", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*/comments$")),
+    ("POST", re.compile(_BASE + r"/issues/[1-9][0-9]*/comments$")),
+    ("GET", re.compile(_BASE + r"/issues/comments/[1-9][0-9]*$")),
     ("POST", re.compile(_BASE + r"/actions/workflows/[A-Za-z0-9_.-]+/dispatches$")),
     ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/(rerun|cancel|approve)$")),
     ("PATCH", re.compile(_BASE + r"/git/refs/heads/[A-Za-z0-9_.%~-]+$")),

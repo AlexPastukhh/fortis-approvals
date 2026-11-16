@@ -26,6 +26,7 @@ tests=(
   test_owner_shell_portal.py
   test_owner_shell_release.py
   test_owner_shell_release_source.py
+  test_powershell_executor_extraction.py
   test_runtime.py
   test_repo_action_contract.py
   test_repo_ingress.py
@@ -45,6 +46,7 @@ tests=(
   test_github_file_pr.py
   test_github_ci_read.py
   test_visual_review.py
+  test_visual_revisions.py
   test_native_workflow.py
   test_native_git_push_diagnostics.py
   test_git_transfer_efficiency.py

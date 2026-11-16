@@ -24,6 +24,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | P3 trusted Release Label Publisher — accepted design / P3.2 source candidate, disabled | [Security/owner project](RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) |
 | Read-only Core incident evidence aggregation (PR2 source candidate) | [Incident Inspector](INCIDENT-INSPECTOR.md) |
 | Upcoming work, acceptance gaps and priority P0 | [Single backlog](BACKLOG-IMPROVEMENTS.md) |
+| PowerShell baseline, Repo AI V1 ASK-only plan and future improvements | [Current owner-only contract](OWNER-POWERSHELL.md) · [Consolidated plan/history](BACKLOG-IMPROVEMENTS.md#powershell-plan) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
 | Provider-specific implementation | [Integration catalog](../fortis_approvals/integrations/README.md) |
 | Deployment scripts and retained return paths | [Deployment index](../fortis_approvals/deploy/README.md) |

@@ -46,6 +46,9 @@ Source/tests/CI, owner release и живой результат — разные
    Изолировать upstream owner release и Gateway release; изменение одного
    не означает принятие другого. Owner Shell/PowerShell Executor — отдельный
    привилегированный API; нельзя подключать его как обычный ALLOW provider.
+   [План Repo AI PowerShell V1](../BACKLOG-IMPROVEMENTS.md#powershell-plan)
+   предусматривает ASK каждого исполнения и owner-настройки ограничений;
+   это отдельный effect/transport review по UC-GW-003, не расширение READ checker.
 2. **Public source-only manifest:** в registered task worktree заполнить
    [шаблоны](../templates/own-api/README.md). Выполнить
    `python3 -B scripts/check-own-api-manifest.py --manifest <absolute-file>`.
@@ -140,6 +143,39 @@ source в своих worktrees; общий vault, production Apply и activation
 Handoff ссылается на этот UC и документацию сервиса; обязательный процесс
 не хранится только в handoff.
 
+### Обязательный вопрос перед отключением прежнего транспорта
+
+**Когда:** переход на HTTPS/443, смена порта, замена или прекращение прежнего
+HTTP/другого транспорта могут затронуть существующие клиенты API.
+Это отдельный owner cutover, **не** побочный эффект подключения Gateway.
+
+**Вопрос владельцу API, до любых действий по отключению:**
+«Используется ли сейчас старый транспорт какими-либо клиентами,
+сервисами или фоновыми/периодическими задачами? Если да — какими?»
+Ответ должен быть **явным** и привязанным к конкретному API/порту.
+Не считать отсутствие текущих TCP-соединений, неизвестный список клиентов
+или успешный HTTPS-тест доказательством отсутствия старых потребителей.
+
+- **«Да»:** не отключать прежний транспорт. Сначала утвердить миграцию
+  каждого нужного клиента и подтвердить его работу по новому пути;
+  только затем повторно спросить владельца об отключении.
+- **«Не знаю», неполный/неоднозначный ответ или нет ответа: STOP.**
+  Сохранить прежний транспорт без изменений, провести read-only
+  инвентаризацию известных и периодических потребителей и запросить
+  отдельное решение владельца.
+- **«Нет»:** зафиксировать ответ и область подтверждения; проверить
+  read-only доступные сведения о потребителях, совместимость, backup,
+  предыдущий immutable image, восстановление и rollback. Этот ответ
+  **не является разрешением немедленно отключать**: нужен отдельный
+  owner-reviewed cutover с установленными предусловиями и readback.
+
+**Готово:** в evidence/handoff записаны сам заданный вопрос, дата и ответ
+владельца, конкретный старый transport, обзор потребителей, решение
+сохранить/мигрировать/вывести из эксплуатации и cutover/rollback evidence
+(без токенов и чувствительных данных). При UNKNOWN, активных потребителях
+или недоказанном rollback — **HTTP_RETIREMENT_STOP**. Существующий API
+может получить HTTPS-only финальное состояние, но только после этого gate.
+
 ### Существующий локальный клиент и machine client одного API
 
 **Когда:** upstream уже обслуживает локальный UI/клиент, а ИИ требуется
@@ -153,7 +189,7 @@ receipt store или business logic ради второго клиента. Topo
 1. Сверить установленный catalog/version и строгую upstream/result schema.
    Несовместимое расширение получает отдельную версию/route; старый READ
    сохраняется до live cutover. Mirror-спецификация —
-   [MIRROR_API_CONTRACT_V1][mirror-contract] (P0 proposal, не runtime capability).
+   [MIRROR_API_CONTRACT_V1][mirror-contract] (принятый P0 contract, не runtime capability).
 2. Отдельно определить эффект и owner ASK. Текущие ALLOW/ASK/DENY, Core и
    machine grants сохраняются; независимость бизнес-функций не обещает
    несуществующих policy toggles и не отменяет ingress authentication.
@@ -221,9 +257,10 @@ review evidence. Независимый tabletop/fixture подтверждае�
 доказательством этих последних стадий.
 
 
-Mirror P3a source adds six observation READ v2 definitions alongside unchanged
-v1. [READ-V2 source and gates](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/READ-V2.md)
-own the finite named inventory, revision protocol and remaining P3b principal-bound
-preview/lookup work. No v2 grant, credential, listener or deployment follows from
+Mirror P3 source adds eight READ v2 definitions alongside unchanged v1,
+including P3b durable principal-bound preview/lookup. [READ-V2 source and gates](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/READ-V2.md)
+own the finite named inventory, revision protocol and trusted Core actor binding.
+P4 must still add signed atomic effect association/reservation; READ assertions
+do not independently prove ASK and never create machine effect bindings. No v2 grant, credential, listener or deployment follows from
 source merge. Use the same manifest, Doctor and Acceptance workflow above;
 do not build a separate onboarding path for each API version.
