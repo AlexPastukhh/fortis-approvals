@@ -58,6 +58,8 @@ ID и GraphQL token scope; **никаких живых Project writes сейча
 
 ## P0 — Подключение собственных API через Gateway: ПЕРВОЕ В ОЧЕРЕДИ (2026-11-10)
 
+- [ ] **Action Core READ — owner runtime gates (2026-11-17).** Source PR #16 в `feed_and_search_and_bank_and_brain` (merged main `cb22a03591e5c77739e192794d8f1d8323a68c4d`) и Gateway provider PR #105 (merged main `42c6ef7b94c4e72d8be0594b8034e782fca4636b`) прошли точный CI/Release Impact. Public [manifest](templates/own-api/action-core-read.json) — только source, сеть `fortis-actioncore-net` предлагается, не установлена. **Перед live READ:** owner-reviewed Docker HTTPS/443 ingress с SAN/CA, отдельный scoped verifier/vault alias, Guard/controller compatibility, блокировать оба подтверждённых Gateway→HTTP/8000 bypass (host.docker.internal и прямой IP), проверить отрицательные TLS/auth/ACL тесты, UC-GW-009 global state/quiescence, старый image, isolated restore, owner Check/Apply/Backup/Promote, затем one-shot Gateway READ для 3/4 с readback. Исходный provider есть в source, но установленный catalog его пока не показывает; **WRITE отдельно**.
+
 **Статус:** PLANNED / TOP PRIORITY. **Рабочий подробный план:**
 [Fortis → API: onboarding, UC, безопасность, автоматизация](/workspace/repo/Workfiles/fortis-api-onboarding-priority-20261110/PLAN.md)
 (локальный Workfiles в постоянном Fortis workspace; путь не является GitHub-ссылкой).
