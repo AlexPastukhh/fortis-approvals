@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,13 +99,24 @@ class DoctorTests(unittest.TestCase):
         out = doctor.core_summary({"items": [
             {"state": "UNCERTAIN"}, {"state": "UNCERTAIN"},
             {"state": "APPROVED"}
-        ], "truncated": False, "total": 3},
+        ], "truncated": False, "total": 3, "offset": 0},
             {"claimed": 1, "queued": 0, "quiescenceProven": False,
              "truncated": False})
         self.assertEqual(out["unresolvedStatesOnPage"]["UNCERTAIN"], 2)
         self.assertEqual(out["claimed"], 1)
         self.assertEqual(out["requestInventoryCoverage"], "COMPLETE_SNAPSHOT")
         self.assertEqual(out["workerQuiescence"], "OWNER_CONFIRMATION_REQUIRED")
+
+    def test_missing_or_inconsistent_inventory_never_claims_complete(self):
+        requests = {'items': [], 'total': 0, 'offset': 0, 'truncated': False}
+        activity = {'claimed': 0, 'queued': 0, 'truncated': False}
+        for req, act in (({'items': []}, activity),
+                         (dict(requests, total=10), activity),
+                         (dict(requests, offset=100), activity),
+                         (requests, {'claimed': 0, 'queued': 0})):
+            with self.subTest(requests=req, activity=act):
+                report = doctor.core_summary(req, act)
+                self.assertNotEqual('COMPLETE_SNAPSHOT', report['requestInventoryCoverage'])
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -220,6 +232,65 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(self.client.calls, 1)
             finally:
                 accept.intent_path = original
+
+    def test_local_provider_version_mismatch_stops_before_ready_or_submit(self):
+        catalog = self.client.catalog()
+        catalog['operations'][0]['version'] = '999'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'read.json'
+            with mock.patch.object(accept, 'intent_path', return_value=path), \
+                 mock.patch.object(self.client, 'catalog', return_value=catalog):
+                for submit in (False, True):
+                    with self.assertRaisesRegex(accept.AcceptanceStop, 'PROVIDER_SOURCE_VERSION_CHANGED'):
+                        accept.acceptance(self.m, journal=path, submit_read=submit, **self.base)
+            self.assertFalse(path.exists())
+            self.assertEqual(0, self.client.calls)
+
+    def test_short_journal_write_never_submits(self):
+        write = accept.os.write
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'read.json'
+            with mock.patch.object(accept, 'intent_path', return_value=path), \
+                 mock.patch.object(accept.os, 'write', side_effect=lambda fd, data: write(fd, data[:-1])):
+                with self.assertRaisesRegex(accept.AcceptanceStop, 'JOURNAL_WRITE_INCOMPLETE'):
+                    accept.acceptance(self.m, journal=path, submit_read=True, **self.base)
+            self.assertEqual(0, self.client.calls)
+
+    def test_directory_sync_failure_never_submits(self):
+        fsync = accept.os.fsync
+        def sync(fd):
+            if accept.stat.S_ISDIR(accept.os.fstat(fd).st_mode):
+                raise OSError('fixture directory sync failure')
+            return fsync(fd)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'read.json'
+            with mock.patch.object(accept, 'intent_path', return_value=path), \
+                 mock.patch.object(accept.os, 'fsync', side_effect=sync):
+                with self.assertRaises(OSError):
+                    accept.acceptance(self.m, journal=path, submit_read=True, **self.base)
+            self.assertEqual(0, self.client.calls)
+
+    def test_other_provider_uses_its_manifest_response_limit(self):
+        from types import SimpleNamespace
+        example = manifest('mirror-read.example.json')
+        example['serviceId'] = 'metricsprobe'
+        example['operations'][0]['maxResponseBytes'] = 150000
+        client = FakeClient(service='metricsprobe')
+        client.reply = {'state': 'EXECUTED', 'data': {'payload': 'x' * 70000}}
+        def result(value):
+            self.assertEqual({'payload'}, set(value))
+            self.assertIsInstance(value['payload'], str)
+        op = SimpleNamespace(name='get_repository', kind='read', ready=True,
+                             version='1', params=lambda value: value, result=result)
+        provider = SimpleNamespace(operations=(op,))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'read.json'
+            with mock.patch.object(accept, 'intent_path', return_value=path), \
+                 mock.patch('fortis_approvals.extensions.model.discover', return_value=(provider,)):
+                out = accept.acceptance(example, journal=path, submit_read=True,
+                                        **dict(self.base, client=client))
+                self.assertEqual('LIVE_TYPED_READ_VERIFIED', out['status'])
+                self.assertGreater(out['resultBytes'], 65536)
 
 
 if __name__ == "__main__":
