@@ -193,7 +193,8 @@ PowerShell и Docker image/record pointer. Для GitHub отсутствие в
 
 **Порядок уточнён:** сначала самостоятельный `fortis-powershell-executor`,
 затем machine ASK и настраиваемые ограничения. Перенос принят в план,
-реализация и Windows cutover ещё не выполнены.
+source-пакет и изменения Script Center подготовлены; bootstrap нового repo
+и Windows cutover ещё не пройдены.
 
 Актуализировано **2026-11-17** по исходникам, истории и решениям владельца
 в текущей задаче. Это **план**, не новая machine capability и не разрешение
@@ -269,9 +270,18 @@ Windows PowerShell Executor. Browser Mirror, Mirror API и Git Pull в ней н
 
 **PS-AI-V1-00 — обязательный первый этап, PLANNED.** Перенести Windows
 исполнитель в отдельный репозиторий **`fortis-powershell-executor`**.
-В рамках обновления плана новый repo/clone не создан, исходники не перенесены,
-Windows-процессы и credentials не изменены. Создание/публикация repo и Windows
-переключение — будущие действия этапа, не выполненные факты.
+Подготовлены воспроизводимый source candidate и изменения Script Center;
+новый repo/clone ещё не создан и не проверен через Gateway. Windows-процессы,
+credentials и установленная DB не изменены. Source-подготовка не является
+завершением переноса или Windows переключением.
+
+**Текущий результат:** 15 файлов кандидата, неизменённые байты runner,
+11 extraction + 9 candidate tests и 94 Script Center tests (1 skip).
+Реальные source-resolver проверки выполнены на PowerShell 7/Linux, не Windows.
+Подробные SHA, scope и границы — в [source evidence](../fortis_approvals/evidence/POWERSHELL-EXECUTOR-EXTRACTION-SOURCE-20261117.md).
+**Следующий prerequisite:** owner-created GitHub repo с initial main и URL
+по UC-CONT-027; fresh READ нового target сейчас вернул FORTIS_HTTP_403,
+а create_repository не представлен в Gateway. Не обходить этот bootstrap.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
 Machine ASK и ограничения команд реализуются следующими этапами; перенос
@@ -379,11 +389,13 @@ AST/allowlist не являются OS sandbox: разрешённый cmdlet/mo
 
 ### Последовательность реализации и критерии готовности
 
-Все новые пункты сейчас **PLANNED**. Старые owner PASS их не закрывают.
+PS-AI-V1-00 сейчас **IN PROGRESS / SOURCE CANDIDATE**; bootstrap и live
+cutover ещё не приняты. Остальные новые пункты **PLANNED**.
+Старые owner PASS их не закрывают.
 
 | ID | Шаг / владелец | Проверяемый результат |
 | --- | --- | --- |
-| PS-AI-V1-00 | Выделение `fortis-powershell-executor`; Executor + Script Center | Выполнены MOVE-01…08: самостоятельный source/CI, новый resolver, совместимый Windows cutover, прежние TLS/config/receipt DB и проверенный rollback; Mirror не нужен для запуска |
+| PS-AI-V1-00 | **IN PROGRESS / SOURCE CANDIDATE** — выделение `fortis-powershell-executor`; Executor + Script Center | Для завершения нужны MOVE-01…08: самостоятельный source/CI, новый resolver, совместимый Windows cutover, прежние TLS/config/receipt DB и проверенный rollback; Mirror не нужен для запуска |
 | PS-AI-V1-01 | Повторная сверка baseline после переноса; Gateway + Executor + Script Center | Точные source/installed версии, identity/bind/TLS/DB metadata без секретов; список незавершённых эффектов; сохранён recovery path. Не запускать release или старую команду повторно |
 | PS-AI-V1-02 | Контракт и threat review; Gateway + Executor | Закрытые submit/status/result schemas, actor/target, ASK-only, полный preview, policy/proof versions, dispatch trust и совместимость owner route/DB; owner-reviewed спецификация до activation |
 | PS-AI-V1-03 | Policy model/evaluator; Gateway + Executor | Versioned owner settings, консервативный AST-профиль, fail-closed отрицательные тесты, pre-ASK/pre-execute binding и TOCTOU; нет захардкоженного списка разрешённых команд |
