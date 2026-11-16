@@ -1,6 +1,6 @@
 # PowerShell Executor extraction — source evidence, 2026-11-17
 
-Status: **SOURCE CANDIDATE / BOOTSTRAP BLOCKED**.
+Status: **SOURCE CANDIDATE / BOOTSTRAP AND PUBLICATION BLOCKED**.
 No standalone GitHub repository, Windows clone, process cutover or machine
 PowerShell permission is established by this record.
 
@@ -66,6 +66,22 @@ registration entry, non-admin/ACL/source-change/port checks, protected config
 path and all five existing TLS/receipt fields. There is no Mirror fallback
 and no Git fetch/update, process stop, credential creation or new DB setup.
 This is uninstalled source; the current Windows launcher/process is untouched.
+
+## Source delivery state
+
+- Approvals implementation commit: `793ab4f6d994867afde7f42cc63bd928c9b2b992`.
+- Script Center implementation/CI commit: `e56d95aaf6504ecb8653ded640ce8e1c95c65c15`.
+- Script Center now also contains a Linux/Windows source CI candidate at
+  `.github/workflows/powershell-executor-source-ci.yml`; no GitHub run is
+  claimed before publication. Its Windows job qualifies the resolver and
+  parses the changed PowerShell files without launching Executor.
+- The external tool approval review rejected draft publication to
+  `AlexPastukhh/fortis-approvals` because explicit consent for this source
+  payload and external destination was missing. No draft PR or remote task
+  branch was created; no alternate publication route was attempted.
+- Publishing the recipe/plan/tests and the Script Center launcher/resolver/CI
+  requires explicit owner permission for those two GitHub destinations.
+  Windows activation is a separate later step and is not part of the draft.
 
 ## External prerequisites and runtime boundary
 

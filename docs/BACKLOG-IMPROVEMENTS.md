@@ -282,6 +282,10 @@ credentials и установленная DB не изменены. Source-по�
 **Следующий prerequisite:** owner-created GitHub repo с initial main и URL
 по UC-CONT-027; fresh READ нового target сейчас вернул FORTIS_HTTP_403,
 а create_repository не представлен в Gateway. Не обходить этот bootstrap.
+Публикация подготовленных draft PR также остановлена внешней approval review:
+нужно явное согласие на recipe/plan/tests в `AlexPastukhh/fortis-approvals`
+и launcher/resolver/CI в `AlexPastukhh/script-control-center`. Исходники
+сохранены локально; ветки в GitHub и draft PR пока не созданы.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
 Machine ASK и ограничения команд реализуются следующими этапами; перенос
