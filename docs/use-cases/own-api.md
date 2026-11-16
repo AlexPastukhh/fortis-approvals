@@ -35,6 +35,9 @@ Source/tests/CI, owner release и живой результат — разные
 Пример будущего DOCKER API: [Observatory](../../fortis_approvals/integrations/observatory/README.md);
 его исторический HTTP/18756 **не является** допущенным HTTPS/443 транспортом.
 Не выдавать неустановленный TLS и ненастроенный Docker network за проверенный.
+Текущий датированный scope Mirror и границы проверенных фактов — в
+[current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+Исторический provider README или source SHA не заменяет fresh catalog/READ.
 
 ### Обязательный порядок
 
@@ -106,7 +109,36 @@ Source/tests/CI, owner release и живой результат — разные
    начинает с этого UC, owner сервиса и actual Gateway status, не с прошлой
    положительной фикстуры.
 
-Автоматизация source-only Doctor и явного typed READ acceptance: [тонкие инструменты](../templates/own-api/TOOLS.md). Это не новый release controller или host listener.
+### Что переиспользовать при каждом подключении
+
+| Шаг | Существующий инструмент / владелец |
+| --- | --- |
+| Закрытый provider и public config | `fortis_approvals.extensions.cli scaffold` / `check`, [extension contract](../INTEGRATION-EXTENSIONS.md) |
+| Public WIN/DOCKER manifest | `scripts/check-own-api-manifest.py`, [шаблоны](../templates/own-api/README.md) |
+| Диагностика | `scripts/own_api_doctor.py`: offline по умолчанию; явные catalog/Core READ не вызывают upstream и не доказывают quiescence |
+| Первый реальный READ | `scripts/own_api_acceptance.py`: protected configuration digest, журнал UUID до отправки, явный `--submit-read`; повтор читает только исходный result |
+| Credential, Check/Apply/Backup/Promote | Существующий `Manage-Integrations.ps1`, UC-GW-004/005; один owner release controller |
+| Доставка и регрессии | `scripts/test-source.sh` включает onboarding/tools tests; UC-CONT-002/003 и точный PR CI |
+
+Команды и ограничения — в [TOOLS](../templates/own-api/TOOLS.md).
+Автоматизация не устанавливает TLS listener/сертификат, Docker network,
+ACL/UID или upstream service principal. Эти probes остаются обязанностью owner
+и проверяются с фактического Gateway network path. Общий HTTPS `JSONAPI`
+использует системное доверие; private CA требует reviewed fixed per-service
+transport, как Mirror. Универсального private-CA transport/provisioner toolkit
+не обещает; нельзя копировать Mirror credential/CA alias для другого API.
+
+Наличие старого HTTP/non-443 transport в принятом source не является исключением
+из текущего UC. До реализации и приёмки требуемого HTTPS профиля provider
+нельзя активировать одной правкой config. Разные чаты могут независимо готовить
+source в своих worktrees; общий vault, production Apply и activation проходят
+только в одном согласованном owner window. Старый transport может ещё
+обслуживать прежних клиентов: его наличие не доказывает текущую активность,
+а новый профиль не разрешает автоматически отключать или мигрировать их.
+Для нового подключения выполнить этот UC; совместимость, cutover и retirement
+старых клиентов принимать отдельно у owner API.
+Handoff ссылается на этот UC и документацию сервиса; обязательный процесс
+не хранится только в handoff.
 
 ### Существующий локальный клиент и machine client одного API
 
