@@ -138,6 +138,7 @@ class RepoIntentBroker:
                             for op in ops)
                         for actor, ops in actor_operations.items())):
             raise ValueError('REPO_TRUSTED_GRANTS_INVALID')
+        self.actor_authorizers = {}  # trusted role scopes, default unchanged
         self.actor_operations = {actor: frozenset(ops)
                                  for actor, ops in actor_operations.items()}
         reads = {} if actor_read_operations is None else actor_read_operations
@@ -158,6 +159,9 @@ class RepoIntentBroker:
         """
         actor = self.core.auth.authenticate(ingress_credential)
         request = validate_read_query(query)
+        guard = self.actor_authorizers.get(actor)
+        if guard is not None:
+            guard(actor, request, 'read')
         action = (request['service'], request['operation'])
         if action not in self.actor_read_operations.get(actor, ()):
             raise Denied('REPO_READ_GRANT_DENIED')
@@ -232,6 +236,9 @@ class RepoIntentBroker:
         # Authenticate and authorize the actor BEFORE any remote GET.
         actor = self.core.auth.authenticate(ingress_credential)
         request = validate_intent(intent)
+        guard = self.actor_authorizers.get(actor)
+        if guard is not None:
+            guard(actor, request, 'action')
         action = (request['service'], request['operation'])
         if action not in self.actor_operations.get(actor, ()):
             raise Denied('REPO_GRANT_DENIED')
@@ -320,4 +327,8 @@ class RepoIntentBroker:
         if (type(request_id) is not str or
                 not re.fullmatch(r'[0-9a-f-]{36}', request_id)):
             raise Denied('REPO_REQUEST_ID_DENIED')
-        return self._public_result(self.core.client(ingress_credential, 'status', request_id))
+        row = self.core.client(ingress_credential, 'status', request_id)
+        guard = self.actor_authorizers.get(row['actor'])
+        if guard is not None:
+            guard(row['actor'], row['request'], 'status')
+        return self._public_result(row)

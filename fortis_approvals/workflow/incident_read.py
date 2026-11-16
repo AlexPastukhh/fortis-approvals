@@ -9,6 +9,7 @@ import time
 
 from ..core import Denied
 from .error_diagnostics import ERROR_CODES, ERROR_STAGES
+from ..integrations.github.publisher_evidence import own_label_evidence, check_own_record
 from ..integrations.github.release_label_evidence import (LABEL_OPERATIONS, read_release_label_evidence,
                                      release_label_receipt_matches)
 from .git_backend import GIT_PUSH_FAILURE_CODES, GIT_PUSH_PHASES
@@ -279,13 +280,15 @@ class IncidentInspector:
         if type(github_reads) is not bool:
             raise Denied('INCIDENT_INSPECT_OPTIONS_INVALID')
         cap = self.client.gateway.post('/v1/workspace/capabilities', {})
+        scope = own_label_evidence(cap)
         inventory = cap.get('globalRequestInventory', {})
-        if (type(inventory) is not dict or inventory.get('readOnly') is not True or
+        if scope is None and (type(inventory) is not dict or inventory.get('readOnly') is not True or
                 inventory.get('crossActorDetails') is not True):
             raise Denied('INCIDENT_INSPECT_GATEWAY_NOT_SUPPORTED')
 
         first = self.client.details(request_id, event_offset=0, event_limit=100)
         record = first['request']
+        check_own_record(scope, record)
         intent = record['request']
         if type(intent) is not dict or type(record.get('state')) is not str:
             raise Denied('INCIDENT_INSPECT_RESPONSE_INVALID')

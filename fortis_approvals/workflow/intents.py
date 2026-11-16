@@ -19,6 +19,7 @@ from ..core import Denied, canonical
 from ..clients.retries import RetryPolicy, transient
 from .common import require, secure_dir, repository_lock
 from .artifact_diagnostics import ARTIFACT_FAILURE_CODES, ARTIFACT_VALIDATION_PHASES
+from ..integrations.github.publisher_evidence import own_label_evidence, allow_intent_details, check_own_record
 from ..integrations.github.release_label_evidence import release_label_receipt_matches
 
 WORKSPACE_COMMANDS = frozenset({'create_task', 'update_main', 'update_main_from_pr'})
@@ -416,6 +417,7 @@ class IntentClient:
                 continue
             details = self.client.details(ident)
             row = details.get('request') or {}
+            check_own_record(own_label_evidence(self._capabilities()), row)
             payload = row.get('request') or {}
             intent = record['intent']
             require(payload.get('target') == intent['repository'] and
@@ -485,7 +487,7 @@ class IntentClient:
                 if confirmed is not None:
                     return self._finish_confirmed(record, confirmed)
                 cap = self._capabilities()
-                require((cap.get('globalRequestInventory') or {}).get('crossActorDetails') is True,
+                require(allow_intent_details(cap, record['intent']),
                         'INTENT_DETAILS_UNSUPPORTED')
                 observations = self._observations(record)
                 for state, worker, response in observations:
