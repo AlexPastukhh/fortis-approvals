@@ -12,7 +12,18 @@ from ..integrations.github.registration import register_github_integration
 
 
 def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90,
-            publisher_profile=None):
+            publisher_profile=None, machine_shell=None):
+    # Default is disabled; production controller must independently provision
+    # reviewed protected machine keys/config and opt in after Windows proof tests.
+    if machine_shell is not None:
+        from ..powershell_machine import MachinePowerShellAdapter
+        if type(machine_shell) is not MachinePowerShellAdapter or machine_shell.actor != actor:
+            raise ValueError('MACHINE_POWERSHELL_COMPOSITION_DENIED')
+        machine_shell.bind_core(core)
+        # Every machine PowerShell ASK requires a fresh WebAuthn ceremony.
+        # Existing owner session/CSRF alone must NEVER approve this effect.
+        portal.strong_operations = portal.strong_operations | {
+            ('powershell', 'execute')}
     publisher = PublisherProfile() if publisher_profile is None else publisher_profile
     if type(publisher) is not PublisherProfile:
         raise ValueError('GITHUB_PUBLISHER_CONFIG_INVALID')
