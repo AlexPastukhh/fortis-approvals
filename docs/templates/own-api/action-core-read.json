@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "serviceId": "action_core",
+  "ownerRepository": "feed_and_search_and_bank_and_brain",
+  "sourceSha": "cb22a03591e5c77739e192794d8f1d8323a68c4d",
+  "transport": {
+    "profile": "DOCKER-HTTPS",
+    "origin": "https://action-core-gw:443",
+    "tlsServerName": "action-core-gw",
+    "pinnedCaPath": "/run/fortis-secrets/action-core-read/ca.pem",
+    "gatewayDockerNetwork": "fortis-actioncore-net"
+  },
+  "credential": {
+    "vaultAlias": "action-core-read",
+    "upstreamPrincipal": "action-core-gateway-reader",
+    "vaultOwner": "OWNER_ONLY"
+  },
+  "operations": [
+    {
+      "name": "read_action",
+      "method": "GET",
+      "path": "/gateway/v1/actions/{action_id}",
+      "targetBinding": "action_id",
+      "targets": ["3", "4"],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    }
+  ]
+}

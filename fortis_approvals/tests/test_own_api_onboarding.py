@@ -12,6 +12,7 @@ SCRIPT = ROOT / "scripts/check-own-api-manifest.py"
 DOC = ROOT / "docs/templates/own-api"
 MIRROR = DOC / "mirror-read.example.json"
 SECOND = DOC / "second-api-docker.fixture.json"
+ACTION_CORE = DOC / "action-core-read.json"
 UC = ROOT / "docs/use-cases/own-api.md"
 
 spec = importlib.util.spec_from_file_location("own_api_manifest_source", SCRIPT)
@@ -27,6 +28,7 @@ class OwnApiOnboardingTests(unittest.TestCase):
     def setUp(self):
         self.mirror = fixture(MIRROR)
         self.second = fixture(SECOND)
+        self.action_core = fixture(ACTION_CORE)
 
     def denied(self, modified, reason):
         with self.assertRaises(module.ManifestStop) as error:
@@ -59,6 +61,80 @@ class OwnApiOnboardingTests(unittest.TestCase):
                             self.second["credential"]["vaultAlias"])
         self.assertNotEqual(self.mirror["transport"]["pinnedCaPath"],
                             self.second["transport"]["pinnedCaPath"])
+
+    def test_action_core_pinned_source_manifest_matches_provider(self):
+        from fortis_approvals.integrations.action_core.extension import PROVIDER
+        from fortis_approvals.integrations.action_core.tls import CA_PATH
+
+        manifest = self.action_core
+        evidence = module.validate(manifest)
+        self.assertEqual("SOURCE_MANIFEST_VALID", evidence["status"])
+        self.assertEqual("action_core", evidence["serviceId"])
+        self.assertEqual("DOCKER-HTTPS", evidence["transportProfile"])
+        self.assertTrue(evidence["sourcePinned"])
+        self.assertFalse(evidence["readyToDeploy"])
+        self.assertFalse(evidence["liveVerified"])
+        self.assertEqual(
+            "cb22a03591e5c77739e192794d8f1d8323a68c4d",
+            manifest["sourceSha"],
+        )
+        self.assertEqual("feed_and_search_and_bank_and_brain",
+                         manifest["ownerRepository"])
+        self.assertEqual("https://action-core-gw:443",
+                         manifest["transport"]["origin"])
+        self.assertEqual("fortis-actioncore-net",
+                         manifest["transport"]["gatewayDockerNetwork"])
+        self.assertEqual("action-core-gw",
+                         manifest["transport"]["tlsServerName"])
+        self.assertEqual(str(CA_PATH),
+                         manifest["transport"]["pinnedCaPath"])
+        self.assertEqual("action-core-read",
+                         manifest["credential"]["vaultAlias"])
+        self.assertEqual("action-core-gateway-reader",
+                         manifest["credential"]["upstreamPrincipal"])
+        self.assertEqual("OWNER_ONLY",
+                         manifest["credential"]["vaultOwner"])
+        self.assertEqual("action_core", PROVIDER.name)
+        self.assertEqual(PROVIDER.api.origin + ":443",
+                         manifest["transport"]["origin"])
+        self.assertEqual(1, len(PROVIDER.operations))
+        op, = manifest["operations"]
+        provider_op, = PROVIDER.operations
+        self.assertEqual(op["name"], provider_op.name)
+        self.assertEqual("read", provider_op.kind)
+        self.assertEqual("read", provider_op.credential)
+        self.assertEqual(("read_action",), provider_op.routes)
+        route = PROVIDER.api.routes[provider_op.routes[0]]
+        self.assertEqual((route.method, route.path, route.readonly),
+                         (op["method"], op["path"], True))
+        self.assertEqual(("action_id", ["3", "4"], 65536),
+                         (op["targetBinding"], op["targets"],
+                          op["maxResponseBytes"]))
+        self.assertEqual(("READ", "ALLOW"), (op["effect"], op["policy"]))
+
+    def test_action_core_manifest_rejects_broader_scope_and_unsafe_transport(self):
+        entry = self.action_core
+        for mutation, expected in (
+            (lambda d: d["operations"][0].update(method="POST"),
+             "MANIFEST_READ_ONLY_REQUIRED"),
+            (lambda d: d["operations"][0].update(targets=["*"]),
+             "MANIFEST_TARGET_SCOPE_INVALID"),
+            (lambda d: d["transport"].update(
+                origin="http://action-core-gw:443"),
+             "MANIFEST_TLS_ORIGIN_INVALID"),
+            (lambda d: d["transport"].update(
+                tlsServerName="wrong-name"),
+             "MANIFEST_TLS_ORIGIN_INVALID"),
+            (lambda d: d["transport"].update(
+                gatewayDockerNetwork=None),
+             "MANIFEST_DOCKER_TRANSPORT_INVALID"),
+            (lambda d: d["credential"].update(
+                bearerToken="NOT-A-SECRET"),
+             "MANIFEST_CREDENTIAL_INVALID"),
+        ):
+            altered = copy.deepcopy(entry)
+            mutation(altered)
+            self.denied(altered, expected)
 
     def test_unknown_manifest_fields_fail_closed(self):
         x = copy.deepcopy(self.mirror)
