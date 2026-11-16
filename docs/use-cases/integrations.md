@@ -154,6 +154,12 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 не попадает в Repo actor. Политика `ASK` не заменяет semantic
 revalidation перед будущим полностью автоматическим publisher.
 
+**P3 security/owner review:** [конкретный проект trusted publisher](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
+фиксирует отдельные principal/trigger/scope и недостающие source gates.
+Статус — `DESIGN_REVIEW_CANDIDATE`: профиль, grant, worker и автоматическая
+публикация этим документом не активируются. Последовательность остаётся в
+[общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
+
 **Методы (см. закрытый Python-контракт
 `fortis_approvals/integrations/github/contract.py`):**
 

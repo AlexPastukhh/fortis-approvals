@@ -21,6 +21,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
 | Optional analysis-review source operations (not deployed) | [Analysis review contract](ANALYSIS-REVIEW-CONTRACT.md) |
 | Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
+| P3 trusted Release Label Publisher — design review candidate, not active | [Security/owner project](RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) |
 | Read-only Core incident evidence aggregation (PR2 source candidate) | [Incident Inspector](INCIDENT-INSPECTOR.md) |
 | Upcoming work, acceptance gaps and priority P0 | [Single backlog](BACKLOG-IMPROVEMENTS.md) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
