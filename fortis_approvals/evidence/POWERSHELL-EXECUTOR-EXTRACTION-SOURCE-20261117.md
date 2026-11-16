@@ -1,8 +1,9 @@
 # PowerShell Executor extraction — source evidence, 2026-11-17
 
-Status: **SOURCE CANDIDATE / BOOTSTRAP AND PUBLICATION BLOCKED**.
-No standalone GitHub repository, Windows clone, process cutover or machine
-PowerShell permission is established by this record.
+Status: **STANDALONE DOCKER SOURCE READY / PUBLICATION BLOCKED / WINDOWS PENDING**.
+The user-provided standalone GitHub repository and Docker bootstrap are now
+verified. Windows clone, process cutover and machine PowerShell permission
+remain unverified/unimplemented.
 
 ## Reproducible source
 
@@ -85,7 +86,8 @@ This is uninstalled source; the current Windows launcher/process is untouched.
 
 ## External prerequisites and runtime boundary
 
-Fresh Gateway capabilities do not expose create_repository. The attempted
+Before the user supplied the created repository URL, Gateway capabilities
+did not expose create_repository. The earlier attempted
 typed repository READ returned `FORTIS_HTTP_403`; this does not prove whether
 the repo is absent or outside the current token scope. No alternate GitHub
 client or direct network Git was used.
@@ -99,3 +101,29 @@ MOVE-01 host metadata, actual old process/children/quiescence, installed
 TLS/config/DB preservation, source release and MOVE-07/08 Windows cutover/
 rollback remain pending. Machine ASK and configurable command restrictions
 are subsequent unimplemented stages. See the single backlog for status.
+
+## Standalone repository bootstrap update
+
+- User-provided URL: https://github.com/AlexPastukhh/fortis-powershell-executor.
+- Gateway metadata: private, main default branch, not archived/disabled.
+- Initial main: `1044d6c47c8445711adcad809e5670e62641e4e9` (README only).
+- Gateway fetch request: `671bdf79-13f4-4f51-bf39-50d92ad637d5`, EXECUTED.
+- Docker primary: `/workspace/repo/Repos/fortis-powershell-executor`, clean main,
+  origin uses the supplied owner HTTPS URL; upstream origin/main verified.
+- The future task root was empty at bootstrap completion. The separately
+  authorized implementation then created registered task
+  `standalone-owner-executor-20261117` and imported 15 reviewed source files.
+- Local source commit: `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c`.
+- Original runner bytes unchanged. Source provenance records an import-only
+  CI checkout adjustment: exact PR HEAD and persist-credentials=false.
+- Imported tests: 9 PASS. Actual task catalog and exact-HEAD PR Release Impact:
+  PASS; one windows-powershell-executor target with windows-update action.
+- The selected GitHub plugin metadata call returned 404, but Gateway metadata,
+  initial main READ and typed fetch succeeded. No connector write was used.
+- Outer approval review blocked source/CI/PR publication to the user-provided
+  destination for lack of explicit payload consent. The call did not reach
+  Gateway; no Core PENDING/ASK, remote task branch or PR was created.
+- Subsequent publication needs explicit consent for these source/CI files in
+  this exact repository. The workflow paths then use the native owner ASK gate.
+- Windows remains pending. Current Executor process, TLS/config/receipt DB and
+  previous Mirror source have not been changed.

@@ -193,8 +193,8 @@ PowerShell и Docker image/record pointer. Для GitHub отсутствие в
 
 **Порядок уточнён:** сначала самостоятельный `fortis-powershell-executor`,
 затем machine ASK и настраиваемые ограничения. Перенос принят в план,
-source-пакет и изменения Script Center подготовлены; bootstrap нового repo
-и Windows cutover ещё не пройдены.
+source-пакет и изменения Script Center подготовлены; Docker bootstrap нового
+repo завершён, Windows clone/cutover ещё не пройдены.
 
 Актуализировано **2026-11-17** по исходникам, истории и решениям владельца
 в текущей задаче. Это **план**, не новая machine capability и не разрешение
@@ -247,7 +247,7 @@ ASK не отменяет ограничения. ИИ не меняет пра�
 | Владелец | Ответственность |
 | --- | --- |
 | `fortis-approvals` | Typed machine API/client, Core ASK/WebAuthn, policy editor и версии, preview, transport, общий audit/receipt readback |
-| `fortis-powershell-executor` (планируемый repo) | Windows Executor, launcher, tests/CI, API, process/identity и durable receipt DB; до завершения переноса действующий source находится в `docke-windows-mirror` |
+| `fortis-powershell-executor` | Приватный repo создан владельцем, Docker bootstrap выполнен; standalone source/CI пока в локальной task-ветке. Текущий установленный Executor остаётся на прежнем source до принятого cutover |
 | `script-control-center` | Удобный owner-controlled запуск и настройки путей; не второй executor, policy store или approval queue |
 | `fortis-container` / `tunnel` | Общая изоляция Repo и worker/Guard boundaries; отдельный будущий container-control broker |
 
@@ -271,21 +271,28 @@ Windows PowerShell Executor. Browser Mirror, Mirror API и Git Pull в ней н
 **PS-AI-V1-00 — обязательный первый этап, PLANNED.** Перенести Windows
 исполнитель в отдельный репозиторий **`fortis-powershell-executor`**.
 Подготовлены воспроизводимый source candidate и изменения Script Center;
-новый repo/clone ещё не создан и не проверен через Gateway. Windows-процессы,
-credentials и установленная DB не изменены. Source-подготовка не является
-завершением переноса или Windows переключением.
+новый GitHub repo и Docker primary проверены через Gateway. Windows clone
+ещё не подтверждён; Windows-процессы, credentials и установленная DB
+не изменены. Source-подготовка не является завершением переноса/cutover.
 
-**Текущий результат:** 15 файлов кандидата, неизменённые байты runner,
-11 extraction + 9 candidate tests и 94 Script Center tests (1 skip).
-Реальные source-resolver проверки выполнены на PowerShell 7/Linux, не Windows.
-Подробные SHA, scope и границы — в [source evidence](../fortis_approvals/evidence/POWERSHELL-EXECUTOR-EXTRACTION-SOURCE-20261117.md).
-**Следующий prerequisite:** owner-created GitHub repo с initial main и URL
-по UC-CONT-027; fresh READ нового target сейчас вернул FORTIS_HTTP_403,
-а create_repository не представлен в Gateway. Не обходить этот bootstrap.
-Публикация подготовленных draft PR также остановлена внешней approval review:
-нужно явное согласие на recipe/plan/tests в `AlexPastukhh/fortis-approvals`
-и launcher/resolver/CI в `AlexPastukhh/script-control-center`. Исходники
-сохранены локально; ветки в GitHub и draft PR пока не созданы.
+**Текущий результат (после URL владельца):** приватный
+`AlexPastukhh/fortis-powershell-executor` доступен Gateway; Docker bootstrap
+завершён на initial main `1044d6c47c8445711adcad809e5670e62641e4e9`.
+Кандидат импортирован в registered task `standalone-owner-executor-20261117`,
+commit `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c`: 15 файлов, runner byte-identical,
+9 тестов PASS, каталог target PASS. CI checkout закреплён на точном PR HEAD,
+публикационный `releaseImpact` проверен по этому HEAD. Ранее подготовленные
+recipe/Script Center checks остаются 25/94 (1 platform skip у Script Center).
+Детали — в [source evidence](../fortis_approvals/evidence/POWERSHELL-EXECUTOR-EXTRACTION-SOURCE-20261117.md).
+
+**Текущая остановка:** внешняя automatic approval review отклонила публикацию
+исходников и CI в предоставленный repo без явного согласия на этот payload.
+Вызов не дошёл до Gateway: **нет Core PENDING/ASK**, remote task branch или PR.
+Нужно явно подтвердить публикацию этих 15 source/CI файлов через Gateway/PR
+в `AlexPastukhh/fortis-powershell-executor`; затем сработает обычная Gateway
+ASK-политика для CI workflow. ASK здесь — о GitHub source, не о PowerShell.
+Подготовленные изменения в Approvals/Script Center пока также локальные.
+Windows clone/cutover не выполнены; runtime/credentials/DB не менялись.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
 Machine ASK и ограничения команд реализуются следующими этапами; перенос
