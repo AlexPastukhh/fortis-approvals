@@ -2,7 +2,8 @@
 
 **Status: DESIGN_ACCEPTED ([owner PR #104](https://github.com/AlexPastukhh/fortis-approvals/pull/104));
 P3.2 SOURCE_ACCEPTED ([owner PR #107](https://github.com/AlexPastukhh/fortis-approvals/pull/107));
-P3.3 SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
+P3.3 SOURCE_ACCEPTED ([owner PR #115](https://github.com/AlexPastukhh/fortis-approvals/pull/115));
+P3.4 STARTUP SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
 The source below does not provision a principal, grant, credential, worker,
 timer or runtime. Source acceptance and owner activation remain separate
 steps. P3 is not DONE.
@@ -89,6 +90,18 @@ real pinned public action integration; the runner has **not** been provisioned
 or activated, and CI passing is not a live publisher demonstration.
 P3.4 isolation, credential/grant issuance, runtime activation and owner pilot
 remain **MANUAL-PENDING**. No scheduler, GitHub Projects or CD steps are started.
+
+## P3.4 trusted startup source candidate — disabled by default
+
+[Owner-sealed startup composition](P3-4-PUBLISHER-OWNER-STARTUP.md) introduces
+one fixed read-only private mount for a second machine credential and exact
+reviewed profile/validator pins. Missing mount means disabled. The owner-only
+profile is explicitly excluded from inherited Sonar/extension grants; it is
+limited to fixed-repository GitHub READ and add/remove ASK. No grant, mount,
+credential, worker, timer or active runtime is deployed by this source change.
+[PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118) stays open
+for a future owner pilot. The separate protected Windows Gateway release,
+private runner isolation and owner WebAuthn pilot remain MANUAL-PENDING.
 
 ## P3.1 verified baseline and gaps
 
