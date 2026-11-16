@@ -43,6 +43,13 @@ pins owner-merged Action Core PR #16 main SHA `cb22a03591e5c77739e192794d8f1d832
 Its `fortis-actioncore-net` network is a **proposal**, not an existing Gateway
 network, and the HTTP/8000 bypass remains unmitigated until owner acceptance.
 
+**Direct HTTPS-only activation:** first enable the Gateway provider only after
+an owner-reviewed, working DOCKER-HTTPS/443 upstream with pinned CA/SAN,
+scoped bearer and proven HTTP/8000 denial exists. No transitional
+compatibility mode, HTTP hop from Gateway, dual-transport fallback, redirect
+or temporary bridge provider is permitted. The historical Windows-local API
+continues to serve its existing clients independently; it is never a Gateway transport.
+
 Before owner release, prove from the real Gateway namespace: exact Docker network and DNS,
 TLS SAN/CA/expiry, wrong CA/SAN/Host, no redirects or HTTP fallback, no route to the
 unauthenticated local API on port 8000, and bearer 401/403. Use UC-GW-012 Doctor and

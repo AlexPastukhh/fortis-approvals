@@ -81,6 +81,10 @@ Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
 Owner Portal browser cancel/assess click и restart/autostart после
 Docker Desktop reboot также остаются непроверенными.
 
+**PowerShell planning update, 2026-11-17:** [Repo AI V1 plan](../BACKLOG-IMPROVEMENTS.md#powershell-plan)
+requires ASK for every execution and owner-editable command restrictions.
+This is a plan, not a new installed capability or host acceptance.
+
 ## Историческая owner acceptance — PS-V1-09 (предыдущий релиз)
 
 **Предыдущий OWNER-REPORTED** guarded image release (PS-V1-09, 2026-11-10):

@@ -369,6 +369,79 @@
     }
   },
   {
+    "name": "preview_windows_pull_v2",
+    "schema": "preview_windows_pull_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "preview_windows_pull_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "repoId": "fortis-approvals",
+        "previewId": "e9d4ab53-68f5-484c-84d8-ab947dc42565",
+        "expectedHead": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "targetSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dockerHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "originIdentity": "AlexPastukhh/fortis-approvals",
+        "sourceEvidence": {
+          "docker": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "branch": "main",
+            "clean": true,
+            "errorCode": null
+          },
+          "windows": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "branch": "main",
+            "clean": true,
+            "errorCode": null
+          },
+          "github": {
+            "verification": "VERIFIED",
+            "checkedAt": "2026-11-17T01:00:00+00:00",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "branch": "main",
+            "clean": null,
+            "errorCode": null
+          }
+        },
+        "checkedAt": "2026-11-17T01:00:00+00:00",
+        "expiresAt": "2026-11-17T01:02:00+00:00",
+        "configGeneration": "b27f058cc919d37d16e4f9402ef45aaeed8e44b02ec4dc05aee5f8e1200ec228",
+        "blockers": []
+      },
+      "error": null
+    }
+  },
+  {
+    "name": "get_windows_pull_result_v2",
+    "schema": "get_windows_pull_result_v2Result",
+    "valid": true,
+    "value": {
+      "schemaVersion": 2,
+      "operation": "get_windows_pull_result_v2",
+      "target": "fortis-approvals",
+      "checkedAt": "2026-11-17T01:00:00+00:00",
+      "data": {
+        "requestId": "2166d435-e811-41d3-a8c8-c7d807942c25",
+        "repoId": "fortis-approvals",
+        "workerState": "EXECUTED",
+        "effect": "CONFIRMED",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedTarget": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "checkedAt": "2026-11-17T01:00:00+00:00",
+        "errorCode": null,
+        "evidence": "WORKER_RECEIPT"
+      },
+      "error": null
+    }
+  },
+  {
     "name": "revision-conflict",
     "schema": "list_worktrees_v2Result",
     "valid": true,

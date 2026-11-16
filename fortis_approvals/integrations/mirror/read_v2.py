@@ -1,8 +1,9 @@
-"""Closed v2 READ provider definitions; no effects, previews or old receipt access.
+"""Closed v2 READ provider definitions; no effects or legacy receipt access.
 
 Uses the existing trusted-code schema helpers and pinned Mirror transport.
 Public params never select upstream identity, scope, URL, headers or policy.
 """
+from datetime import datetime
 from functools import partial
 import hashlib
 import re
@@ -17,8 +18,9 @@ from fortis_approvals.integrations.review_schema import (
 INVENTORIES = {'mirror-pilot': ('fortis-approvals',)}
 READS = ('list_repositories_v2', 'get_repository_v2', 'list_worktrees_v2',
          'get_github_status_v2', 'get_available_actions_v2', 'get_capabilities_v2')
-DEFERRED = ('check_windows_history_v2', 'preview_windows_pull_v2',
-            'execute_windows_pull_v2', 'get_windows_pull_result_v2')
+BOUND_READS = ('preview_windows_pull_v2', 'get_windows_pull_result_v2')
+READS = READS + BOUND_READS
+DEFERRED = ('check_windows_history_v2', 'execute_windows_pull_v2')
 ERRORS = frozenset(('SOURCE_UNAVAILABLE', 'NOT_CHECKED', 'PERMISSION_DENIED', 'TIMEOUT',
     'LIMIT_EXCEEDED', 'REPOSITORY_NOT_ALLOWED', 'SCHEMA_INVALID', 'PREVIEW_EXPIRED',
     'PREVIEW_STALE', 'REQUEST_ID_CONFLICT', 'SIGNATURE_INVALID', 'UNKNOWN_KEY', 'PROOF_REQUIRED',
@@ -105,7 +107,77 @@ DATA = {'list_repositories_v2': listed(repo), 'get_repository_v2': repository,
         'get_available_actions_v2': array(action, 10), 'get_capabilities_v2': array(capability, 10)}
 
 
+uuid4 = partial(pattern, expression=r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
+_preview_shape = object_schema({'repoId': repo, 'previewId': nullable(uuid4),
+    'expectedHead': nullable(sha), 'targetSha': nullable(sha), 'dockerHead': nullable(sha),
+    'originIdentity': nullable(partial(pattern, expression=r'AlexPastukhh/[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}')),
+    'sourceEvidence': object_schema({'windows': source, 'docker': source, 'github': source}),
+    'checkedAt': timestamp, 'expiresAt': timestamp, 'configGeneration': revision,
+    'blockers': array(error_code, 32)})
+
+
+
+def preview(value):
+    _preview_shape(value)
+    check((datetime.fromisoformat(value['expiresAt'].replace('Z', '+00:00')) -
+           datetime.fromisoformat(value['checkedAt'].replace('Z', '+00:00'))).total_seconds() == 120,
+          'MIRROR_V2_PREVIEW_TTL_INVALID')
+    if not value['blockers']:
+        evidence = value['sourceEvidence']
+        check(value['previewId'] is not None and value['originIdentity'] is not None and
+              value['expectedHead'] is not None and value['targetSha'] is not None and
+              value['expectedHead'] != value['targetSha'] and value['dockerHead'] == value['targetSha'] and
+              value['expectedHead'] == evidence['windows']['head'] and
+              value['targetSha'] == evidence['github']['head'] == evidence['docker']['head'] and
+              all(item['verification'] == 'VERIFIED' and item['branch'] == 'main' for item in evidence.values()) and
+              evidence['windows']['clean'] is True and evidence['docker']['clean'] is True,
+              'MIRROR_V2_EVIDENCE_INVALID')
+    else:
+        check(value['previewId'] is None, 'MIRROR_V2_EVIDENCE_INVALID')
+    return value
+
+
+def receipt(value):
+    object_schema({'requestId': uuid4, 'repoId': repo,
+        'workerState': partial(choice, values=('NOT_FOUND', 'DISPATCHED', 'EXECUTED', 'FAILED', 'UNCERTAIN', 'ALREADY_CURRENT')),
+        'effect': partial(choice, values=('NONE', 'CONFIRMED', 'UNKNOWN')), 'observedHead': nullable(sha),
+        'expectedTarget': nullable(sha), 'checkedAt': timestamp, 'errorCode': nullable(error_code),
+        'evidence': partial(choice, values=('NONE', 'WORKER_RECEIPT', 'TARGET_READBACK'))})(value)
+    state = value['workerState']
+    if state in ('NOT_FOUND', 'DISPATCHED', 'UNCERTAIN'):
+        check(value['effect'] == 'UNKNOWN', 'MIRROR_V2_EVIDENCE_INVALID')
+    elif state in ('FAILED', 'ALREADY_CURRENT'):
+        check(value['effect'] == 'NONE', 'MIRROR_V2_EVIDENCE_INVALID')
+    else:
+        check(value['effect'] == 'CONFIRMED' and value['observedHead'] is not None and
+              value['expectedTarget'] is not None and value['observedHead'] == value['expectedTarget'] and value['errorCode'] is None and
+              value['evidence'] in ('WORKER_RECEIPT', 'TARGET_READBACK'), 'MIRROR_V2_EVIDENCE_INVALID')
+    return value
+
+
+DATA.update(preview_windows_pull_v2=preview, get_windows_pull_result_v2=receipt)
+
+
+def trusted_identity(ctx):
+    # Core has persisted authenticated actor before executing this READ. No
+    # caller identity is added to public params or to the generic framework.
+    check(ctx.phase in ('execute', 'reconcile'), 'MIRROR_V2_PRINCIPAL_UNAVAILABLE')
+    row = ctx.runtime.core._read(ctx.request_id)
+    request = row['request']
+    check(row['state'] in ('DISPATCHED', 'UNCERTAIN') and request['requestId'] == ctx.request_id and
+          request['service'] == 'mirror' and request['operation'] == ctx.operation.name and
+          request['target'] == ctx.target and request['params'] == ctx.params,
+          'MIRROR_V2_PRINCIPAL_UNAVAILABLE')
+    actor = pattern(row['actor'], r'[A-Za-z0-9_.:-]{1,120}')
+    check(type(ctx.generation) is str and 0 < len(ctx.generation) <= 128, 'MIRROR_V2_GENERATION_UNAVAILABLE')
+    generation = hashlib.sha256(canonical({'definition': ctx.runtime.digest,
+        'policy': row['policyVersion'], 'credential': ctx.generation}).encode()).hexdigest()
+    return actor, generation
+
+
 def validate_params(operation, value):
+    if operation == 'get_windows_pull_result_v2':
+        return object_schema({'requestId': uuid4})(value)
     if operation not in ('list_repositories_v2', 'list_worktrees_v2', 'get_github_status_v2'):
         return object_schema({})(value)
     object_schema({'offset': partial(number, maximum=10000, minimum=0),
@@ -141,7 +213,15 @@ def execute(operation, ctx):
         query = {'inventory': ctx.target, 'scope_digest': hashlib.sha256(canonical(sorted(members)).encode()).hexdigest()}
     else:
         path = {'repo_id': ctx.target}
-    if params:
+    if operation in BOUND_READS:
+        actor, generation = trusted_identity(ctx)
+        query['principal'] = actor
+        if operation == 'preview_windows_pull_v2':
+            uuid4(ctx.request_id)
+            query.update(request_id=ctx.request_id, gateway_generation=generation)
+        else:
+            path['request_id'] = params['requestId']
+    elif params:
         query.update(offset=params['offset'], limit=params['limit'])
         if params['inventoryRevision'] is not None:
             query['revision'] = params['inventoryRevision']
@@ -163,6 +243,10 @@ def execute(operation, ctx):
                   'MIRROR_V2_CAPABILITIES_INVALID')
             check(all(item['available'] is False and item['blockers'] == ['POLICY_DENIED']
                       for item in available if item['operation'] in DEFERRED), 'MIRROR_V2_CAPABILITIES_INVALID')
+        if operation in BOUND_READS:
+            check(data['repoId'] == ctx.target, 'MIRROR_V2_TARGET_MISMATCH')
+            if operation == 'get_windows_pull_result_v2':
+                check(data['requestId'] == params['requestId'], 'MIRROR_V2_TARGET_MISMATCH')
         if operation == 'get_repository_v2':
             check(data['repoId'] == ctx.target, 'MIRROR_V2_TARGET_MISMATCH')
             check(data['github']['verification'] == 'NOT_CHECKED' and data['relation'] == 'unknown',
@@ -185,4 +269,5 @@ def execute(operation, ctx):
 
 OPERATIONS = tuple(Operation(name, 'Bounded Mirror READ v2: ' + name, 'read',
     partial(validate_params, name), partial(validate_result, name), partial(execute, name),
-    credential='link', routes=(name,), version='2') for name in READS)
+    credential='link', routes=(name,), version='2',
+    lookup=partial(execute, name) if name in BOUND_READS else None) for name in READS)
