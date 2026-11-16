@@ -114,10 +114,14 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.f.gateway.core._read(result['intent']['requestId'])['state'],'REJECTED')
         self.assertEqual(sum(path=='/v1/actions' for path,_,_ in self.f.gateway.publisher.calls),1)
 
-    def test_no_delta_or_missing_definition_creates_no_ask(self):
+    def test_no_delta_creates_no_ask(self):
         self.f.plan.value.update(add=[],remove=[])
         self.assertEqual(self.f.runner.request(7)['status'],'NO_CHANGES')
-        self.f.next_invocation()
+        self.assertEqual(self.f.gateway.core.owner_list(),[])
+
+    def test_missing_definition_creates_no_ask(self):
+        # Independent source graph/journal: a separate input must not depend
+        # on a previous NO_CHANGES run or its cached Git bundle objects.
         self.f.plan.value.update(status='BLOCKED_MISSING_LABELS',add=['build:missing'],
                                  missingDefinitions=['build:missing'])
         self.assertEqual(self.f.runner.request(7)['status'],'BLOCKED_MISSING_LABELS')
