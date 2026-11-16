@@ -287,15 +287,17 @@ commit `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c`: 15 файлов, runner byte-
 recipe/Script Center checks остаются 25/94 (1 platform skip у Script Center).
 Детали — в [source evidence](../fortis_approvals/evidence/POWERSHELL-EXECUTOR-EXTRACTION-SOURCE-20261117.md).
 
-**Публикация согласована 2026-11-17:** владелец явно разрешил source/CI/PR
-в трёх репозиториях. Gateway создал два Core PENDING ASK для sensitive workflow
-paths: Executor — `42ddcbf4-eb76-43b2-8bcf-2f71b4ca15b7`, Script Center —
-`a61dd709-5a37-4911-817a-f58558fadc64`. На момент этого source snapshot
-оба ожидают owner WebAuthn; remote task branches/PR ещё не подтверждены.
-Публикация плана/recipe/tests в Approvals выполняется отдельно. Предыдущие
-отказы внешней проверки сохранены в evidence как история, не текущий запрет.
-ASK здесь — о GitHub source, не о PowerShell. Windows clone/cutover
-не выполнены; runtime/credentials/DB не менялись.
+**Source опубликован через Gateway 2026-11-17:**
+[Executor PR #1](https://github.com/AlexPastukhh/fortis-powershell-executor/pull/1),
+[Approvals PR #111](https://github.com/AlexPastukhh/fortis-approvals/pull/111),
+[Script Center draft PR #17](https://github.com/AlexPastukhh/script-control-center/pull/17).
+Оба первоначальных workflow ASK одобрены владельцем; push EXECUTED.
+Первая Windows CI выявила ошибки очистки временных SQLite fixtures,
+кодировки Python и выбора нескольких Git installations. Исправления
+подготовлены в тех же source tasks; CI по финальному HEAD — обязательный
+следующий gate. Локальные 977 Gateway tests PASS до sync принятого main;
+Executor 9 PASS, Script Center 95 PASS (1 platform skip) после исправлений.
+Owner merge, Windows clone/cutover и machine ASK ещё не выполнены.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
 Machine ASK и ограничения команд реализуются следующими этапами; перенос

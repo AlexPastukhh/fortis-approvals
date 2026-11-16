@@ -1,6 +1,6 @@
 # PowerShell Executor extraction — source evidence, 2026-11-17
 
-Status: **STANDALONE DOCKER SOURCE READY / PUBLICATION AUTHORIZED / OWNER ASK PENDING / WINDOWS PENDING**.
+Status: **SOURCE PRS CREATED / CI CORRECTIONS IN PROGRESS / WINDOWS PENDING**.
 The user-provided standalone GitHub repository and Docker bootstrap are now
 verified. Windows clone, process cutover and machine PowerShell permission
 remain unverified/unimplemented.
@@ -135,3 +135,38 @@ are subsequent unimplemented stages. See the single backlog for status.
   PENDING request recorded above. No approval was fabricated or bypassed.
 - Windows remains pending. Current Executor process, TLS/config/receipt DB and
   previous Mirror source have not been changed.
+
+
+## Publication and first Windows CI update
+
+The earlier PENDING table is a dated pre-decision snapshot. Both listed pushes
+were owner-approved and EXECUTED at their exact recorded SHAs. Continuing their
+existing delivery intents created Executor PR #1 and Script Center draft PR #17;
+Approvals PR #111 was published through its separate ordinary ALLOW delivery.
+
+- https://github.com/AlexPastukhh/fortis-powershell-executor/pull/1
+- https://github.com/AlexPastukhh/script-control-center/pull/17
+- https://github.com/AlexPastukhh/fortis-approvals/pull/111
+- Executor Release Impact passed at imported HEAD `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c`.
+- Linux CI passed for both source deliveries. Initial Windows jobs failed:
+  Executor `43948166011`, Script Center `43948219164`.
+- Executor failures are temporary SQLite fixture cleanup locks. The follow-up
+  collects connection cycles before removing fixtures; runner bytes stay exact.
+  These post-import test changes are recorded in standalone SOURCE-PROVENANCE.
+- Script Center failures exposed Python's Windows default encoding and multiple
+  Git application discovery results. Follow-up enables UTF-8 for source CI,
+  selects one actual Git executable and tests duplicate discovery results.
+- Local follow-up checks: Executor 9 PASS; Script Center 95 PASS with one optional
+  platform skip, including 9 real PowerShell resolver cases.
+- The full supported Approvals source suite passed 977 tests and compileall
+  at the original task HEAD. Accepted main advanced concurrently; only the
+  derived hash manifest conflicted. It was deferred, native sync_task completed
+  EXECUTED (`5278c453-00a4-4ad3-8e97-39aa3ce2288f`) against main
+  `3773c9d22927305c6e0a33e1c9ca70356d76f2c9`, then manifests are regenerated.
+  Final exact-HEAD GitHub CI remains required after this source sync.
+- Direct check-run listing was denied by GitHub's advertised permission
+  requirements. Supported Actions run/job/log reads through the same Gateway
+  supplied the exact-SHA evidence; no credential or publication route changed.
+
+No PR has been owner-merged by this task. Source work does not activate the
+Windows Executor or grant Repo AI PowerShell access.
