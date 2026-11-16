@@ -300,7 +300,8 @@ Executor 9 PASS, Script Center 95 PASS (1 platform skip) после исправ
 Owner merge, Windows clone/cutover и machine ASK ещё не выполнены.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
-Machine ASK и ограничения команд реализуются следующими этапами; перенос
+Machine ASK реализуется следующим отдельным этапом без V1 command allowlist;
+настройки ограничений и возможный отказ от ASK относятся к V2+. Перенос
 не открывает новый AI-доступ и не меняет разрешения существующего клиента.
 
 | Шаг | Что сделать | Критерий готовности |
@@ -332,99 +333,83 @@ image не требуется; это подтвердить compatibility/readb
 machine ASK release проходит отдельно по PS-AI-V1-02…10.
 Функции Mirror и Browser Pull не становятся зависимостями нового компонента.
 
-### Обязательный контракт Repo AI V1
+### Обязательный контракт Repo AI V1 — решение владельца 2026-11-17 (упрощение)
 
-- Machine grant допускает только явно зарегистрированного actor и Windows
-  target; caller не передаёт URL, port, credential, process identity,
-  interpreter flags, policy или путь receipt DB.
-- Операция исполнения имеет только ASK для допущенного запроса либо DENY.
-  Catalog/capabilities и чтение готовой квитанции могут быть READ/ALLOW,
-  если они **не запускают PowerShell**. Новая команда для диагностики тоже ASK.
-- Preview показывает actor, target, полный исполняемый текст без обрезания,
-  командный SHA256, версию/ digest правил, identity/profile, рабочий каталог,
-  ограничения времени/вывода и известные доступы. Никакой скрытой команды,
-  автоматически дописанной ИИ после решения владельца.
-- Approval связывает UUID с точной командой, параметрами, target и правилами.
-  Изменение команды, правил, исполнения или target делает preview устаревшим:
-  новая проверка и новое ASK; старое решение не расширяется.
-- Windows исполняет один раз только после проверяемой авторизации Gateway.
-  mTLS + bearer + UUID не доказывают owner approval. Новый machine путь
-  требует reviewed dispatch proof, привязанного к actor/target/UUID/digest,
-  сроку и версии правил, либо отдельно доказанной эквивалентной границы.
-  Формат proof, ключи/rotation и негативные тесты принять на PS-AI-V1-02;
-  Proof другой операции не считается автоматически применимым к PowerShell.
-- Текущий owner-local execute route нельзя использовать как AI proxy.
-  Старый клиент сохраняется только в своей owner boundary; его credentials
-  не выдаются Repo. Новый протокол/route version не должен обходить проверку.
-- Один Windows runner и существующая durable DB: резервирование до эффекта,
-  конфликт UUID/command запрещён; параллельные/повторные dispatch не дают второй
-  запуск. Перезапуск/обновление сохраняет квитанции и незавершённые состояния.
-- ИИ получает exit code, ограниченные stdout/stderr и command digest,
-  UUID, target/actor/policy binding и статус. История не содержит ключей/grants.
-  Команды/вывод могут быть чувствительными: не переносить их в публичные логи.
-- Timeout, потерянный ACK, падение/restart и незавершённый дочерний процесс
-  дают неизвестный исход и блокируют новый эффект в соответствующем scope.
-  Читать/расследовать исходный UUID; не повторять команду автоматически,
-  не создавать замену под новым UUID и не переносить generic Git retry сюда.
-  Ненулевой exit code не означает отсутствие побочных действий.
+**V1 — любая синтаксически корректная непустая PowerShell-команда от допущенного
+Repo actor к зарегистрированному Windows target проходит ASK.** В V1 **нет**
+редактора командных ограничений, AST allowlist, исключений из ASK и режима ALLOW
+для исполнения. Это не отменяет аутентификацию, проверку строгого API, лимиты
+длины/вывода/времени, идемпотентность, отсутствие небезопасного повтора и
+криптографическую привязку решения владельца к одному конкретному запросу.
 
-### Настройки ограничений — обязательны в первой версии
+- Только проверенная machine identity и явно зарегистрированный target.
+  Caller не выбирает URL/port, bearer, ключи, путь DB, Windows identity,
+  рабочий каталог, параметры interpreter, режим политики или флаг approval.
+- **Каждый** новый запуск (включая Get-Date и диагностику) создаёт отдельный
+  Core PENDING / ASK, затем владелец видит полный текст, SHA256, actor, target,
+  UUID, user/профиль, фиксированные ограничения и последствия запуска.
+  Нажатие Reject или отсутствие WebAuthn — ноль dispatch.
+- В V1 нет «безопасного списка команд»: после подтверждения владелец допускает
+  **произвольный non-admin PowerShell** со всеми правами Windows пользователя.
+  Это не песочница. Просмотр и ASK — контроль человеком, а не автоматическая
+  оценка опасности скрипта.
+- Core approval связывается с actor, UUID, точными command bytes и digest,
+  target, profile/source identity и фиксированным V1 ASK-only contract version.
+  Изменение привязанных данных или устаревшая заявка — STOP/STALE.
+- Текущий owner-local «execute» API **не** используется как machine proxy.
+  В Windows нужен отдельный machine dispatch route, проверяющий
+  неподлежащее подделке owner-approved proof, выданное доверенным Gateway
+  после Core WebAuthn. Только mTLS + bearer + UUID не доказывают ASK.
+- Один Windows runner и та же текущая durable receipt DB: reservation до
+  исполнения, один эффект на UUID, отсутствие повторов при UNKNOWN,
+  сохранение DISPATCHED/UNCERTAIN после restart. Timeout, потеря ACK,
+  отключение и detached children не означают, что эффекта не было.
+- Scoped READ результата/готовой квитанции может быть разрешён без ASK,
+  **если READ не запускает команды**; stdout/stderr bounded и приватны.
+- TLS, config, receipt DB и owner-only Browser Portal сохраняются;
+  новая версия не должна нарушить старые UUID и owner операции.
 
-Owner Portal получает отдельный защищённый раздел настроек, использующий
-существующую owner authentication/CSRF/WebAuthn. ИИ имеет только разрешённое
-чтение effective policy; запись/импорт правил через machine API запрещены.
+### Следующие версии — редактируемые ограничения и выбор ASK/ALLOW (НЕ V1)
 
-| Настраиваемые данные | Требование V1 |
-| --- | --- |
-| Scope | Разрешённые actor/target/profile; неизвестное значение DENY |
-| Команды | Явные allow/deny правила имён; отсутствие правила DENY; нет fallback «любая команда через ASK» |
-| Аргументы | Допустимые параметры и ограничения literal values/типов; unknown параметры/формы DENY |
-| Файлы и контекст | Разрешённые canonical roots, рабочий каталог и доступные script/module/executable identities там, где профиль умеет это проверять |
-| Ресурсы | Timeout и output/command limits в пределах reviewed верхних ceilings; значения по умолчанию учитывать из baseline |
-| Изменения правил | Проверка схемы, preview diff, owner WebAuthn, audit, immutable version/digest и повторная проверка pending requests |
+После V1 отдельно спроектировать и внедрить в Owner Portal настройки:
+разрешённые/запрещённые команды, параметры, профили, paths/roots,
+временные/output ceilings, строгий AST evaluator и полный audit/version/digest.
+Владелец сможет решать, когда для **узко ограниченного** случая нужен ASK,
+а когда можно разрешить выполнение без ASK. Пока нет защищённого
+машинно-проверяемого правила и отдельной owner acceptance для ALLOW,
+**default для исполнения всегда ASK**. Опасные или непроверяемые правила
+не получают ALLOW автоматически. Настройки не берутся из AI payload и не
+могут изменяться через Repo machine API.
 
-Сами имена разрешённых команд и пользовательские scopes не компилируются
-в приложение. Код определяет строгую схему, проверяющий механизм и безопасные
-верхние ceilings. Editor не предлагает ALLOW для PowerShell execution.
-
-Первый evaluator поддерживает **ограниченный явно описанный PowerShell
-профиль**, а не обещает разбор любого скрипта. При проектировании зафиксировать
-допустимые AST nodes, literal arguments и pipeline semantics; aliases,
-dynamic/encoded invocation, `Invoke-Expression`, dot-sourcing, запуск дочерних
-процессов, .NET/COM, redirection, alternate providers/paths и другие формы,
-которые нельзя надёжно проверить, отклоняются. Расширять профиль отдельно.
-Проверку выполнять до ASK и перед эффектом; Windows должен проверить ту же
-версию/результат правил либо независимо проверить подписанное policy binding.
-Решение о расположении evaluator и защита TOCTOU входят в PS-AI-V1-02/03.
-
-AST/allowlist не являются OS sandbox: разрешённый cmdlet/module сам может
-иметь широкие права. В настройках и preview явно показывать эту границу.
-Если file/network/process scope не обеспечивается выбранным профилем/OS,
-соответствующий доступ не объявляется ограниченным и не включается молча.
-Приёмочные escape tests обязательны для заявленных ограничений.
+Опциональный ALLOW потребует самостоятельного threat review, проверок
+policy race/stale approvals, AST/alias/dynamic invocation/paths,
+повторного Windows enforcement и escape-тестов. Allowlist/AST не являются
+OS sandbox; неподтверждённую изоляцию не обещать.
 
 ### Последовательность реализации и критерии готовности
 
-PS-AI-V1-00 сейчас **IN PROGRESS / SOURCE CANDIDATE**; bootstrap и live
-cutover ещё не приняты. Остальные новые пункты **PLANNED**.
+PS-AI-V1-00: owner reported standalone Windows Executor running with preserved
+DB/TLS and historical receipt readable; full negative/restart acceptance remains
+open. Machine V1 work is **SOURCE CANDIDATE**, not live. Policy/owner-settings
+steps 03/04 are postponed; other stages remain planned.
 Старые owner PASS их не закрывают.
 
 | ID | Шаг / владелец | Проверяемый результат |
 | --- | --- | --- |
 | PS-AI-V1-00 | **IN PROGRESS / SOURCE CANDIDATE** — выделение `fortis-powershell-executor`; Executor + Script Center | Для завершения нужны MOVE-01…08: самостоятельный source/CI, новый resolver, совместимый Windows cutover, прежние TLS/config/receipt DB и проверенный rollback; Mirror не нужен для запуска |
 | PS-AI-V1-01 | Повторная сверка baseline после переноса; Gateway + Executor + Script Center | Точные source/installed версии, identity/bind/TLS/DB metadata без секретов; список незавершённых эффектов; сохранён recovery path. Не запускать release или старую команду повторно |
-| PS-AI-V1-02 | Контракт и threat review; Gateway + Executor | Закрытые submit/status/result schemas, actor/target, ASK-only, полный preview, policy/proof versions, dispatch trust и совместимость owner route/DB; owner-reviewed спецификация до activation |
-| PS-AI-V1-03 | Policy model/evaluator; Gateway + Executor | Versioned owner settings, консервативный AST-профиль, fail-closed отрицательные тесты, pre-ASK/pre-execute binding и TOCTOU; нет захардкоженного списка разрешённых команд |
-| PS-AI-V1-04 | Owner settings UI; Approvals | Просмотр/редактирование правил, diff/validation/WebAuthn/audit, stale approval на смене версии; machine policy write и ALLOW execution отклоняются |
-| PS-AI-V1-05 | Machine adapter и typed Repo client; Approvals | Реальный Core PENDING без execute до решения; Reject без эффекта; новый authenticated actor не получает доступ сам по себе; fixed reviewed transport |
-| PS-AI-V1-06 | Windows dispatch/runner; Executor | Проверка proof/policy/target, один runner/DB, durable reserve/result и migration/restart; старый owner route не является machine bypass |
+| PS-AI-V1-02 | **В работе**: упрощённый контракт ASK-only; Gateway + Executor | Все допущенные скрипты ASK без AST allowlist; точный preview, owner decision/proof, target/UUID, лимиты и совместимость owner route/DB до activation |
+| PS-AI-V1-03 | **ОТЛОЖЕНО ДО V2**: Policy/AST evaluator; Gateway + Executor | В V1 нет редактируемой команды/AST политики и нет ALLOW; следующий этап отдельным review |
+| PS-AI-V1-04 | **ОТЛОЖЕНО ДО V2**: Owner policy settings; Approvals | Редактирование правил и ASK/ALLOW по настройке — новая owner-reviewed стадия; по умолчанию ASK |
+| PS-AI-V1-05 | Machine adapter и typed Repo client; Approvals | Реальный Core PENDING для **каждой** допущенной команды без execute до решения; Reject без эффекта; checked actor/target, fixed reviewed transport |
+| PS-AI-V1-06 | Windows dispatch/runner; Executor | Проверка owner-approved proof, фиксированного ASK-only contract/target/command, один runner/DB, durable reserve/result, restart; старый owner route не machine bypass |
 | PS-AI-V1-07 | Сквозные offline/source проверки; оба repo | Матрица ниже, совместимость baseline, source manifests/CI; отдельно исправленный CLIXML progress без потери настоящих stderr |
 | PS-AI-V1-08 | Source delivery; владельцы repo | Task → exact-head CI/Release Impact → owner GitHub merge → clean Docker main; Windows source sync только для изменяемого consumer. Source ещё не live |
 | PS-AI-V1-09 | Раздельный owner release | Windows install и Gateway Check/Apply/Backup/Promote по UC-GW-005, свежие TLS/ACL/config/capabilities и сохранённые native/OwnerShell unresolved scopes; один согласованный release window |
-| PS-AI-V1-10 | Windows/Gateway live acceptance | Настройки изменены владельцем; Get-Date: PENDING → WebAuthn → один запуск → bound receipt; Reject, forbidden command, stale rules, replay/conflict, timeout/lost ACK и restart negatives подтверждены |
+| PS-AI-V1-10 | Windows/Gateway live acceptance | Get-Date: PENDING → WebAuthn → один запуск → bound receipt; Reject, wrong actor/target, forged/missing proof, stale command, replay/conflict, timeout/lost ACK и restart negatives подтверждены |
 
-Dependencies: 00 (MOVE-01…08) → 01 → 02 → 03/04; 02/03 → 05/06;
-04/05/06 → 07 → 08 → 09 → 10.
+Dependencies for ASK-only V1: 00 (compatible owner baseline) → 01 → 02 → 05/06 → 07 → 08 → 09 → 10.
+03/04 are deferred V2 tasks, not V1 gates.
 Реализация разных repo может идти независимо после общего контракта;
 shared production release и vault не меняются несколькими задачами одновременно.
 
@@ -436,13 +421,13 @@ shared production release и vault не меняются несколькими 
 | Любая допустимая команда, в том числе Get-Date | PENDING; счётчик runner = 0 до owner WebAuthn |
 | Reject / expired / revoked / stale approval | Ни одного запуска |
 | Нет owner session / wrong Host/Origin/CSRF на owner routes | Отказ; machine credential не подменяет owner |
-| Правило запрещает команду/аргумент, неизвестный AST/alias/path | DENY; ASK не снимает запрет |
-| Смена command/target/policy/proof/identity после preview | Отказ/stale; требуется новое ASK |
+| Некорректный JSON/UUID, чужой target, пустая/NUL/oversize команда | DENY до ASK; V1 не фильтрует команды AST allowlist |
+| Смена command/target/ASK-only contract version/proof/identity после preview | Отказ/stale; требуется новое ASK |
 | Нет/неверный mTLS, bearer или dispatch proof; proof replay | Отказ; bearer/UUID не служат подтверждением решения |
 | Двойной клик, одинаковый UUID, concurrent executor/restart | Максимум один effect; изменённая команда под UUID даёт конфликт |
 | Timeout/kill/lost ACK, detached child, crash после reserve | Нет автоматического повтора; uncertain и проверяемый lookup/blocking |
 | Recovery/upgrade при существующей DB и старых receipts | Сохранены старые UUID, результаты и blocking; новая пустая DB запрещена |
-| Изменение настроек без кодовой правки | Новые правила реально применяются; старое approval не расширяется |
+| V1 ASK-only режим | Никакого ALLOW для execution, произвольная допустимая команда → ASK; гибкие настройки/ALLOW — отдельная V2 приёмка |
 | Получение stdout/stderr/receipt в Repo | Exact binding, bounds, правильная кодировка; ошибка/неизвестность не превращаются в success |
 
 Repo AI V1 завершена только после PS-AI-V1-10 и отдельного dated evidence.
@@ -455,7 +440,7 @@ Offline PASS, owner-reported baseline и live machine acceptance имеют ра
 | --- | --- | --- |
 | PS-FUT-01 | Отдельная минимальная Windows identity, JEA/CLM, WDAC/AppLocker, NTFS ACL | Сравнить подходы; реальные read/write/traversal/reparse/child-process escape tests. Не считать non-admin sandbox; не включать все технологии формально |
 | PS-FUT-02 | CA/staging hardening и recovery | Проверенная offline backup/изоляция issuer keys и cleanup Windows-staged Gateway client key/bearer; не удалять единственные копии. PS-V1-07 остаётся OPEN/DEFERRED до evidence |
-| PS-FUT-03 | Расширенный policy/AST профиль | Более сложные pipelines/scripts/modules/executables, bounded filesystem/network/children, environment; каждая возможность с enforcement/negative tests. ASK-only execution сохраняется |
+| PS-FUT-03 | Настраиваемый policy/AST профиль и owner-controlled ASK/ALLOW (V2+) | Консервативные правила команд/аргументов с version/audit и отрицательными тестами. По отдельному security review можно добавить ограниченные owner-выбранные ALLOW; ASK остаётся безопасным значением по умолчанию, произвольный unrestricted shell не получает ALLOW автоматически |
 | PS-FUT-04 | Analyzer для команд и других Portal requests | Объяснение риска/эффекта и второй AI advisory; не approval, не замена deterministic DENY и не существующий Sonar analysis_review. Не отправлять секреты модели |
 | PS-FUT-05 | Windows service/autostart и удобный restart/status | Учитывать уже существующий Script Center adapter/setup UI; та же DB/identity, health и controlled shutdown, проверка после reboot |
 | PS-FUT-06 | Полноценная lifecycle-защита дочерних процессов | Process-tree containment/cleanup и cancellation semantics с доказуемым outcome; kill родителя сам по себе не rollback |
@@ -485,7 +470,7 @@ identity/credential boundary: конкретный неприемлемый scop
 | [Container backlog][ps-container-plan], [исторический архив][ps-container-archive], [изоляционный аудит][ps-container-audit] | Identity/AST/deterministic DENY, network/children и Docker broker идеи; PowerShell roadmap теперь здесь, общий container scope остаётся там |
 | [UC-GW-012](use-cases/own-api.md#uc-gw-012), [UC-GW-002/003](use-cases/integrations.md#uc-gw-002) | Reuse Gateway/Core, separate effect/transport review и live acceptance; READ onboarding не расширен на shell |
 | Tunnel G2/G3 документы 2026-10-13…16 | История Windows sessions/launchers/listeners; не контракт этого OwnerShell API и не разрешение Repo → host shell |
-| Решения владельца в этой задаче, 2026-11-17 | Все исполнения из Repo через ASK; ограничения меняются в настройках; консолидировать первую версию и будущие улучшения; обновить план с выделением Executor в отдельный `fortis-powershell-executor` первым этапом |
+| Решения владельца в этой задаче, 2026-11-17 | V1: все исполнения из Repo через ASK без редактируемых ограничений; ограничения и опциональный ALLOW только в поздних версиях; консолидировать первую версию и будущие улучшения; обновить план с выделением Executor в отдельный `fortis-powershell-executor` первым этапом |
 
 Датированные evidence/archives и старые Git revisions сохраняются. Актуальные
 entrypoints ведут сюда; исторические deferred требования не становятся DONE.

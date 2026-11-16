@@ -27,6 +27,7 @@ tests=(
   test_owner_shell_release.py
   test_owner_shell_release_source.py
   test_powershell_executor_extraction.py
+  test_powershell_machine_contract.py
   test_runtime.py
   test_repo_action_contract.py
   test_repo_ingress.py

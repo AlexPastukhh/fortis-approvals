@@ -12,11 +12,13 @@ separate. **Do not infer full security acceptance from one successful command.**
 
 ## План Repo AI V1 и историческая граница
 
-[Единый план](BACKLOG-IMPROVEMENTS.md#powershell-plan) собирает историю,
-первую версию доступа ИИ и будущие улучшения. Решение владельца 2026-11-17:
-каждый допущенный запуск из Repo проходит ASK; ограничения команд меняются
-в owner settings, запрещённые команды отклоняются. Эти возможности пока
-планируются. Описанный ниже owner-only контракт остаётся baseline;
+[Единый план](BACKLOG-IMPROVEMENTS.md#powershell-plan) и [кандидат контракта machine ASK](POWERSHELL-MACHINE-ASK-CONTRACT-V1.md) собирает историю,
+первую версию доступа ИИ и будущие улучшения. Уточнённое решение владельца 2026-11-17:
+V1: любой запрос команды от допущенного Repo actor требует ASK владельца
+через существующий Core/Owner Portal/WebAuthn; нет настраиваемых списков
+команд или ALLOW execution. Ограничения команд и выбор ASK/ALLOW
+перенесены в будущую V2 и требуют отдельного review. Machine execution
+ещё не реализовано. Описанный ниже owner-only контракт остаётся baseline;
 его старые PS-V1 IDs не являются приёмкой machine API.
 
 ## Interaction
