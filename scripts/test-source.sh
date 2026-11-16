@@ -87,6 +87,7 @@ tests=(
   test_automatic_read_retries.py
   test_command_intents.py
   test_intent_result_recovery.py
+  test_release_label_recovery.py
   test_intent_target_efficiency.py
   test_delivery_intents.py
   test_intent_cli.py

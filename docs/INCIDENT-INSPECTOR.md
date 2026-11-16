@@ -34,7 +34,7 @@ The projection suppresses raw reason, params except whitelisted
 identity, owner proof, worker claim token, bearer, full exception text and
 provider payloads. Optional GitHub READ uses only existing typed methods:
 bounded branch and PR listings, exact `get_pull_request` for merge/ready
-state, or the visual-review Issue run marker. For create_branch, matching
+state, the bounded Release Label context, or the visual-review Issue run marker. For create_branch, matching
 remote branch name + exact source SHA is target-state evidence; for
 merge/ready, matching PR number + head SHA + state is target-state evidence.
 Neither is proof of which UUID effected the change.
@@ -76,10 +76,41 @@ Even proven nonexecution requires separate fresh authorization and the
 applicable UC-CONT-003/UC-GW-009 process. The proposed fast path and worker
 fencing belong to separately reviewed PR 2b/3, **not** PR 2.
 
+## Release Label reconciliation (P2 source)
+
+For `add_pr_release_labels` / `remove_pr_release_label`, the additive
+`releaseLabelReconciliation.state` separates a durable original effect from
+its independently observed current projection:
+
+- `CONFIRMED_APPLIED`: complete stable Core audit, original-UUID-bound GitHub
+  receipt, matching Core result, and two consistent typed
+  `get_pr_release_label_context` reads agree on exact HEAD/base/body and the
+  complete receipt label set. A final Core recheck must also agree.
+- `CONFIRMED_NOT_APPLIED`: proven `CANCELLED_BEFORE_DISPATCH`, no dispatch,
+  worker or receipt, and stable current HEAD/base/body/labels matching the
+  original preconditions. An absent label or `NOT_FOUND` alone is insufficient.
+- `UNKNOWN_STOP`: all other cases, including changed fingerprints, concurrent
+  labels, incomplete evidence, unavailable/disabled reads or a closed PR for
+  which the existing open-PR-only context READ is unavailable. The separate
+  original Core execution assessment remains available; a failed projection
+  read never erases known execution and never authorizes another WRITE.
+
+Both the intent coordinator and inspector validate the receipt's full label
+set against `expectedLabelsSha256` and the permitted delta, including the
+boolean `changed` flag. With at most five additions, at most 32 prior label
+sets are possible; one removal has two. This accepts already-present adds and
+no-op removals while rejecting unrelated label loss/addition or duplicates.
+No second journal or provider authority is introduced. Provider output exposes
+only bounded identifiers, hashes/counts and comparisons, not label names/body.
+
+`retryAuthorization` stays `NONE`, including on confirmed nonexecution.
+Repeated reads narrow observation races; they do not create a GitHub PR-HEAD
+CAS, a global transaction, publisher automation or deployment evidence.
+
 ## Verification
 
 Run focused tests `test_pr2_incident_inspector.py` and
-`test_machine_uncertain_inventory.py`, then mandatory
+`test_machine_uncertain_inventory.py` and `test_release_label_recovery.py`, then mandatory
 `bash scripts/test-source.sh` with the declared owner dependencies installed.
 Tests cover cross-actor secrecy, exact cancel/dispatch boundary, worker claim,
 205-event pagination, changed pages, provider target-state without attribution,
