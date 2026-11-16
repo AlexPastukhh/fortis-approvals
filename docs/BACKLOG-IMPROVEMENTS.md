@@ -285,14 +285,15 @@ commit `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c`: 15 файлов, runner byte-
 recipe/Script Center checks остаются 25/94 (1 platform skip у Script Center).
 Детали — в [source evidence](../fortis_approvals/evidence/POWERSHELL-EXECUTOR-EXTRACTION-SOURCE-20261117.md).
 
-**Текущая остановка:** внешняя automatic approval review отклонила публикацию
-исходников и CI в предоставленный repo без явного согласия на этот payload.
-Вызов не дошёл до Gateway: **нет Core PENDING/ASK**, remote task branch или PR.
-Нужно явно подтвердить публикацию этих 15 source/CI файлов через Gateway/PR
-в `AlexPastukhh/fortis-powershell-executor`; затем сработает обычная Gateway
-ASK-политика для CI workflow. ASK здесь — о GitHub source, не о PowerShell.
-Подготовленные изменения в Approvals/Script Center пока также локальные.
-Windows clone/cutover не выполнены; runtime/credentials/DB не менялись.
+**Публикация согласована 2026-11-17:** владелец явно разрешил source/CI/PR
+в трёх репозиториях. Gateway создал два Core PENDING ASK для sensitive workflow
+paths: Executor — `42ddcbf4-eb76-43b2-8bcf-2f71b4ca15b7`, Script Center —
+`a61dd709-5a37-4911-817a-f58558fadc64`. На момент этого source snapshot
+оба ожидают owner WebAuthn; remote task branches/PR ещё не подтверждены.
+Публикация плана/recipe/tests в Approvals выполняется отдельно. Предыдущие
+отказы внешней проверки сохранены в evidence как история, не текущий запрет.
+ASK здесь — о GitHub source, не о PowerShell. Windows clone/cutover
+не выполнены; runtime/credentials/DB не менялись.
 
 Задача переноса — сохранить существующее owner-only поведение и API.
 Machine ASK и ограничения команд реализуются следующими этапами; перенос

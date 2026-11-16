@@ -1,6 +1,6 @@
 # PowerShell Executor extraction — source evidence, 2026-11-17
 
-Status: **STANDALONE DOCKER SOURCE READY / PUBLICATION BLOCKED / WINDOWS PENDING**.
+Status: **STANDALONE DOCKER SOURCE READY / PUBLICATION AUTHORIZED / OWNER ASK PENDING / WINDOWS PENDING**.
 The user-provided standalone GitHub repository and Docker bootstrap are now
 verified. Windows clone, process cutover and machine PowerShell permission
 remain unverified/unimplemented.
@@ -76,13 +76,23 @@ This is uninstalled source; the current Windows launcher/process is untouched.
   `.github/workflows/powershell-executor-source-ci.yml`; no GitHub run is
   claimed before publication. Its Windows job qualifies the resolver and
   parses the changed PowerShell files without launching Executor.
-- The external tool approval review rejected draft publication to
-  `AlexPastukhh/fortis-approvals` because explicit consent for this source
-  payload and external destination was missing. No draft PR or remote task
-  branch was created; no alternate publication route was attempted.
-- Publishing the recipe/plan/tests and the Script Center launcher/resolver/CI
-  requires explicit owner permission for those two GitHub destinations.
-  Windows activation is a separate later step and is not part of the draft.
+- Earlier external approval review rejected publication because explicit
+  consent for the source payload and GitHub destinations was missing. That
+  attempt stopped before Gateway; no alternate route was attempted.
+- On 2026-11-17 the owner explicitly authorized publication after reviewing
+  the three-repository source/CI payload. The native typed delivery now reached
+  Gateway. Current sensitive workflow pushes await owner WebAuthn:
+
+| Repository | Exact source HEAD | Core request | Parent delivery intent | Snapshot |
+| --- | --- | --- | --- | --- |
+| fortis-powershell-executor | `fd97d8f5b60389fb2ee5b75a52a01de3d89f537c` | `42ddcbf4-eb76-43b2-8bcf-2f71b4ca15b7` | `ccb6853d-9d1d-5031-b00f-8da0c1011ed8` | PENDING / WAIT_OWNER at push |
+| script-control-center | `e56d95aaf6504ecb8653ded640ce8e1c95c65c15` | `a61dd709-5a37-4911-817a-f58558fadc64` | `ff5ee143-62b6-5c52-bf5a-efec5ef23d09` | PENDING / WAIT_OWNER at push |
+
+No remote source branch, PR or GitHub CI is claimed by this snapshot.
+Continue the existing delivery intents after owner decisions; do not submit
+replacement pushes while PENDING. Approvals source/plan publication proceeds
+separately with no runtime implementation change. Windows activation remains
+a separate later step.
 
 ## External prerequisites and runtime boundary
 
@@ -120,10 +130,8 @@ are subsequent unimplemented stages. See the single backlog for status.
   PASS; one windows-powershell-executor target with windows-update action.
 - The selected GitHub plugin metadata call returned 404, but Gateway metadata,
   initial main READ and typed fetch succeeded. No connector write was used.
-- Outer approval review blocked source/CI/PR publication to the user-provided
-  destination for lack of explicit payload consent. The call did not reach
-  Gateway; no Core PENDING/ASK, remote task branch or PR was created.
-- Subsequent publication needs explicit consent for these source/CI files in
-  this exact repository. The workflow paths then use the native owner ASK gate.
+- The earlier outer-review rejection did not reach Gateway. After explicit
+  owner publication consent, the native workflow push created the real Core
+  PENDING request recorded above. No approval was fabricated or bypassed.
 - Windows remains pending. Current Executor process, TLS/config/receipt DB and
   previous Mirror source have not been changed.
