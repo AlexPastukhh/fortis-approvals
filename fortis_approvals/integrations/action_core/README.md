@@ -37,7 +37,11 @@ Source candidate for UC-GW-012 DOCKER-HTTPS. This provider exposes one operation
 
 This provider does not expose Action creation/version publication, schedules, runs,
 run history, source/search APIs or External AI registration. It has no WRITE operation.
-Public config/manifest is not proof of TLS, network isolation, vault readiness or runtime. The UC-GW-012 own-API manifest must pin the exact owner-merged Action Core main SHA; do not publish a placeholder or source-branch SHA.
+Public config/manifest is not proof of TLS, network isolation, vault readiness or runtime.
+The [source-only own-API manifest](../../../docs/templates/own-api/action-core-read.json)
+pins owner-merged Action Core PR #16 main SHA `cb22a03591e5c77739e192794d8f1d8323a68c4d`.
+Its `fortis-actioncore-net` network is a **proposal**, not an existing Gateway
+network, and the HTTP/8000 bypass remains unmitigated until owner acceptance.
 
 Before owner release, prove from the real Gateway namespace: exact Docker network and DNS,
 TLS SAN/CA/expiry, wrong CA/SAN/Host, no redirects or HTTP fallback, no route to the
