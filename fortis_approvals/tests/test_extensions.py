@@ -4,6 +4,7 @@ No host/Docker imitation and no provider credentials/network. Shared WebAuthn
 checks remain in the existing suite; these Core tests use its TEST-only verifier.
 """
 from copy import deepcopy
+from dataclasses import replace
 import io
 import json
 import os
@@ -121,6 +122,118 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(self.calls, [('write', 'record')])
         body['params']['value'] = 'different'
         with self.assertRaises(Conflict): self.runtime.call(GRANT, body)
+
+    def test_authenticated_preapproval_actor_is_core_bound_and_revalidated(self):
+        # P4 prerequisite: the actor exists before Core has inserted a row.
+        # Only Core's authenticated preparation path may supply it.
+        seen = []
+        original = self.runtime.operations[('tickets', 'set_item')]
+
+        def preview(ctx):
+            seen.append(('preview', ctx.phase, ctx.authenticated_actor))
+            return {'value': ctx.authenticated_actor}
+
+        def execute(ctx):
+            seen.append(('execute', ctx.phase, ctx.authenticated_actor))
+            return self.write(ctx)
+
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=preview, execute=execute)
+        body = self.call('set_item', {'value': 'after'})
+        row = self.runtime.call(GRANT, body)
+        self.assertEqual('PENDING', row['state'])
+        self.assertEqual('actor', self.core._read(row['requestId'])['preview']['before']['value'])
+        self.assertEqual([], self.calls)
+        self.assertEqual([('preview', 'preview', 'actor')], seen)
+        self.assertEqual('EXECUTED', self.decide(row['requestId'], 'approve')['state'])
+        self.assertEqual([('write', 'record')], self.calls)
+        # Core.execute does one revalidation and ExtensionAdapter.apply another.
+        self.assertEqual(3, len([item for item in seen if item[0] == 'preview']))
+        self.assertEqual(('execute', 'execute', 'actor'), seen[-1])
+        self.assertEqual('EXECUTED', self.runtime.call(GRANT, body)['state'])
+        self.assertEqual([('write', 'record')], self.calls)
+
+        # A direct legacy adapter.prepare is *not* an authenticated Core
+        # entry point, and may not derive the actor from public params.
+        with self.assertRaises(Denied):
+            self.core.adapters['tickets'].prepare({**body,
+                'requestId': str(uuid.uuid4()), 'expectedVersion': 0})
+
+    def test_authenticated_actor_rejects_spoofing_reject_and_policy_stale(self):
+        seen = []
+        original = self.runtime.operations[('tickets', 'set_item')]
+
+        def preview(ctx):
+            seen.append(ctx.authenticated_actor)
+            return {'value': ctx.authenticated_actor}
+
+        self.runtime.operations[('tickets', 'set_item')] = replace(original, preview=preview)
+        for body in (self.call('set_item', {'value': 'after', 'actor': 'other'}),
+                     self.call('set_item', {'value': 'after'}, actor='other'),
+                     self.call('set_item', {'value': 'after'}, approved=True)):
+            with self.subTest(body=body), self.assertRaises(Denied):
+                self.runtime.call(GRANT, body)
+        with self.assertRaises(Denied):
+            self.runtime.call('OFFLINE-SECOND-MACHINE-GRANT-0001',
+                              self.call('set_item', {'value': 'after'}))
+        self.assertEqual([], seen)
+        row = self.runtime.call(GRANT, self.call('set_item', {'value': 'after'}))
+        self.assertEqual('REJECTED', self.decide(row['requestId'], 'reject')['state'])
+        self.assertEqual([], self.calls)
+        row = self.runtime.call(GRANT, self.call('set_item', {'value': 'after'}))
+        self.core.policies[('actor', 'tickets', 'set_item', 'record')] = 'DENY'
+        with self.assertRaises(Denied):
+            self.decide(row['requestId'], 'approve')
+        self.assertEqual('PENDING', self.core._read(row['requestId'])['state'])
+        self.assertEqual([], self.calls)
+
+    def test_reauthenticated_actor_change_stales_without_external_effect(self):
+        # An upstream grant remap between Runtime._access and Core.client must
+        # never turn the first actor's approved preview into the second actor's
+        # effect. Core revalidation detects the mismatched scoped principal.
+        original = self.runtime.operations[('tickets', 'set_item')]
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': ctx.authenticated_actor})
+        self.core.policies[('other', 'tickets', 'set_item', 'record')] = 'ALLOW'
+        self.core.policies[('actor', 'tickets', 'set_item', 'record')] = 'ALLOW'
+        with patch.object(self.core.auth, 'authenticate', side_effect=['actor', 'other']):
+            row = self.runtime.call(GRANT, self.call('set_item', {'value': 'after'}))
+        self.assertEqual('STALE', row['state'])
+        self.assertEqual([], self.calls)
+        self.assertIsNone(self.runtime._preflight_identity.get())
+
+    def test_direct_preparation_denies_mismatched_stored_request(self):
+        original = self.runtime.operations[('tickets', 'set_item')]
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': ctx.authenticated_actor})
+        body = self.call('set_item', {'value': 'after'})
+        row = self.runtime.call(GRANT, body)
+        self.assertEqual('PENDING', row['state'])
+        with self.assertRaisesRegex(Denied, 'INTEGRATION_CORE_IDENTITY_INVALID'):
+            self.core.adapters['tickets'].prepare({**body, 'expectedVersion': 0,
+                                                    'params': {'value': 'modified'}})
+        self.assertEqual([], self.calls)
+        self.assertIsNone(self.runtime._preflight_identity.get())
+
+    def test_authenticated_actor_preview_stales_on_changed_semantics(self):
+        original = self.runtime.operations[('tickets', 'set_item')]
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': ctx.authenticated_actor})
+        row = self.runtime.call(GRANT, self.call('set_item', {'value': 'after'}))
+        self.assertEqual('PENDING', row['state'])
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': 'unexpected'})
+        self.assertEqual('STALE', self.decide(row['requestId'], 'approve')['state'])
+        self.assertEqual([], self.calls)
+
+    def test_authenticated_actor_direct_apply_cannot_bypass_core_dispatch(self):
+        body = self.call('set_item', {'value': 'after'})
+        row = self.runtime.call(GRANT, body)
+        self.assertEqual('PENDING', row['state'])
+        with self.assertRaises(Denied):
+            self.core.adapters['tickets'].apply({**body, 'expectedVersion': 0})
+        self.assertEqual('PENDING', self.core._read(row['requestId'])['state'])
+        self.assertEqual([], self.calls)
 
     def test_allow_write_executes_without_owner_and_keeps_request_id(self):
         self.core.policies[('actor', 'tickets', 'set_item', 'record')] = 'ALLOW'
