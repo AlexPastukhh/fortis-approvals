@@ -1,8 +1,7 @@
 # Mirror Gateway provider — READ-only source candidate
 
-The retained get_repository v1 READ is unchanged. P3a adds six version 2
-observation READ definitions, disabled unless explicitly granted in reviewed
-configuration. No Gateway ASK Pull, preview or receipt lookup is registered. A source package,
+The retained get_repository v1 READ is unchanged. P3 adds eight version 2 READ definitions, disabled unless explicitly granted in reviewed
+configuration. No Gateway ASK Pull or history WRITE is registered. Bound lookup never adopts Browser receipts. A source package,
 green tests or published PR is not a Windows or Gateway deployment.
 
 The fixed TLS transport is HTTPS/443 to host.docker.internal, using a
@@ -47,7 +46,7 @@ docke-windows-mirror/docs/API-FIRST.md and UC-MIR-005.
 The Windows Mirror raw `docker.worktrees` is the complete registered Git worktree inventory and includes its `docker.primary` exactly once. The Gateway READ projection checks that the primary entry matches the separate raw primary object and omits only that verified entry from the projected ordinary worktrees; missing, mismatched or duplicate primaries fail closed. This does not authorize Mirror or Gateway WRITE, change TLS/credentials, or deploy a runtime.
 
 
-## P3a bounded READ v2 source
+## P3 bounded READ v2 source
 
 Normative source scope and owner activation gates:
 [Mirror READ-V2](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/READ-V2.md),
@@ -74,11 +73,30 @@ Repository/worktree/action reads do not contact GitHub. Only the explicit
 get_github_status_v2 uses bounded Windows owner gh reads through shared Core;
 no READ fetches Git refs. Required checks remain NOT_VERIFIED. Capabilities
 report source support; effective actor policy remains in the Gateway catalog.
-Preview and initiating-principal receipt lookup require P3b; history WRITE
-stays DENY and signed ASK requires P4. Do not expose old Browser receipts.
+P3b supplies durable principal-bound preview/lookup. The Windows factory requires
+an explicit reviewed generation and safe Core ledger; it has no production machine
+binding writer until P4 signed atomic reservation. History WRITE and Pull remain
+DENY. Do not expose or retroactively bind old Browser receipts.
 
 For a future release reuse the existing own-API manifest/linter, Doctor and
 Acceptance tools from UC-GW-012. Do not enable the v2 factory, change occupied
 443, provision keys/credentials or rebuild Gateway as part of source delivery.
 A fresh live READ from the Gateway namespace and negative TLS/scope/write
 probes remain separate owner-controlled acceptance.
+
+
+P3b trusted_identity derives actor from Core's persisted authenticated request
+in execute/reconcile and validates request operation/target/params. No public
+actor field or generic framework change is added. Internal preview GET carries
+principal/original READ UUID and a hash of trusted definition, admitted Core
+policy version and READ credential generation. Lookup carries the authenticated principal and exact effect UUID.
+The READ bearer authenticates Gateway assertions; it does not independently prove
+human approval. READ never signs, consumes ASK or creates an effect binding.
+Preview lookup callback reuses the original UUID after uncertain transport;
+Windows returns its frozen stored metadata and never silently renews TTL.
+
+Windows metadata shares the existing Core ledger and preflight. Lookup is a
+strict stored-result projection after durable ownership/payload checks, without
+Git readback/reconciliation. Missing or foreign/Browser UUIDs are indistinguishable;
+NOT_FOUND and unfinished receipts remain UNKNOWN. See the canonical READ-V2 runbook
+for capacity, generation rotation and owner-controlled activation gates.

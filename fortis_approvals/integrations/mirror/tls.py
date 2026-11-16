@@ -27,6 +27,10 @@ ROUTES = (
     Route("get_github_status_v2", "GET", "/gateway/v2/repositories/{repo_id}/github",
           readonly=True, query_keys=PAGE_QUERY),
     Route("get_available_actions_v2", "GET", "/gateway/v2/repositories/{repo_id}/actions", readonly=True),
+    Route("preview_windows_pull_v2", "GET", "/gateway/v2/repositories/{repo_id}/pull-preview",
+          readonly=True, query_keys=('principal', 'request_id', 'gateway_generation')),
+    Route("get_windows_pull_result_v2", "GET", "/gateway/v2/repositories/{repo_id}/pull-results/{request_id}",
+          readonly=True, query_keys=('principal',)),
     Route("get_capabilities_v2", "GET", "/gateway/v2/capabilities", readonly=True,
           query_keys=INVENTORY_QUERY),
 )

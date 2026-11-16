@@ -59,4 +59,9 @@ execution are accepted as **functional evidence**; full session/CSRF/receipt
 safety acceptance is still open. Analyzer and second-AI controls remain disabled.
 See [current state](docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
 [Owner PowerShell contract](docs/OWNER-POWERSHELL.md) and the
-[single backlog](docs/BACKLOG-IMPROVEMENTS.md).
+[single backlog](docs/BACKLOG-IMPROVEMENTS.md#powershell-plan).
+
+The consolidated plan distinguishes the existing owner-only baseline from
+**Repo AI V1 (planned)**: every PowerShell execution is ASK, with owner-editable
+command restrictions. It also records implementation gates, acceptance and
+future improvements; this documentation does not enable machine execution.

@@ -10,6 +10,15 @@ and the [single backlog](BACKLOG-IMPROVEMENTS.md). The optional PowerShell tab
 belongs to the existing Owner Portal; Pending/History and machine API remain
 separate. **Do not infer full security acceptance from one successful command.**
 
+## План Repo AI V1 и историческая граница
+
+[Единый план](BACKLOG-IMPROVEMENTS.md#powershell-plan) собирает историю,
+первую версию доступа ИИ и будущие улучшения. Решение владельца 2026-11-17:
+каждый допущенный запуск из Repo проходит ASK; ограничения команд меняются
+в owner settings, запрещённые команды отклоняются. Эти возможности пока
+планируются. Описанный ниже owner-only контракт остаётся baseline;
+его старые PS-V1 IDs не являются приёмкой machine API.
+
 ## Interaction
 
 After WebAuthn sign-in, select **PowerShell**, paste up to 8 KiB of PowerShell
