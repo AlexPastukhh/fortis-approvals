@@ -1,5 +1,6 @@
 """Explicit config + shared Core for all extension ALLOW/ASK calls, including reads."""
 from copy import deepcopy
+from contextvars import ContextVar
 import hashlib
 from pathlib import Path
 
@@ -42,7 +43,7 @@ class Context:
         self.runtime, self.provider, self.operation = runtime, provider, operation
         self.target, self.params = request['target'], deepcopy(request['params'])
         self.request_id, self.phase = request['requestId'], phase
-        # Set only by trusted Core submission or by its persisted request row.
+        # Set by authenticated extension-call scope or persisted Core row.
         # A public params/URL actor is never identity evidence.
         self.authenticated_actor = authenticated_actor
         self._secret = None
@@ -90,13 +91,25 @@ class ExtensionAdapter:
         return self.runtime.operations[(self.provider.name, request['operation'])]
 
     def prepare(self, request):
-        # Backward-compatible direct adapter tests have no trusted actor.
-        return self._prepare(request, authenticated_actor=None)
-
-    def prepare_authenticated(self, request, actor):
-        # Core.client authenticated actor before submit; Core.execute supplies
-        # the immutable persisted row actor. Never extract identity from params.
-        check(type(actor) is str and actor, 'INTEGRATION_PRINCIPAL_UNAVAILABLE')
+        # Core is immutable under the pinned persistence-source gate. The
+        # extension call owns a scoped, authenticated principal BEFORE submit;
+        # Core's persisted request row owns it on revalidation/execute.
+        scope = self.runtime._preflight_identity.get()
+        try:
+            row = self.runtime.core._read(request['requestId'])
+        except Denied:
+            row = None
+        if row is not None:
+            check(row['request'] == request, 'INTEGRATION_CORE_IDENTITY_INVALID')
+            actor = row['actor']
+            if scope is not None:
+                check(scope == (actor, request['requestId']),
+                      'INTEGRATION_PRINCIPAL_CHANGED')
+        else:
+            actor = None
+            if scope is not None:
+                check(scope[1] == request['requestId'], 'INTEGRATION_REQUEST_ID_CHANGED')
+                actor = scope[0]
         return self._prepare(request, authenticated_actor=actor)
 
     def _prepare(self, request, *, authenticated_actor):
@@ -123,7 +136,7 @@ class ExtensionAdapter:
         ctx = Context(self.runtime, self.provider, op, request, 'execute',
                       authenticated_actor=row['actor'])
         # Recheck frozen domain inputs and credential generation at the effect boundary.
-        if canonical(self.prepare_authenticated(request, row['actor'])) != canonical(row['preview']):
+        if canonical(self.prepare(request)) != canonical(row['preview']):
             raise Stale('INTEGRATION_PREVIEW_CHANGED')
         check(ctx.generation == row['preview']['credentialGeneration'], 'INTEGRATION_CREDENTIAL_CHANGED')
         try: data = op.execute(ctx)
@@ -155,6 +168,9 @@ class ExtensionRuntime:
         check(isinstance(config, ExtensionConfig))
         check(type(providers) is tuple and all(isinstance(x, Provider) for x in providers))
         check(len({x.name for x in providers}) == len(providers), 'INTEGRATION_DUPLICATE_PROVIDER')
+        # Scoped to one integration call, not one process/thread; reset on
+        # success and failure so no later actor or request can inherit it.
+        self._preflight_identity = ContextVar('fortis_extension_preflight_identity', default=None)
         self.providers = {x.name: x for x in providers}
         self.operations = {(p.name, o.name): o for p in providers for o in p.operations}
         self.vault = vault or CredentialVault()
@@ -214,10 +230,14 @@ class ExtensionRuntime:
         # Core's strict envelope binds ID/service/operation/target/reason and bounds JSON.
         body = {**deepcopy(value), 'expectedVersion': 0}
         self.core._payload(body)
-        self._access(credential, value['service'], value['operation'], value['target'])
+        actor = self._access(credential, value['service'], value['operation'], value['target'])
         op = self.operations[(value['service'], value['operation'])]
         forbid_credentials(value['params']); validate_with(op.params, value['params'], limit=32768)
-        row = self.core.client(credential, 'submit', body)
+        marker = self._preflight_identity.set((actor, value['requestId']))
+        try:
+            row = self.core.client(credential, 'submit', body)
+        finally:
+            self._preflight_identity.reset(marker)
         return {'requestId': row['requestId'], 'state': row['state']}
 
     def result(self, credential, request_id, *, reconcile=False):

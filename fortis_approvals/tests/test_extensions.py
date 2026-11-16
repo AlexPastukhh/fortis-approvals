@@ -156,7 +156,8 @@ class ExtensionTests(unittest.TestCase):
         # A direct legacy adapter.prepare is *not* an authenticated Core
         # entry point, and may not derive the actor from public params.
         with self.assertRaises(Denied):
-            self.core.adapters['tickets'].prepare({**body, 'expectedVersion': 0})
+            self.core.adapters['tickets'].prepare({**body,
+                'requestId': str(uuid.uuid4()), 'expectedVersion': 0})
 
     def test_authenticated_actor_rejects_spoofing_reject_and_policy_stale(self):
         seen = []
@@ -185,6 +186,34 @@ class ExtensionTests(unittest.TestCase):
             self.decide(row['requestId'], 'approve')
         self.assertEqual('PENDING', self.core._read(row['requestId'])['state'])
         self.assertEqual([], self.calls)
+
+    def test_reauthenticated_actor_change_stales_without_external_effect(self):
+        # An upstream grant remap between Runtime._access and Core.client must
+        # never turn the first actor's approved preview into the second actor's
+        # effect. Core revalidation detects the mismatched scoped principal.
+        original = self.runtime.operations[('tickets', 'set_item')]
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': ctx.authenticated_actor})
+        self.core.policies[('other', 'tickets', 'set_item', 'record')] = 'ALLOW'
+        self.core.policies[('actor', 'tickets', 'set_item', 'record')] = 'ALLOW'
+        with patch.object(self.core.auth, 'authenticate', side_effect=['actor', 'other']):
+            row = self.runtime.call(GRANT, self.call('set_item', {'value': 'after'}))
+        self.assertEqual('STALE', row['state'])
+        self.assertEqual([], self.calls)
+        self.assertIsNone(self.runtime._preflight_identity.get())
+
+    def test_direct_preparation_denies_mismatched_stored_request(self):
+        original = self.runtime.operations[('tickets', 'set_item')]
+        self.runtime.operations[('tickets', 'set_item')] = replace(
+            original, preview=lambda ctx: {'value': ctx.authenticated_actor})
+        body = self.call('set_item', {'value': 'after'})
+        row = self.runtime.call(GRANT, body)
+        self.assertEqual('PENDING', row['state'])
+        with self.assertRaisesRegex(Denied, 'INTEGRATION_CORE_IDENTITY_INVALID'):
+            self.core.adapters['tickets'].prepare({**body, 'expectedVersion': 0,
+                                                    'params': {'value': 'modified'}})
+        self.assertEqual([], self.calls)
+        self.assertIsNone(self.runtime._preflight_identity.get())
 
     def test_authenticated_actor_preview_stales_on_changed_semantics(self):
         original = self.runtime.operations[('tickets', 'set_item')]

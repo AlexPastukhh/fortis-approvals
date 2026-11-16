@@ -208,19 +208,6 @@ class Core:
                 return self._view(row)
         raise Denied('CLIENT_ACTION_DENIED')
 
-    @staticmethod
-    def _prepare_for_actor(adapter, payload, actor):
-        """Trusted Core-to-adapter preflight; never take actor from payload.
-
-        Legacy adapters keep their unchanged prepare(request) interface.
-        Opt-in extensions receive the Core-authenticated or persisted actor
-        before the request row exists, including on execute revalidation.
-        """
-        authenticated = getattr(adapter, 'prepare_authenticated', None)
-        if authenticated is None:
-            return adapter.prepare(payload)
-        return authenticated(payload, actor)
-
     def submit(self, actor, payload):
         body = self._payload(payload)
         request_id = payload['requestId']
@@ -240,7 +227,7 @@ class Core:
             policy = self._policy(actor, payload)
             if policy == 'DENY' or policy not in ('ALLOW', 'ASK') or key[0] not in self.adapters:
                 raise Denied('OPERATION_DENIED')
-            snapshot = self._prepare_for_actor(self.adapters[key[0]], payload, actor)  # trusted read-only preflight
+            snapshot = self.adapters[key[0]].prepare(payload)  # read-only, domain validates
             digest = fingerprint(snapshot)
             now = int(self.clock())
             state = 'PENDING' if policy == 'ASK' else 'APPROVED'
@@ -343,7 +330,7 @@ class Core:
                 self._event(db, request_id, 'STALE')
                 return self._view(db.execute('SELECT * FROM requests WHERE id=?', (request_id,)).fetchone())
             try:
-                latest = self._prepare_for_actor(adapter, payload, row['actor'])
+                latest = adapter.prepare(payload)
                 if canonical(latest) != row['snapshot']:
                     raise Stale('PREVIEW_INPUTS_CHANGED')
             except Denied as exc:
