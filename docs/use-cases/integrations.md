@@ -173,8 +173,10 @@ revalidation перед будущим полностью автоматичес
 отдельный actor имеет только scoped READ и add/remove через ASK, own-request
 evidence v1, bounded exact-head CI и защиту от конкурирующих label-заявок.
 P3.3 — [trusted one-shot runner](../../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
-`SOURCE_CANDIDATE` с pin public validator, data-only source и существующим
-intent/receipt, без нового сервиса. Default disabled/DENY; выдача
+`SOURCE_ACCEPTED` (#115) с pin public validator, data-only source и существующим
+intent/receipt, без нового сервиса. P3.4 — [owner-sealed startup](../P3-4-PUBLISHER-OWNER-STARTUP.md)
+`SOURCE_CANDIDATE`: отдельные точные GitHub grants без унаследованных Sonar-полномочий,
+включаемые только будущим owner-private mount. Default disabled/DENY;
 grants/credentials, worker и live activation остаются отдельным owner-этапом.
 Последовательность — в
 [общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
