@@ -89,7 +89,8 @@ and checked as a **separate** owner-managed runtime step.
 4. Separately provision the **runner**, not a shared AI worker: non-root,
    read-only root filesystem, no Repo/Workfiles/Docker/owner mounts, fixed
    Gateway TLS-only egress, private data cache and existing Intent Journal;
-   no direct GitHub egress. This source PR does not launch that container.
+   no direct GitHub egress. The separate [P3.4 one-shot image source](P3-4-PUBLISHER-ISOLATED-RUNTIME.md)
+   defines an owner-review candidate but does not build, deploy or launch it.
 5. Keep [pilot PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118)
    **open** and non-draft. Revalidate its **latest** exact-head CI,
    stable PR/labels/base, registered task and one permitted managed delta
