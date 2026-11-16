@@ -128,15 +128,34 @@ function show(row){
  selected=row;const area=$('detail');area.replaceChildren();
  const h=document.createElement('h2');h.textContent=row.request.service+' · '+row.request.operation;
  area.append(h,line('Состояние',row.state));
+ const machinePowerShell=row.request.service==='powershell'&&row.request.operation==='execute';
+ if(machinePowerShell){
+  const warn=document.createElement('p');
+  warn.textContent='⚠ PowerShell от ИИ: произвольная команда под Windows-пользователем. Нет песочницы или автоматической проверки безопасности. Каждое исполнение требует отдельного WebAuthn ASK.';
+  area.append(warn,line('Инициатор',row.actor||'—'),line('Windows target',row.request.target));
+  area.append(line('SHA256 команды',row.preview?.commandSha256||'—'));
+  const label=document.createElement('h3');label.textContent='Полная команда — изучите до решения';
+  const command=document.createElement('pre');
+  command.textContent=row.request.params?.command||'';
+  command.className='machine-command-preview';
+  area.append(label,command);
+  if(command.textContent.length===0||row.preview?.command!==command.textContent){
+   const err=document.createElement('p');
+   err.textContent='Команда отсутствует или не совпадает с preview. Подтверждение заблокировано.';
+   area.append(err);
+  }
+ }
  const controls=document.createElement('div');controls.className='detail-actions';
  const feedback=document.createElement('p');feedback.id='detail-feedback';
  feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
  if(row.state==='PENDING'){
   for(const [decision,title] of [['approve','Подтвердить'],['reject','Отклонить']]){
    const btn=document.createElement('button');btn.type='button';btn.textContent=title;
-   if(decision==='approve'&&row.approvalAllowed===false){
+   const invalidMachine=machinePowerShell&&(row.preview?.command!==row.request.params?.command||
+     !row.request.params?.command||row.requiresStrongProof!==true);
+   if(decision==='approve'&&(row.approvalAllowed===false||invalidMachine)){
     btn.disabled=true;btn.dataset.policyDenied='true';
-    btn.title='Подтверждение этой операции отключено';
+    btn.title=invalidMachine?'Требуется полный совпадающий preview и WebAuthn':'Подтверждение этой операции отключено';
    }else btn.onclick=action(()=>decide(row,decision));
    controls.append(btn);
   }
@@ -167,7 +186,8 @@ function show(row){
   controls.append(close);
  }
 
- // Controls first; long payload and preview come after.
+ // Machine PowerShell preview precedes any approve control. Existing
+ // non-machine actions retain their current ordering and UI behavior.
  area.append(controls,feedback);
  if(row.state==='UNCERTAIN')detailFeedback(
   'Результат неизвестен: действие могло выполниться. Не повторяйте его. Проверка receipt ничего не запускает.',true);
