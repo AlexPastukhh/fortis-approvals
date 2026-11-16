@@ -17,9 +17,20 @@ print(report['assessment'], report['missingEvidence'], report['retryAuthorizatio
 
 The inspector checks live `globalRequestInventory.crossActorDetails`, requests
 `/v1/workspace/details` with bounded pages (at most 10,000 events), rejects
-page/sequence/state drift, and checks a final snapshot. Each Core page is a
+page/order/state drift, and checks a final snapshot. Each Core page is a
 separate read: the final recheck narrows but does not create a global
-transaction. The projection suppresses raw reason, params except whitelisted
+transaction.
+
+Core event IDs are global AUTOINCREMENT values across all requests. Other
+requests may allocate IDs between a selected request's events; sparse positive
+IDs are valid, including across pages. Coverage uses the stable per-request
+event total, exact offset and expected page length, not consecutive IDs.
+Duplicate, decreasing, nonpositive or non-integer IDs fail closed with
+`AUDIT_SEQUENCE_INVALID`; incomplete or excess pages remain
+`AUDIT_PAGE_INVALID`. Changed fingerprints, states, receipts or worker
+snapshots still prevent a confirmed outcome. Inspection never retries effects.
+
+The projection suppresses raw reason, params except whitelisted
 identity, owner proof, worker claim token, bearer, full exception text and
 provider payloads. Optional GitHub READ uses only existing typed methods:
 bounded branch and PR listings, exact `get_pull_request` for merge/ready

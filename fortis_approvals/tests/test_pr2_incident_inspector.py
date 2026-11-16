@@ -18,6 +18,7 @@ class FakeGateway:
         self.params={'task':'one','newSha':'a'*40,'secret':'should-not-leak'}
         self.visual=None
         self.event_states=None
+        self.events=None
         self.capable=True
 
     def post(self, path, body):
@@ -38,6 +39,8 @@ class FakeGateway:
             event_list[-1]['state']='CANCELLED_BEFORE_DISPATCH'
             event_list=[x for x in event_list if x['state']!='DISPATCHED']
             for i,row in enumerate(event_list):row['seq']=i+1
+        if self.events is not None:
+            event_list=self.events
         total=len(event_list)
         return {'schemaVersion':1,'request':{'requestId':UUID,
             'actor':'agent-a','fingerprint':'fixed','state':state,
@@ -81,6 +84,176 @@ class IncidentInspectorTests(unittest.TestCase):
         self.assertNotIn('should-not-leak',str(r))
         self.assertEqual({p for p,_ in g.calls},
                          {'/v1/workspace/capabilities','/v1/workspace/details'})
+
+    @staticmethod
+    def audit_rows(sequence):
+        states=('PENDING','APPROVED','DISPATCHED','EXECUTED')
+        return [{'seq':seq,'state':states[i % len(states)],'detail':{},'at':i}
+                for i,seq in enumerate(sequence)]
+
+    def bound_audit_flow(self, events):
+        receipt={'source':'github-receipts','result':{
+            'requestId':UUID,'operation':'push_commits','repository':'test-repo'}}
+        c,g=self.flow(state='EXECUTED',count=len(events),receipt=receipt)
+        g.events=events
+        return c,g
+
+    def test_p1_sparse_global_audit_ids_are_complete(self):
+        c,g=self.bound_audit_flow(self.audit_rows([8665,8672,8673,8674]))
+        g.operation='add_pr_release_labels'
+        g.params={'number':76,'expectedHeadSha':'a'*40}
+        g.receipt['result'].update(operation=g.operation,number=76,
+                                  headSha='a'*40,labels=['release:no-deployment'])
+        report=c.incidents.inspect(UUID,github_reads=False)
+        self.assertEqual(report['assessment'],'CONFIRMED_EXECUTED')
+        self.assertEqual(report['missingEvidence'],[])
+        self.assertEqual(report['audit']['eventsCollected'],4)
+        self.assertTrue(report['audit']['complete'])
+        self.assertTrue(report['audit']['dispatchedObserved'])
+        self.assertEqual(report['retryAuthorization'],'NONE')
+        self.assertEqual({path for path,_ in g.calls},
+                         {'/v1/workspace/capabilities','/v1/workspace/details'})
+
+    def test_sparse_global_ids_across_pages_are_complete(self):
+        c,g=self.bound_audit_flow(self.audit_rows(range(1001,1411,2)))
+        report=c.incidents.inspect(UUID,github_reads=False)
+        self.assertEqual(report['assessment'],'CONFIRMED_EXECUTED')
+        self.assertTrue(report['audit']['complete'])
+        self.assertEqual(report['audit']['eventsCollected'],205)
+        self.assertEqual(report['missingEvidence'],[])
+        self.assertEqual([body['eventOffset'] for path,body in g.calls
+                          if path=='/v1/workspace/details'],[0,100,200,0])
+        self.assertEqual(report['retryAuthorization'],'NONE')
+
+    def test_real_core_interleaved_requests_preserve_audit_completeness(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from fortis_approvals.core import Core, Authenticator
+        from fortis_approvals.synthetic import SyntheticAdapter
+        from fortis_approvals.tests.test_core import SyntheticOwnerVerifier
+
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            adapter=SyntheticAdapter(root/'adapter.sqlite')
+            adapter.seed('first','before')
+            adapter.seed('other','before')
+            owner=SyntheticOwnerVerifier()
+            core=Core(root/'core.sqlite',adapters={'synthetic':adapter},
+                      policies={('synthetic','set_ask'):'ASK',
+                                ('synthetic','set_free'):'ALLOW'},
+                      authenticator=Authenticator({'first-grant':'actor-a',
+                                                   'other-grant':'actor-b'}),
+                      owner_verifier=owner)
+            def request(ident,target,operation):
+                return dict(requestId=ident,service='synthetic',operation=operation,
+                            target=target,params={'value':'after'},expectedVersion=0,
+                            reason='Offline interleaved audit fixture')
+            pending=core.client('first-grant','submit',request(UUID,'first','set_ask'))
+            core.client('other-grant','submit',
+                        request('22345678-1234-1234-1234-123456789abc','other','set_free'))
+            core.owner_decide(UUID,'approve',owner.proof(UUID,pending['fingerprint'],'approve'))
+            rows=core.events(UUID)
+        sequence=[row['seq'] for row in rows]
+        self.assertTrue(any(b>a+1 for a,b in zip(sequence,sequence[1:])))
+        c,g=self.flow(state='EXECUTED',count=len(rows))
+        g.events=[{**{k:row[k] for k in ('seq','state','at')},
+                   'detail':json.loads(row['detail'])} for row in rows]
+        report=c.incidents.inspect(UUID,github_reads=False)
+        self.assertTrue(report['audit']['complete'])
+        self.assertEqual(report['audit']['eventsCollected'],len(rows))
+        self.assertEqual(report['assessment'],'UNCONFIRMED')  # No bound receipt.
+        self.assertNotIn('AUDIT_SEQUENCE_GAP',report['missingEvidence'])
+
+    def test_invalid_global_audit_ids_fail_closed(self):
+        cases=[('duplicate',[1,1]),('reversed',[2,1]),('zero',[0]),
+               ('negative',[-1]),('boolean',[True]),('string',['1']),
+               ('null',[None]),('missing',[None])]
+        for name,sequence in cases:
+            with self.subTest(name=name):
+                events=self.audit_rows(sequence)
+                if name=='missing':events[0].pop('seq')
+                c,g=self.bound_audit_flow(events)
+                report=c.incidents.inspect(UUID,github_reads=False)
+                self.assertEqual(report['assessment'],'UNCONFIRMED')
+                self.assertIn('AUDIT_SEQUENCE_INVALID',report['missingEvidence'])
+                self.assertFalse(report['audit']['complete'])
+                self.assertEqual(report['retryAuthorization'],'NONE')
+                self.assertEqual({path for path,_ in g.calls},
+                                 {'/v1/workspace/capabilities','/v1/workspace/details'})
+
+    def test_invalid_sequence_across_page_boundary_fails_closed(self):
+        for boundary in (100,99,'101',True):
+            with self.subTest(boundary=boundary):
+                events=self.audit_rows(range(1,206))
+                events[100]['seq']=boundary
+                c,g=self.bound_audit_flow(events)
+                report=c.incidents.inspect(UUID,github_reads=False)
+                self.assertEqual(report['assessment'],'UNCONFIRMED')
+                self.assertIn('AUDIT_SEQUENCE_INVALID',report['missingEvidence'])
+                self.assertEqual(report['audit']['eventsCollected'],100)
+                self.assertFalse(report['audit']['complete'])
+                self.assertEqual(report['retryAuthorization'],'NONE')
+
+    def test_incomplete_or_excess_audit_pages_fail_closed(self):
+        for fault in ('short-first','short-middle','empty-middle','extra-final'):
+            with self.subTest(fault=fault):
+                count=101 if fault=='extra-final' else 205
+                c,g=self.bound_audit_flow(self.audit_rows(range(1001,1001+count)))
+                original=g.post
+                def post(path,body,original=original,fault=fault):
+                    data=original(path,body)
+                    if path=='/v1/workspace/details' and body['eventLimit']==100:
+                        offset=body['eventOffset']
+                        if (fault=='short-first' and offset==0 or
+                                fault=='short-middle' and offset==100):
+                            data['events']=data['events'][:-1]
+                        elif fault=='empty-middle' and offset==100:
+                            data['events']=[]
+                        elif fault=='extra-final' and offset==100:
+                            data['events'].append(dict(data['events'][-1],seq=data['events'][-1]['seq']+1))
+                    return data
+                g.post=post
+                report=c.incidents.inspect(UUID,github_reads=False)
+                self.assertEqual(report['assessment'],'UNCONFIRMED')
+                self.assertIn('AUDIT_PAGE_INVALID',report['missingEvidence'])
+                self.assertFalse(report['audit']['complete'])
+                self.assertEqual(report['retryAuthorization'],'NONE')
+
+    def test_sparse_audit_metadata_drift_fails_closed(self):
+        for field in ('eventTotal','eventOffset','fingerprint'):
+            with self.subTest(field=field):
+                c,g=self.bound_audit_flow(self.audit_rows(range(1001,1411,2)))
+                original=g.post
+                def post(path,body,original=original,field=field):
+                    data=original(path,body)
+                    if path=='/v1/workspace/details' and body['eventOffset']==100:
+                        if field=='fingerprint':data['request']['fingerprint']='changed'
+                        else:data[field]+=1
+                    return data
+                g.post=post
+                report=c.incidents.inspect(UUID,github_reads=False)
+                self.assertEqual(report['assessment'],'UNCONFIRMED')
+                self.assertIn('AUDIT_SNAPSHOT_CHANGED',report['missingEvidence'])
+                self.assertFalse(report['audit']['complete'])
+                self.assertEqual(report['retryAuthorization'],'NONE')
+
+    def test_sparse_audit_final_receipt_or_worker_drift_fails_closed(self):
+        for field in ('receipt','worker'):
+            with self.subTest(field=field):
+                c,g=self.bound_audit_flow(self.audit_rows([8665,8672,8673,8674]))
+                original=g.post
+                def post(path,body,original=original,field=field):
+                    data=original(path,body)
+                    if path=='/v1/workspace/details' and body['eventLimit']==1:
+                        data[field]=None if field=='receipt' else {'state':'CLAIMED'}
+                    return data
+                g.post=post
+                report=c.incidents.inspect(UUID,github_reads=False)
+                self.assertEqual(report['assessment'],'UNCONFIRMED')
+                self.assertIn('EVIDENCE_CHANGED_DURING_READ',report['missingEvidence'])
+                self.assertFalse(report['audit']['complete'])
+                self.assertEqual(report['retryAuthorization'],'NONE')
 
     def test_changed_snapshot_fails_closed(self):
         c,g=self.flow()
