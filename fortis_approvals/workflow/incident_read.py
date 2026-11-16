@@ -307,14 +307,18 @@ class IncidentInspector:
                     missing.append('AUDIT_SNAPSHOT_CHANGED')
                     break
                 chunk = page['events']
-                if not chunk or len(chunk) > 100 or any(type(x) is not dict for x in chunk):
+                if (len(chunk) != min(100, total - offset) or
+                        any(type(x) is not dict for x in chunk)):
                     missing.append('AUDIT_PAGE_INVALID')
                     break
-                if events and chunk[0].get('seq') != events[-1].get('seq', -2) + 1:
-                    missing.append('AUDIT_SEQUENCE_GAP')
-                    break
-                if any(chunk[j].get('seq') != chunk[j-1].get('seq', -2)+1 for j in range(1,len(chunk))):
-                    missing.append('AUDIT_SEQUENCE_GAP')
+                # Core seq is global across requests, so other actors can
+                # allocate IDs between these rows. Per-request offsets/counts
+                # prove coverage; IDs must stay positive and strictly ordered.
+                sequence = [row.get('seq') for row in chunk]
+                if (any(type(value) is not int or value <= 0 for value in sequence) or
+                        any(right <= left for left, right in zip(sequence, sequence[1:])) or
+                        (events and sequence[0] <= events[-1]['seq'])):
+                    missing.append('AUDIT_SEQUENCE_INVALID')
                     break
                 events.extend(chunk)
                 offset += len(chunk)
