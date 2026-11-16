@@ -46,6 +46,9 @@ Source/tests/CI, owner release и живой результат — разные
    Изолировать upstream owner release и Gateway release; изменение одного
    не означает принятие другого. Owner Shell/PowerShell Executor — отдельный
    привилегированный API; нельзя подключать его как обычный ALLOW provider.
+   [План Repo AI PowerShell V1](../BACKLOG-IMPROVEMENTS.md#powershell-plan)
+   предусматривает ASK каждого исполнения и owner-настройки ограничений;
+   это отдельный effect/transport review по UC-GW-003, не расширение READ checker.
 2. **Public source-only manifest:** в registered task worktree заполнить
    [шаблоны](../templates/own-api/README.md). Выполнить
    `python3 -B scripts/check-own-api-manifest.py --manifest <absolute-file>`.
