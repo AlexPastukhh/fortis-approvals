@@ -103,6 +103,11 @@ and receipt for **any authenticated machine actor** without retry/reconcile. Ind
 GitHub and local Git evidence before attributing the effect. An absent receipt
 does not prove the action failed. `reconcile` is a separate operation
 with its own contract, not a mandatory read-only viewing step.
+A stuck `APPROVED` does not require owner cancellation before
+unrelated authorized work can proceed. For the **same target/effect**, check
+the frozen request, possible later dispatch and actual CAS/idempotency
+guarantees before deciding whether a fresh request is safe; see the
+[APPROVED continuation rules](use-cases/incidents.md#approved-не-является-глобальным-барьером-для-работы).
 For a stuck `APPROVED`, the owner can use the guarded Portal
 `Cancel before dispatch` action; only the exact `APPROVED` request may
 transition to `CANCELLED_BEFORE_DISPATCH` under the Core writer lock.

@@ -88,6 +88,32 @@ class G1Test(unittest.TestCase):
         self.assertEqual([x['state'] for x in self.core.events(v['requestId'])],
                          ['PENDING', 'APPROVED', 'DISPATCHED', 'EXECUTED'])
 
+    def test_approved_undispatched_does_not_block_fresh_cas_protected_work(self):
+        """A dormant approval is not a global lock or mandatory cleanup step."""
+        old = self.submit(self.request(op='set_ask', value='obsolete'))
+        with self.core._db() as db:
+            db.execute("UPDATE requests SET state='APPROVED' WHERE id=?",
+                       (old['requestId'],))
+            self.core._event(db, old['requestId'], 'APPROVED',
+                             {'policy': 'ASK'})
+        self.assertEqual(self.core._read(old['requestId'])['state'], 'APPROVED')
+        self.assertIsNone(self.adapter.receipt(old['requestId']))
+
+        current = self.submit(self.request(op='set_free', value='current', version=0))
+        self.assertEqual(current['state'], 'EXECUTED')
+        self.assertEqual(self.core._read(old['requestId'])['state'], 'APPROVED')
+        self.assertEqual(self.adapter.get('record'),
+                         {'value': 'current', 'version': 1})
+
+        # Frozen CAS prevents later execution of the old approved request.
+        late = self.core.execute(old['requestId'])
+        self.assertEqual(late['state'], 'STALE')
+        self.assertIsNone(self.adapter.receipt(old['requestId']))
+        self.assertEqual(self.adapter.get('record'),
+                         {'value': 'current', 'version': 1})
+        self.assertEqual([e['state'] for e in self.core.events(old['requestId'])],
+                         ['PENDING', 'APPROVED', 'STALE'])
+
     def test_reject_does_not_execute(self):
         v = self.submit(self.request())
         out = self.approve(v, 'reject')
