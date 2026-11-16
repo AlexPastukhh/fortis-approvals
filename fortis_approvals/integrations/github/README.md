@@ -19,6 +19,7 @@ owns accepted source/image and deployed scope; do not copy old container IDs.
 | Native profile/policy and workspace adapter | `../../workflow/runtime.py`, `../../workflow/adapters.py` |
 | Native bundle validation/publication | `../../workflow/git_backend.py` |
 | Native Repo client/worker and closed machine routes | `../../workflow/client.py`, `../../workflow/worker.py`, `../../workflow/ingress.py` |
+| P3.3 trusted Release Label Publisher (disabled source candidate) | [Owner technical contract](PUBLISHER-RUNNER.md); `publisher_source.py`, `publisher_validator.py`, `release_label_publisher.py` |
 
 The [native contract](../../../docs/NATIVE-WORKTREE-GATEWAY-2026-11-06.md) is the
 single source operation/policy table; deployed scope is in current state. Source implementation is broader than

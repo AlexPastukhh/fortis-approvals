@@ -536,6 +536,9 @@ current-state READ does not undo known execution. Reconciliation requires a
 positive full original-UUID-bound receipt, not merely matching GitHub labels.
 
 The existing public-action owner-ASK helper remains a legacy Repo caller and
-rejects this new scoped principal. The trusted runner/validator wiring is P3.3;
-actual isolation, credentials, live capabilities/WebAuthn/readback and activation
+rejects this new scoped principal. P3.2 was owner-accepted in PR #107.
+P3.3 is a [disabled source candidate](../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
+with exact-SHA data-only bundles, pinned public validator, one-shot ASK planning
+and original UUID / independent target readback through the existing journal.
+Actual isolation, credentials, live capabilities/WebAuthn/readback and activation
 remain owner-managed P3.4, MANUAL-PENDING. Source tests/CI do not close those gates.
