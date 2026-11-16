@@ -65,6 +65,7 @@ tests=(
   test_release_emergency_image_source.py
   test_analysis_review.py
   test_extensions.py
+  test_mirror_signing.py
   test_extensions_http.py
   test_extensions_tooling.py
   test_own_api_onboarding.py

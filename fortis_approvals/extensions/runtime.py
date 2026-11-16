@@ -47,6 +47,18 @@ class Context:
         # A public params/URL actor is never identity evidence.
         self.authenticated_actor = authenticated_actor
         self._secret = None
+        self._signing_alias = None
+        self._signing_secret = None
+        self._signing_generation = None
+        self._signed_dispatch = None
+        self._dispatch_used = False
+        if operation.signing_credential:
+            self._signing_alias = runtime.credentials[provider.name][operation.signing_credential]
+            try:
+                self._signing_secret = runtime.vault.get(self._signing_alias)
+                self._signing_generation = self._signing_secret.generation
+            except (OSError, Denied):
+                raise Denied('INTEGRATION_SIGNING_CREDENTIAL_NOT_READY') from None
         if operation.credential:
             alias = runtime.credentials[provider.name][operation.credential]
             try: self._secret = runtime.vault.get(alias)
@@ -56,15 +68,66 @@ class Context:
     def generation(self):
         return None if self._secret is None else self._secret.generation
 
+    @property
+    def signing_generation(self):
+        return self._signing_generation
+
+    def sign_mirror_dispatch(self, persisted_identity, *, preview_expires_at):
+        """Execution-only Ed25519 proof for the *verified* immutable P4 preview.
+
+        Trusted Mirror operation code must first compare persisted_identity to
+        the actor-bound stored preview and fresh preconditions. This method is
+        not a public API and does not authorize a Windows effect by itself.
+        """
+        check(self.phase == 'execute' and self.provider.name == 'mirror' and
+              self.operation.name == 'execute_windows_pull_v2' and
+              self.operation.kind == 'write' and self._signing_alias is not None and
+              type(self.authenticated_actor) is str and bool(self.authenticated_actor),
+              'MIRROR_SIGNING_PHASE_DENIED')
+        check(type(persisted_identity) is dict and set(persisted_identity) ==
+              {'previewId', 'expectedHead', 'targetSha', 'configGeneration'} and
+              persisted_identity == self.params,
+              'MIRROR_SIGNING_IDENTITY_INVALID')
+        check(self._signed_dispatch is None and not self._dispatch_used,
+              'MIRROR_SIGNING_ALREADY_USED')
+        approved = self.runtime.core._read(self.request_id)
+        check(approved['state'] == 'DISPATCHED' and approved['decision'] == 'approve' and
+              type(approved['owner']) is str and bool(approved['owner']) and
+              approved['actor'] == self.authenticated_actor and
+              approved['request']['service'] == 'mirror' and
+              approved['request']['operation'] == self.operation.name and
+              approved['request']['target'] == self.target and
+              approved['request']['params'] == self.params,
+              'MIRROR_SIGNING_APPROVAL_REQUIRED')
+        try:
+            current = self.runtime.vault.get(self._signing_alias)
+            transport = self.runtime.vault.get(
+                self.runtime.credentials[self.provider.name][self.operation.credential])
+        except (OSError, Denied):
+            raise Denied('MIRROR_SIGNING_CREDENTIAL_REVOKED') from None
+        check(current.generation == self._signing_generation and
+              self._secret is not None and transport.generation == self._secret.generation,
+              'MIRROR_SIGNING_CREDENTIAL_REVOKED')
+        from fortis_approvals.integrations.mirror.signing import sign_dispatch_identity
+        identity = dict(issuer='fortis-gateway', audience='fortis-mirror',
+            service='mirror', operation='execute_windows_pull_v2',
+            requestId=self.request_id, actor=self.authenticated_actor,
+            repoId=self.target, **persisted_identity)
+        proof = sign_dispatch_identity(identity, key_id=self.operation.signing_key_id,
+            secret=current, preview_expires_at=preview_expires_at)
+        self._signed_dispatch = deepcopy(proof)
+        return proof
+
     def safe(self, value):
         bounded(value)
         forbid_credentials(value)
-        if self._secret is not None:
-            # Compare decoded strings: JSON escaping must not hide quotes, slashes
-            # or Unicode in a credential accidentally returned by an SDK.
-            token = self._secret.reveal()
+        if self._secret is not None or self._signing_secret is not None:
+            # No WRITE bearer or signer seed may escape through schema output,
+            # including JSON-escaped strings or nested keys.
+            tokens = tuple(secret.reveal() for secret in
+                           (self._secret, self._signing_secret) if secret is not None)
             def contains(item):
-                if type(item) is str: return token in item
+                if type(item) is str: return any(token in item for token in tokens)
                 if type(item) is dict: return any(contains(k) or contains(v) for k, v in item.items())
                 if type(item) is list: return any(contains(v) for v in item)
                 return False
@@ -78,6 +141,28 @@ class Context:
             raise Denied('INTEGRATION_READ_BEFORE_APPROVAL_DENIED')
         if self.phase != 'execute' or self.operation.kind == 'read':
             check(definition.readonly, 'INTEGRATION_PREVIEW_OR_RECONCILE_WRITE_DENIED')
+        if not definition.readonly and self.operation.signing_credential is not None:
+            # A matching one-use signed dispatch is mandatory even with a WRITE
+            # bearer. An earlier lost response must not trigger a second POST.
+            expected = {'requestId': self.request_id, 'repoId': self.target,
+                'actor': self.authenticated_actor, **self.params,
+                'proof': self._signed_dispatch}
+            check(self.phase == 'execute' and self._signed_dispatch is not None and
+                  not self._dispatch_used and type(body) is dict and
+                  body == expected and set(body) == set(expected),
+                  'MIRROR_SIGNED_DISPATCH_REQUIRED')
+            # A revoked/rotated signer or WRITE bearer never dispatches a
+            # previously constructed proof with stale local credentials.
+            try:
+                signer = self.runtime.vault.get(self._signing_alias)
+                transport = self.runtime.vault.get(self.runtime.credentials[self.provider.name]
+                    [self.operation.credential])
+            except (OSError, Denied):
+                raise Denied('MIRROR_SIGNING_CREDENTIAL_REVOKED') from None
+            check(self._signing_generation == signer.generation and
+                  self._secret is not None and self._secret.generation == transport.generation,
+                  'MIRROR_SIGNING_CREDENTIAL_REVOKED')
+            self._dispatch_used = True  # before network, including lost ACK
         return self.provider.api.call(route, credential=self._secret, path=path, query=query,
                                       body=body, request_id=self.request_id)
 
@@ -124,9 +209,12 @@ class ExtensionAdapter:
         except Exception:
             raise Denied('INTEGRATION_PREVIEW_FAILED') from None
         if op.preview_result is not None: validate_with(op.preview_result, preview)
-        return ctx.safe({'summary': op.description, 'effect': op.kind, 'target': request['target'],
+        snapshot = {'summary': op.description, 'effect': op.kind, 'target': request['target'],
             'params': request['params'], 'before': preview, 'credentialGeneration': ctx.generation,
-            'definitionDigest': self.runtime.digest})
+            'definitionDigest': self.runtime.digest}
+        if op.signing_credential is not None:
+            snapshot['signingGeneration'] = ctx.signing_generation
+        return ctx.safe(snapshot)
 
     def apply(self, request):
         op = self.operation(request)
@@ -139,6 +227,9 @@ class ExtensionAdapter:
         if canonical(self.prepare(request)) != canonical(row['preview']):
             raise Stale('INTEGRATION_PREVIEW_CHANGED')
         check(ctx.generation == row['preview']['credentialGeneration'], 'INTEGRATION_CREDENTIAL_CHANGED')
+        if op.signing_credential is not None:
+            check(ctx.signing_generation == row['preview']['signingGeneration'],
+                  'INTEGRATION_SIGNING_CREDENTIAL_CHANGED')
         try: data = op.execute(ctx)
         except Exception: raise Denied('INTEGRATION_EXECUTION_UNCONFIRMED') from None
         validate_with(op.result, data)
@@ -175,14 +266,31 @@ class ExtensionRuntime:
         self.operations = {(p.name, o.name): o for p in providers for o in p.operations}
         self.vault = vault or CredentialVault()
         self.credentials, self.rules = {}, {}
+        global_signing_aliases, global_transport_aliases = set(), set()
         check(default_actor in actors, 'INTEGRATION_ACTOR_INVALID')
         for service, settings in config.value['providers'].items():
             check(service in self.providers, 'INTEGRATION_PROVIDER_NOT_PACKAGED')
             check(type(settings) is dict and set(settings) == {'credentials', 'operations'}, 'INTEGRATION_CONFIG_INVALID')
             credentials, operations = settings['credentials'], settings['operations']
-            known_credentials = {x.credential for x in self.providers[service].operations if x.credential}
+            definitions = self.providers[service].operations
+            known_credentials = {x.credential for x in definitions if x.credential}
+            known_credentials |= {x.signing_credential for x in definitions if x.signing_credential}
             check(type(credentials) is dict and set(credentials) <= known_credentials, 'INTEGRATION_CREDENTIAL_BINDING_INVALID')
             for alias in credentials.values(): credential_name(alias)
+            signing_aliases = {credentials[x.signing_credential] for x in definitions
+                               if x.signing_credential in credentials}
+            transport_aliases = {credentials[x.credential] for x in definitions
+                                 if x.credential in credentials}
+            protected_write_aliases = {credentials[x.credential] for x in definitions
+                                       if x.signing_credential and x.credential in credentials}
+            read_aliases = {credentials[x.credential] for x in definitions
+                            if x.kind == 'read' and x.credential in credentials}
+            check(not protected_write_aliases.intersection(read_aliases),
+                  'INTEGRATION_READ_WRITE_ROLE_COLLISION')
+            check(not signing_aliases.intersection(transport_aliases),
+                  'INTEGRATION_SIGNING_ROLE_COLLISION')
+            global_signing_aliases.update(signing_aliases)
+            global_transport_aliases.update(transport_aliases)
             self.credentials[service] = dict(credentials)
             check(type(operations) is dict and 1 <= len(operations) <= 100, 'INTEGRATION_CONFIG_INVALID')
             for operation, rule in operations.items():
@@ -190,6 +298,8 @@ class ExtensionRuntime:
                 op = self.operations[(service, operation)]
                 check(type(rule) is dict and {'policy', 'targets'} <= set(rule) <= {'policy', 'targets', 'actors'}, 'INTEGRATION_CONFIG_INVALID')
                 check(rule['policy'] in ('ALLOW', 'ASK', 'DENY'), 'INTEGRATION_POLICY_INVALID')
+                check(not op.signing_credential or rule['policy'] != 'ALLOW',
+                      'INTEGRATION_SIGNING_REQUIRES_ASK')
                 targets, principals = rule['targets'], rule.get('actors', [default_actor])
                 check(type(targets) is list and 1 <= len(targets) <= 100 and
                       all(type(x) is str and TARGET.fullmatch(x) for x in targets) and len(set(targets)) == len(targets), 'INTEGRATION_TARGETS_INVALID')
@@ -198,8 +308,12 @@ class ExtensionRuntime:
                 if rule['policy'] != 'DENY':
                     check(op.ready, 'INTEGRATION_HANDLER_NOT_READY')
                     check(not op.credential or op.credential in credentials, 'INTEGRATION_CREDENTIAL_BINDING_MISSING')
+                    check(not op.signing_credential or op.signing_credential in credentials,
+                          'INTEGRATION_SIGNING_CREDENTIAL_BINDING_MISSING')
                 for actor in principals:
                     for target in targets: self.rules[(actor, service, operation, target)] = rule['policy']
+        check(not global_signing_aliases.intersection(global_transport_aliases),
+              'INTEGRATION_SIGNING_ROLE_COLLISION')
         framework = hashlib.sha256()
         for path in sorted(Path(__file__).parent.glob('*.py')):
             framework.update(path.name.encode()); framework.update(path.read_bytes())

@@ -1,6 +1,6 @@
-# P3.3 — trusted Release Label Publisher (source candidate)
+# P3.3 — trusted Release Label Publisher (accepted source, disabled)
 
-**Status:** P3.3 SOURCE_CANDIDATE, disabled unless explicitly enabled by
+**Status:** P3.3 SOURCE_ACCEPTED (owner PR #115), disabled unless explicitly enabled by
 owner-reviewed configuration and a separate P3.4 release. No service, scheduler,
 identity, grant, credential, image or runtime activation is installed here.
 The [accepted P3 project](../../../docs/RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
@@ -93,7 +93,8 @@ integration tests intentionally skip, while pin, authority and real-Git
 tests run offline. Run full `scripts/test-source.sh`, source manifest
 verification and exact-head CI before source acceptance.
 
-**P3.4 MANUAL-PENDING:** owner-controlled immutable/readonly code and config,
+**P3.4 MANUAL-PENDING:** [Owner-sealed Gateway startup candidate](../../../docs/P3-4-PUBLISHER-OWNER-STARTUP.md)
+adds source-only, default-deny second-principal composition. Owner-controlled immutable/readonly code and config,
 separate isolated worker, non-Repo credentials and grants, exact reviewed pins,
 network/isolation verification, live capabilities and a controlled owner ASK
 with original receipt and independent readback. Do not run an owner pilot from
