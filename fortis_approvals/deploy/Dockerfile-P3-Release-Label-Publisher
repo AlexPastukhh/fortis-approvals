@@ -12,12 +12,17 @@ RUN python3 -c "import sys; assert sys.version_info[:2] == (3,11)" \
     && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin publisher
 # Exact Python-only scope; not a Gateway server or a Repo checkout.
 # Installed into system site-packages for python -I (no cwd/PYTHONPATH injection).
-COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/diagnostic_contract.py fortis_approvals/repo_action_contract.py /usr/local/lib/python3.11/site-packages/fortis_approvals/
+COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/diagnostic_contract.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py /usr/local/lib/python3.11/site-packages/fortis_approvals/
 COPY fortis_approvals/clients/*.py /usr/local/lib/python3.11/site-packages/fortis_approvals/clients/
 COPY fortis_approvals/workflow/*.py /usr/local/lib/python3.11/site-packages/fortis_approvals/workflow/
 COPY fortis_approvals/integrations/*.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/
 COPY fortis_approvals/integrations/github/*.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/github/
 COPY fortis_approvals/integrations/github/repo_client/*.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/github/repo_client/
+COPY fortis_approvals/integrations/github/gateway/__init__.py fortis_approvals/integrations/github/gateway/transport.py fortis_approvals/integrations/github/gateway/pr_create_diagnostic.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/github/gateway/
+# Read-only Sonar schema types are imported by the shared client envelope;
+# this container has no Sonar adapter, token, actor or service transport.
+COPY fortis_approvals/integrations/sonarcloud/__init__.py fortis_approvals/integrations/sonarcloud/analysis_contract.py fortis_approvals/integrations/sonarcloud/contract.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/sonarcloud/
+COPY fortis_approvals/integrations/sonarcloud/gateway/__init__.py fortis_approvals/integrations/sonarcloud/gateway/analysis_reader.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/sonarcloud/gateway/
 # No owner API/Portal, GitHub PAT, machine grant, validator code, PR source,
 # Repo worktrees, config, journal, network routing, mount or timer in image.
 USER 10002:10002

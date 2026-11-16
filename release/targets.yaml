@@ -56,11 +56,20 @@ buildUnits:
       - fortis_approvals/core.py
       - fortis_approvals/diagnostic_contract.py
       - fortis_approvals/repo_action_contract.py
+      - fortis_approvals/repo_ingress.py
       - fortis_approvals/clients/*.py
       - fortis_approvals/workflow/*.py
       - fortis_approvals/integrations/*.py
       - fortis_approvals/integrations/github/*.py
       - fortis_approvals/integrations/github/repo_client/*.py
+      - fortis_approvals/integrations/github/gateway/__init__.py
+      - fortis_approvals/integrations/github/gateway/transport.py
+      - fortis_approvals/integrations/github/gateway/pr_create_diagnostic.py
+      - fortis_approvals/integrations/sonarcloud/__init__.py
+      - fortis_approvals/integrations/sonarcloud/analysis_contract.py
+      - fortis_approvals/integrations/sonarcloud/contract.py
+      - fortis_approvals/integrations/sonarcloud/gateway/__init__.py
+      - fortis_approvals/integrations/sonarcloud/gateway/analysis_reader.py
 targets:
   - id: fortis-gateway
     buildUnit: primary-gateway-image

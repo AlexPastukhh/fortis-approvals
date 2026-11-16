@@ -81,6 +81,16 @@ class PublisherImageSourceTests(unittest.TestCase):
                                   cwd=directory,env=environ,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn('{preview,request,inspect}',result.stdout)
+            # The live one-shot runner imports the explicit publisher-only
+            # WorkflowClient lazily. Include that path in packaging smoke;
+            # CLI --help alone does not exercise it.
+            code=preamble+('from fortis_approvals.workflow.client '
+                           'import WorkflowClient, WorkflowTransport;'
+                           'print("PUBLISHER_PRIVATE_CLIENT_IMPORT_PASS")')
+            result=subprocess.run(base+[code],capture_output=True,text=True,
+                                  cwd=directory,env=environ,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('PUBLISHER_PRIVATE_CLIENT_IMPORT_PASS',result.stdout)
             # No config/secret is shipped: a request must STOP before any
             # Gateway client or network interaction.
             code=preamble+('import json,sys;'
