@@ -318,6 +318,10 @@ class GitHubClient:
     def get_pull_request(self, repo, number):
         return self.read("get_pull_request", repo, {"number": number})
 
+    def list_head_workflow_runs(self, repo, head_sha, *, page=1, per_page=20):
+        return self.read("list_head_workflow_runs", repo, {
+            "headSha": head_sha, "page": page, "perPage": per_page})
+
     def list_workflow_runs(self, repo, *, page=1, per_page=30):
         return self.read("list_workflow_runs", repo, {"page": page, "perPage": per_page})
 

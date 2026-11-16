@@ -4,16 +4,23 @@ from .common import WORKSPACE_OPS
 from .git_backend import GitHubGitBackend
 from .ingress import NativeIngress
 from .store import Store
+from ..integrations.github.publisher_profile import PublisherProfile
 from ..integrations.github.contract import LEGACY_READ_OPERATIONS
 from ..integrations.github.analysis_contract import READS as CI_READS, ACTIONS as CI_ACTIONS
 from ..integrations.github.gateway.transport import GitHubHTTPTransport
 from ..integrations.github.registration import register_github_integration
 
 
-def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90):
+def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,worker_wait=90,
+            publisher_profile=None):
+    publisher = PublisherProfile() if publisher_profile is None else publisher_profile
+    if type(publisher) is not PublisherProfile:
+        raise ValueError('GITHUB_PUBLISHER_CONFIG_INVALID')
+    publisher.validate_composition(core, broker, actor, config)
     store=Store(root/'native-git')
     adapter=NativeGitHubAdapter(transport or GitHubHTTPTransport.from_file(),config=config,root=root,actor=actor,
-        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store,observation_core=core)
+        backend=backend or GitHubGitBackend(store.root/'git',owner=config.owner,repositories=None if config.dynamic_repositories else (config.repository,)),store=store,observation_core=core,
+        publisher_profile=publisher)
     register_github_integration(core=core,broker=broker,adapter=adapter)
     reads=(LEGACY_READ_OPERATIONS|CI_READS)-{('github','list_repositories')}
     if config.dynamic_repositories:
@@ -46,9 +53,13 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     for operation in WORKSPACE_OPS:core.policies[(actor,'workspace',operation)]='ALLOW'
     core.policies[(actor,'workspace','cleanup_task')]=workspace.cleanup_policy
     portal.strong_operations=portal.strong_operations|writes|{('workspace','cleanup_task')}
-    return dict(adapter=adapter,workspace=workspace,store=store,actor=actor)
+    # Deny guards exist even without an enabled profile. These do not issue a
+    # credential or install publisher grants/ALLOW/ASK policy. Owner composition
+    # must supply those explicitly before opting in to the reviewed profile.
+    publisher.bind_guards(core, broker, adapter)
+    return dict(adapter=adapter,workspace=workspace,store=store,actor=actor,publisher=publisher)
 
 
 def wrap(ingress,installed):
     return NativeIngress(ingress,github=installed['adapter'],workspace=installed['workspace'],
-                         store=installed['store'],actor=installed['actor'])
+                         store=installed['store'],actor=installed['actor'],publisher_profile=installed.get('publisher'))

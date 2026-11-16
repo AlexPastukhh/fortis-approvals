@@ -10,10 +10,14 @@ from ..integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..integrations.github.contract import validate_github_action, validate_github_read, validate_github_read_projection
 from .error_diagnostics import observe_adapter
+from ..integrations.github.publisher_profile import PublisherProfile
+from ..integrations.github.release_label_ci import ServerCIReader, collect_ci
 from .common import WORKSPACE_OPS, branch, digest, file_path, require, sha, slug
 
 
 class NativeGitHubAdapter(AnalysisGitHubAdapter):
+    publisher = PublisherProfile()  # legacy test/composition subclasses remain disabled
+    observation_core = None
     _PR_CREATE_CHECKPOINTS=frozenset({
         'PR_CREATE_POST_STARTED','PR_CREATE_POST_ACKNOWLEDGED'
     })
@@ -47,7 +51,11 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
                 'providerAcknowledged':checkpoint=='PR_CREATE_POST_ACKNOWLEDGED',
             })
 
-    def __init__(self,transport,*,config,root,actor,backend,store,observation_core=None):
+    def __init__(self,transport,*,config,root,actor,backend,store,observation_core=None,
+                 publisher_profile=None):
+        self.publisher = PublisherProfile() if publisher_profile is None else publisher_profile
+        if type(self.publisher) is not PublisherProfile or self.publisher.enabled and observation_core is None:
+            raise ValueError("GITHUB_PUBLISHER_CORE_REQUIRED")
         self.config=config;self.actor=actor;self.backend=backend;self.workflow=store
         self.observation_core=observation_core
         super().__init__(transport,owner=config.owner,repositories=(config.repository,),
@@ -325,6 +333,8 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         return witness
 
     def prepare(self,request):
+        if request['operation'] in ('create_release_label','add_pr_release_labels','remove_pr_release_label'):
+            self.publisher.admission_guard(self, request)
         operation=request['operation'];repo=self._access(request['target']);p=request['params']
         if operation=='publish_visual_review':return self._visual_prepare(request)
         if operation in CI_ACTION_NAMES:
@@ -349,7 +359,15 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
                         pr['base']['repo'].get('full_name')==self.owner+'/'+repo,
                         'GITHUB_RELEASE_PR_REPOSITORY_DENIED')
                 self.task_branch(repo,pr['head'].get('ref'))
-            return GitHubAdapter.prepare(self,request)
+            snapshot = GitHubAdapter.prepare(self,request)
+            if self.publisher.gated(request):
+                if operation == 'create_release_label':
+                    snapshot['releaseLabelPolicy'] = self.publisher.fingerprint(self.actor)
+                else:
+                    snapshot['releaseLabelAdmission'] = collect_ci(ServerCIReader(self),
+                        profile=self.publisher, registry_actor=self.actor, owner=self.owner,
+                        head=snapshot['headSha'], number=p['number'], branch=pr['head']['ref'])
+            return snapshot
         require(operation in ('create_pull_request','mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file'),'GIT_OPERATION_DISABLED')
         if operation=='create_pull_request':
             self.task_branch(repo,p['head']);require(p['base']=='main','GIT_PR_BASE_DENIED')
@@ -378,11 +396,67 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             return {**GitHubAdapter.prepare(self,request),'requiredCI':ci}
         return GitHubAdapter.prepare(self,request)
 
+    def apply_approved(self, request, approved_preview):
+        bound = ('releaseLabelAdmission' in approved_preview or 'releaseLabelPolicy' in approved_preview)
+        if self.publisher.gated(request) or bound:
+            return GitHubAdapter.apply(self, request, approved_preview=approved_preview)
+        return self.apply(request)
+
+    def _before_release_label_write(self, request, snapshot, approved_preview):
+        bound = ('releaseLabelAdmission' in snapshot or 'releaseLabelPolicy' in snapshot or
+                 type(approved_preview) is dict and ('releaseLabelAdmission' in approved_preview or
+                                                    'releaseLabelPolicy' in approved_preview))
+        if not self.publisher.gated(request) and not bound:
+            return
+        try:
+            require(self.publisher.gated(request) and type(approved_preview) is dict,
+                    'GITHUB_RELEASE_APPROVED_PREVIEW_REQUIRED')
+            core = self.observation_core
+            require(core is not None, 'GITHUB_RELEASE_APPROVED_CORE_REQUIRED')
+            row = core._read(request['requestId'])
+            require(row['state'] == 'DISPATCHED' and row['decision'] == 'approve' and
+                    type(row['owner']) is str and bool(row['owner']) and
+                    int(core.clock()) < row['expiresAt'] and
+                    row['policyVersion'] == core.policy_version and core.auth.active(row['actor']) and
+                    core._policy(row['actor'], request) == 'ASK' and
+                    canonical(row['request']) == canonical(request) and
+                    canonical(row['preview']) == canonical(approved_preview) == canonical(snapshot),
+                    'GITHUB_RELEASE_APPROVED_CONTEXT_CHANGED')
+            try:
+                self.publisher.validate_composition(core, self.publisher_broker, self.actor, self.config)
+            except ValueError:
+                raise Denied('GITHUB_RELEASE_PROFILE_CHANGED') from None
+            policy_hash = self.publisher.fingerprint(self.actor)
+            if request['operation'] == 'create_release_label':
+                require(snapshot.get('releaseLabelPolicy') == policy_hash,
+                        'GITHUB_RELEASE_PROFILE_CHANGED')
+            else:
+                admission = snapshot.get('releaseLabelAdmission')
+                require(type(admission) is dict and admission.get('profileSha256') == policy_hash,
+                        'GITHUB_RELEASE_PROFILE_CHANGED')
+                self.task_branch(request['target'], admission['branch'])
+        except Denied:
+            # This hook is called before the provider effect edge only.
+            raise Stale('GITHUB_RELEASE_APPROVED_CONTEXT_CHANGED') from None
+
     @observe_adapter('GITHUB_ADAPTER')
     def apply(self,request):
         prior=self.receipt(request['requestId'])
         if prior is not None:return prior
         operation=request['operation']
+        if operation in ('create_release_label','add_pr_release_labels','remove_pr_release_label'):
+            row = None
+            if self.observation_core is not None:
+                try:
+                    row = self.observation_core._read(request['requestId'])
+                except Denied:
+                    require(not self.publisher.gated(request), 'GITHUB_RELEASE_APPROVED_PREVIEW_REQUIRED')
+            bound = (row is not None and ('releaseLabelAdmission' in row['preview'] or
+                                         'releaseLabelPolicy' in row['preview']))
+            if self.publisher.gated(request) or bound:
+                require(row is not None and row['state'] == 'DISPATCHED',
+                        'GITHUB_RELEASE_APPROVED_PREVIEW_REQUIRED')
+                return self.apply_approved(request, row['preview'])
         if operation in CI_ACTION_NAMES:
             self._access(request['target'])
             return AnalysisGitHubAdapter.apply(self,request)
