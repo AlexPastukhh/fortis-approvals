@@ -447,6 +447,16 @@ intentional negative serializer fixture, not a failure by itself. An actual
 is a hard STOP: update the Windows controller from reviewed accepted source;
 never patch local protected scripts in place or disable StrictMode.
 
+For older Primary records, `gatewayNetworks` and the optional
+`providers.action_core` may be absent. The current owner SelfTest validates
+those absent fields under PowerShell 5.1 StrictMode; require
+`FORTIS_ACTION_CORE_OPTIONAL_FIELDS_SELFTEST_PASS` before `Check -Auto`.
+It must never invent network identities or activate the separate
+`-EnableActionCoreNetwork` opt-in. If the field is present but malformed,
+the controller must STOP. If Check fails after `BUILD_IMAGE` with a
+`PropertyNotFoundStrict` message, do not run Apply or blindly retry Check:
+review the controller version and protected release evidence first.
+
 This mode **does not deploy automatically**. Check builds once and writes the
 same protected, immutable checked-image binding used by manual Check. Auto
 Apply selects only its protected `auto-check.json` pointer, revalidates exact
