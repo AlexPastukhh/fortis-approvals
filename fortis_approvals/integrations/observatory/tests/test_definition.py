@@ -1,12 +1,9 @@
 """Offline contract/security tests; never contact production Observatory."""
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import threading
 import unittest
-from http.client import HTTPConnection
 
 from fortis_approvals.core import Denied
-from fortis_approvals.extensions.http import Route
+from fortis_approvals.extensions.vault import Secret
 from fortis_approvals.extensions.model import discover
 from fortis_approvals.integrations.observatory.extension import (
     PROVIDER, _read_health, _list_sessions, _sessions_result)
@@ -70,51 +67,69 @@ class Tests(unittest.TestCase):
             _list_sessions(Context('registry', {'ok': True, 'sessions': [{'title': 'oops'}]}))
 
     def test_transport_fixed_host_bearer_and_no_redirect(self):
-        token = Token().reveal()
+        # The previous regression tested HTTP/18756 with one route. V2
+        # deliberately requires both reviewed GET routes and a Secret
+        # credential; never allow an HTTP fallback to make that test green.
+        token = 'T' * 48
+        credential = Secret('synthetic', token)
 
-        class Handler(BaseHTTPRequestHandler):
-            response_status = 200
+        class Response:
+            status = 200
 
-            def log_message(self, *_):
-                pass
+            def getheader(self, name):
+                self.assert_header = name
+                return 'application/json; charset=utf-8'
 
-            def do_GET(self):
-                good = self.path == '/v1/health' and (
-                    self.headers.get('Host') == 'fortis-observatory-api:18756'
-                    and self.headers.get('Authorization') == 'Bearer ' + token)
-                content = json.dumps({'ok': good, 'service': 'fortis-observatory-api',
-                                      'mode': 'staging_only'}).encode()
-                self.send_response(self.response_status if good else 403)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(content)))
-                if self.response_status == 302:
-                    self.send_header('Location', 'https://example.invalid')
-                self.end_headers()
-                self.wfile.write(content)
+            def read(self, limit):
+                if limit != 262145:
+                    raise AssertionError('response bound changed')
+                return json.dumps({'ok': True,
+                                   'service': 'fortis-observatory-api',
+                                   'mode': 'staging_only'}).encode()
 
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        transport = ObservatoryTransport((
-            Route('health', 'GET', '/v1/health', readonly=True),
-        ), connect=lambda: HTTPConnection('127.0.0.1', server.server_port, timeout=2))
-        self.assertTrue(transport.call('health', credential=Token())['ok'])
+        class SyntheticTLS:
+            def __init__(self):
+                self.requests = []
+                self.responses = [Response()]
+                self.closed = False
+
+            def request(self, method, path, *, headers):
+                self.requests.append((method, path, dict(headers)))
+
+            def getresponse(self):
+                return self.responses[-1]
+
+            def close(self):
+                self.closed = True
+
+        wire = SyntheticTLS()
+        transport = ObservatoryTransport(tuple(PROVIDER.api.routes.values()),
+                                         connect=lambda: wire)
+        self.assertTrue(transport.call('health', credential=credential)['ok'])
+        self.assertTrue(wire.closed)
+        self.assertEqual(len(wire.requests), 1)
+        method, path, headers = wire.requests[0]
+        self.assertEqual((method, path), ('GET', '/v1/health'))
+        self.assertEqual(headers['Host'], 'fortis-observatory-api')
+        self.assertEqual(headers['Authorization'], 'Bearer ' + token)
+        self.assertEqual(headers['Connection'], 'close')
+        self.assertNotIn('18756', str(wire.requests))
         for route in ('other', '/v1/health', '../health'):
             with self.assertRaises(Denied):
-                transport.call(route, credential=Token())
+                transport.call(route, credential=credential)
+        for kwargs in ({'path': {'extra': 'xxx'}},
+                       {'query': {'custom': 'xxx'}},
+                       {'body': {'foo': 'bar'}}):
+            with self.assertRaises(Denied):
+                transport.call('health', credential=credential, **kwargs)
+        for invalid in (None, Token()):
+            with self.assertRaises(Denied):
+                transport.call('health', credential=invalid)
+        wire.responses[-1].status = 302
         with self.assertRaises(Denied):
-            transport.call('health', credential=Token(), path={'extra': 'xxx'})
-        with self.assertRaises(Denied):
-            transport.call('health', credential=Token(), query={'custom': 'xxx'})
-        with self.assertRaises(Denied):
-            transport.call('health', credential=Token(), body={'foo': 'bar'})
-        with self.assertRaises(Denied):
-            transport.call('health', credential=None)
-        Handler.response_status = 302
-        with self.assertRaises(Denied):
-            transport.call('health', credential=Token())
+            transport.call('health', credential=credential)
+        self.assertEqual(len(wire.requests), 2)  # Never follow redirect.
+
 
 
 if __name__ == '__main__':
