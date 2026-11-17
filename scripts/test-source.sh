@@ -46,6 +46,8 @@ tests=(
   test_r7_unified_candidate.py
   test_github_pilot.py
   test_github_pilot_package.py
+  test_action_core_network_guard.py
+  test_action_core_network_release_source.py
   test_github_file_pr.py
   test_github_ci_read.py
   test_visual_review.py
