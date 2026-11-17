@@ -358,6 +358,13 @@ $ReleaseBase=Join-Path $env:LOCALAPPDATA 'Fortis\GatewayReleases'
 $Pointer=Join-Path $ReleaseBase 'current.json'
 $AttemptPointer=Join-Path $ReleaseBase 'attempt.json'
 $PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
+# Bootstrap release-record context before SelfTest and before any protected
+# private pointer READ. Under the caller's StrictMode, reading an absent
+# script-scoped RecordPath (or R during Write-Private) throws even when no
+# release attempt exists. Empty/null values are only initial sentinels:
+# the exact protected path and model are still assigned at PREPARE_RECORD_MODEL.
+$script:RecordPath=''
+$script:R=$null
 $script:Step='PREFLIGHT';$script:Image=$Image
 $script:PreserveUncertainRequests=$PreserveUncertainRequests
 $script:PreserveUncertainExact=[bool]$PreserveUncertainRequests
@@ -1428,6 +1435,9 @@ if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INV
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
 if($Action -eq 'SelfTest'){
+    # CI and owner SelfTest must exercise the same strict variable semantics.
+    # This is a fixture-only path; no Docker/Primary release is attempted.
+    Set-StrictMode -Version Latest
     Assert-BoundedReleaseJsonSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument

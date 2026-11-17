@@ -429,6 +429,8 @@ Windows PowerShell 5.1**, never by an AI through a remote shell:
 
 ```powershell
 $manager = Join-Path $HOME 'Repos\fortis-approvals\fortis_approvals\deploy\Manage-Integrations.ps1'
+& $manager -Action SelfTest
+# Require FORTIS_RELEASE_BOUNDED_JSON_SELFTEST_PASS and FORTIS_INTEGRATIONS_SELFTEST_PASS.
 & $manager -Action Check -Auto
 # Review exact source SHA, read-only scope count, READY and checked-image ID.
 # Only after owner approves this exact release window:
@@ -437,6 +439,13 @@ $manager = Join-Path $HOME 'Repos\fortis-approvals\fortis_approvals\deploy\Manag
 & $manager -Action Backup -Auto
 & $manager -Action Promote -Auto
 ```
+
+Do not proceed to Check unless SelfTest finishes successfully. The
+`FORTIS_RELEASE_JSON_OBJECT_LIMIT scope= count=257 limit=256` line is an
+intentional negative serializer fixture, not a failure by itself. An actual
+`VariableIsUndefined` error on `RecordPath`/`R`, or any incomplete SelfTest,
+is a hard STOP: update the Windows controller from reviewed accepted source;
+never patch local protected scripts in place or disable StrictMode.
 
 This mode **does not deploy automatically**. Check builds once and writes the
 same protected, immutable checked-image binding used by manual Check. Auto
