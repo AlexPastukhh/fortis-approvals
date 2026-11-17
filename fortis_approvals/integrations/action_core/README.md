@@ -54,5 +54,10 @@ continues to serve its existing clients independently; it is never a Gateway tra
 
 Before owner release, prove from the real Gateway namespace: exact Docker network and DNS,
 TLS SAN/CA/expiry, wrong CA/SAN/Host, no redirects or HTTP fallback, no route to the
-unauthenticated local API on port 8000, and bearer 401/403. Use UC-GW-012 Doctor and
-one-shot Acceptance; do not create a second client, vault, approval engine or controller.
+unauthenticated local API on port 8000, and bearer 401/403. The
+[Action Core network-isolation procedure](../../../docs/ACTION-CORE-NETWORK-ISOLATION.md)
+defines the proposed Windows firewall preflight, reviewed egress/ingress networks,
+controller-owned attachment, strict network-ID Guard and host/direct-IP negative
+probes. They are source-only and not installed; the rule is not created automatically.
+Use UC-GW-012 Doctor and one-shot Acceptance; do not create a second client,
+vault, approval engine or controller.

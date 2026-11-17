@@ -401,6 +401,45 @@ def provision_token(token, volume='/provision', *, uid=10001, gid=10001):
     return {'credentialProvisioned': True, 'uid': uid, 'mode': '0600'}
 
 
+GATEWAY_EGRESS_NETWORK = 'fortis-gateway-egress'
+GATEWAY_ACTION_NETWORK = 'fortis-actioncore-net'
+
+
+def admit_gateway_networks(container, expected, *, pilot):
+    """Guard exact Docker endpoint IDs; do not trust NetworkMode alone."""
+    host = container['HostConfig']
+    actual = container.get('NetworkSettings', {}).get('Networks')
+    wanted = expected.get('gatewayNetworks')
+    if wanted is None:
+        # Legacy primary or isolated review: keep the prior bridge contract.
+        require(host['NetworkMode'] == 'bridge', 'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
+        if actual is not None:
+            require(type(actual) is dict and set(actual) == {'bridge'},
+                    'PILOT_UNREVIEWED_NETWORK_ATTACHMENT')
+        return
+    require(pilot and type(wanted) is dict and set(wanted) ==
+            {GATEWAY_EGRESS_NETWORK, GATEWAY_ACTION_NETWORK} and
+            all(type(v) is str and re.fullmatch('[0-9a-f]{64}', v)
+                for v in wanted.values()) and len(set(wanted.values())) == 2,
+            'PILOT_GATEWAY_NETWORK_RECORD_INVALID')
+    require(host['NetworkMode'] == GATEWAY_EGRESS_NETWORK,
+            'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
+    pending = expected.get('allowPendingActionNetwork') is True
+    if pending:
+        # Return-only escape for a never-started candidate interrupted between
+        # docker create and controller-owned network connect. Not live admission.
+        require(expected.get('status') == 'created' and type(actual) is dict and
+                set(actual) == {GATEWAY_EGRESS_NETWORK},
+                'PILOT_PENDING_NETWORK_NOT_PRISTINE')
+    else:
+        require(type(actual) is dict and set(actual) == set(wanted),
+                'PILOT_UNREVIEWED_NETWORK_ATTACHMENT')
+    for name in actual:
+        endpoint = actual[name]
+        require(type(endpoint) is dict and endpoint.get('NetworkID') == wanted[name],
+                'PILOT_GATEWAY_NETWORK_ID_MISMATCH')
+
+
 def admit(container, expected, *, pilot):
     require(container['Id'] == expected['id'] if expected.get('id') else bool(re.fullmatch('[0-9a-f]{64}', container['Id'])),
             'PILOT_CONTAINER_ID_MISMATCH')
@@ -414,8 +453,9 @@ def admit(container, expected, *, pilot):
     restart = expected.get('restartPolicy', 'no')
     require(restart == 'no' or (pilot and expected['name'] == 'fortis-gateway' and restart == 'unless-stopped'),
             'PILOT_RESTART_POLICY_DENIED')
-    require(host['NetworkMode'] == 'bridge' and host['PidsLimit'] == 100 and host['Memory'] == 536870912 and
+    require(host['PidsLimit'] == 100 and host['Memory'] == 536870912 and
             host['RestartPolicy'] == {'Name': restart, 'MaximumRetryCount': 0}, 'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
+    admit_gateway_networks(container, expected, pilot=pilot)
     require(host['PortBindings'] == {'19103/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '19203'}],
                                    '19104/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '19204'}]}, 'PILOT_PORTS_MISMATCH')
     require(host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,size=16m'} and

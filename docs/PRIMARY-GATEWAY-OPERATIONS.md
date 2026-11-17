@@ -1,5 +1,20 @@
 # Primary Fortis Gateway — operator procedure
 
+## Action Core READ / Docker network migration — source candidate
+
+The opt-in Action Core HTTPS/443 release introduces an additional **owner-only**
+network admission gate. The existing Manage-Integrations.ps1 supports
+-EnableActionCoreNetwork for checked Check/Apply only: it pins exact Docker
+network identities, requires a verified Docker backend outbound TCP/8000 block,
+and checks both legacy HTTP bypasses from the staged Gateway before activation.
+The original bridge source and protected Return remain supported. Neither
+this text nor a source merge changes Windows Firewall, Docker networks,
+Gateway runtime or PostgreSQL. Follow
+[ACTION-CORE-NETWORK-ISOLATION.md](ACTION-CORE-NETWORK-ISOLATION.md)
+and UC-GW-009/012; production activation remains STOP until owner-run
+preflight, source CI, isolated restore and negative/positive live probes.
+
+
 ## Исторический actor-scoped incident read и owner closure (релиз 2026-11-09)
 
 Owner-reported `FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED`
