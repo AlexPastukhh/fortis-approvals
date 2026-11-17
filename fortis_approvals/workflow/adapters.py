@@ -122,7 +122,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             # uploads without a comment receipt. No competing asset may adopt it.
             table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='visual_revisions'").fetchone()
             if table is not None:
-                rows=db.execute('SELECT asset_id,revision,run_id,comment_id,comment_sha256 FROM visual_revisions '
+                rows=db.execute('SELECT asset_id,revision,run_id,comment_id,comment_sha256,id FROM visual_revisions '
                                 'WHERE repository=? AND issue_number=? ORDER BY revision',
                                 (repo,number)).fetchall()
                 require(not rows or all(row[0]==p['assetId'] for row in rows),
@@ -141,9 +141,26 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
                 require(p['revision']==2,'GITHUB_REVISION_OUT_OF_ORDER')
         if rows:
             previous=rows[-1]
+            # A GitHub comment ID can be durable even when the final readback
+            # failed. It does not establish a completed v2 Core action.
+            completed=self.receipt(previous[5])
+            require(type(completed) is dict and
+                    completed.get('requestId')==previous[5] and
+                    completed.get('operation')=='append_visual_revision' and
+                    completed.get('repository')==repo and
+                    completed.get('issueNumber')==number and
+                    completed.get('revision')==previous[1] and
+                    completed.get('runId')==previous[2] and
+                    completed.get('commentId')==previous[3],
+                    'GITHUB_REVISION_PREVIOUS_UNCONFIRMED')
+            core_row=core._read(previous[5])
+            require(core_row.get('state')=='EXECUTED',
+                    'GITHUB_REVISION_PREVIOUS_UNCONFIRMED')
             comment=self._api('GET',self._path(repo,'issues/comments/'+str(previous[3])))
             expected='<!-- fortis-visual-revision:'+p['assetId']+':'+str(previous[1])+':'+previous[2]+' -->'
+            expected_url='https://github.com/'+self.owner+'/'+repo+'/issues/'+str(number)+'#issuecomment-'+str(previous[3])
             require(type(comment) is dict and comment.get('id')==previous[3] and
+                    comment.get('html_url')==expected_url and
                     type(comment.get('body')) is str and comment['body'].startswith(expected+'\n') and
                     hashlib.sha256(comment['body'].encode()).hexdigest()==previous[4],
                     'GITHUB_REVISION_PREVIOUS_COMMENT_CHANGED')

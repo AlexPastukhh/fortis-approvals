@@ -282,7 +282,7 @@ class NativeIngress:
             record=details.get('request')
             intent=record.get('request') if type(record) is dict else None
             if (type(intent) is dict and intent.get('service')=='github' and
-                    intent.get('operation')=='publish_visual_review'):
+                    intent.get('operation') in ('publish_visual_review','append_visual_revision')):
                 details['visualReview']=self.github.visual_evidence(body['requestId'])
             return details
         if path in ('/v1/workspace/result','/v1/workspace/reconcile'):
