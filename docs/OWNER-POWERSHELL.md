@@ -17,8 +17,8 @@ separate. **Do not infer full security acceptance from one successful command.**
 V1: любой запрос команды от допущенного Repo actor требует ASK владельца
 через существующий Core/Owner Portal/WebAuthn; нет настраиваемых списков
 команд или ALLOW execution. Ограничения команд и выбор ASK/ALLOW
-перенесены в будущую V2 и требуют отдельного review. Machine execution
-ещё не реализовано. Описанный ниже owner-only контракт остаётся baseline;
+перенесены в будущую V2 и требуют отдельного review. Исходный код machine ASK принят отдельно, но установленный Gateway
+пока не предоставляет machine API (capabilities: HTTP 404). Описанный ниже owner-only контракт остаётся baseline;
 его старые PS-V1 IDs не являются приёмкой machine API.
 
 ## Interaction

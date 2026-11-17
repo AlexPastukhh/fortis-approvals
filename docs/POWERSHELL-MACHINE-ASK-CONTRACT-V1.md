@@ -1,6 +1,9 @@
 # Fortis Repo → Gateway → Windows PowerShell — ASK-only V1 contract
 
-**Status:** PS-AI-V1-02 SOURCE REVIEW CANDIDATE (2026-11-17).
+**Status:** PS-AI-V1-02 CONTRACT UPDATE CANDIDATE (2026-11-17).
+**Implementation evidence:** Gateway and Windows source integrations exist in
+accepted repositories, but the *installed Gateway* still returns HTTP 404 for
+`POST /v1/powershell/capabilities`. Source inclusion is not live enablement.
 **Decision of owner:** for the first machine version, **every admitted PowerShell
 command from the AI requires an individual owner ASK**. No editable allow/deny
 command rules, AST policy, or configurable bypass of ASK in V1. Those are
@@ -14,17 +17,23 @@ The existing owner-only PowerShell browser flow stays operational and separate.
 
 ## 1. Baseline already reported
 
-- Standalone Windows Executor clone at `6bdda41cbc8a3edc79818a8b3c716cdefc7797ed`
-  and Script Center at `a40ac4b031b44915f7aea4f09cf131d37fb6d429`,
-  clean and synced to locally fetched origin/main.
-- Old Mirror process tree stopped; new standalone py/python tree reported on
-  `127.0.0.1:10443`. Preflight and mTLS-ready banner appeared and loopback
-  TCP handshake succeeded. Windows listener enumeration via netstat/.NET
-  was inconsistent, so the listener's PID still needs independent verification.
-- Same server TLS material, protected Script Center config and CURRENT Windows
-  receipt DB. Read-only DB counts: 1 EXECUTED, 0 DISPATCHED/UNCERTAIN.
-  Owner Portal read back historical state EXECUTED. New exitCode/digest comparison,
-  negative tests, controlled restart and full rollback acceptance remain open.
+- The owner previously confirmed standalone Windows Executor source at
+  `3a455fd34c9b442e3480729b377680a895c5399c`. The Windows
+  Script Center source-only update is confirmed clean at accepted main
+  `750d2fc0d7411d2072c41cf68fb12b5e9d87e935`.
+  Neither observation proves the running Python process changed versions.
+- Owner reported running process tree `powershell.exe → py.exe → python.exe`,
+  a visible `OWNER_SHELL_MTLS_READY` owner-only banner and a successful
+  `Test-NetConnection 127.0.0.1:10443` TCP handshake. Windows listener
+  enumeration via `netstat`/`Get-NetTCPConnection` was inconsistent; a
+  successful handshake does not independently establish mTLS/API acceptance
+  or the listener PID. Do not restart or start a second listener as a test.
+- The protected owner-only Script Center config exists; the separate
+  `machine-script-center.json` opt-in does not exist. Historical read-only
+  receipt evidence was 1 EXECUTED and 0 DISPATCHED/UNCERTAIN; that inventory
+  has **not been freshly re-verified**. The existing TLS paths, current
+  SQLite receipt DB and owner-only process must remain unchanged until an
+  independently reviewed, owner-controlled cutover.
 
 This is **owner-only baseline evidence**, not machine execution acceptance.
 
@@ -65,7 +74,7 @@ subject only to the existing interpreter and transport ceilings. ASK is not
 automatic risk assessment; the owner is deciding whether to run the exact
 script under an ordinary Windows account.
 
-## 3. Closed typed request schema — offline proposal
+## 3. Closed typed request schema — offline helper and accepted source
 
 | Logical operation | Body | Semantics |
 | --- | --- | --- |
@@ -73,11 +82,16 @@ script under an ordinary Windows account.
 | `powershell.status.v1` | exact existing UUID | Scoped Core read, no dispatch |
 | `powershell.result.v1` | exact existing UUID | Scoped original-UUID receipt read, no retry |
 
-HTTP paths, Windows machine route and transport are **not** implemented yet.
 The offline `scripts/powershell_machine_contract.py` enforces body shape,
 canonical UUID4/7, fixed target registry, UTF-8 limit and NUL rejection.
-It constructs the immutable preview. **It does not grant ASK, parse policy,
-authenticate the caller, sign a dispatch proof or execute a command.**
+It constructs a proposed immutable preview. **The offline helper does not
+authenticate the caller, grant ASK, sign a dispatch proof or execute a
+command.** The separate accepted Gateway source already defines typed
+`POST /v1/powershell/{submit,result,capabilities}` endpoints in
+`fortis_approvals/workflow/ingress.py` and the Windows source separately
+defines `/machine-shell/v1/execute` and result readback. Those source
+routes are not present in the currently deployed Gateway (404 on the
+capabilities route).
 
 The trusted preview binds `contractVersion` and `contractDigest` for the
 **fixed ASK-only V1 contract**, NOT an owner-editable command policy. It also
@@ -85,31 +99,45 @@ binds actor, UUID, target, exact command/hash, Windows source/identity,
 interpreter profile, working directory and limits. Altering any of those after
 review must invalidate the Core request. No GUI to edit these fields in V1.
 
-## 4. Required separate Windows dispatch proof review
+## 4. Implemented source proof and remaining release review
 
-Candidate only: use a dedicated signed, short-lived machine capability
-issued by Gateway *after* Core confirms WebAuthn-approved ASK (never from
-the AI payload). Bind audience, issuer/key ID, target/Windows instance,
-actor, requestId/Core fingerprint, command SHA-256, immutable ASK-only
-contract version/digest, identity, limits, expiry and replay ID.
-Do not send the signing key to Repo or Windows. Windows validates signature,
-time/audience/target/full command/proof ID and a durable once-only reservation.
+The accepted V1 source chooses **HMAC-SHA256**, not an asymmetric
+signature. The dedicated owner-provisioned **shared secret must exist in
+protected copies on BOTH Gateway and Windows Executor** to issue and
+verify the MAC. It must never be available to Repo AI, a public repository,
+logs or the owner-only bearer. Loss of secrecy on either endpoint
+compromises the ability to authenticate machine dispatch proofs; confirm
+credential custody, file ACLs, rotation and failure modes before release.
 
-Current `Core.execute` calls `adapter.apply(payload)` after writing
-DISPATCHED. This payload alone contains no owner approval evidence.
-**STOP:** the implementation must add a reviewed Core-owned dispatch context
-(fingerprint + frozen preview + actual approval decision) or equivalent,
-unforgeable on the machine route. Never accept `approved=true`, generic
-Bearer+UUID, an AI-supplied signature, or the existing owner transport as proof.
-Choose exact protocol, key custody/rotation and replay storage before activation.
+The Gateway's `MachinePowerShellAdapter._approved_row` re-reads the
+existing trusted Core record and requires `DISPATCHED`, an actual
+`approve` decision, an owner identity, the exact stored request,
+unchanged ASK-only preview and the matching actor/policy **before**
+`issue_proof` can sign it. The MAC covers the fixed audience, actor,
+target, original UUID, Core fingerprint, exact command SHA-256,
+issue/expiry times and nonce. The Core fingerprint indirectly binds
+the reviewed preview's contract digest, identity and limits; these
+are **not all separate fields in the HMAC claims**. Windows validates
+the proof and reserves the original UUID in the same SQLite DB before
+the command effect, with additive machine binding records.
+
+This is **accepted source, not verified live installation**. Before
+activating a Windows machine route, independently verify the Core
+fingerprint-to-preview binding, actual WebAuthn approval path,
+dual-endpoint secret protection, proof replay/expiry handling,
+same-DB durability, wrong-instance denial, negative tests and
+lost-ACK/UNCERTAIN behavior. Never accept `approved=true`, a generic
+Bearer+UUID, an AI-supplied proof or the legacy owner-only route as
+an equivalent authorization.
 
 ## 5. Shared DB, replay and failure handling
 
 The single installed Windows `shell_receipts` SQLite database, TLS, protected
-config and owner launcher stay in place. Historical UUID receipts remain
-readable. A new machine route needs a reviewed **additive transactionally bound**
-actor/target/contract/proof record (possibly side table in the SAME DB), not
-a replacement or parallel DB. Before effects: reserve the original UUID
+config and owner launcher stay in place. Historical UUID receipts must remain readable. The accepted Windows
+source implements an additive `shell_machine_bindings` side table in the
+**SAME CURRENT DB**, not a replacement or parallel DB. It requires an
+owner-controlled pre-release check against the installed historical
+database before activation. Before effects: reserve the original UUID
 durably. Different command/target/proof under the same UUID conflicts.
 Concurrent dispatch, restart or lost acknowledgement never cause double
 execution. UNCERTAIN/DISPATCHED blocks further effects until reviewed
@@ -130,9 +158,11 @@ text/outputs to public CI or GitHub.
 | Live Get-Date from Repo | ASK → owner WebAuthn → exactly one Windows execution → bound result |
 | Strict ASK-only policy | No shortcut or ALLOW for execution; reads may be non-ASK |
 
-Full source CI, exact-head PR/owner merge, Windows changes and Gateway release
-require **separate** later gates. Owner-side managed release and negative tests
-are not part of this contract artifact.
+The standalone Windows Executor, Gateway source adapter and opt-in Script
+Center changes were accepted separately. This contract PR still requires
+fresh exact-head source CI and an owner merge. A separate guarded Gateway
+image deployment, protected mount and controlled single-listener Windows
+opt-in remain **unperformed**. Live negative/rollback tests remain open.
 
 ## 7. Later phases (NOT V1)
 
@@ -145,4 +175,4 @@ PowerShell cannot silently become ALLOW. Owner UI, policy writes, stale-rule
 handling, restrictions and ALLOW/ASK routing are future work, not hidden V1
 prerequisites.
 
-No executable machine route or source publication is included at this stage.
+This contract-only PR does not itself enable, deploy or invoke any machine route.
