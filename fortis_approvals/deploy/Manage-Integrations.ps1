@@ -482,10 +482,30 @@ function Read-ActionCoreBoundary {
     Write-Host 'FORTIS_ACTION_CORE_BOUNDARY_PREFLIGHT_PASS'
     return $Networks
 }
+# Most accepted provider configs do not contain Action Core. Missing optional
+# action_core must not throw PropertyNotFoundStrict in owner -Auto Check.
+# The enclosing providers object remains mandatory, never a fallback.
+function Read-ActionCoreProvider {
+    param($Config)
+    if($null -eq $Config){throw 'RELEASE_ACTION_CORE_CONFIG_INVALID'}
+    $Field=$Config.PSObject.Properties['providers']
+    if($null -eq $Field -or $null -eq $Field.Value -or
+       $Field.Value -isnot [pscustomobject]){
+        throw 'RELEASE_ACTION_CORE_CONFIG_INVALID'
+    }
+    $Action=$Field.Value.PSObject.Properties['action_core']
+    if($null -eq $Action){return $null}
+    # An explicitly present null/invalid provider is not equivalent to an
+    # absent optional provider; never downgrade a malformed opt-in.
+    if($Action.Value -isnot [pscustomobject]){
+        throw 'RELEASE_ACTION_CORE_CONFIG_INVALID'
+    }
+    return $Action.Value
+}
 function Assert-ActionCoreConfig {
     param([string]$Json)
     $Config=ConvertFrom-Json -InputObject $Json -ErrorAction Stop
-    $Provider=$Config.providers.action_core
+    $Provider=Read-ActionCoreProvider $Config
     if($Config.schemaVersion -ne 1 -or -not $Provider -or
        @($Provider.operations.PSObject.Properties.Name).Count -ne 1 -or
        @($Provider.operations.PSObject.Properties.Name)[0] -cne 'read_action' -or
@@ -782,6 +802,126 @@ function Read-CiControlRepositories {
         throw 'RELEASE_CI_CONTROL_RECORD_INVALID'
     }
     return $Value
+}
+# Optional Action Core network identity on protected primary records.
+# Legacy records (bridge-only) legitimately lack gatewayNetworks. StrictMode
+# must never interpret that missing field as a property exception; however a
+# present but malformed field MUST NOT become an implicit bridge downgrade.
+function Read-GatewayNetworks {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('gatewayNetworks')){return $null}
+        $Value=$Record['gatewayNetworks']
+    } else {
+        $Property=$Record.PSObject.Properties['gatewayNetworks']
+        if($null -eq $Property){return $null}
+        $Value=$Property.Value
+    }
+    if($Value -is [Collections.IDictionary]){
+        $Names=@($Value.Keys)
+    } elseif($Value -is [pscustomobject]){
+        $Properties=@($Value.PSObject.Properties)
+        if(@($Properties|Where-Object{
+            $_.MemberType -ne [Management.Automation.PSMemberTypes]::NoteProperty
+        }).Count){throw 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'}
+        $Names=@($Properties|ForEach-Object{$_.Name})
+    } else {
+        throw 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'
+    }
+    if($Names.Count -ne 2 -or
+       $Names -cnotcontains 'fortis-gateway-egress' -or
+       $Names -cnotcontains 'fortis-actioncore-net'){
+        throw 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'
+    }
+    if($Value -is [Collections.IDictionary]){
+        $Egress=$Value['fortis-gateway-egress']
+        $ActionNet=$Value['fortis-actioncore-net']
+    } else {
+        $Egress=$Value.PSObject.Properties['fortis-gateway-egress'].Value
+        $ActionNet=$Value.PSObject.Properties['fortis-actioncore-net'].Value
+    }
+    if($Egress -isnot [string] -or $ActionNet -isnot [string] -or
+       $Egress -cnotmatch '^[0-9a-f]{64}$' -or
+       $ActionNet -cnotmatch '^[0-9a-f]{64}$' -or
+       $Egress -ceq $ActionNet){
+        throw 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'
+    }
+    return [ordered]@{
+        'fortis-gateway-egress'=$Egress
+        'fortis-actioncore-net'=$ActionNet
+    }
+}
+# Runs under Windows PowerShell 5.1 StrictMode Latest from the existing
+# owner/CI SelfTest. Only fabricated JSON and local hashtables: no Docker,
+# live state or network access, and no private release record is created.
+function Assert-OptionalActionCoreSelfTest {
+    $Legacy=ConvertFrom-Json -InputObject '{"schemaVersion":1}'
+    $LegacyMap=[ordered]@{schemaVersion=1}
+    if($null -ne (Read-GatewayNetworks $Legacy) -or
+       $null -ne (Read-GatewayNetworks $LegacyMap)){
+        throw 'RELEASE_ACTION_CORE_LEGACY_RECORD_SELFTEST_FAILED'
+    }
+    $Egress='a'*64
+    $Action='b'*64
+    $Good=[ordered]@{
+        'fortis-gateway-egress'=$Egress
+        'fortis-actioncore-net'=$Action
+    }
+    $FromMap=Read-GatewayNetworks ([ordered]@{gatewayNetworks=$Good})
+    $FromJson=Read-GatewayNetworks (ConvertFrom-Json -InputObject (
+        '{"gatewayNetworks":{"fortis-gateway-egress":"'+$Egress+
+        '","fortis-actioncore-net":"'+$Action+'"}}'))
+    if(-not (Same-Json $Good $FromMap) -or
+       -not (Same-Json $Good $FromJson)){
+        throw 'RELEASE_ACTION_CORE_VALID_RECORD_SELFTEST_FAILED'
+    }
+    $Malformed=@(
+        ([ordered]@{gatewayNetworks=$null})
+        ([ordered]@{gatewayNetworks='bridge'})
+        ([ordered]@{gatewayNetworks=[ordered]@{'fortis-gateway-egress'=$Egress}})
+        ([ordered]@{gatewayNetworks=[ordered]@{
+            'fortis-gateway-egress'=$Egress;'fortis-actioncore-net'=$Egress}})
+        ([ordered]@{gatewayNetworks=[ordered]@{
+            'fortis-gateway-egress'=$Egress;'fortis-actioncore-net'=$Action
+            'unexpected-net'=('c'*64)}})
+        (ConvertFrom-Json -InputObject (
+            '{"gatewayNetworks":{"Fortis-gateway-egress":"'+$Egress+
+            '","fortis-actioncore-net":"'+$Action+'"}}'))
+    )
+    foreach($Bad in $Malformed){
+        $Rejected=$false
+        try{$null=Read-GatewayNetworks $Bad}
+        catch{
+            if($_.Exception.Message -cne 'RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID'){throw}
+            $Rejected=$true
+        }
+        if(-not $Rejected){throw 'RELEASE_ACTION_CORE_MALFORMED_RECORD_SELFTEST_FAILED'}
+    }
+    $NoAction=ConvertFrom-Json -InputObject '{"schemaVersion":1,"providers":{"github":{}}}'
+    if($null -ne (Read-ActionCoreProvider $NoAction)){
+        throw 'RELEASE_ACTION_CORE_ABSENT_PROVIDER_SELFTEST_FAILED'
+    }
+    $HasAction=ConvertFrom-Json -InputObject '{"schemaVersion":1,"providers":{"action_core":{"operations":{}}}}'
+    if($null -eq (Read-ActionCoreProvider $HasAction)){
+        throw 'RELEASE_ACTION_CORE_VALID_PROVIDER_SELFTEST_FAILED'
+    }
+    $MalformedProviders=@(
+        $Legacy
+        (ConvertFrom-Json -InputObject '{"schemaVersion":1,"providers":null}')
+        (ConvertFrom-Json -InputObject '{"schemaVersion":1,"providers":{"action_core":null}}')
+        (ConvertFrom-Json -InputObject '{"schemaVersion":1,"providers":{"action_core":false}}')
+    )
+    foreach($Bad in $MalformedProviders){
+        $Rejected=$false
+        try{$null=Read-ActionCoreProvider $Bad}
+        catch{
+            if($_.Exception.Message -cne 'RELEASE_ACTION_CORE_CONFIG_INVALID'){throw}
+            $Rejected=$true
+        }
+        if(-not $Rejected){throw 'RELEASE_ACTION_CORE_MALFORMED_PROVIDER_SELFTEST_FAILED'}
+    }
+    Write-Host 'FORTIS_ACTION_CORE_OPTIONAL_FIELDS_SELFTEST_PASS'
 }
 function Parse-PreservedUncertainRequests {
     param([string]$Value)
@@ -1202,9 +1342,10 @@ function Admit {
         ciControlRepositories=(Read-CiControlRepositories $P)
         vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)
         publisherActivationVolume=(Read-PublisherActivationVolume $P)}
-    if($P.gatewayNetworks){$Expected.gatewayNetworks=$P.gatewayNetworks}
+    $Networks=Read-GatewayNetworks $P
+    if($null -ne $Networks){$Expected.gatewayNetworks=$Networks}
     if($AllowPendingIngress){
-        if(-not $P.gatewayNetworks -or $script:R.phase -cne 'Created' -or
+        if($null -eq $Networks -or $script:R.phase -cne 'Created' -or
            $script:R.activated -or $script:R.probesPassed -or
            $C.State.Status -cne 'created' -or
            $C.State.StartedAt -cne '0001-01-01T00:00:00Z'){
@@ -1237,7 +1378,7 @@ function Admit {
 }
 function Admit-ReturnCandidate {
     param($C,$P)
-    if($P.gatewayNetworks -and $script:R.phase -ceq 'Created' -and
+    if((Read-GatewayNetworks $P) -and $script:R.phase -ceq 'Created' -and
        -not $script:R.activated -and -not $script:R.probesPassed -and
        $C.State.Status -ceq 'created' -and
        $C.State.StartedAt -ceq '0001-01-01T00:00:00Z'){
@@ -1372,9 +1513,10 @@ function Return-Source {
 }
 function Complete-ActionCoreNetwork {
     param($C,$P)
-    if(-not $P.gatewayNetworks){return $C}
+    $Networks=Read-GatewayNetworks $P
+    if($null -eq $Networks){return $C}
     $Now=Read-ActionCoreBoundary
-    if(-not (Same-Json $Now $P.gatewayNetworks)){
+    if(-not (Same-Json $Now $Networks)){
         throw 'RELEASE_ACTION_CORE_BOUNDARY_CHANGED'
     }
     $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
@@ -1407,7 +1549,7 @@ function Resume-Target {
         $RepoCatalog=Repo-JSON "import json;from fortis_approvals.extensions.client import default_client;print(json.dumps(default_client().catalog()))"
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         $null=Running-CLI $C.Id @('probe') $script:R.probes
-        if($P.gatewayNetworks){
+        if(Read-GatewayNetworks $P){
             Step 'VERIFY_ACTION_CORE_HTTP8000_DENIAL'
             Assert-ActionCoreNoHttpFromGateway $C.Id
         }
@@ -1439,6 +1581,7 @@ if($Action -eq 'SelfTest'){
     # This is a fixture-only path; no Docker/Primary release is attempted.
     Set-StrictMode -Version Latest
     Assert-BoundedReleaseJsonSelfTest
+    Assert-OptionalActionCoreSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
@@ -2034,7 +2177,7 @@ if($script:PublisherActivationVolume){
         throw 'RELEASE_PUBLISHER_SOURCE_MATERIAL_CHANGED'
     }
 }
-if($SourceForOwnerShell.runtime.gatewayNetworks -and -not $EnableActionCoreNetwork){
+if((Read-GatewayNetworks $SourceForOwnerShell.runtime) -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_DOWNGRADE_DENIED'
 }
 $OwnerShellEnabled=((Read-OwnerShellFlag $SourceForOwnerShell.runtime) -or [bool]$EnableOwnerShell)
@@ -2045,7 +2188,7 @@ if($OwnerShellEnabled){
 if($Auto){$ConfigText=$script:AutoConfigText}
 else {$ConfigText=Get-Content -LiteralPath $Config -Raw}
 $PublicConfig=ConvertFrom-Json -InputObject $ConfigText -ErrorAction Stop
-if($PublicConfig.providers.action_core -and -not $EnableActionCoreNetwork){
+if((Read-ActionCoreProvider $PublicConfig) -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRED'
 }
 if($EnableActionCoreNetwork){Assert-ActionCoreConfig $ConfigText}
@@ -2234,7 +2377,7 @@ try {
     Step 'CREATE_STAGED'
     $Arguments=@('create','--pull=never','--name',$Runtime.pilotName,'--label',('io.fortis.review-update='+$RunId),
         '--restart','no','--init','--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
-        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network',$(if($Runtime.gatewayNetworks){'fortis-gateway-egress'}else{'bridge'}),'--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
+        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network',$(if(Read-GatewayNetworks $Runtime){'fortis-gateway-egress'}else{'bridge'}),'--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
         '--env-file',$EnvFile,'--publish','127.0.0.1:19203:19103','--publish','127.0.0.1:19204:19104',
         '--mount',('type=volume,source='+$Runtime.stateVolume+',target=/state'),
         '--mount',('type=volume,source='+$Runtime.tokenVolume+',target=/run/github-token,readonly'),

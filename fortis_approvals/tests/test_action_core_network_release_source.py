@@ -24,6 +24,65 @@ class ActionCoreReleaseSourceTests(unittest.TestCase):
                 self.assertIn(text, PS)
         self.assertGreaterEqual(PS.count("$EnableActionCoreNetwork -or"), 2)
 
+    def test_optional_network_identity_uses_one_fail_closed_reader(self):
+        # Legacy Primary has no gatewayNetworks. In PS5.1 StrictMode an
+        # absent PSCustomObject property raises before Check reaches its
+        # state preflight; never access the optional field directly.
+        self.assertIn('function Read-GatewayNetworks {', PS)
+        self.assertIn("$Record.PSObject.Properties['gatewayNetworks']", PS)
+        self.assertIn("$Record.Contains('gatewayNetworks')", PS)
+        self.assertIn('RELEASE_ACTION_CORE_NETWORK_RECORD_INVALID', PS)
+        for marker in (
+            '$Networks=Read-GatewayNetworks $P',
+            '$Expected.gatewayNetworks=$Networks',
+            'if($null -eq $Networks -or',
+            'if((Read-GatewayNetworks $P) -and',
+            'if($null -eq $Networks){return $C}',
+            'Same-Json $Now $Networks',
+            'if(Read-GatewayNetworks $P){',
+            'if((Read-GatewayNetworks $SourceForOwnerShell.runtime) -and',
+            '$(if(Read-GatewayNetworks $Runtime)',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, PS)
+        # A network identity can only be written to a candidate when the
+        # explicit owner-only Action Core network flag was approved.
+        self.assertIn('if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}', PS)
+        for forbidden in (
+            '$P.gatewayNetworks',
+            '$SourceForOwnerShell.runtime.gatewayNetworks',
+            'if($Runtime.gatewayNetworks)',
+        ):
+            self.assertNotIn(forbidden, PS)
+
+    def test_default_auto_config_allows_absent_action_core_provider(self):
+        self.assertIn('function Read-ActionCoreProvider {', PS)
+        self.assertIn("$Field.Value.PSObject.Properties['action_core']", PS)
+        self.assertIn('RELEASE_ACTION_CORE_CONFIG_INVALID', PS)
+        self.assertIn("if($null -eq $Action){return $null}",PS)
+        self.assertIn("if($Action.Value -isnot [pscustomobject])",PS)
+        self.assertIn('providers\":null}',PS)
+        self.assertIn('action_core\":null}',PS)
+        self.assertIn('$Provider=Read-ActionCoreProvider $Config', PS)
+        self.assertIn('if((Read-ActionCoreProvider $PublicConfig) -and -not $EnableActionCoreNetwork)', PS)
+        self.assertNotIn('$PublicConfig.providers.action_core', PS)
+        self.assertNotIn('$Config.providers.action_core', PS)
+
+    def test_strict_owner_and_ci_selftest_execute_live_shaped_fixtures(self):
+        self.assertIn('function Assert-OptionalActionCoreSelfTest {', PS)
+        self.assertIn('FORTIS_ACTION_CORE_OPTIONAL_FIELDS_SELFTEST_PASS', PS)
+        self.assertIn('Set-StrictMode -Version Latest', PS)
+        self.assertIn('    Assert-OptionalActionCoreSelfTest', PS)
+        self.assertIn('LegacyMap=[ordered]@', PS)
+        self.assertIn('Read-GatewayNetworks $Legacy', PS)
+        self.assertIn('Read-GatewayNetworks $LegacyMap', PS)
+        self.assertIn('Read-GatewayNetworks $Bad', PS)
+        self.assertIn('Read-ActionCoreProvider $NoAction', PS)
+        self.assertIn('Read-ActionCoreProvider $HasAction', PS)
+        w=(ROOT/'.github/workflows/source-ci.yml').read_text()
+        self.assertIn('& $files[4] -Action SelfTest', w)
+        self.assertIn('shell: powershell', w)
+
     def test_owner_firewall_probe_is_read_only_and_closed(self):
         for text in (
             "Get-CimInstance Win32_Process",
