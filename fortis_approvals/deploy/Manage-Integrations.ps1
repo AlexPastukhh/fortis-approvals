@@ -1263,8 +1263,9 @@ function Admit-ReturnCandidate {
 }
 function Snapshot-Uncertain-Growth {
     param([string]$Volume)
-    # Only owner-opted MANUAL Check. The offline image helper validates the
-    # current exact Core/worker/approved state before sealing its witness.
+    # Shared by standard owner -Auto and explicit manual checked Check.
+    # The offline helper validates exact Core/worker/approved state before
+    # sealing a witness; this never confers broader mutation privileges.
     State-Helper @{action='uncertain_growth_snapshot';github=$true;native=$true
         preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)
         requireExactClaimed=([bool]$script:PreserveClaimedExact)
@@ -1641,6 +1642,10 @@ if($Auto){
         throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
     }
     if($Action -cin @('Check','Apply')){
+        # Standard owner -Auto reuses the SAME checked-image witness and
+        # fail-closed append-only Core guard as manual Check/Apply. This does
+        # not opt into publisher, owner-shell, new grants, or APPROVED carryover.
+        $AllowUncertainGrowth=[switch]$true
         $Git=(Get-Command git.exe -CommandType Application).Source
         if((Private-Process @('-C',$SourceRoot,'status','--porcelain') '' $Git)){
             throw 'RELEASE_WINDOWS_SOURCE_DIRTY'
@@ -1667,8 +1672,14 @@ if($Auto){
             if($SavedCheck.schema -cne 'fortis-extension-image-check-v1' -or
                 $SavedCheck.phase -cne 'Ready' -or
                 $SavedCheck.binding.image -cne $Selection.image -or
-                $SavedCheck.binding.sourceSha -cne $LocalSha){
-                throw 'RELEASE_AUTO_CHECK_BINDING_INVALID'
+                $SavedCheck.binding.sourceSha -cne $LocalSha -or
+                $SavedCheck.binding.allowUncertainGrowth -isnot [bool] -or
+                -not $SavedCheck.binding.allowUncertainGrowth -or
+                $null -eq $SavedCheck.growthWitness -or
+                $null -eq $SavedCheck.sourceReceipt){
+                # An old -Auto Check created before witness support cannot
+                # authorize this flow. The owner must run a fresh Check.
+                throw 'RELEASE_AUTO_CHECK_GROWTH_WITNESS_REQUIRED'
             }
             $SourceSha=$LocalSha;$Image=[string]$Selection.image
             $script:Image=$Image
@@ -1743,7 +1754,22 @@ print(json.dumps({'schema':1,'sourceSha':sha,'uncertain':states['UNCERTAIN'],
             # automatic blanket carryover. Existing manual controller remains.
             throw 'RELEASE_AUTO_OWNER_REVIEW_REQUIRED'
         }
-        $script:PreserveUncertainRequests=@($Snapshot.uncertain) -join ','
+        if($Action -eq 'Apply'){
+            # Bind to the ORIGINAL checked-image scope, never the freshly
+            # observed list. The shared growth helper may admit only audited
+            # new UNCERTAIN rows and leaves the immutable Check untouched.
+            $OriginalIds=@(Parse-PreservedUncertainRequests ([string]$SavedCheck.binding.preserveUncertainRequests))
+            $ObservedIds=@($Snapshot.uncertain)
+            $Missing=@($OriginalIds | Where-Object { $ObservedIds -cnotcontains $_ })
+            if($Missing.Count -or $ObservedIds.Count -lt $OriginalIds.Count){
+                throw 'RELEASE_AUTO_UNCERTAIN_SCOPE_REDUCED'
+            }
+            $script:PreserveUncertainRequests=$OriginalIds -join ','
+        } else {
+            # Check is bound to its final offline snapshot; the Repo READ
+            # inventory is advisory, not authorization to alter Core rows.
+            $script:PreserveUncertainRequests=@($Snapshot.uncertain) -join ','
+        }
         $script:PreserveUncertainExact=($script:PreserveUncertainRequests -ne '')
         $script:PreserveClaimedJobs=@($Snapshot.claimed) -join ','
         $script:PreserveClaimedExact=($script:PreserveClaimedJobs -ne '')
@@ -1826,7 +1852,7 @@ if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $App
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
-if($AllowUncertainGrowth -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+if($AllowUncertainGrowth -and ($Action -cnotin @('Check','Apply') -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
     -not $ConfirmWorkerQuiescent -or
     ($Action -eq 'Check' -and -not $Build) -or

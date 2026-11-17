@@ -20,10 +20,12 @@ host docker inspect**. Полный порядок, вопросы подтве�
 только в [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b).
 ИИ не исполняет эти owner-команды за владельца.
 
-**Что делает -Auto:** Check строит один проверенный image и сохраняет
-owner-protected binding; Apply использует **тот же** immutable image ID, без
-повторной сборки. Публичные config/probes берутся из существующего protected
-Complete record; Gateway READ собирает точные `UNCERTAIN/CLAIMED` scopes.
+**Что делает -Auto:** Check строит image и защищённый immutable
+binding; Apply использует **тот же** image ID без повторной сборки.
+Config/probes берутся из защищённого Complete record, Gateway READ
+собирает исходные `UNCERTAIN/CLAIMED` scopes. После owner-установки версии
+PR #128 допустимые новые `UNCERTAIN` проверяются на сохранность старого
+audit и всех остальных данных, а не автоматически доверяются Repo READ.
 При `PENDING/DISPATCHED/APPROVED`, неполных данных, drift SHA/config/state
 или отсутствии сохранённого previous image — STOP/owner review. Владелец
 независимо подтверждает worker quiescence и отдельно даёт GO на Apply.
@@ -44,13 +46,16 @@ WebAuthn browser acceptance или provider mutation acceptance. Датиров�
 и текущая evidence — в [current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
 подробные защищённые записи остаются у владельца.
 
-**Опциональное расширение UNCERTAIN (source candidate, ещё не установлено):**
-[контракт append-only Check/Apply](../UNCERTAIN-GROWTH-RELEASE-2026-11-17.md)
-допускает только новые записи Core UNCERTAIN с неизменными старыми SQL-строками,
-audit и всеми остальными файлами состояния. Режим — только вручную с
-`-AllowUncertainGrowth`, проверкой владельца и окончательной сверкой после
-остановки Gateway. При изменении worker, receipts или APPROVED — STOP.
-Без флага прежний строгий Check/Apply не меняется.
+**Единый стандарт после принятия PR #128 и отдельной установки на Windows:**
+штатный `Check -Auto → Apply -Auto` использует
+[bounded append-only сохранение `UNCERTAIN`](../UNCERTAIN-GROWTH-RELEASE-2026-11-17.md):
+новые проверенные заявки добавляются к исходному защищённому набору;
+старые заявки, audit и остальные данные остаются неизменными.
+Флаг `-AllowUncertainGrowth` для `-Auto` **не передают** — он включается
+самим контроллером. Любой drift worker/receipts, `APPROVED` или старых
+заявок остаётся STOP. Ручной проверенный Check/Apply допускает явный
+`-AllowUncertainGrowth`; без него действует строгое сравнение.
+**До owner-установки это лишь source candidate, не live-поведение.**
 
 **Ручные исключения:** когда `-Auto` не допускается по его предусловиям,
 оператор использует отдельно проверенный полный контракт из runbook:

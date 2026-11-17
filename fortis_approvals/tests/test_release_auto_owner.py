@@ -77,6 +77,52 @@ class AutoOwnerSourceTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):self.assertIn(marker,SOURCE)
 
+    def test_auto_check_apply_enable_same_sealed_growth_helper_by_default(self):
+        auto=SOURCE.split('if($Auto){',1)[1].split('if($Pull -and -not $Build)',1)[0]
+        self.assertIn('$AllowUncertainGrowth=[switch]$true',auto)
+        self.assertIn("if($Action -cin @('Check','Apply'))",auto)
+        self.assertIn('RELEASE_AUTO_CHECK_GROWTH_WITNESS_REQUIRED',auto)
+        self.assertIn('$SavedCheck.binding.allowUncertainGrowth',auto)
+        self.assertIn('$null -eq $SavedCheck.growthWitness',auto)
+        self.assertIn('$OriginalIds=@(Parse-PreservedUncertainRequests',auto)
+        self.assertIn('$SavedCheck.binding.preserveUncertainRequests',auto)
+        self.assertIn('$ObservedIds=@($Snapshot.uncertain)',auto)
+        self.assertIn('RELEASE_AUTO_UNCERTAIN_SCOPE_REDUCED',auto)
+        self.assertIn('$script:PreserveUncertainRequests=$OriginalIds -join',auto)
+        self.assertIn('Snapshot-Uncertain-Growth $Source.runtime.stateVolume',SOURCE)
+        self.assertIn('original=$Checked.sourceReceipt;witness=$Checked.growthWitness',SOURCE)
+        self.assertIn('preserveUncertainIds=@(Effective-Uncertain-Ids)',SOURCE)
+        # Explicit manual flags are STILL denied in -Auto. Only internal
+        # owner-confirmed -Auto Check/Apply enables the shared witness.
+        self.assertIn('$PreserveApprovedRequest -or $AllowUncertainGrowth -or',auto)
+        self.assertIn("if($EnablePublisherMount -and ($Auto",SOURCE)
+        self.assertIn('RELEASE_AUTO_OWNER_REVIEW_REQUIRED',SOURCE)
+        self.assertIn('RELEASE_AUTO_QUIESCENCE_NOT_ATTESTED',SOURCE)
+        self.assertIn('RELEASE_AUTO_OWNER_GO_REQUIRED',SOURCE)
+
+    def test_auto_check_refuses_old_unwitnessed_pointer(self):
+        auto=SOURCE.split('if($Auto){',1)[1].split('if($Pull -and -not $Build)',1)[0]
+        check=auto.index('$SavedCheck=Read-Private $CheckedImageRecord')
+        refusal=auto.index('RELEASE_AUTO_CHECK_GROWTH_WITNESS_REQUIRED',check)
+        read=auto.index('$Snapshot=Repo-JSON $ReadCode',refusal)
+        self.assertLess(check,refusal)
+        self.assertLess(refusal,read)
+        self.assertIn("-not $SavedCheck.binding.allowUncertainGrowth",auto)
+        self.assertIn('$SavedCheck.binding.allowUncertainGrowth -isnot [bool]',auto)
+        self.assertIn('$null -eq $SavedCheck.sourceReceipt',auto)
+
+    def test_auto_apply_original_scope_not_replaced_by_recent_repo_read(self):
+        auto=SOURCE.split('if($Auto){',1)[1].split('if($Pull -and -not $Build)',1)[0]
+        idx=auto.index("if($Action -eq 'Apply'){",auto.index('$Snapshot=Repo-JSON $ReadCode'))
+        compare=auto.index("if($Missing.Count -or $ObservedIds.Count -lt $OriginalIds.Count)",idx)
+        sealed=auto.index("$script:PreserveUncertainRequests=$OriginalIds -join ','",compare)
+        check_path=auto.index("} else {" + chr(10) + "            # Check is bound to its final offline snapshot",sealed)
+        self.assertLess(compare,sealed)
+        self.assertLess(sealed,check_path)
+        self.assertNotIn('$script:PreserveUncertainRequests=$ObservedIds',auto)
+        self.assertIn("RELEASE_AUTO_OWNER_REVIEW_REQUIRED",auto)
+        self.assertIn('$script:PreserveClaimedJobs=@($Snapshot.claimed)',auto)
+
     def test_owner_go_required_and_existing_guards_not_bypassed(self):
         for marker in (
             'Type QUIESCENT','RELEASE_AUTO_QUIESCENCE_NOT_ATTESTED',

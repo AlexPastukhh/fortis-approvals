@@ -16,7 +16,7 @@ class GrowthGuardSourceTests(unittest.TestCase):
         for marker in (
             '[switch]$AllowUncertainGrowth',
             'RELEASE_UNCERTAIN_GROWTH_REQUIRES_OWNER_CHECKED_IMAGE',
-            'if($AllowUncertainGrowth -and ($Auto',
+            'if($AllowUncertainGrowth -and ($Action -cnotin',
             '-not $ConfirmWorkerQuiescent',
             "($Action -eq 'Check' -and -not $Build)",
             "($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build))",
@@ -79,6 +79,7 @@ class GrowthGuardSourceTests(unittest.TestCase):
             with self.subTest(marker=marker):self.assertIn(marker,HELPER)
 
     def test_default_nonoptin_remains_exact(self):
+        # Explicit/manual no-flag releases must remain on the strict path.
         self.assertIn('} elseif(-not (Same-Json $Record.sourceReceipt $Now))',SCRIPT)
         self.assertIn('} elseif(-not (Same-Json $Stored.sourceReceipt $Receipt))',SCRIPT)
         self.assertIn('require(unresolved <= permitted',HELPER)
