@@ -93,7 +93,8 @@ integration tests intentionally skip, while pin, authority and real-Git
 tests run offline. Run full `scripts/test-source.sh`, source manifest
 verification and exact-head CI before source acceptance.
 
-**P3.4 MANUAL-PENDING:** [Owner-sealed Gateway startup candidate](../../../docs/P3-4-PUBLISHER-OWNER-STARTUP.md)
+**P3.4 MANUAL-PENDING:** [Owner-sealed Gateway startup source](../../../docs/P3-4-PUBLISHER-OWNER-STARTUP.md)
+and [separate disabled one-shot image candidate](../../../docs/P3-4-PUBLISHER-ISOLATED-RUNTIME.md)
 adds source-only, default-deny second-principal composition. Owner-controlled immutable/readonly code and config,
 separate isolated worker, non-Repo credentials and grants, exact reviewed pins,
 network/isolation verification, live capabilities and a controlled owner ASK
