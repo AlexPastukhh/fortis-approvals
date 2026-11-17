@@ -12,6 +12,7 @@ MANAGER = (DEPLOY / "Manage-Integrations.ps1").read_text()
 PILOT = (DEPLOY / "Run-GitHub-Pilot-E2E.ps1").read_text()
 BOUNDED = MANAGER
 WORKFLOW = (ROOT / ".github" / "workflows" / "source-ci.yml").read_text()
+RUNBOOK = (ROOT / "docs" / "PRIMARY-GATEWAY-OPERATIONS.md").read_text()
 
 
 class BoundedReleaseRecordSourceTests(unittest.TestCase):
@@ -23,6 +24,65 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         self.assertIn("param([string]$SerializedJson='')", PILOT)
         self.assertIn("if(-not $JsonText){$JsonText=ConvertTo-Json -InputObject $script:R -Depth 25}", PILOT)
         self.assertIn("try {$script:R=$Value;$script:RecordPath=$Path;Save-Record}", MANAGER)
+
+    def test_record_context_exists_before_selftest_and_auto_private_reads(self):
+        # Parent profile/interactive Windows owner sessions can enable
+        # Set-StrictMode -Version Latest. The old SelfTest attempted
+        # $PreviousPath=$script:RecordPath before it was initialized, and
+        # Check -Auto could similarly encounter Read/Write-Private.
+        bootstrap=MANAGER.index("$PrimaryPointer=Join-Path $ReleaseBase 'primary.json'")
+        path=MANAGER.index("$script:RecordPath=''",bootstrap)
+        model=MANAGER.index("$script:R=$null",path)
+        runtime=MANAGER.index("$script:Step='PREFLIGHT';$script:Image=$Image",model)
+        selftest=MANAGER.index("if($Action -eq 'SelfTest'){",runtime)
+        previous=MANAGER.index("$PreviousPath=$script:RecordPath")
+        read=MANAGER.index("function Read-Private {")
+        write=MANAGER.index("function Write-Private {")
+        prepare=MANAGER.index("$script:RecordPath=Join-Path $Directory 'record.json'")
+        self.assertLess(bootstrap,path)
+        self.assertLess(path,model)
+        self.assertLess(model,runtime)
+        self.assertLess(path,selftest)
+        strict=MANAGER.index("Set-StrictMode -Version Latest",selftest)
+        actual_fixture=MANAGER.index("    Assert-BoundedReleaseJsonSelfTest",strict)
+        self.assertLess(selftest,strict)
+        self.assertLess(strict,actual_fixture)
+        self.assertEqual(MANAGER.count("Set-StrictMode -Version Latest"),1)
+        # Function definitions can precede or follow the bootstrap; the
+        # important ordering is the top-level initialization before the
+        # first SelfTest / release action dispatch.
+        self.assertLess(path,prepare)
+        self.assertIn('$PreviousPath=$script:RecordPath',MANAGER)
+        self.assertIn('function Read-Private {',MANAGER)
+        self.assertIn('function Write-Private {',MANAGER)
+        self.assertLess(runtime,prepare)
+        self.assertEqual(MANAGER.count("$script:RecordPath=''"),1)
+        self.assertEqual(MANAGER.count("$script:R=$null"),1)
+        self.assertIn("$script:RecordPath=$PreviousPath",MANAGER)
+        self.assertIn("finally {$script:RecordPath=$Saved}",MANAGER)
+        self.assertIn("finally {$script:R=$SavedR;$script:RecordPath=$SavedPath}",MANAGER)
+        # The SelfTest still uses isolated temporary state and must never
+        # write the global production attempt/current pointers.
+        local=MANAGER[MANAGER.index("function Assert-BoundedReleaseJsonSelfTest {"):MANAGER.index("$ErrorActionPreference='Stop'")]
+        self.assertIn("$TestDirectory=Join-Path $env:TEMP",local)
+        self.assertNotIn("Write-Private $AttemptPointer",local)
+        self.assertNotIn("Write-Private $Pointer",local)
+
+    def test_owner_auto_release_runbook_requires_successful_selftest(self):
+        section=RUNBOOK.split('## Lightweight owner release path',1)[1]
+        start=section.index('$manager = Join-Path')
+        selftest=section.index('& $manager -Action SelfTest',start)
+        check=section.index('& $manager -Action Check -Auto',selftest)
+        apply=section.index('& $manager -Action Apply -Auto',check)
+        self.assertLess(start,selftest)
+        self.assertLess(selftest,check)
+        self.assertLess(check,apply)
+        for marker in ('FORTIS_RELEASE_BOUNDED_JSON_SELFTEST_PASS',
+                       'FORTIS_INTEGRATIONS_SELFTEST_PASS',
+                       'count=257 limit=256','VariableIsUndefined',
+                       'hard STOP'):
+            self.assertIn(marker,section)
+        self.assertIn("Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return",MANAGER)
 
     def test_no_unbounded_powershell_object_graph_serializer_in_apply(self):
         self.assertIn("RELEASE_RECORD_JSON_UNSUPPORTED_TYPE", BOUNDED)
