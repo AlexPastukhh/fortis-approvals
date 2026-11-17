@@ -8,6 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
+    [switch]$EnableActionCoreNetwork,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -379,6 +380,136 @@ function Check-ExtensionEnv {
     $Actual=@($Lines|Where-Object{$_.StartsWith('FORTIS_EXTENSIONS_CONFIG=') -or $_.StartsWith('FORTIS_RELEASE_NONCE=')})
     if($Actual.Count -ne 2 -or @($Actual|Where-Object{$Expected -cnotcontains $_}).Count -or
        @($Actual|Select-Object -Unique).Count -ne 2){throw 'RELEASE_CONFIG_CHANGED'}
+}
+# Action Core is an explicit opt-in. These checks are read-only and owner-side;
+# the process firewall rule is installed separately, never by an AI release.
+function Assert-ActionCoreFirewall {
+    $Path='C:\Program Files\Docker\Docker\resources\com.docker.backend.exe'
+    $Backends=@(Get-CimInstance Win32_Process -Filter "Name='com.docker.backend.exe'")
+    if(-not $Backends.Count -or @($Backends|Where-Object{$_.ExecutablePath -ine $Path}).Count){
+        throw 'RELEASE_ACTION_CORE_BACKEND_IDENTITY_INVALID'
+    }
+    $Rules=@(Get-NetFirewallRule -Name 'Fortis-DockerBackend-Block-TCP8000' -PolicyStore ActiveStore -ErrorAction Stop)
+    if($Rules.Count -ne 1){throw 'RELEASE_ACTION_CORE_FIREWALL_RULE_MISSING'}
+    $Rule=$Rules[0]
+    if([string]$Rule.Enabled -cne 'True' -or [string]$Rule.Direction -cne 'Outbound' -or
+       [string]$Rule.Action -cne 'Block' -or [string]$Rule.Profile -cne 'Any'){
+        throw 'RELEASE_ACTION_CORE_FIREWALL_RULE_INVALID'
+    }
+    $App=@(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $Rule)
+    $Port=@(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $Rule)
+    $Address=@(Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $Rule)
+    $Service=@(Get-NetFirewallServiceFilter -AssociatedNetFirewallRule $Rule)
+    $Interface=@(Get-NetFirewallInterfaceTypeFilter -AssociatedNetFirewallRule $Rule)
+    if($App.Count -ne 1 -or $Port.Count -ne 1 -or $Address.Count -ne 1 -or
+       $Service.Count -ne 1 -or $Interface.Count -ne 1 -or
+       $App[0].Program -ine $Path -or
+       [string]$Port[0].Protocol -cne 'TCP' -or [string]$Port[0].RemotePort -cne '8000' -or
+       [string]$Port[0].LocalPort -cne 'Any' -or
+       [string]$Address[0].RemoteAddress -cne 'Any' -or
+       [string]$Address[0].LocalAddress -cne 'Any' -or
+       [string]$Service[0].Service -cne 'Any' -or
+       [string]$Interface[0].InterfaceType -cne 'Any'){
+        throw 'RELEASE_ACTION_CORE_FIREWALL_SCOPE_INVALID'
+    }
+    $Profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore)
+    if($Profiles.Count -ne 3 -or @($Profiles|Where-Object{[string]$_.Enabled -cne 'True'}).Count){
+        throw 'RELEASE_ACTION_CORE_FIREWALL_PROFILE_DISABLED'
+    }
+    Write-Host 'FORTIS_ACTION_CORE_FIREWALL_RULE_VERIFIED'
+}
+function Read-ActionCoreDockerNetwork {
+    param([string]$Name,[bool]$Internal,[string]$Owner,[string]$Purpose)
+    $Records=@(Docker-Json @('network','inspect',$Name))
+    if($Records.Count -ne 1){throw 'RELEASE_ACTION_CORE_NETWORK_MISSING'}
+    $N=$Records[0]
+    if($N.Name -cne $Name -or $N.Id -cnotmatch '^[0-9a-f]{64}$' -or
+       $N.Driver -cne 'bridge' -or $N.Scope -cne 'local' -or
+       [bool]$N.Internal -ne $Internal -or [bool]$N.Attachable -or [bool]$N.Ingress -or
+       $N.Labels.'io.fortis.owner' -cne $Owner -or
+       $N.Labels.'io.fortis.purpose' -cne $Purpose){
+        throw 'RELEASE_ACTION_CORE_NETWORK_IDENTITY_INVALID'
+    }
+    return [string]$N.Id
+}
+function Get-ActionCoreLocalApiAddress {
+    $Containers=@(Docker-Json @('container','inspect','feedbrain-api-1'))
+    if($Containers.Count -ne 1){throw 'RELEASE_ACTION_CORE_LOCAL_API_MISSING'}
+    $C=$Containers[0]
+    $Binding=@($C.HostConfig.PortBindings.'8000/tcp')
+    $Address=[string]$C.NetworkSettings.Networks.'feedbrain_default'.IPAddress
+    $Parsed=$null
+    if($C.Name -cne '/feedbrain-api-1' -or $C.State.Status -cne 'running' -or
+       $C.Config.Labels.'com.docker.compose.project' -cne 'feedbrain' -or
+       $C.Config.Labels.'com.docker.compose.service' -cne 'api' -or
+       $Binding.Count -ne 1 -or $Binding[0].HostIp -cne '127.0.0.1' -or
+       [string]$Binding[0].HostPort -cne '8000' -or
+       [string]$C.NetworkSettings.Networks.'feedbrain_default'.GlobalIPv6Address -ne '' -or
+       -not [Net.IPAddress]::TryParse($Address,[ref]$Parsed) -or
+       $Parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){
+        throw 'RELEASE_ACTION_CORE_LOCAL_API_IDENTITY_INVALID'
+    }
+    return $Address
+}
+function Assert-ActionCoreWindowsLocalRead {
+    try {
+        $Response=Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health/live' -TimeoutSec 5
+        if($Response.StatusCode -ne 200){throw 'NON_200'}
+    }catch{throw 'RELEASE_ACTION_CORE_WINDOWS_LOCAL_READ_FAILED'}
+    Write-Host 'FORTIS_ACTION_CORE_WINDOWS_LOCAL_HTTP_OK'
+}
+function Read-ActionCoreBoundary {
+    Assert-ActionCoreFirewall
+    $Networks=[ordered]@{}
+    $Networks['fortis-gateway-egress']=Read-ActionCoreDockerNetwork -Name 'fortis-gateway-egress' -Internal:$false -Owner 'fortis-approvals' -Purpose 'gateway-egress-v1'
+    $Networks['fortis-actioncore-net']=Read-ActionCoreDockerNetwork -Name 'fortis-actioncore-net' -Internal:$true -Owner 'feed_and_search_and_bank_and_brain' -Purpose 'action-core-gateway-v1'
+    if($Networks['fortis-gateway-egress'] -ceq $Networks['fortis-actioncore-net']){
+        throw 'RELEASE_ACTION_CORE_NETWORK_ALIAS_INVALID'
+    }
+    $null=Get-ActionCoreLocalApiAddress
+    Assert-ActionCoreWindowsLocalRead
+    Write-Host 'FORTIS_ACTION_CORE_BOUNDARY_PREFLIGHT_PASS'
+    return $Networks
+}
+function Assert-ActionCoreConfig {
+    param([string]$Json)
+    $Config=ConvertFrom-Json -InputObject $Json -ErrorAction Stop
+    $Provider=$Config.providers.action_core
+    if($Config.schemaVersion -ne 1 -or -not $Provider -or
+       @($Provider.operations.PSObject.Properties.Name).Count -ne 1 -or
+       @($Provider.operations.PSObject.Properties.Name)[0] -cne 'read_action' -or
+       $Provider.credentials.read -cne 'action-core-read' -or
+       $Provider.operations.read_action.policy -cne 'ALLOW' -or
+       @($Provider.operations.read_action.targets).Count -ne 2 -or
+       (@($Provider.operations.read_action.targets|Sort-Object) -join ',') -cne '3,4'){
+        throw 'RELEASE_ACTION_CORE_READ_CONFIG_REQUIRED'
+    }
+}
+function Assert-ActionCoreNoHttpFromGateway {
+    param([string]$ContainerId)
+    $Address=Get-ActionCoreLocalApiAddress
+    $Code=@'
+import socket,sys
+def must_refuse(host):
+    endpoints=socket.getaddrinfo(host,8000,type=socket.SOCK_STREAM)
+    if not endpoints: raise RuntimeError("NO_DNS")
+    for family,kind,protocol,_,endpoint in endpoints:
+        with socket.socket(family,kind,protocol) as conn:
+            conn.settimeout(2)
+            if conn.connect_ex(endpoint)==0:
+                raise RuntimeError("HTTP_8000_ROUTE_OPEN")
+must_refuse("host.docker.internal")
+must_refuse(sys.argv[1])
+print("ACTION_CORE_HTTP8000_BOTH_DENIED")
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<action-core-network-negative>','exec'))"
+    $Outcome=Docker-Text @('exec','--user','10001:10001',$ContainerId,'python','-I','-B','-c',$Wrapper,$Address)
+    if($Outcome.Trim() -cne 'ACTION_CORE_HTTP8000_BOTH_DENIED'){
+        throw 'RELEASE_ACTION_CORE_HTTP8000_BYPASS'
+    }
+    Assert-ActionCoreWindowsLocalRead
+    Write-Host 'FORTIS_ACTION_CORE_GATEWAY_HTTP8000_BOTH_DENIED'
 }
 function OwnerShell-EnvLines {
     param([bool]$Enabled)
@@ -818,6 +949,8 @@ function Checked-Image-Binding {
         acceptUnverifiedRestore=[bool]$AcceptUnverifiedRestore
         enableDynamicGitHubRepositories=[bool]$EnableDynamicGitHubRepositories
         enableOwnerShell=[bool]$EnableOwnerShell
+        enableActionCoreNetwork=[bool]$EnableActionCoreNetwork
+        gatewayNetworks=$script:ActionCoreNetworks
         ciControlRepositories=$CiControlRepositories
         preserveUncertainRequests=$script:PreserveUncertainRequests
         preserveClaimedJobs=$script:PreserveClaimedJobs
@@ -955,7 +1088,7 @@ function Assert-Previous-Image-Retained {
 }
 
 function Admit {
-    param($C,$P,[switch]$AllowUnhealthy)
+    param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress)
     if($P.pilotId -and $C.Id -cne $P.pilotId){throw 'RELEASE_CONTAINER_ID_CHANGED'}
     if($C.Config.Labels.'io.fortis.review-update' -cne $P.runId){throw 'RELEASE_CONTAINER_PROVENANCE_INVALID'}
     $Public=Public-Inspect $C
@@ -971,6 +1104,16 @@ function Admit {
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         ciControlRepositories=(Read-CiControlRepositories $P)
         vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
+    if($P.gatewayNetworks){$Expected.gatewayNetworks=$P.gatewayNetworks}
+    if($AllowPendingIngress){
+        if(-not $P.gatewayNetworks -or $script:R.phase -cne 'Created' -or
+           $script:R.activated -or $script:R.probesPassed -or
+           $C.State.Status -cne 'created' -or
+           $C.State.StartedAt -cne '0001-01-01T00:00:00Z'){
+            throw 'RELEASE_PENDING_ACTION_CORE_NETWORK_NOT_PRISTINE'
+        }
+        $Expected.allowPendingActionNetwork=$true
+    }
     if($P.restartPolicy -ceq 'unless-stopped'){
         # The already deployed immutable image still validates the original
         # review name and restart=no. Admit the exact primary rename/policy
@@ -991,6 +1134,19 @@ function Admit {
 }
 function Admit-ReturnCandidate {
     param($C,$P)
+    if($P.gatewayNetworks -and $script:R.phase -ceq 'Created' -and
+       -not $script:R.activated -and -not $script:R.probesPassed -and
+       $C.State.Status -ceq 'created' -and
+       $C.State.StartedAt -ceq '0001-01-01T00:00:00Z'){
+        $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
+        if($Attached.Count -eq 1 -and $Attached[0] -ceq 'fortis-gateway-egress'){
+            # Only this never-started intermediate state is return-admissible;
+            # no ad-hoc network connect is required to resume the old Gateway.
+            Admit $C $P -AllowUnhealthy -AllowPendingIngress
+            Write-Host 'FORTIS_ACTION_CORE_RETURN_UNSTARTED_PARTIAL_NETWORK'
+            return
+        }
+    }
     try {Admit $C $P -AllowUnhealthy;return}
     catch {if($_.Exception.Message -cne 'RELEASE_CONFIG_CHANGED'){throw}}
     # Return only: exact released env-builder bug, never-started cloned state.
@@ -1057,8 +1213,29 @@ function Return-Source {
     Assert-Release-Production;$script:R.phase='Returned';Save
     Write-Host 'FORTIS_INTEGRATIONS_RETURNED_SOURCE'
 }
+function Complete-ActionCoreNetwork {
+    param($C,$P)
+    if(-not $P.gatewayNetworks){return $C}
+    $Now=Read-ActionCoreBoundary
+    if(-not (Same-Json $Now $P.gatewayNetworks)){
+        throw 'RELEASE_ACTION_CORE_BOUNDARY_CHANGED'
+    }
+    $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
+    if($Attached.Count -eq 1 -and $Attached[0] -ceq 'fortis-gateway-egress'){
+        # A retried owner Resume may complete an interrupted create, but may
+        # never issue a second connect or attach any arbitrary Docker network.
+        Admit $C $P -AllowUnhealthy -AllowPendingIngress
+        Step 'ATTACH_ACTION_CORE_NETWORK'
+        $null=Docker-Text @('network','connect','fortis-actioncore-net',$C.Id)
+        $C=Container $C.Id
+    }
+    Admit $C $P -AllowUnhealthy
+    return $C
+}
 function Resume-Target {
-    $P=$script:R.runtime;$C=Container $P.pilotName;Admit $C $P -AllowUnhealthy
+    $P=$script:R.runtime;$C=Container $P.pilotName
+    $C=Complete-ActionCoreNetwork $C $P
+    Admit $C $P -AllowUnhealthy
     if($C.State.Status -ceq 'created' -or $C.State.Status -ceq 'exited'){
         Assert-OnlyWriter $P.stateVolume;$null=Docker-Text @('start',$C.Id)
     }
@@ -1073,6 +1250,10 @@ function Resume-Target {
         $RepoCatalog=Repo-JSON "import json;from fortis_approvals.extensions.client import default_client;print(json.dumps(default_client().catalog()))"
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         $null=Running-CLI $C.Id @('probe') $script:R.probes
+        if($P.gatewayNetworks){
+            Step 'VERIFY_ACTION_CORE_HTTP8000_DENIAL'
+            Assert-ActionCoreNoHttpFromGateway $C.Id
+        }
         if(Read-OwnerShellFlag $P){
             Step 'VERIFY_STAGED_OWNER_SHELL_MTLS'
             Running-OwnerShell-Check $C.Id
@@ -1244,6 +1425,10 @@ if($Action -eq 'SelfTest'){
     }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
+    $NetFlag=@(Forward-NativeParameters @{EnableActionCoreNetwork=([switch]$true)})
+    if($NetFlag.Count -ne 1 -or $NetFlag[0] -cne '-EnableActionCoreNetwork'){
+        throw 'RELEASE_ACTION_CORE_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $Index=[array]::IndexOf($Forwarded,'-SourceSha')
     if($Forwarded.Count -ne 3 -or $Forwarded -cnotcontains '-Build' -or $Index -lt 0 -or
        $Forwarded[$Index+1] -cne 'a value with spaces'){throw 'RELEASE_NATIVE_ARGUMENT_SELFTEST_FAILED'}
@@ -1272,7 +1457,8 @@ if($Auto){
         $Config -or $Probes -or $Image -or $CheckedImageRecord -or $SourceSha -or
         $Build -or $Pull -or $CurrentRecord -or $AttemptRecord -or
         $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or
-        $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or
+        $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or
+        $CiControlRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
         $VaultVolume -cne 'fortis-review-secrets'){
@@ -1434,6 +1620,11 @@ if($CheckedImageRecord -and ($Action -cne 'Apply' -or $Build -or $Pull -or $Curr
     throw 'RELEASE_CHECKED_IMAGE_APPLY_ARGUMENTS_INVALID'
 }
 $ApprovedImageSource=($Build -or [bool]$CheckedImageRecord)
+if($EnableActionCoreNetwork -and ($Auto -or $Action -cnotin @('Apply','Check') -or
+    -not $ApprovedImageSource -or $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or
+    $AttemptRecord -or $CurrentRecord)){
+    throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRES_APPROVED_IMAGE_BUILD'
+}
 if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
@@ -1480,7 +1671,12 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+$script:ActionCoreNetworks=$null
+if($EnableActionCoreNetwork){
+    Step 'ACTION_CORE_NETWORK_PREFLIGHT_READ_ONLY'
+    $script:ActionCoreNetworks=Read-ActionCoreBoundary
+}
 if($Build){
     Step 'BUILD_IMAGE'
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
@@ -1585,6 +1781,9 @@ if($Action -eq 'Return' -or $AttemptRecord){
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
+if($SourceForOwnerShell.runtime.gatewayNetworks -and -not $EnableActionCoreNetwork){
+    throw 'RELEASE_ACTION_CORE_NETWORK_DOWNGRADE_DENIED'
+}
 $OwnerShellEnabled=((Read-OwnerShellFlag $SourceForOwnerShell.runtime) -or [bool]$EnableOwnerShell)
 if($OwnerShellEnabled){
     Step 'OWNER_SHELL_MATERIAL_PREFLIGHT'
@@ -1592,6 +1791,11 @@ if($OwnerShellEnabled){
 }
 if($Auto){$ConfigText=$script:AutoConfigText}
 else {$ConfigText=Get-Content -LiteralPath $Config -Raw}
+$PublicConfig=ConvertFrom-Json -InputObject $ConfigText -ErrorAction Stop
+if($PublicConfig.providers.action_core -and -not $EnableActionCoreNetwork){
+    throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRED'
+}
+if($EnableActionCoreNetwork){Assert-ActionCoreConfig $ConfigText}
 Step 'CONFIG_AND_CREDENTIAL_PREFLIGHT'
 $Report=Image-CLI @('check') $ConfigText
 if($Action -eq 'Apply'){
@@ -1682,6 +1886,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     preserveApprovedRequest=$script:PreserveApprovedRequest
     workerQuiescenceOwnerAttested=([bool]$ConfirmWorkerQuiescent)
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;ownerShell=$OwnerShellEnabled;runId=$RunId}
+if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
     activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''
@@ -1718,6 +1923,13 @@ try {
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
     Assert-PublicEnvFile $EnvFile $EnvLines
+    if($EnableActionCoreNetwork){
+        Step 'ACTION_CORE_BOUNDARY_FINAL_PREFLIGHT'
+        $FinalBoundary=Read-ActionCoreBoundary
+        if(-not (Same-Json $FinalBoundary $script:ActionCoreNetworks)){
+            throw 'RELEASE_ACTION_CORE_BOUNDARY_CHANGED'
+        }
+    }
     Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
     if($CheckedImageRecord){Verify-Checked-Image $Source $Report}
     Assert-Previous-Image-Retained $Source
@@ -1747,7 +1959,7 @@ try {
     Step 'CREATE_STAGED'
     $Arguments=@('create','--pull=never','--name',$Runtime.pilotName,'--label',('io.fortis.review-update='+$RunId),
         '--restart','no','--init','--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
-        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network','bridge','--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
+        '--pids-limit','100','--memory','512m','--memory-swap','1g','--network',$(if($Runtime.gatewayNetworks){'fortis-gateway-egress'}else{'bridge'}),'--tmpfs','/tmp:rw,nosuid,nodev,size=16m',
         '--env-file',$EnvFile,'--publish','127.0.0.1:19203:19103','--publish','127.0.0.1:19204:19104',
         '--mount',('type=volume,source='+$Runtime.stateVolume+',target=/state'),
         '--mount',('type=volume,source='+$Runtime.tokenVolume+',target=/run/github-token,readonly'),
