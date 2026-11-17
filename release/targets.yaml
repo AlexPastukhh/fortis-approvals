@@ -129,5 +129,8 @@ noDeploymentPaths:
   - docs/**
   - scripts/**
   - fortis_approvals/README.md
+  # Only the deployment index Markdown is documentation: never blanket-ignore
+  # deploy/ because it contains the live owner controller and image helpers.
+  - fortis_approvals/deploy/README.md
   - fortis_approvals/evidence/**
   - fortis_approvals/tests/**
