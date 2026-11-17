@@ -16,15 +16,15 @@ SPEC.loader.exec_module(CHECKER)
 
 
 class ObservatoryManifestTests(unittest.TestCase):
-    def test_manifest_valid_but_not_live_or_immutably_pinned(self):
+    def test_manifest_valid_and_accepted_source_pinned_but_not_live(self):
         obj=CHECKER.load(MANIFEST)
         status=CHECKER.validate(obj)
         self.assertEqual(status['status'],'SOURCE_MANIFEST_VALID')
         self.assertEqual(status['operationCount'],2)
-        self.assertFalse(status['sourcePinned'])
+        self.assertTrue(status['sourcePinned'])
         self.assertFalse(status['readyToDeploy'])
         self.assertFalse(status['liveVerified'])
-        self.assertIsNone(obj['sourceSha'])
+        self.assertEqual(obj['sourceSha'],'927e9cb039fe4a52a2f1493aa9cf1d778cde3416')
 
     def test_manifest_exact_routes_network_ca_and_vault(self):
         obj=CHECKER.load(MANIFEST)

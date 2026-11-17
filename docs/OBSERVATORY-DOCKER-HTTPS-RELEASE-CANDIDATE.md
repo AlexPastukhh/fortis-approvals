@@ -7,7 +7,7 @@
 
 - Fixed origin `https://fortis-observatory-api:443` via Python `http.client.HTTPSConnection`; strict DNS SAN and CA via `/run/fortis-secrets/observatory-read/ca.pem` owner-read-only volume path. No system default CA, no proxy, redirect, HTTP/18756 fallback, caller URL or POST route.
 - Trust material is **owner-provisioned** only. Do not commit the key, CA private key, tokens or runtime configs. The only upstream bearer in Gateway is a future distinct `observatory-read` vault alias tied to `read:metadata` and exact owner-approved chat allowlist. The existing Windows principal and previously retired Repo client are not changed.
-- Source-only manifest `docs/templates/own-api/observatory-read.source.json` validates with existing `scripts/check-own-api-manifest.py`. `sourceSha=null` deliberately means upstream Observatory source is **not yet pinned to accepted merged main**; `readyToDeploy=false` until accepted Observatory HEAD, reviewed digest, owner CA and network release.
+- Source-only manifest `docs/templates/own-api/observatory-read.source.json` validates with `scripts/check-own-api-manifest.py`. Observatory source **[PR #2](https://github.com/AlexPastukhh/fortis-observatory-api/pull/2)** was owner-merged after exact-head CI PASS. Manifest `sourceSha=927e9cb039fe4a52a2f1493aa9cf1d778cde3416` pins the accepted **post-merge upstream main commit** (not the prior task-branch head). This pin is source reference only: `readyToDeploy=false` until owner CA, immutable image attestation, recovery and protected R5/R6 network releases.
 
 ## Restricted network candidate (not created)
 
@@ -22,7 +22,7 @@
 
 1. Owner accepts R1 network/TLS/SAN/key mounts, one Observatory-only Docker interface, no Windows-host route and independent isolated backup restore. Do not deploy if indirect clients need old networks, if another RW writer remains or if old image/restore is unproven.
 2. Observatory upstream HTTPS/443 code PR/CI/owner GitHub UI merge, immutable image build/verified synthetic full-API test, protected R5 cutover. Original HTTP/18756 must be discontinued **at R5 only**, no side-channel listener.
-3. Finalize upstream manifest `sourceSha` against accepted Observatory source and keep the same pin in owner release records; create new separate `read:metadata` credential and CA trust in owner vault only after owner R2 approval.
+3. Manifest `sourceSha` is now pinned to the accepted merged upstream main; independently tie the verified Observatory image digest and owner release records to that exact source, and create a new separate `read:metadata` credential and CA trust in owner vault only after owner R2 approval.
 4. Gateway source PR/CI and owner merge; separate protected Gateway Check with exact source/record, global unresolved and claimed worker inventory under UC-GW-009, owner quiescence and independently verified backup. Owner-only Apply/Backup/Promote, never API-invoked by Repo AI.
 5. R7 live `observatory.health`/`observatory.list_sessions`, TLS negatives, no old port/host route, audit and R8 handoff.
 

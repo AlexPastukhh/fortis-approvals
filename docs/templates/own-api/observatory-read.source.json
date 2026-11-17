@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "serviceId": "observatory",
   "ownerRepository": "fortis-observatory-api",
-  "sourceSha": null,
+  "sourceSha": "927e9cb039fe4a52a2f1493aa9cf1d778cde3416",
   "transport": {
     "profile": "DOCKER-HTTPS",
     "origin": "https://fortis-observatory-api:443",
