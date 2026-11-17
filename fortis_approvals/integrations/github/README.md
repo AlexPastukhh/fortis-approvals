@@ -205,10 +205,14 @@ release, repeat typed READ and inspect bounded diagnostic evidence first.
 When Issue READ is restored, a controlled Issue+PNG E2E can be approved
 separately; the attachment must be opened by the owner to verify the bytes.
 
-The running Gateway must be separately released; a source-only client cannot
-enable these changes. Preserve exact UNCERTAIN, CLAIMED and worker activity
-state through any owner-controlled release. A new successful E2E requires
-separate approval of its source/release and no blind replay of old requests.
+The running Gateway must be separately released; source-only changes
+cannot activate it. Preserve UNCERTAIN, CLAIMED and native worker evidence
+under [UC-GW-005](../../docs/use-cases/releases.md#uc-gw-005), using the
+single owner controller and its protected checked-image workflow. The
+owner-installed PR #128 Auto mode admits only independently audited
+append-only UNCERTAIN additions; this is not permission to change existing
+requests or omit receipts. New E2E still needs separate source/release
+approval and never blindly replays an old request.
 
 
 ## Append visual revision to an existing Issue — SOURCE CANDIDATE (NOT LIVE)

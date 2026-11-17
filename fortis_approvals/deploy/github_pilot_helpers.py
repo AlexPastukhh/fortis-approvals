@@ -389,6 +389,211 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
     return before
 
 
+
+
+# Manual, owner-opted monotone Core growth. This is NOT a wildcard for
+# historical rows or other receipts: only brand-new, fully audited UNCERTAIN
+# requests can extend the source snapshot. Every old SQL row is sealed by
+# prefix digest; other state files must remain byte-identical.
+def _core_growth_witness(volume):
+    root=Path(volume)/'private'
+    path=root/'approvals.sqlite'
+    db=sqlite3.connect(path.absolute().as_uri()+'?mode=ro',uri=True)
+    try:
+        expected={
+            'requests':('id','fingerprint','actor','payload','snapshot','state',
+                        'policy_version','created_at','expires_at','decision',
+                        'owner','result','failure'),
+            'events':('seq','request_id','at','state','detail')}
+        # Other Core tables/schema changes cannot be normalized as growth.
+        names={x[0] for x in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        require(names==set(expected),'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+        for table,names in expected.items():
+            current=tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')'))
+            require(current==names,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+        limits={table:db.execute('SELECT COALESCE(MAX(rowid),0) FROM '+table).fetchone()[0]
+                for table in expected}
+        counts={table:db.execute('SELECT COUNT(*) FROM '+table).fetchone()[0]
+                for table in expected}
+        result=_core_prefix_digest(db,limits,counts)
+        result['schemaSha256']=_core_schema_digest(db)
+        return result
+    finally:
+        db.close()
+
+
+def _core_schema_digest(db):
+    rows=db.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master "
+        "ORDER BY type,name,tbl_name,sql").fetchall()
+    require(rows and all(type(item) in (str,type(None))
+                         for row in rows for item in row),
+            'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+    return hashlib.sha256(json.dumps(
+        rows,ensure_ascii=False,separators=(',',':')).encode('utf-8')).hexdigest()
+
+
+def _core_prefix_digest(db, limits, counts):
+    require(type(limits) is dict and set(limits)=={'requests','events'} and
+            type(counts) is dict and set(counts)=={'requests','events'} and
+            all(type(value) is int and 0<=value<=10000000
+                for value in list(limits.values())+list(counts.values())),
+            'PILOT_GROWTH_WITNESS_INVALID')
+    digest=hashlib.sha256(b'fortis-append-only-core-v1\x00')
+    for table in ('requests','events'):
+        old_rows=db.execute('SELECT rowid,* FROM '+table+
+                            ' WHERE rowid <= ? ORDER BY rowid',
+                            (limits[table],)).fetchall()
+        require(len(old_rows)==counts[table],'PILOT_GROWTH_CORE_PREFIX_CHANGED')
+        for row in old_rows:
+            # Strict Core schema: only TEXT, INTEGER and NULL are admitted.
+            require(all(type(v) in (int,str,type(None)) for v in row),
+                    'PILOT_GROWTH_CORE_ROW_INVALID')
+            raw=json.dumps(row,ensure_ascii=False,separators=(',',':')).encode('utf-8')
+            digest.update(len(raw).to_bytes(4,'big'))
+            digest.update(raw)
+    return {'schema':'fortis-core-growth-v1','limits':limits,
+            'counts':counts,'prefixSha256':digest.hexdigest()}
+
+
+def _actual_uncertain_ids(volume):
+    db=sqlite3.connect((Path(volume)/'private'/'approvals.sqlite').absolute().as_uri()+
+                       '?mode=ro',uri=True)
+    try:
+        rows=[x[0] for x in db.execute(
+            "SELECT id FROM requests WHERE state='UNCERTAIN' ORDER BY id")]
+        require(len(rows)<=20,'PILOT_UNCERTAIN_SCOPE_INVALID')
+        validate_uncertain_ids(rows)
+        return rows
+    finally:
+        db.close()
+
+
+def uncertain_growth_snapshot(volume, *, github, native, preserve_claimed_ids,
+                              preserve_approved_ids, require_exact_claimed,
+                              require_exact_approved, uid=10001, gid=10001):
+    require(github is True and native is True,
+            'PILOT_GROWTH_REQUIRES_FULL_STATE')
+    for _ in range(3):
+        ids=_actual_uncertain_ids(volume)
+        original=inspect_state(
+            volume,uid=uid,gid=gid,github=True,native=True,preserve_uncertain_ids=ids,
+            require_exact_uncertain=True,preserve_claimed_ids=preserve_claimed_ids,
+            require_exact_claimed=require_exact_claimed,
+            preserve_approved_ids=preserve_approved_ids,
+            require_exact_approved=require_exact_approved)
+        witness=_core_growth_witness(volume)
+        if (original==inspect_state(
+                volume,uid=uid,gid=gid,github=True,native=True,preserve_uncertain_ids=ids,
+                require_exact_uncertain=True,preserve_claimed_ids=preserve_claimed_ids,
+                require_exact_claimed=require_exact_claimed,
+                preserve_approved_ids=preserve_approved_ids,
+                require_exact_approved=require_exact_approved) and
+                witness==_core_growth_witness(volume)):
+            require(original['summary']['requests']==witness['counts']['requests']
+                    and original['summary']['events']==witness['counts']['events'],
+                    'PILOT_GROWTH_SNAPSHOT_INCONSISTENT')
+            return {'receipt':original,'witness':witness,'uncertainIds':ids}
+    raise RuntimeError('PILOT_GROWTH_SOURCE_BUSY')
+
+
+def review_uncertain_growth(volume, *, original, witness, github, native,
+                            preserve_claimed_ids, preserve_approved_ids,
+                            require_exact_claimed, require_exact_approved, uid=10001, gid=10001):
+    require(github is True and native is True and type(original) is dict and
+            set(original)=={'sha256','summary'} and type(witness) is dict and
+            set(witness)=={'schema','limits','counts','prefixSha256','schemaSha256'} and
+            witness['schema']=='fortis-core-growth-v1',
+            'PILOT_GROWTH_RECORD_INVALID')
+    require(all(type(witness[name]) is str and
+                re.fullmatch('[0-9a-f]{64}',witness[name])
+                for name in ('prefixSha256','schemaSha256')),
+            'PILOT_GROWTH_WITNESS_INVALID')
+    ids=_actual_uncertain_ids(volume)
+    old=validate_uncertain_ids(original['summary'].get('uncertainRequestIds'))
+    added=set(ids)-old
+    require(old <= set(ids) and len(added)<=20 and len(ids)<=20,
+            'PILOT_GROWTH_UNCERTAIN_REMOVED_OR_OVERFLOW')
+    if not added:
+        current=inspect_state(volume,uid=uid,gid=gid,github=True,native=True,preserve_uncertain_ids=ids,
+                              require_exact_uncertain=True,preserve_claimed_ids=preserve_claimed_ids,
+                              require_exact_claimed=require_exact_claimed,preserve_approved_ids=preserve_approved_ids,
+                              require_exact_approved=require_exact_approved)
+        require(current==original,'PILOT_GROWTH_OTHER_STATE_CHANGED')
+        return {'receipt':current,'uncertainIds':ids,'addedCount':0}
+    with sqlite3.connect((Path(volume)/'private'/'approvals.sqlite').absolute().as_uri()+
+                         '?mode=ro',uri=True) as db:
+        expected=_core_prefix_digest(db,witness['limits'],witness['counts'])
+        require(expected['prefixSha256']==witness['prefixSha256'] and
+                expected['counts']==witness['counts'] and
+                expected['limits']==witness['limits'],
+                'PILOT_GROWTH_CORE_PREFIX_CHANGED')
+        require(_core_schema_digest(db)==witness['schemaSha256'],
+                'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+        added_requests=list(db.execute(
+            'SELECT id,state FROM requests WHERE rowid > ? ORDER BY rowid',
+            (witness['limits']['requests'],)))
+        require(len(added_requests)==len(added) and
+                {row[0] for row in added_requests}==added and
+                all(row[1]=='UNCERTAIN' for row in added_requests),
+                'PILOT_GROWTH_NEW_REQUEST_NOT_UNCERTAIN')
+        added_events=list(db.execute(
+            'SELECT request_id,state FROM events WHERE rowid > ? ORDER BY rowid',
+            (witness['limits']['events'],)))
+        require(len(added_events)>=len(added) and
+                {row[0] for row in added_events}==added and
+                all(row[1] in ('PENDING','APPROVED','DISPATCHED','UNCERTAIN')
+                    for row in added_events),
+                'PILOT_GROWTH_NEW_AUDIT_INVALID')
+        for ident in added:
+            last=[s for request_id,s in added_events if request_id==ident]
+            require(last and last[-1]=='UNCERTAIN',
+                    'PILOT_GROWTH_NEW_AUDIT_INVALID')
+    current=inspect_state(
+        volume,uid=uid,gid=gid,github=True,native=True,preserve_uncertain_ids=ids,
+        require_exact_uncertain=True,preserve_claimed_ids=preserve_claimed_ids,
+        require_exact_claimed=require_exact_claimed,
+        preserve_approved_ids=preserve_approved_ids,
+        require_exact_approved=require_exact_approved)
+    before_hashes=original['sha256']
+    after_hashes=current['sha256']
+    require(type(before_hashes) is dict and
+            set(after_hashes)==set(before_hashes) and
+            all(after_hashes[k]==v for k,v in before_hashes.items()
+                if k!='approvals.sqlite') and
+            after_hashes['approvals.sqlite']!=before_hashes['approvals.sqlite'],
+            'PILOT_GROWTH_OTHER_STATE_CHANGED')
+    before=original['summary']
+    after=current['summary']
+    permitted_changes={'requests','events','uncertainRequestIds','requestStates'}
+    require(set(before)==set(after) and
+            all(after[k]==v for k,v in before.items()
+                if k not in permitted_changes) and
+            after['requests']==before['requests']+len(added) and
+            after['events']==before['events']+len(added_events) and
+            after['uncertainRequestIds']==ids,'PILOT_GROWTH_SUMMARY_CHANGED')
+    states=dict(before['requestStates'])
+    states['UNCERTAIN']=states.get('UNCERTAIN',0)+len(added)
+    require(after['requestStates']==states,'PILOT_GROWTH_OTHER_STATE_CHANGED')
+    # Re-validate the old immutable SQL prefix plus the complete current
+    # receipt: this must not silently admit a concurrent second insertion.
+    with sqlite3.connect((Path(volume)/'private'/'approvals.sqlite').absolute().as_uri()+
+                         '?mode=ro',uri=True) as db:
+        repeated=_core_prefix_digest(db,witness['limits'],witness['counts'])
+        require(repeated['prefixSha256']==witness['prefixSha256'],
+                'PILOT_GROWTH_CORE_PREFIX_CHANGED')
+        require(_core_schema_digest(db)==witness['schemaSha256'],
+                'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+    fresh=inspect_state(
+        volume,uid=uid,gid=gid,github=True,native=True,preserve_uncertain_ids=ids,
+        require_exact_uncertain=True,preserve_claimed_ids=preserve_claimed_ids,
+        require_exact_claimed=require_exact_claimed,
+        preserve_approved_ids=preserve_approved_ids,
+        require_exact_approved=require_exact_approved)
+    require(fresh==current,'PILOT_GROWTH_SOURCE_BUSY')
+    return {'receipt':current,'uncertainIds':ids,'addedCount':len(added)}
+
 def provision_token(token, volume='/provision', *, uid=10001, gid=10001):
     require(type(token) is str and bool(re.fullmatch(r'[A-Za-z0-9_]{20,4096}', token)), 'PILOT_CREDENTIAL_FORMAT_INVALID')
     root = Path(volume)
@@ -611,6 +816,19 @@ def main():
         preserve_claimed_ids=value.get('preserveClaimedIds',[]),
         require_exact_claimed=value.get('requireExactClaimed',False),
         preserve_approved_ids=value.get('preserveApprovedIds',[]),
+        require_exact_approved=value.get('requireExactApproved',False))
+    elif action == 'uncertain_growth_snapshot': result = uncertain_growth_snapshot(
+        '/source',github=value.get('github',False),native=value.get('native',False),
+        preserve_claimed_ids=value.get('preserveClaimedIds',[]),
+        preserve_approved_ids=value.get('preserveApprovedIds',[]),
+        require_exact_claimed=value.get('requireExactClaimed',False),
+        require_exact_approved=value.get('requireExactApproved',False))
+    elif action == 'uncertain_growth_review': result = review_uncertain_growth(
+        '/source',original=value['original'],witness=value['witness'],
+        github=value.get('github',False),native=value.get('native',False),
+        preserve_claimed_ids=value.get('preserveClaimedIds',[]),
+        preserve_approved_ids=value.get('preserveApprovedIds',[]),
+        require_exact_claimed=value.get('requireExactClaimed',False),
         require_exact_approved=value.get('requireExactApproved',False))
     elif action == 'admit': result = admit(value['container'], value['expected'], pilot=value['pilot'])
     elif action == 'receipt': result = verify_receipt(**value['expected'])

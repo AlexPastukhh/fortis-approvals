@@ -145,13 +145,17 @@ release аргументы без актуального списка pending/ap
 record остаётся `CLAIMED`, а отсутствие Repo receipt не означает доказанного
 отсутствия эффекта. Не закрывать её автоматически и не переписывать SQLite.
 
-Для **нового image release**, при его явной необходимости, использовать
-штатный `Manage-Integrations.ps1`: Windows SelfTest, `Check -Build` с принятым
-source SHA и полным точным списком текущих `UNCERTAIN`, `Apply` после owner GO,
-затем отдельные `Backup` и `Promote`. Для наследуемого `CLAIMED` указывать
-`-PreserveClaimedJobs <exact-UUID> -ConfirmWorkerQuiescent` на
-`Check`/`Apply`. Заявление об отсутствии активных внешних Repo worker
-процессов необходимо подтвердить независимо: сам switch это **не проверяет**.
+**Для новых штатных релизов — упрощённый `Check -Auto → Apply -Auto`**
+с отдельными owner GO, Backup, Promote и независимой quiescence-проверкой
+по [действующему runbook](#lightweight-owner-release-path-pr4b).
+Приведённый здесь ручной `Check -Build` с точными
+`-PreserveUncertainRequests` / `-PreserveClaimedJobs` остаётся
+**исключением**, когда `-Auto` недопустим. Появление новых
+`UNCERTAIN` в версии после PR #128 допускается только через
+[проверяемый механизм](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md),
+не через отключение целостности состояния.
+Независимое доказательство отсутствия активной работы обязательно:
+`-ConfirmWorkerQuiescent` само по себе не является доказательством.
 `Backup` и `Promote` наследуют protected scope и требуют новой аттестации
 `-ConfirmWorkerQuiescent`. Не запускать повторный `Apply` или чистку worker
 после неоднозначного результата.
@@ -234,6 +238,12 @@ copy its old runtime pins. Normal image releases use the next section.
 
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
+
+## Audited UNCERTAIN growth — source candidate (PR #128)
+
+[One technical contract](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md)
+defines the shared helper for standard Auto and manual checked releases.
+Source merge or CI is not Windows/Production installation.
 
 ## P3.4 — source-only owner publisher volume mount (not activated)
 
@@ -440,20 +450,24 @@ prior values are `STOP`, never replaced with a guessed template.
 
 The Repo machine grant performs **read-only** global request/worker activity
 inventory. `PENDING`, `DISPATCHED` or any live `APPROVED` demand STOP/owner
-review; full and bounded pagination is mandatory. Exact current
-`UNCERTAIN/CLAIMED` IDs are passed to the **existing** read-only Docker volume
-receipt checker with equality requirements; the Repo inventory cannot expand
-unapproved worker actions or serve as its own preservation proof. Existing
+review; full and bounded pagination is mandatory. Starting with the
+owner-installed PR #128 source, Auto Check seals the original
+`UNCERTAIN/CLAIMED` scope and an offline SQL/audit witness. Auto Apply uses
+the **original sealed scope**, not the latest Repo READ list, and the same
+read-only verifier admits only [bounded new UNCERTAIN entries](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md).
+The final ID list is frozen after stopping the original Gateway. Older
+Check records without a witness require a fresh Check. Existing
 `CLAIMED` worker is never resumed/closed. The owner must **independently**
 verify quiescence and type `QUIESCENT` again at each phase. Applying requires
 separate explicit `APPLY`, Backup and Promote their own confirmation. Failed
 or ambiguous Apply is handled via protected attempt record and Return/UC-GW-006,
 not retry of `Apply -Auto`.
 
-**Important:** after a Check, record the reported source SHA, `checkedImageId`,
-`checkedImageRecord` in owner-local evidence; do not paste private record
-content or tokens in chats. Any state change between Check and Apply can
-produce a valid STOP; rerun preflight rather than bypassing the binding.
+**Important:** record source SHA, `checkedImageId` and `checkedImageRecord`
+in owner-local evidence; do not paste private records or tokens.
+After owner installation of PR #128, strictly audited additions to
+`UNCERTAIN` may pass. Any other source-state drift, incomplete evidence
+or missing witness still causes STOP; never bypass the checked-image binding.
 Do not use `-Auto` against an older Windows source revision: owner Merge/Pull
 and PowerShell SelfTest must precede this workflow. The explicit manual
 controller path remains available for incident handling and exact reviewed

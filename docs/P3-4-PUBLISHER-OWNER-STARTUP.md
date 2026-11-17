@@ -76,9 +76,14 @@ activate the previously disabled principal.
 
 1. Owner accepts exact source HEAD, profile/validator pins, no broad grants and
    a reproducible image; a source merge is not a release.
-2. Fresh clean Windows Mirror Pull, PowerShell 5.1 SelfTest, protected
-   `Manage-Integrations.ps1 -Action Check -Auto`, and **separate owner GO**
-   for Apply, Backup and Promote per [UC-GW-005](use-cases/releases.md#uc-gw-005).
+2. Fresh clean Windows Mirror Pull and PowerShell 5.1 SelfTest.
+   **First-time publisher volume activation** requires the manual pinned
+   Check/Apply with owner `-EnablePublisherMount` per
+   [activation contract](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+   and [UC-GW-005](use-cases/releases.md#uc-gw-005).
+   `Check -Auto → Apply -Auto` is for later compatible Gateway updates,
+   not for provisioning a new publisher principal. Separate owner GO,
+   Backup and Promote remain mandatory.
    Preserve all existing `UNCERTAIN` requests and historical `CLAIMED`
    jobs. `quiescenceProven=false` remains STOP until independent owner proof.
    An ambiguous Apply must use original protected recovery record, not retry.

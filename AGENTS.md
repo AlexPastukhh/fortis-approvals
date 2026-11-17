@@ -6,6 +6,10 @@ UC-CONT-003 in full** before working. UC-CONT-002 owns Docker → GitHub → exa
 CI → approved merge → Docker main → Windows/Mirror; UC-CONT-003 owns typed
 GitHub-client/Gateway-only authorization, including STOP for unregistered repos.
 Read this repo README, the applicable [local Gateway UC](docs/use-cases/README.md) and relevant technical owner only for the chosen task.
+For any Gateway image/controller release (including tasks from other chats),
+add [UC-GW-005](docs/use-cases/releases.md#uc-gw-005) and its owner runbook.
+Never treat source merge as Windows/runtime installation or copy dated
+one-off release commands.
 Do not duplicate shared cases, runtime snapshots or policy tables here.
 
 The user authorizes creating needed ASK proposals within an assigned task without

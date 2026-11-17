@@ -90,10 +90,14 @@ the original worker job. Browser click acceptance was not independently
 established by the machine read. Current use case:
 [UC-GW-009](../../docs/use-cases/incidents.md#uc-gw-009).
 
-## Historical UNCERTAIN / CLAIMED protected migration — installed guard
+## Historical exact-scope UNCERTAIN / CLAIMED migration
 
-For a new source/image release the controller still requires owner-scoped
-`-PreserveUncertainRequests` with the current exact set of `UNCERTAIN`.
+This records the earlier manual guard, **not the current standard Auto recipe**.
+For owner releases use [UC-GW-005](../../docs/use-cases/releases.md#uc-gw-005)
+and its [runbook](../../docs/PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b).
+After owner installation of PR #128, Auto uses the audited source-growth
+helper without a second release script. The older manual path requires
+`-PreserveUncertainRequests` with an exact original `UNCERTAIN` set.
 Orphaned native `CLAIMED` jobs can be byte-preserved only under an explicit
 `-PreserveClaimedJobs` UUID with `-Build -SourceSha <approved SHA>` and
 `-ConfirmWorkerQuiescent`; the switch is an owner attestation, not a

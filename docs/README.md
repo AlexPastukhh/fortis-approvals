@@ -27,6 +27,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | PowerShell baseline, Repo AI V1 ASK-only plan and future improvements | [Current owner-only contract](OWNER-POWERSHELL.md) · [Consolidated plan/history](BACKLOG-IMPROVEMENTS.md#powershell-plan) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
 | Provider-specific implementation | [Integration catalog](../fortis_approvals/integrations/README.md) |
+| Gateway release owner procedure and UNCERTAIN drift contract | [UC-GW-005](use-cases/releases.md#uc-gw-005) · [Owner runbook](PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b) · [Read-only growth verifier](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md) |
 | Deployment scripts and retained return paths | [Deployment index](../fortis_approvals/deploy/README.md) |
 | Completed onboarding milestones | [Onboarding record](INTEGRATION-MODULARIZATION-AND-GITHUB-ONBOARDING-PLAN.md) |
 

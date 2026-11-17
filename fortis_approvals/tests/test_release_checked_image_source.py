@@ -150,7 +150,7 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertIn("RELEASE_BUILD_ACTION_INVALID", SCRIPT)
 
     def test_unrelated_backup_and_promote_paths_stay_guarded(self):
-        self.assertIn("-or $PreserveApprovedRequest -or $CheckedImageRecord)", SCRIPT)
+        self.assertIn("-or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)", SCRIPT)
         self.assertIn("if($Action -eq 'Backup'){Backup-Primary;return}", SCRIPT)
         self.assertIn("if($Action -eq 'Promote'){Promote-Primary;return}", SCRIPT)
         self.assertIn("PRIMARY_VERIFIED_BACKUP_REQUIRED", PRIMARY)
