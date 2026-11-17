@@ -54,6 +54,14 @@ Apply с checkedImageId/checkedImageRecord **без** `-Build`.
 и отдельного owner review. Исключения не отключают state admission,
 previous-image retention, Backup/Promote и fail-closed recovery.
 
+**P3.4 Publisher (только source candidate):** отдельный защищённый
+[volume-opt-in контракт](../P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+предусматривает вручную подтверждённый owner Check -Build и связанный
+Apply -CheckedImageRecord с одним уже подготовленным приватным volume.
+Обычный -Auto не умеет впервые включать отдельный publisher machine grant.
+Никакая публикация исходников не создаёт секреты и не доказывает
+фактический Docker mount; без отдельного owner release Publisher выключен.
+
 **Несколько чатов:** совместимые принятые PR можно включить в один
 проверенный merged `main` SHA и один логический owner release;
 смешивать Docker images/SQLite разных чатов нельзя. Межчатовый
