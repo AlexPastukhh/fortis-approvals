@@ -21,6 +21,8 @@ def read_code():
 class FakeClient:
     def __init__(self):
         self.sha=SHA
+        self.branch_pages={1:[{'name':'main','sha':self.sha}]}
+        self.branch_calls=[]
         self.rows=[
             {'requestId':'11111111-1111-4111-8111-111111111111','state':'UNCERTAIN'},
             {'requestId':'22222222-2222-4222-8222-222222222222','state':'UNCERTAIN'},
@@ -30,8 +32,9 @@ class FakeClient:
         self.github=self;self.gateway=self
 
     def list_branches(self,repo,*,page,per_page):
-        assert repo=='fortis-approvals' and page==1 and per_page==100
-        return {'items':[{'name':'main','sha':self.sha}]}
+        assert repo=='fortis-approvals' and per_page==100
+        self.branch_calls.append(page)
+        return {'items':self.branch_pages.get(page,[])}
 
     def post(self,path,payload):
         assert path=='/v1/workspace/capabilities' and payload=={}
@@ -93,6 +96,36 @@ class AutoOwnerSourceTests(unittest.TestCase):
         for disallowed in ('reconcile(','.publish(','.submit(','.execute('):
             self.assertNotIn(disallowed,read_code())
 
+    def test_branch_inventory_paginates_beyond_100(self):
+        fake=FakeClient()
+        fake.branch_pages={
+            1:([{'name':f'branch-{i:03d}','sha':'a'*40} for i in range(99)] +
+               [{'name':'main','sha':SHA}]),
+            2:[{'name':f'task-branch-{i:03d}','sha':'b'*40} for i in range(31)],
+        }
+        data=run_read(fake)
+        self.assertEqual(fake.branch_calls,[1,2])
+        self.assertEqual(data['sourceSha'],SHA)
+
+    def test_branch_inventory_page_limit_fails_closed(self):
+        fake=FakeClient()
+        fake.branch_pages={
+            page:[{'name':f'branch-{page}-{i}','sha':'a'*40} for i in range(100)]
+            for page in range(1,21)
+        }
+        with self.assertRaisesRegex(RuntimeError,'RELEASE_BRANCH_PAGE_LIMIT'):
+            run_read(fake)
+
+    def test_branch_inventory_rejects_duplicate_names(self):
+        fake=FakeClient()
+        fake.branch_pages={
+            1:([{'name':f'branch-{i:03d}','sha':'a'*40} for i in range(99)] +
+               [{'name':'main','sha':SHA}]),
+            2:[{'name':'main','sha':SHA}],
+        }
+        with self.assertRaisesRegex(RuntimeError,'RELEASE_BRANCH_DUPLICATE'):
+            run_read(fake)
+
     def test_inventory_growth_detected_without_manual_uuid(self):
         fake=FakeClient()
         self.assertEqual(len(run_read(fake)['uncertain']),2)
@@ -105,8 +138,9 @@ class AutoOwnerSourceTests(unittest.TestCase):
         fake=FakeClient();fake.incomplete=True
         with self.assertRaisesRegex(AssertionError,'RELEASE_INVENTORY_INCOMPLETE'):
             run_read(fake)
-        fake=FakeClient();fake.sha='a'*40
-        with self.assertRaisesRegex(AssertionError,'RELEASE_REMOTE_MAIN_MISMATCH'):
+        fake=FakeClient()
+        fake.branch_pages={1:[{'name':'main','sha':'a'*40}]}
+        with self.assertRaisesRegex(RuntimeError,'RELEASE_REMOTE_MAIN_MISMATCH'):
             run_read(fake)
         fake=FakeClient();fake.claims=[{'requestId':'x','jobState':'QUEUED'}]
         with self.assertRaisesRegex(AssertionError,'RELEASE_ACTIVITY_UNEXPECTED_JOB'):
