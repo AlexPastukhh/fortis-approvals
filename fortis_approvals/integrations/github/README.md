@@ -238,8 +238,10 @@ A new local durable row reserves `(repository,runId)` and
 `(repository,issueNumber,revision)` **before any upstream effect**. Uploaded
 attachment links, a verified comment ID and a per-request receipt are retained.
 Unconfirmed partial output blocks future revisions. The next revision checks
-the previous comment still exists, is bound to the expected marker, and the
-previous version has a durable comment ID. This is a comment-delivery proof,
+that the previous version has a request-bound durable receipt **and an EXECUTED
+Core state**, and that its comment still exists with the exact marker, ID,
+body digest and URL. A durable comment ID alone is insufficient: a lost final
+GET after a successful POST leaves v2 unconfirmed and must block v3. This is a comment-delivery proof,
 not a byte-level check of the remotely hosted PNG.
 
 **Security/release:** This is a new Core action (UC-GW-003). The reviewed

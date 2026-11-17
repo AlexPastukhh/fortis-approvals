@@ -100,7 +100,9 @@ class RevisionTests(unittest.TestCase):
             request=intent,preview=preview,state='DISPATCHED',decision='approve',
             owner='owner',actor='agent',policyVersion=1,
             expiresAt=int(time.time())+3600)
-        return self.adapter.apply(intent)
+        result=self.adapter.apply(intent)
+        self.core.rows[intent['requestId']]['state']='EXECUTED'
+        return result
 
     def test_no_owner_approval_or_wrong_policy_blocks_before_effect(self):
         with self.assertRaises(Denied):self.adapter.apply(self.intent())
@@ -217,6 +219,33 @@ class RevisionTests(unittest.TestCase):
             self.approved(self.intent(third,p))
         self.assertEqual(self.transport.comment_posts,1)
 
+    def test_missing_final_readback_receipt_blocks_v3(self):
+        original=self.transport.request
+        def lost(method,path,**kwargs):
+            if method=='GET' and '/issues/comments/' in path:
+                raise TimeoutError('readback lost after comment created')
+            return original(method,path,**kwargs)
+        self.transport.request=lost
+        with self.assertRaises(TimeoutError):self.approved(self.intent())
+        self.assertEqual(self.transport.comment_posts,1)
+        self.assertIsNone(self.adapter.receipt(self.rev_id))
+        self.assertEqual(self.adapter.visual_evidence(self.rev_id)['commentId'],778)
+        self.transport.request=original
+        ident=str(uuid.uuid4());p=self.revision_params('third-after-lost-readback',3)
+        self.stage(ident,p)
+        with self.assertRaisesRegex(Denied,'GITHUB_REVISION_PREVIOUS_UNCONFIRMED'):
+            self.approved(self.intent(ident,p))
+        self.assertEqual(self.transport.comment_posts,1)
+
+    def test_previous_core_uncertain_blocks_v3_even_with_receipt(self):
+        self.approved(self.intent())
+        self.core.rows[self.rev_id]['state']='UNCERTAIN'
+        ident=str(uuid.uuid4());p=self.revision_params('third-after-uncertain',3)
+        self.stage(ident,p)
+        with self.assertRaisesRegex(Denied,'GITHUB_REVISION_PREVIOUS_UNCONFIRMED'):
+            self.approved(self.intent(ident,p))
+        self.assertEqual(self.transport.comment_posts,1)
+
     def test_deleted_prior_comment_blocks_next_version(self):
         self.approved(self.intent())
         self.transport.comments.pop(778)
@@ -224,6 +253,15 @@ class RevisionTests(unittest.TestCase):
         self.stage(third,p)
         with self.assertRaises((Denied,KeyError)):
             self.approved(self.intent(third,p))
+        self.assertEqual(self.transport.comment_posts,1)
+
+    def test_changed_previous_comment_url_blocks_v3(self):
+        self.approved(self.intent())
+        self.transport.comments[778]['html_url']='https://github.com/PilotOwner/visual-workspace/issues/99#issuecomment-778'
+        ident=str(uuid.uuid4());p=self.revision_params('third-after-moved-comment',3)
+        self.stage(ident,p)
+        with self.assertRaisesRegex(Denied,'GITHUB_REVISION_PREVIOUS_COMMENT_CHANGED'):
+            self.approved(self.intent(ident,p))
         self.assertEqual(self.transport.comment_posts,1)
 
     def test_client_previews_locally_and_stages_once(self):
