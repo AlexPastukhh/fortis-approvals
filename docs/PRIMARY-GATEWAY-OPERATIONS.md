@@ -1,5 +1,20 @@
 # Primary Fortis Gateway — operator procedure
 
+## Action Core READ / Docker network migration — source candidate
+
+The opt-in Action Core HTTPS/443 release introduces an additional **owner-only**
+network admission gate. The existing Manage-Integrations.ps1 supports
+-EnableActionCoreNetwork for checked Check/Apply only: it pins exact Docker
+network identities, requires a verified Docker backend outbound TCP/8000 block,
+and checks both legacy HTTP bypasses from the staged Gateway before activation.
+The original bridge source and protected Return remain supported. Neither
+this text nor a source merge changes Windows Firewall, Docker networks,
+Gateway runtime or PostgreSQL. Follow
+[ACTION-CORE-NETWORK-ISOLATION.md](ACTION-CORE-NETWORK-ISOLATION.md)
+and UC-GW-009/012; production activation remains STOP until owner-run
+preflight, source CI, isolated restore and negative/positive live probes.
+
+
 ## Исторический actor-scoped incident read и owner closure (релиз 2026-11-09)
 
 Owner-reported `FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED`
@@ -219,6 +234,20 @@ copy its old runtime pins. Normal image releases use the next section.
 
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
+
+## P3.4 — source-only owner publisher volume mount (not activated)
+
+The [separate protected opt-in design](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+introduces only a FIXED named Docker volume, readonly mounted at
+/run/r7-publisher-activation. It requires an owner-provisioned two-file
+identity with UID 10001 and modes 0700/0600 and a byte-bound offline
+fingerprint stored only in protected release records. The first activation
+must use manual SHA-pinned Check -Build and bound Apply with
+-EnablePublisherMount and independently attested quiescence. -Auto must
+fail closed on first opt-in. An already installed identity may be preserved
+by later -Auto releases only with its original volume and material digest.
+A source merge does not provision the volume, run Docker or enable Publisher.
+Maintain UC-GW-005 protected UNCERTAIN/CLAIMED scope and host readback.
 
 ## Pending Release Labels typed API release — not yet installed
 

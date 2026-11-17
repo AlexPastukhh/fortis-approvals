@@ -126,7 +126,19 @@ function Helper {
 }
 function Public-Inspect {
     param($C)
+    # NetworkMode alone does not reveal a later docker network connect.
+    # Send only endpoint name and immutable network ID into the trusted Guard.
+    $Endpoints=[ordered]@{}
+    if($C.NetworkSettings -and $C.NetworkSettings.Networks){
+        foreach($Endpoint in $C.NetworkSettings.Networks.PSObject.Properties){
+            if($Endpoint.MemberType -ne [Management.Automation.PSMemberTypes]::NoteProperty){
+                throw 'PILOT_NETWORK_INSPECT_INVALID'
+            }
+            $Endpoints[$Endpoint.Name]=[ordered]@{NetworkID=[string]$Endpoint.Value.NetworkID}
+        }
+    }
     return [ordered]@{ Id=$C.Id; Name=$C.Name; Image=$C.Image; Mounts=$C.Mounts
+        NetworkSettings=[ordered]@{Networks=$Endpoints}
         State=[ordered]@{ Status=$C.State.Status; Health=[ordered]@{ Status=$C.State.Health.Status } }
         Config=[ordered]@{ User=$C.Config.User; WorkingDir=$C.Config.WorkingDir; Healthcheck=$C.Config.Healthcheck
             Cmd=$C.Config.Cmd; Entrypoint=$C.Config.Entrypoint

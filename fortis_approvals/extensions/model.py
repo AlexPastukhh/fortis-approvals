@@ -57,6 +57,9 @@ class Operation:
     routes: tuple = ()
     version: str = '1'
     ready: bool = True
+    # Additive optional fields preserve legacy positional Operation definitions.
+    signing_credential: str = None
+    signing_key_id: str = None
 
     def __post_init__(self):
         ident(self.name)
@@ -68,7 +71,16 @@ class Operation:
         check(self.preview is None or callable(self.preview))
         check(self.preview_result is None or callable(self.preview_result))
         check(self.lookup is None or callable(self.lookup))
-        check(self.credential is None or IDENT.fullmatch(self.credential))
+        check(self.credential is None or type(self.credential) is str and IDENT.fullmatch(self.credential))
+        check((self.signing_credential is None) == (self.signing_key_id is None),
+              'INTEGRATION_SIGNING_DEFINITION_INVALID')
+        if self.signing_credential is not None:
+            check(self.kind == 'write' and self.credential is not None and
+                  type(self.signing_credential) is str and IDENT.fullmatch(self.signing_credential) and
+                  self.signing_credential != self.credential and
+                  type(self.signing_key_id) is str and
+                  re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', self.signing_key_id),
+                  'INTEGRATION_SIGNING_DEFINITION_INVALID')
         check(type(self.routes) is tuple and len(set(self.routes)) == len(self.routes) and
               all(type(x) is str and IDENT.fullmatch(x) for x in self.routes))
 

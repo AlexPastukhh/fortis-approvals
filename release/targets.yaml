@@ -18,6 +18,8 @@ buildUnits:
       - fortis_approvals/owner_auth.py
       - fortis_approvals/owner_portal.py
       - fortis_approvals/owner_shell.py
+      - fortis_approvals/powershell_machine.py
+      - fortis_approvals/powershell_owner_mount.py
       - fortis_approvals/owner_shell_release.py
       - fortis_approvals/owner_shell_portal.py
       - fortis_approvals/incidents.py
@@ -45,6 +47,31 @@ buildUnits:
       - fortis_approvals/static/**
       - fortis_approvals/deploy/github_pilot_helpers.py
       - fortis_approvals/deploy/image_offline_smoke.py
+  # P3.4 source definition only; no publisher image is built or activated here.
+  - id: publisher-runner-image
+    artifactType: docker-image
+    recipe: fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher
+    inputs:
+      - fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher
+      - .dockerignore
+      - fortis_approvals/__init__.py
+      - fortis_approvals/core.py
+      - fortis_approvals/diagnostic_contract.py
+      - fortis_approvals/repo_action_contract.py
+      - fortis_approvals/repo_ingress.py
+      - fortis_approvals/clients/*.py
+      - fortis_approvals/workflow/*.py
+      - fortis_approvals/integrations/*.py
+      - fortis_approvals/integrations/github/*.py
+      - fortis_approvals/integrations/github/repo_client/*.py
+      - fortis_approvals/integrations/github/gateway/__init__.py
+      - fortis_approvals/integrations/github/gateway/transport.py
+      - fortis_approvals/integrations/github/gateway/pr_create_diagnostic.py
+      - fortis_approvals/integrations/sonarcloud/__init__.py
+      - fortis_approvals/integrations/sonarcloud/analysis_contract.py
+      - fortis_approvals/integrations/sonarcloud/contract.py
+      - fortis_approvals/integrations/sonarcloud/gateway/__init__.py
+      - fortis_approvals/integrations/sonarcloud/gateway/analysis_reader.py
 targets:
   - id: fortis-gateway
     buildUnit: primary-gateway-image
@@ -71,11 +98,25 @@ targets:
     verification:
       - windows-source-exact-sha
       - owner-powershell-selftest
+  # Separate, disabled P3.4 owner-controlled runner (not Primary Gateway).
+  - id: release-label-publisher
+    buildUnit: publisher-runner-image
+    deployment:
+      kind: owner-controlled
+      procedure: docs/P3-4-PUBLISHER-ISOLATED-RUNTIME.md
+      environments: [production]
+    verification:
+      - source-ci
+      - owner-isolation-attestation
+      - publisher-grant-capabilities
+      - owner-one-shot-webAuthn-pilot
+      - original-receipt-and-label-readback
 noDeploymentPaths:
   - release/**
   # WorkflowClient is a Repo-side machine client; the Primary image COPY
   # includes only the native workflow server modules and not this file.
   - fortis_approvals/workflow/client.py
+  - fortis_approvals/workflow/powershell_client.py
   - fortis_approvals/workflow/intents.py
   - README.md
   - CONTRIBUTING.md

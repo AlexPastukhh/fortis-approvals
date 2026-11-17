@@ -21,6 +21,10 @@ from .repo_action_contract import RepoIntentBroker
 from .integrations.sonarcloud.contract import LEGACY_READ_OPERATIONS as SONAR_READ_OPERATIONS
 from .repo_ingress import RepoIngress
 from .r5_read_candidate import _GRANT, _RESERVED_OWNER_ORIGINS
+from .integrations.github.publisher_profile import (
+    ACTOR as PUBLISHER_ACTOR, READS as PUBLISHER_READS,
+    WRITES as PUBLISHER_WRITES, PublisherProfile,
+)
 from .integrations.sonarcloud.gateway.sonar import SonarIssueAdapter
 from .integrations.sonarcloud.gateway.read_adapter import SonarReadAdapter
 
@@ -69,7 +73,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               ingress_grant, sonar_transport,
                               organizations, region='eu', actor_grants=None,
                               project_keys=None, github_pilot=None,
-                              github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None):
+                              github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None,
+                              publisher_profile=None, publisher_grant=None,
+                              machine_shell=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -94,6 +100,17 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         if not isinstance(github_pilot, GitHubPilotConfig):
             raise ValueError('GITHUB_PILOT_CONFIG_REQUIRED')
         github_pilot.check_endpoints(owner_origin, ingress_host)
+    if machine_shell is not None:
+        from .powershell_machine import MachinePowerShellAdapter
+        from .integrations.github.pilot import GitHubPilotConfig
+        if (type(machine_shell) is not MachinePowerShellAdapter or
+                type(github_pilot) is not GitHubPilotConfig or
+                github_pilot.native_worktree is not True):
+            raise Denied('MACHINE_POWERSHELL_NATIVE_COMPOSITION_REQUIRED')
+    # A separately mounted owner principal is NEVER part of the legacy actor
+    # list: those actors inherit Sonar READ/ASK and optional extension scopes.
+    # In particular, accepting a publisher in actor_grants would silently
+    # grant it the wrong powers before the native guards were installed.
     grants = ({ingress_grant: ACTOR} if actor_grants is None else actor_grants)
     if (type(grants) is not dict or not grants or
             any(type(grant) is not str or not _GRANT.fullmatch(grant) or
@@ -102,11 +119,35 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             len(set(grants.values())) != len(grants) or
             ingress_grant not in grants):
         raise Denied('R7_MACHINE_GRANTS_INVALID')
+    if PUBLISHER_ACTOR in grants.values():
+        raise Denied('R7_PUBLISHER_LEGACY_GRANT_DENIED')
+    if publisher_profile is not None and type(publisher_profile) is not PublisherProfile:
+        raise Denied('R7_PUBLISHER_PROFILE_INVALID')
+    profile = PublisherProfile() if publisher_profile is None else publisher_profile
+    enabled = profile.enabled
+    if (enabled != (publisher_grant is not None) or
+            publisher_profile is not None and not enabled):
+        raise Denied('R7_PUBLISHER_ACTIVATION_PAIR_REQUIRED')
+    if enabled:
+        if (type(publisher_grant) is not str or
+                not _GRANT.fullmatch(publisher_grant) or
+                publisher_grant in grants or
+                github_pilot is None or
+                not github_pilot.native_worktree or not github_pilot.ci_reads):
+            raise Denied('R7_PUBLISHER_TRUSTED_COMPOSITION_REQUIRED')
+    # The existing Repo/Sonar/extension actors remain unchanged.
+    legacy_actors = tuple(grants.values())
+    auth_grants = dict(grants)
+    if enabled:
+        auth_grants[publisher_grant] = PUBLISHER_ACTOR
     if (type(organizations) not in (tuple,list,set,frozenset) or
             not organizations or len(organizations) > 20 or
             any(type(org) is not str for org in organizations) or
             len(set(organizations)) != len(organizations)):
         raise ValueError('R7_ORGANIZATIONS_INVALID')
+    if (machine_shell is not None and
+            machine_shell.actor != grants[ingress_grant]):
+        raise Denied('MACHINE_POWERSHELL_ACTOR_SCOPE_DENIED')
     # Construct adapters *before* modifying state: invalid org/region fail closed.
     reader = SonarReadAdapter(sonar_transport,
                               organization_keys=organizations, region=region,
@@ -118,12 +159,14 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         organization_keys=tuple(organizations) if project_keys is None else (),
         receipt_store=root/'sonar-receipts.sqlite',region=region)
     owner = IncidentOwnerWebAuthn(root/'owner.sqlite',origin=owner_origin)
-    auth = Authenticator(grants)
-    actors = tuple(grants.values())
+    auth = Authenticator(auth_grants)
+    actors = legacy_actors
     policies = {(actor, service, operation): 'ALLOW'
                 for actor in actors
                 for service, operation in SONAR_READ_OPERATIONS}
     policies.update({(actor, *G4_OPERATION): 'ASK' for actor in actors})
+    if enabled:
+        policies.update(profile.owner_policy_map())
     core = IncidentCore(root/'approvals.sqlite',adapters={'sonarcloud':writer},
                 policies=policies,authenticator=auth,owner_verifier=owner,
                 policy_version='r7-p1-sonar-accept-issue-write-v1')
@@ -131,16 +174,21 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
                              read_only_banner=False,
                              owner_shell=OwnerShellClient.from_environment())
+    broker_actions = {actor:{G4_OPERATION} for actor in actors}
+    broker_reads = {actor: SONAR_READ_OPERATIONS for actor in actors}
+    if enabled:
+        broker_actions[PUBLISHER_ACTOR] = frozenset(('github', op) for op in PUBLISHER_WRITES)
+        broker_reads[PUBLISHER_ACTOR] = frozenset(('github', op) for op in PUBLISHER_READS)
     broker = RepoIntentBroker(
-        core,actor_operations={actor:{G4_OPERATION} for actor in actors},
-        actor_read_operations={actor: SONAR_READ_OPERATIONS for actor in actors},
-        read_adapter=reader)
+        core,actor_operations=broker_actions,
+        actor_read_operations=broker_reads,read_adapter=reader)
     native = None
     if github_pilot is not None:
         if github_pilot.native_worktree:
             from .workflow.runtime import install
             native = install(core=core,portal=portal,broker=broker,config=github_pilot,
-                root=root,actor=grants[ingress_grant],transport=github_transport)
+                root=root,actor=grants[ingress_grant],transport=github_transport,
+                publisher_profile=profile,machine_shell=machine_shell)
         else:
             from .integrations.github.pilot import install_pilot
             install_pilot(core=core, portal=portal, broker=broker, config=github_pilot,

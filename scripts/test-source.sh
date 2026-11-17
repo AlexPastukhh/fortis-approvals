@@ -24,6 +24,9 @@ tests=(
   test_machine_uncertain_inventory.py
   test_worker_observability.py
   test_owner_shell_portal.py
+  test_powershell_machine_gateway.py
+  test_powershell_owner_mount.py
+  test_powershell_machine_client.py
   test_owner_shell_release.py
   test_owner_shell_release_source.py
   test_powershell_executor_extraction.py
@@ -44,6 +47,8 @@ tests=(
   test_r7_unified_candidate.py
   test_github_pilot.py
   test_github_pilot_package.py
+  test_action_core_network_guard.py
+  test_action_core_network_release_source.py
   test_github_file_pr.py
   test_github_ci_read.py
   test_visual_review.py
@@ -63,6 +68,7 @@ tests=(
   test_release_emergency_image_source.py
   test_analysis_review.py
   test_extensions.py
+  test_mirror_signing.py
   test_extensions_http.py
   test_extensions_tooling.py
   test_own_api_onboarding.py

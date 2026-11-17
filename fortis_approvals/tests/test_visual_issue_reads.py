@@ -158,7 +158,34 @@ class Tests(unittest.TestCase):
             self.assertEqual(caps['visualReview']['publishPolicy'],'ALLOW')
             self.assertIn('publish_visual_review',caps['allowGitHub'])
             self.assertNotIn('publish_visual_review',caps['askGitHub'])
+            self.assertEqual(policy('append_visual_revision','visual-workspace'),'ASK')
+            self.assertEqual(policy('append_visual_revision','other'),'DENY')
+            self.assertIn('append_visual_revision',caps['askGitHub'])
+            self.assertNotIn('append_visual_revision',caps['allowGitHub'])
             self.assertEqual(caps['githubIssueReads'],['list_issues','get_issue','list_issue_comments'])
+
+    def test_details_includes_append_evidence_but_not_unrelated_operations(self):
+        ref='00000000-0000-4000-8000-000000000019'
+        current={'operation':'append_visual_revision'};calls=[]
+        core=SimpleNamespace(auth=SimpleNamespace(authenticate=lambda credential:'agent'),
+            machine_request_details=lambda credential,ident,**kw:{
+                'request':{'requestId':ident,'state':'UNCERTAIN',
+                           'request':{'service':'github','operation':current['operation'],
+                                      'target':'visual-workspace'}},'state':'UNCERTAIN'})
+        gh=SimpleNamespace(visual_evidence=lambda ident:calls.append(ident) or
+                           dict(issueNumber=42,revision=2,commentId=None,uploadedFiles=1))
+        native=NativeIngress(SimpleNamespace(broker=SimpleNamespace(core=core)),
+                             github=gh,workspace=None,store=None,actor='agent')
+        args=dict(requestId=ref,eventOffset=0,eventLimit=10)
+        with patch('fortis_approvals.workflow.ingress.diagnose',return_value={}):
+            with patch('fortis_approvals.workflow.ingress.diagnose_v2',return_value={}):
+                row=native._dispatch('/v1/workspace/details',args,'secret','agent')
+                self.assertEqual(row['visualReview']['commentId'],None)
+                self.assertEqual(calls,[ref])
+                current['operation']='create_pull_request'
+                unrelated=native._dispatch('/v1/workspace/details',args,'secret','agent')
+                self.assertNotIn('visualReview',unrelated)
+                self.assertEqual(calls,[ref])
 
     def test_details_uses_core_nested_request_for_media_progress(self):
         ref='00000000-0000-4000-8000-000000000009'
