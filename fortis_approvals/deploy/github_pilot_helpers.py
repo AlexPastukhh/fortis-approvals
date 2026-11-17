@@ -473,6 +473,15 @@ def admit(container, expected, *, pilot):
     if expected.get('vaultVolume'):
         require(bool(re.fullmatch('fortis-review-secrets(?:-[a-z0-9-]{1,48})?', expected['vaultVolume'])), 'PILOT_VAULT_VOLUME_INVALID')
         desired.add(('volume', expected['vaultVolume'], '/run/fortis-secrets', False))
+    # Optional owner-approved publisher machine principal, introduced only by
+    # a protected checked Gateway release. Unknown/dynamic/host volumes fail
+    # before the container can be admitted. No environment-based opt-in.
+    publisher_volume = expected.get('publisherActivationVolume', '')
+    require(type(publisher_volume) is str and publisher_volume in
+            ('', 'fortis-r7-publisher-activation'), 'PILOT_PUBLISHER_VOLUME_INVALID')
+    if publisher_volume:
+        require(pilot, 'PILOT_PUBLISHER_REQUIRES_PROTECTED_RELEASE')
+        desired.add(('volume', publisher_volume, '/run/r7-publisher-activation', False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')

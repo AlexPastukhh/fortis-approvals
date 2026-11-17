@@ -235,6 +235,20 @@ copy its old runtime pins. Normal image releases use the next section.
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
 
+## P3.4 — source-only owner publisher volume mount (not activated)
+
+The [separate protected opt-in design](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+introduces only a FIXED named Docker volume, readonly mounted at
+/run/r7-publisher-activation. It requires an owner-provisioned two-file
+identity with UID 10001 and modes 0700/0600 and a byte-bound offline
+fingerprint stored only in protected release records. The first activation
+must use manual SHA-pinned Check -Build and bound Apply with
+-EnablePublisherMount and independently attested quiescence. -Auto must
+fail closed on first opt-in. An already installed identity may be preserved
+by later -Auto releases only with its original volume and material digest.
+A source merge does not provision the volume, run Docker or enable Publisher.
+Maintain UC-GW-005 protected UNCERTAIN/CLAIMED scope and host readback.
+
 ## Pending Release Labels typed API release — not yet installed
 
 The source candidate for PR label READ/ASK methods is defined in

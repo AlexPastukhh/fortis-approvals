@@ -64,10 +64,13 @@ property; source validation cannot establish Docker isolation. Do not put
 filled files, credentials or secrets in Fortis Repo, Workfiles, Git, chat or
 CI artifacts.
 
-This source PR **does not modify** the Windows controller/Compose mounts.
-Therefore it cannot enable the publisher in the existing Primary, even after
-the normal image release. Actual mount/provisioning must be designed, reviewed
-and checked as a **separate** owner-managed runtime step.
+A separate [protected P3.4 Gateway mount source candidate](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+now proposes the fixed, optional owner-provisioned readonly Docker volume
+fortis-r7-publisher-activation. The owner mount is NOT installed by a source
+merge, and no credential/volume is created by that source change. First-time
+activation requires manual reviewed Check/Apply with a protected binding,
+then separate owner image release and live principal readback. Auto cannot
+activate the previously disabled principal.
 
 ## Required pilot release gates
 

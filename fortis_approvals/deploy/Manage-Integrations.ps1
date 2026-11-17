@@ -8,7 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnableActionCoreNetwork,
+    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -847,6 +847,76 @@ function Read-OwnerShellFlag {
     if($Value -isnot [bool]){throw 'RELEASE_OWNER_SHELL_RECORD_INVALID'}
     return $Value
 }
+# Publisher activation uses one fixed owner-provisioned Docker volume.
+# No arbitrary host path, no env activation switch, and no automatic
+# provisioning. Old protected Complete records have no field => disabled.
+function Read-PublisherActivationVolume {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_PUBLISHER_VOLUME_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('publisherActivationVolume')){return ''}
+        $Value=$Record['publisherActivationVolume']
+    } else {
+        $Prop=$Record.PSObject.Properties['publisherActivationVolume']
+        if($null -eq $Prop){return ''}
+        $Value=$Prop.Value
+    }
+    if($Value -isnot [string] -or $Value -cnotin @('','fortis-r7-publisher-activation')){
+        throw 'RELEASE_PUBLISHER_VOLUME_RECORD_INVALID'
+    }
+    return [string]$Value
+}
+function Read-PublisherActivationDigest {
+    param($Record)
+    $Volume=Read-PublisherActivationVolume $Record
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('publisherActivationDigest')){
+            if($Volume){throw 'RELEASE_PUBLISHER_DIGEST_RECORD_MISSING'}
+            return ''
+        }
+        $Digest=$Record['publisherActivationDigest']
+    } else {
+        $Prop=$Record.PSObject.Properties['publisherActivationDigest']
+        if($null -eq $Prop){
+            if($Volume){throw 'RELEASE_PUBLISHER_DIGEST_RECORD_MISSING'}
+            return ''
+        }
+        $Digest=$Prop.Value
+    }
+    if($Digest -isnot [string] -or
+        ($Volume -and $Digest -cnotmatch '^[0-9a-f]{64}$') -or
+        (-not $Volume -and $Digest -cne '')){
+        throw 'RELEASE_PUBLISHER_DIGEST_RECORD_INVALID'
+    }
+    return [string]$Digest
+}
+function Image-PublisherMount-Preflight {
+    param([string]$ImageId)
+    # Protect and attest an already owner-provisioned *local Docker volume*.
+    # No creating volumes, no printing credentials, no Repo/owner shell access.
+    $Name='fortis-r7-publisher-activation'
+    Assert-Volume $Name
+    Assert-OnlyWriter $Name
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.integrations.github.publisher_mount_digest import reviewed_mount_digest
+print('FORTIS_PUBLISHER_MOUNT_SHA256=' + reviewed_mount_digest())
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<publisher-owner-mount>','exec'))"
+    $Args=@('run','--rm','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','128m',
+        '--mount',('type=volume,source='+$Name+',target=/run/r7-publisher-activation,readonly'),
+        '--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
+    $Result=Private-Process $Args ''
+    if($Result -cnotmatch '^FORTIS_PUBLISHER_MOUNT_SHA256=([0-9a-f]{64})$'){
+        throw 'RELEASE_PUBLISHER_VOLUME_PREFLIGHT_FAILED'
+    }
+    return [string]$Matches[1]
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -944,6 +1014,8 @@ function Checked-Image-Binding {
         publicConfigHash=$ConfigHash;probeHash=$ProbeHash
         configurationDigest=$Report.configurationDigest
         vaultVolume=$VaultVolume
+        publisherActivationVolume=$script:PublisherActivationVolume
+        publisherActivationDigest=$script:PublisherActivationDigest
         emergencyRescueImage=$EmergencyRescueImage
         emergencyRescueArchiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
         acceptUnverifiedRestore=[bool]$AcceptUnverifiedRestore
@@ -1103,7 +1175,8 @@ function Admit {
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         ciControlRepositories=(Read-CiControlRepositories $P)
-        vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)}
+        vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)
+        publisherActivationVolume=(Read-PublisherActivationVolume $P)}
     if($P.gatewayNetworks){$Expected.gatewayNetworks=$P.gatewayNetworks}
     if($AllowPendingIngress){
         if(-not $P.gatewayNetworks -or $script:R.phase -cne 'Created' -or
@@ -1131,6 +1204,11 @@ function Admit {
         $Expected.name=$P.originalPilotName
     }
     $null=State-Helper @{action='admit';container=$Public;expected=$Expected;pilot=$true}
+    if($Expected.publisherActivationVolume){
+        $Pinned=Read-PublisherActivationDigest $P
+        $Observed=Image-PublisherMount-Preflight -ImageId $P.image
+        if($Observed -cne $Pinned){throw 'RELEASE_PUBLISHER_VOLUME_CONTENT_CHANGED'}
+    }
 }
 function Admit-ReturnCandidate {
     param($C,$P)
@@ -1423,6 +1501,29 @@ if($Action -eq 'SelfTest'){
     if($Flag.Count -ne 1 -or $Flag[0] -cne '-EnableOwnerShell'){
         throw 'RELEASE_OWNER_SHELL_FLAG_FORWARDING_SELFTEST_FAILED'
     }
+    # Owner-only publisher volume defaults off, and protected releases must
+    # reject forged names/digests before any Docker/owner writes.
+    $PublisherOld='{"schema":1}'|ConvertFrom-Json
+    $PublisherGood='{"publisherActivationVolume":"fortis-r7-publisher-activation","publisherActivationDigest":"'+('a'*64)+'"}'|ConvertFrom-Json
+    $PublisherBad='{"publisherActivationVolume":"../../owner"}'|ConvertFrom-Json
+    if((Read-PublisherActivationVolume $PublisherOld) -cne '' -or
+       (Read-PublisherActivationDigest $PublisherOld) -cne '' -or
+       (Read-PublisherActivationVolume $PublisherGood) -cne 'fortis-r7-publisher-activation' -or
+       (Read-PublisherActivationDigest $PublisherGood) -cne ('a'*64)){
+        throw 'RELEASE_PUBLISHER_RECORD_SELFTEST_FAILED'
+    }
+    $PublisherRejected=$false
+    try{$null=Read-PublisherActivationVolume $PublisherBad}
+    catch{if($_.Exception.Message -cne 'RELEASE_PUBLISHER_VOLUME_RECORD_INVALID'){throw};$PublisherRejected=$true}
+    if(-not $PublisherRejected){throw 'RELEASE_PUBLISHER_RECORD_SELFTEST_FAILED'}
+    $PublisherRejected=$false
+    try{$null=Read-PublisherActivationDigest ('{"publisherActivationVolume":"fortis-r7-publisher-activation"}'|ConvertFrom-Json)}
+    catch{if($_.Exception.Message -cne 'RELEASE_PUBLISHER_DIGEST_RECORD_MISSING'){throw};$PublisherRejected=$true}
+    if(-not $PublisherRejected){throw 'RELEASE_PUBLISHER_RECORD_SELFTEST_FAILED'}
+    $PublisherFlag=@(Forward-NativeParameters @{EnablePublisherMount=([switch]$true)})
+    if($PublisherFlag.Count -ne 1 -or $PublisherFlag[0] -cne '-EnablePublisherMount'){
+        throw 'RELEASE_PUBLISHER_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $NetFlag=@(Forward-NativeParameters @{EnableActionCoreNetwork=([switch]$true)})
@@ -1461,7 +1562,7 @@ if($Auto){
         $CiControlRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
-        $VaultVolume -cne 'fortis-review-secrets'){
+        $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount){
         throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
     }
     if($Action -cin @('Check','Apply')){
@@ -1637,6 +1738,13 @@ if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $App
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
+if($EnablePublisherMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
+    -not $ConfirmWorkerQuiescent -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
+    throw 'RELEASE_PUBLISHER_REQUIRES_EXACT_OWNER_CHECKED_IMAGE'
+}
 if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
     @($CiControlRepositories.Split(',')|Select-Object -Unique).Count -ne @($CiControlRepositories.Split(',')).Count)){
     throw 'RELEASE_CI_CONTROL_REPOSITORIES_INVALID'
@@ -1781,6 +1889,17 @@ if($Action -eq 'Return' -or $AttemptRecord){
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
+$script:PublisherActivationVolume=Read-PublisherActivationVolume $SourceForOwnerShell.runtime
+$PreviousPublisherDigest=Read-PublisherActivationDigest $SourceForOwnerShell.runtime
+if($EnablePublisherMount){$script:PublisherActivationVolume='fortis-r7-publisher-activation'}
+$script:PublisherActivationDigest=''
+if($script:PublisherActivationVolume){
+    Step 'PUBLISHER_ACTIVATION_MATERIAL_PREFLIGHT'
+    $script:PublisherActivationDigest=Image-PublisherMount-Preflight -ImageId $script:Image
+    if($PreviousPublisherDigest -and $script:PublisherActivationDigest -cne $PreviousPublisherDigest){
+        throw 'RELEASE_PUBLISHER_SOURCE_MATERIAL_CHANGED'
+    }
+}
 if($SourceForOwnerShell.runtime.gatewayNetworks -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_DOWNGRADE_DENIED'
 }
@@ -1885,7 +2004,10 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     preserveClaimedJobs=$script:PreserveClaimedJobs
     preserveApprovedRequest=$script:PreserveApprovedRequest
     workerQuiescenceOwnerAttested=([bool]$ConfirmWorkerQuiescent)
-    vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce;ownerShell=$OwnerShellEnabled;runId=$RunId}
+    vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce
+    publisherActivationVolume=$script:PublisherActivationVolume
+    publisherActivationDigest=$script:PublisherActivationDigest
+    ownerShell=$OwnerShellEnabled;runId=$RunId}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
@@ -1968,7 +2090,12 @@ try {
         '--mount','type=volume,source=fortis-r7-sonar-token,target=/run/r7-sonar-token,readonly',
         '--mount',('type=volume,source='+$VaultVolume+',target=/run/fortis-secrets,readonly'),
         '--health-cmd','python -m fortis_approvals.r7_unified_server health','--health-interval','20s','--health-timeout','5s',
-        '--health-retries','3','--health-start-period','20s',$script:Image)
+        '--health-retries','3','--health-start-period','20s')
+    if($Runtime.publisherActivationVolume){
+        $Arguments+=@('--mount',('type=volume,source='+$Runtime.publisherActivationVolume+
+            ',target=/run/r7-publisher-activation,readonly'))
+    }
+    $Arguments+=@($script:Image)
     $script:R.runtime.pilotId=Docker-Text $Arguments
     if($script:R.runtime.pilotId -cnotmatch '^[0-9a-f]{64}$'){throw 'RELEASE_CREATED_ID_INVALID'}
     $script:R.phase='Created';Save;Resume-Target
