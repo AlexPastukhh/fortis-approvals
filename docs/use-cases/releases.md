@@ -44,6 +44,14 @@ WebAuthn browser acceptance или provider mutation acceptance. Датиров�
 и текущая evidence — в [current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
 подробные защищённые записи остаются у владельца.
 
+**Опциональное расширение UNCERTAIN (source candidate, ещё не установлено):**
+[контракт append-only Check/Apply](../UNCERTAIN-GROWTH-RELEASE-2026-11-17.md)
+допускает только новые записи Core UNCERTAIN с неизменными старыми SQL-строками,
+audit и всеми остальными файлами состояния. Режим — только вручную с
+`-AllowUncertainGrowth`, проверкой владельца и окончательной сверкой после
+остановки Gateway. При изменении worker, receipts или APPROVED — STOP.
+Без флага прежний строгий Check/Apply не меняется.
+
 **Ручные исключения:** когда `-Auto` не допускается по его предусловиям,
 оператор использует отдельно проверенный полный контракт из runbook:
 точные `-PreserveApprovedRequest`, `-PreserveClaimedJobs`,

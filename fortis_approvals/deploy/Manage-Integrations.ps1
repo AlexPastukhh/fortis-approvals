@@ -8,7 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork,
+    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork, [switch]$AllowUncertainGrowth,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -361,6 +361,10 @@ $PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
 $script:Step='PREFLIGHT';$script:Image=$Image
 $script:PreserveUncertainRequests=$PreserveUncertainRequests
 $script:PreserveUncertainExact=[bool]$PreserveUncertainRequests
+$script:GrowthEffectiveUncertainRequests=$null
+$script:GrowthSourceVolume=''
+$script:GrowthWitness=$null
+$script:GrowthReviewedReceipt=$null
 $script:PreserveClaimedJobs=$PreserveClaimedJobs
 $script:PreserveClaimedExact=[bool]$PreserveClaimedJobs
 $script:PreserveApprovedRequest=$PreserveApprovedRequest
@@ -674,7 +678,7 @@ function Repo-JSON {
 }
 function Assert-ApprovedScopeForwarded {
     param($Payload)
-    if($Payload.action -cnotin @('inspect','clone')){return}
+    if($Payload.action -cnotin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review')){return}
     # Owner-pinned full list must survive PowerShell -> JSON -> Docker unchanged.
     # An empty/missing, reordered or widened list is rejected before Docker.
     $Expected=@(Approved-Ids)
@@ -690,7 +694,7 @@ function Assert-ApprovedScopeForwarded {
 function State-Helper {
     param($Payload,[string[]]$Mounts=@(),[switch]$Root)
     Assert-ApprovedScopeForwarded $Payload
-    if($script:PreserveApprovedRequest -and $Payload.action -cin @('inspect','clone')){
+    if($script:PreserveApprovedRequest -and $Payload.action -cin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review')){
         Write-Host 'FORTIS_APPROVED_SCOPE_FORWARD_VERIFIED'
     }
     if($Mounts.Count % 2 -ne 0){throw 'RELEASE_STATE_MOUNT_PAIR_INVALID'}
@@ -1025,6 +1029,7 @@ function Checked-Image-Binding {
         gatewayNetworks=$script:ActionCoreNetworks
         ciControlRepositories=$CiControlRepositories
         preserveUncertainRequests=$script:PreserveUncertainRequests
+        allowUncertainGrowth=[bool]$AllowUncertainGrowth
         preserveClaimedJobs=$script:PreserveClaimedJobs
         preserveApprovedRequest=$script:PreserveApprovedRequest
         requireExactUncertain=$script:PreserveUncertainExact
@@ -1043,6 +1048,7 @@ function Save-Checked-Image {
     Write-Private $Path ([ordered]@{
         schema='fortis-extension-image-check-v1';phase='Ready'
         binding=(Checked-Image-Binding $Source $Report);sourceReceipt=$Receipt
+        growthWitness=$script:GrowthWitness
     })
     return $Path
 }
@@ -1063,7 +1069,13 @@ function Verify-Checked-Image {
     $Expected=Checked-Image-Binding $Source $Report
     Assert-Checked-Image-Binding $Record.binding $Expected
     $Now=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
-    if(-not (Same-Json $Record.sourceReceipt $Now)){
+    if($AllowUncertainGrowth){
+        # The original immutable Check receipt and prefix witness are
+        # reviewed afresh; no replacement Check binding is ever written.
+        if(-not (Same-Json $script:GrowthReviewedReceipt $Now)){
+            throw 'RELEASE_GROWTH_SOURCE_STATE_CHANGED'
+        }
+    } elseif(-not (Same-Json $Record.sourceReceipt $Now)){
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
@@ -1072,8 +1084,14 @@ function Assert-Checked-Source-Receipt {
     if(-not $CheckedImageRecord){return}
     $Stored=Read-Private $CheckedImageRecord
     if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready' -or
-       $null -eq $Stored.sourceReceipt -or
-       -not (Same-Json $Stored.sourceReceipt $Receipt)){
+       $null -eq $Stored.sourceReceipt){
+        throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
+    }
+    if($AllowUncertainGrowth){
+        if(-not (Same-Json $script:GrowthReviewedReceipt $Receipt)){
+            throw 'RELEASE_GROWTH_SOURCE_STATE_CHANGED'
+        }
+    } elseif(-not (Same-Json $Stored.sourceReceipt $Receipt)){
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
@@ -1243,9 +1261,62 @@ function Admit-ReturnCandidate {
     Admit $Copy $P -AllowUnhealthy
     Write-Host 'FORTIS_INTEGRATIONS_RETURN_NEVER_STARTED_ENV_BUG'
 }
+function Snapshot-Uncertain-Growth {
+    param([string]$Volume)
+    # Only owner-opted MANUAL Check. The offline image helper validates the
+    # current exact Core/worker/approved state before sealing its witness.
+    State-Helper @{action='uncertain_growth_snapshot';github=$true;native=$true
+        preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)
+        requireExactClaimed=([bool]$script:PreserveClaimedExact)
+        preserveApprovedIds=@(Approved-Ids)
+        requireExactApproved=([bool]$script:PreserveApprovedExact)} @('--mount',
+        ('type=volume,source='+$Volume+',target=/source,readonly'))
+}
+function Review-Uncertain-Growth {
+    param([string]$Volume)
+    if(-not $AllowUncertainGrowth -or -not $CheckedImageRecord){
+        throw 'RELEASE_GROWTH_REVIEW_UNAUTHORIZED'
+    }
+    $Checked=Read-Private $CheckedImageRecord
+    if($Checked.schema -cne 'fortis-extension-image-check-v1' -or
+       $Checked.phase -cne 'Ready' -or
+       $Checked.binding.allowUncertainGrowth -isnot [bool] -or
+       -not $Checked.binding.allowUncertainGrowth -or
+       $null -eq $Checked.sourceReceipt -or $null -eq $Checked.growthWitness){
+        throw 'RELEASE_GROWTH_WITNESS_MISSING'
+    }
+    $Result=State-Helper @{action='uncertain_growth_review';github=$true;native=$true
+        original=$Checked.sourceReceipt;witness=$Checked.growthWitness
+        preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)
+        requireExactClaimed=([bool]$script:PreserveClaimedExact)
+        preserveApprovedIds=@(Approved-Ids)
+        requireExactApproved=([bool]$script:PreserveApprovedExact)} @('--mount',
+        ('type=volume,source='+$Volume+',target=/source,readonly'))
+    if($null -eq $Result.receipt -or $null -eq $Result.uncertainIds -or
+       $Result.addedCount -lt 0 -or $Result.addedCount -gt 20){
+        throw 'RELEASE_GROWTH_REVIEW_INVALID'
+    }
+    $Ids=@($Result.uncertainIds)
+    if($Ids.Count -gt 20 -or ($Ids -join ',') -cne ((@($Ids|Sort-Object)) -join ',')){
+        throw 'RELEASE_GROWTH_IDS_INVALID'
+    }
+    $script:GrowthEffectiveUncertainRequests=$Ids -join ','
+    $script:GrowthReviewedReceipt=$Result.receipt
+    return $Result
+}
+function Effective-Uncertain-Ids {
+    if($AllowUncertainGrowth -and $null -ne $script:GrowthEffectiveUncertainRequests){
+        return @(Parse-PreservedUncertainRequests $script:GrowthEffectiveUncertainRequests)
+    }
+    return @(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)
+}
 function Receipt {
     param([string]$Volume,[switch]$Exact,[switch]$ExactClaimed,[switch]$ExactApproved)
-    $Ids=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests)
+    if($AllowUncertainGrowth -and $CheckedImageRecord -and
+       $Volume -ceq $script:GrowthSourceVolume){
+        $null=Review-Uncertain-Growth $Volume
+    }
+    $Ids=@(Effective-Uncertain-Ids)
     $Claims=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs)
     $Approved=@(Approved-Ids)
     State-Helper @{action='inspect';github=$true;native=$true;
@@ -1524,6 +1595,10 @@ if($Action -eq 'SelfTest'){
     if($PublisherFlag.Count -ne 1 -or $PublisherFlag[0] -cne '-EnablePublisherMount'){
         throw 'RELEASE_PUBLISHER_FLAG_FORWARDING_SELFTEST_FAILED'
     }
+    $GrowthFlag=@(Forward-NativeParameters @{AllowUncertainGrowth=([switch]$true)})
+    if($GrowthFlag.Count -ne 1 -or $GrowthFlag[0] -cne '-AllowUncertainGrowth'){
+        throw 'RELEASE_GROWTH_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
     $NetFlag=@(Forward-NativeParameters @{EnableActionCoreNetwork=([switch]$true)})
@@ -1557,7 +1632,7 @@ if($Auto){
     if($Action -cnotin @('Check','Apply','Backup','Promote') -or
         $Config -or $Probes -or $Image -or $CheckedImageRecord -or $SourceSha -or
         $Build -or $Pull -or $CurrentRecord -or $AttemptRecord -or
-        $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or
+        $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $AllowUncertainGrowth -or
         $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or
         $CiControlRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
@@ -1738,6 +1813,13 @@ if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $App
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
+if($AllowUncertainGrowth -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
+    -not $ConfirmWorkerQuiescent -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
+    throw 'RELEASE_UNCERTAIN_GROWTH_REQUIRES_OWNER_CHECKED_IMAGE'
+}
 if($EnablePublisherMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
     -not $ConfirmWorkerQuiescent -or
@@ -1779,7 +1861,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 $script:ActionCoreNetworks=$null
 if($EnableActionCoreNetwork){
     Step 'ACTION_CORE_NETWORK_PREFLIGHT_READ_ONLY'
@@ -1889,6 +1971,9 @@ if($Action -eq 'Return' -or $AttemptRecord){
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
+if($AllowUncertainGrowth){
+    $script:GrowthSourceVolume=$SourceForOwnerShell.runtime.stateVolume
+}
 $script:PublisherActivationVolume=Read-PublisherActivationVolume $SourceForOwnerShell.runtime
 $PreviousPublisherDigest=Read-PublisherActivationDigest $SourceForOwnerShell.runtime
 if($EnablePublisherMount){$script:PublisherActivationVolume='fortis-r7-publisher-activation'}
@@ -1933,7 +2018,17 @@ if($Action -eq 'Check'){
         if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
             -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
         Step 'SOURCE_STATE_PREFLIGHT_READ_ONLY'
-        $CheckReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+        if($AllowUncertainGrowth){
+            $GrowthSnapshot=Snapshot-Uncertain-Growth $Source.runtime.stateVolume
+            $script:PreserveUncertainRequests=@($GrowthSnapshot.uncertainIds) -join ','
+            $script:PreserveUncertainExact=($script:PreserveUncertainRequests -ne '')
+            $script:GrowthWitness=$GrowthSnapshot.witness
+            $CheckReceipt=$GrowthSnapshot.receipt
+            Write-Host ('FORTIS_UNCERTAIN_GROWTH_CHECK_BOUND count='+
+                @($GrowthSnapshot.uncertainIds).Count)
+        } else {
+            $CheckReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+        }
     }
     if($Build){
         if($EmergencyRequested){Assert-Previous-Image-Retained $Source}
@@ -2062,7 +2157,16 @@ try {
     $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
     Assert-OnlyWriter $Source.runtime.stateVolume
-    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact;Save
+    $script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+    if($AllowUncertainGrowth){
+        # The last bounded extension is validated only AFTER the old writer
+        # has exited. Seal its full exact ID scope into the candidate record
+        # before cloning; the original Check record is never rewritten.
+        $script:R.runtime.preserveUncertainRequests=$script:GrowthEffectiveUncertainRequests
+        Write-Host ('FORTIS_UNCERTAIN_GROWTH_FROZEN count='+
+            @((Effective-Uncertain-Ids)).Count)
+    }
+    Save
     # Close the final race: recheck the frozen source AFTER the old writer stops.
     # On mismatch, the guarded failure path returns the retained source.
     if($CheckedImageRecord){Assert-Checked-Source-Receipt $script:R.sourceReceipt}
@@ -2071,7 +2175,7 @@ try {
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
     if(@(Docker-Json @('volume','inspect',$Runtime.stateVolume))[0].Labels.'io.fortis.release' -cne $RunId){throw 'RELEASE_STATE_VOLUME_PROVENANCE_INVALID'}
     $Clone=State-Helper @{action='clone';github=$true;native=$true;
-        preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests);
+        preserveUncertainIds=@(Effective-Uncertain-Ids);
         preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs);
         preserveApprovedIds=@(Approved-Ids);requireExactApproved=([bool]$script:PreserveApprovedExact)} @('--mount',
         ('type=volume,source='+$Source.runtime.stateVolume+',target=/source,readonly'),'--mount',

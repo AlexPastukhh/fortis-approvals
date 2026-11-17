@@ -235,6 +235,16 @@ copy its old runtime pins. Normal image releases use the next section.
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
 
+## Optional bounded UNCERTAIN growth (source candidate only)
+
+[Append-only checked release](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md)
+allows a separately owner-opted manual Check/Apply to preserve only newly
+appended Core UNCERTAIN rows, if old rows/audit, exact approved/claimed scope
+and all non-Core state bytes are unchanged. The final unknown ID set is
+frozen after source stop and copied byte-exact. No wildcard, no initial
+Auto activation, no bypass of independent worker quiescence or owner GO.
+This source change is not a protected Windows release.
+
 ## P3.4 — source-only owner publisher volume mount (not activated)
 
 The [separate protected opt-in design](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
