@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "serviceId": "observatory",
+  "ownerRepository": "fortis-observatory-api",
+  "sourceSha": null,
+  "transport": {
+    "profile": "DOCKER-HTTPS",
+    "origin": "https://fortis-observatory-api:443",
+    "tlsServerName": "fortis-observatory-api",
+    "pinnedCaPath": "/run/fortis-secrets/observatory-read/ca.pem",
+    "gatewayDockerNetwork": "fortis-observatory-gw-net"
+  },
+  "credential": {
+    "vaultAlias": "observatory-read",
+    "upstreamPrincipal": "observatory-gateway-reader",
+    "vaultOwner": "OWNER_ONLY"
+  },
+  "operations": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/v1/health",
+      "targetBinding": null,
+      "targets": [
+        "service"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 262144
+    },
+    {
+      "name": "list_sessions",
+      "method": "GET",
+      "path": "/v1/sessions",
+      "targetBinding": null,
+      "targets": [
+        "registry"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 262144
+    }
+  ]
+}

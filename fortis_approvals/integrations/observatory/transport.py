@@ -1,82 +1,97 @@
-"""Trusted fixed-route transport for the existing Observatory V1 Gateway.
+"""Fixed Observatory DOCKER-HTTPS/443 upstream transport for two READ routes.
 
-Not a generic HTTP proxy: no caller-specified origin, Host, method, headers,
-redirect, cookies, URL or provider credential. Observatory currently only
-offers host.docker.internal:18756 over HTTP, which the shared HTTPS JSONAPI
-intentionally rejects. This scoped transport is an explicit interoperability
-exception, not permission to weaken shared JSONAPI. Deployment and transport
-trust review are separate from source tests.
+The owner-managed per-service CA is loaded afresh, with hostname verification
+and no default trust store. Never follow redirects or proxy, use HTTP/18756,
+accept caller-selected origins, or expose staging POST through this provider.
 """
-from http.client import HTTPConnection
-from urllib.parse import quote, urlencode
+from http.client import HTTPSConnection
+from pathlib import Path
+import os
 import re
+import ssl
+import stat
 
-from ...core import Denied, canonical, loads_strict
+from ...core import Denied, loads_strict
 from ...extensions.http import Route
 from ...extensions.model import check
+from ...extensions.vault import Secret
 
-_GATEWAY_HOST = 'host.docker.internal'
-_GATEWAY_PORT = 18756
-_GATEWAY_AUTHORITY = 'fortis-observatory-api:18756'
+_GATEWAY_HOST = 'fortis-observatory-api'
+_GATEWAY_PORT = 443
+_GATEWAY_AUTHORITY = 'fortis-observatory-api'
+_CA_PATH = Path('/run/fortis-secrets/observatory-read/ca.pem')
 _MAX_BYTES = 262144
-_PATH_VALUE = re.compile(r'[A-Za-z0-9_:-]{1,100}\Z')
+_ALLOWED = {'health': '/v1/health', 'sessions': '/v1/sessions'}
+_PEM = re.compile(
+    rb'\s*-----BEGIN CERTIFICATE-----\s*'
+    rb'[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*')
+
+
+def observatory_context():
+    """Trust exactly the owner-provisioned CA; missing/unsafe CA is STOP."""
+    try:
+        if _CA_PATH.parent.is_symlink() or _CA_PATH.parent.parent.is_symlink():
+            raise ValueError('ca_parent_symlink')
+        fd = os.open(_CA_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            metadata = os.fstat(fd)
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+                    or stat.S_IMODE(metadata.st_mode) & 0o022
+                    or not 0 < metadata.st_size <= 16384):
+                raise ValueError('ca_unsafe_file')
+            with os.fdopen(fd, 'rb', closefd=False) as inp:
+                pem = inp.read(16385)
+            if len(pem) > 16384 or _PEM.fullmatch(pem) is None:
+                raise ValueError('ca_invalid_pem')
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_verify_locations(cadata=pem.decode('ascii'))
+            if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+                raise ValueError('ca_tls_verification_disabled')
+            return context
+        finally:
+            os.close(fd)
+    except (OSError, UnicodeError, ValueError, ssl.SSLError):
+        raise Denied('OBS_CA_UNAVAILABLE') from None
 
 
 class ObservatoryTransport:
     def __init__(self, routes, *, connect=None):
-        check(type(routes) is tuple and routes and
-              all(isinstance(route, Route) for route in routes))
-        check(len({route.name for route in routes}) == len(routes))
+        check(type(routes) is tuple and len(routes) == 2 and all(
+            isinstance(route, Route) and route.readonly
+            and route.method == 'GET' and _ALLOWED.get(route.name) == route.path
+            and not route.query_keys and not route.idempotency_header
+            for route in routes), 'OBS_READ_ROUTES_REQUIRED')
+        check({route.name for route in routes} == set(_ALLOWED),
+              'OBS_READ_ROUTES_REQUIRED')
+        check(connect is None or callable(connect), 'OBS_CONNECT_INVALID')
         self.routes = {route.name: route for route in routes}
-        self._connect = connect or (lambda: HTTPConnection(
-            _GATEWAY_HOST, _GATEWAY_PORT, timeout=5))
+        self._connect = connect
 
     def call(self, route_name, *, credential=None, path=None, query=None,
              body=None, request_id=None):
         check(route_name in self.routes, 'OBS_ROUTE_DENIED')
-        route = self.routes[route_name]
-        path = {} if path is None else path
-        query = {} if query is None else query
-        slots = re.findall(r'\{([a-z][a-z0-9_]*)\}', route.path)
-        check(type(path) is dict and set(path) == set(slots) and all(
-            type(x) is str and _PATH_VALUE.fullmatch(x) for x in path.values()),
-            'OBS_PATH_DENIED')
-        check(type(query) is dict and set(query) <= set(route.query_keys) and all(
-            type(x) is str and _PATH_VALUE.fullmatch(x) for x in query.values()),
-            'OBS_QUERY_DENIED')
-        check(credential is not None, 'OBS_CREDENTIAL_REQUIRED')
+        check(path in (None, {}) and query in (None, {}) and body is None
+              and request_id is None, 'OBS_READ_ONLY_ROUTE')
+        check(isinstance(credential, Secret), 'OBS_CREDENTIAL_REQUIRED')
         token = credential.reveal()
-        check(type(token) is str and 16 <= len(token) <= 256 and all(
-            33 <= ord(c) <= 126 for c in token), 'OBS_CREDENTIAL_FORMAT_DENIED')
-        uri = route.path
-        for slot, value in path.items():
-            uri = uri.replace('{' + slot + '}', quote(value, safe=''))
-        check('{' not in uri and '}' not in uri and uri.startswith('/') and
-              not uri.startswith('//'), 'OBS_URI_DENIED')
-        if query: uri += '?' + urlencode(query)
-        headers = {
-            'Host': _GATEWAY_AUTHORITY,
-            'Authorization': 'Bearer ' + token,
-            'Accept': 'application/json',
-            'Connection': 'close',
-        }
-        payload = None
-        if body is not None:
-            check(route.method == 'POST', 'OBS_BODY_METHOD_DENIED')
-            payload = canonical(body).encode('utf-8')
-            check(len(payload) <= 65536, 'OBS_REQUEST_LIMIT')
-            headers['Content-Type'] = 'application/json'
-        if route.idempotency_header:
-            check(type(request_id) is str and len(request_id) <= 100,
-                  'OBS_REQUEST_ID_DENIED')
-            headers[route.idempotency_header] = request_id
+        check(type(token) is str and 32 <= len(token) <= 128 and
+              re.fullmatch(r'[A-Za-z0-9_-]+', token), 'OBS_CREDENTIAL_FORMAT_DENIED')
         connection = None
         try:
-            connection = self._connect()
-            connection.request(route.method, uri, body=payload, headers=headers)
+            connection = (self._connect() if self._connect is not None
+                          else HTTPSConnection(_GATEWAY_HOST, _GATEWAY_PORT,
+                                               timeout=5, context=observatory_context()))
+            connection.request('GET', self.routes[route_name].path,
+                               headers={'Host': _GATEWAY_AUTHORITY,
+                                        'Authorization': 'Bearer ' + token,
+                                        'Accept': 'application/json',
+                                        'Connection': 'close'})
             response = connection.getresponse()
-            # Never follow redirects or return raw upstream error bodies.
-            check(response.status in route.statuses, 'OBS_UPSTREAM_STATUS')
+            # No redirects, no raw error bodies, bounded and duplicate-key strict.
+            check(response.status == 200, 'OBS_UPSTREAM_STATUS')
+            check(response.getheader('Content-Type') == 'application/json; charset=utf-8',
+                  'OBS_RESPONSE_CONTENT_TYPE')
             raw = response.read(_MAX_BYTES + 1)
             check(len(raw) <= _MAX_BYTES, 'OBS_RESPONSE_LIMIT')
             value = loads_strict(raw)

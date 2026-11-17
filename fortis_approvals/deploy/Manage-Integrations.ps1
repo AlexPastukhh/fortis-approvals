@@ -8,7 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork,
+    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -471,6 +471,76 @@ function Read-ActionCoreBoundary {
     Write-Host 'FORTIS_ACTION_CORE_BOUNDARY_PREFLIGHT_PASS'
     return $Networks
 }
+function Test-RecordedGatewayNetwork {
+    param($Map,[string]$Name)
+    if($null -eq $Map){return $false}
+    if($Map -is [Collections.IDictionary]){return $Map.Contains($Name)}
+    return $null -ne $Map.PSObject.Properties[$Name]
+}
+function Get-RecordedGatewayNetworkNames {
+    param($Map)
+    if($null -eq $Map){return @()}
+    if($Map -is [Collections.IDictionary]){return @($Map.Keys)}
+    return @($Map.PSObject.Properties.Name)
+}
+function Read-ObservatoryBoundary {
+    # Requires owner-released Observatory on one private network; no host port.
+    $Name='fortis-observatory-gw-net'
+    $Id=Read-ActionCoreDockerNetwork -Name $Name -Internal:$true -Owner 'fortis-approvals' -Purpose 'observatory-gateway-v1'
+    $Rows=@(Docker-Json @('container','inspect','fortis-observatory-api'))
+    if($Rows.Count -ne 1){throw 'RELEASE_OBSERVATORY_CONTAINER_NOT_FOUND'}
+    $C=$Rows[0]
+    $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
+    $Published=$C.HostConfig.PortBindings
+    if($C.Name -cne '/fortis-observatory-api' -or $C.State.Status -cne 'running' -or
+       $C.Config.Labels.'com.docker.compose.project' -cne 'fortis-observatory-api' -or
+       $C.Config.Labels.'com.docker.compose.service' -cne 'api' -or
+       $C.Config.User -cne '1000:1000' -or
+       -not [bool]$C.HostConfig.ReadonlyRootfs -or
+       -not ($C.HostConfig.CapDrop -contains 'ALL') -or
+       $C.HostConfig.CapAdd -or
+       $Attached.Count -ne 1 -or $Attached[0] -cne $Name -or
+       [string]$C.NetworkSettings.Networks.PSObject.Properties[$Name].Value.NetworkID -cne $Id -or
+       ($Published -and @($Published.PSObject.Properties).Count -gt 0)){
+        throw 'RELEASE_OBSERVATORY_DOCKER_ONLY_IDENTITY_INVALID'
+    }
+    Write-Host 'FORTIS_OBSERVATORY_NETWORK_DOCKER_ONLY_PASS'
+    return $Id
+}
+function Read-GatewayNetworkBoundary {
+    param([bool]$ActionCore,[bool]$Observatory)
+    if(-not ($ActionCore -or $Observatory)){throw 'RELEASE_GATEWAY_NETWORK_SCOPE_REQUIRED'}
+    if($ActionCore){$Networks=Read-ActionCoreBoundary}
+    else {
+        $Networks=[ordered]@{}
+        $Networks['fortis-gateway-egress']=Read-ActionCoreDockerNetwork -Name 'fortis-gateway-egress' -Internal:$false -Owner 'fortis-approvals' -Purpose 'gateway-egress-v1'
+    }
+    if($Observatory){$Networks['fortis-observatory-gw-net']=Read-ObservatoryBoundary}
+    if(@($Networks.Values|Select-Object -Unique).Count -ne $Networks.Count){
+        throw 'RELEASE_GATEWAY_NETWORK_ID_ALIAS_INVALID'
+    }
+    Write-Host 'FORTIS_GATEWAY_NETWORK_BOUNDARY_PASS'
+    return $Networks
+}
+function Assert-ObservatoryConfig {
+    param([string]$Json)
+    $Cfg=ConvertFrom-Json -InputObject $Json -ErrorAction Stop
+    $Provider=$Cfg.providers.observatory
+    if(-not $Provider){throw 'RELEASE_OBSERVATORY_READ_ONLY_CONFIG_REQUIRED'}
+    $Ops=@($Provider.operations.PSObject.Properties.Name|Sort-Object)
+    $CredentialKeys=@($Provider.credentials.PSObject.Properties.Name)
+    if($Cfg.schemaVersion -ne 1 -or ($Ops -join ',') -cne 'health,list_sessions' -or
+       $CredentialKeys.Count -ne 1 -or $CredentialKeys[0] -cne 'api' -or
+       $Provider.credentials.api -cne 'observatory-read' -or
+       $Provider.operations.health.policy -cne 'ALLOW' -or
+       $Provider.operations.list_sessions.policy -cne 'ALLOW' -or
+       @($Provider.operations.health.targets).Count -ne 1 -or
+       @($Provider.operations.list_sessions.targets).Count -ne 1 -or
+       $Provider.operations.health.targets[0] -cne 'service' -or
+       $Provider.operations.list_sessions.targets[0] -cne 'registry'){
+        throw 'RELEASE_OBSERVATORY_READ_ONLY_CONFIG_REQUIRED'
+    }
+}
 function Assert-ActionCoreConfig {
     param([string]$Json)
     $Config=ConvertFrom-Json -InputObject $Json -ErrorAction Stop
@@ -510,6 +580,51 @@ print("ACTION_CORE_HTTP8000_BOTH_DENIED")
     }
     Assert-ActionCoreWindowsLocalRead
     Write-Host 'FORTIS_ACTION_CORE_GATEWAY_HTTP8000_BOTH_DENIED'
+}
+function Assert-ObservatoryPrivateTlsRead {
+    param([string]$ContainerId)
+    # Positive TLS/443 handshake with owner-pinned CA and DNS SAN; use the
+    # expected unauthenticated 401, never an upstream bearer in command argv.
+    $Code=@'
+from http.client import HTTPSConnection
+from fortis_approvals.integrations.observatory.transport import observatory_context
+connection=HTTPSConnection("fortis-observatory-api",443,context=observatory_context(),timeout=5)
+try:
+    connection.request("GET","/v1/health",headers={"Host":"fortis-observatory-api","Connection":"close"})
+    response=connection.getresponse()
+    if response.status!=401: raise RuntimeError("OBS_TLS_UNAUTHENTICATED_NON401")
+finally:
+    connection.close()
+print("OBSERVATORY_PRIVATE_TLS443_AUTH_GATE_PASS")
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<observatory-tls443-positive>','exec'))"
+    $Outcome=Docker-Text @('exec','--user','10001:10001',$ContainerId,'python','-I','-B','-c',$Wrapper)
+    if($Outcome.Trim() -cne 'OBSERVATORY_PRIVATE_TLS443_AUTH_GATE_PASS'){
+        throw 'RELEASE_OBSERVATORY_TLS443_READ_FAILED'
+    }
+    Write-Host 'FORTIS_OBSERVATORY_GATEWAY_TLS443_PASS'
+}
+function Assert-ObservatoryNoLegacyHttp {
+    param([string]$ContainerId)
+    # No credential / API read; only verifies retired HTTP socket is closed.
+    $Code=@'
+import socket
+for host in ("fortis-observatory-api","host.docker.internal"):
+    try:
+        with socket.create_connection((host,18756),timeout=2):
+            raise RuntimeError("OBS_HTTP18756_ROUTE_OPEN")
+    except OSError:
+        pass
+print("OBSERVATORY_HTTP18756_BOTH_DENIED")
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<observatory-http-negative>','exec'))"
+    $Outcome=Docker-Text @('exec','--user','10001:10001',$ContainerId,'python','-I','-B','-c',$Wrapper)
+    if($Outcome.Trim() -cne 'OBSERVATORY_HTTP18756_BOTH_DENIED'){
+        throw 'RELEASE_OBSERVATORY_HTTP18756_BYPASS'
+    }
+    Write-Host 'FORTIS_OBSERVATORY_GATEWAY_HTTP18756_DENIED'
 }
 function OwnerShell-EnvLines {
     param([bool]$Enabled)
@@ -1022,6 +1137,7 @@ function Checked-Image-Binding {
         enableDynamicGitHubRepositories=[bool]$EnableDynamicGitHubRepositories
         enableOwnerShell=[bool]$EnableOwnerShell
         enableActionCoreNetwork=[bool]$EnableActionCoreNetwork
+        enableObservatoryNetwork=[bool]$EnableObservatoryNetwork
         gatewayNetworks=$script:ActionCoreNetworks
         ciControlRepositories=$CiControlRepositories
         preserveUncertainRequests=$script:PreserveUncertainRequests
@@ -1217,9 +1333,11 @@ function Admit-ReturnCandidate {
        $C.State.Status -ceq 'created' -and
        $C.State.StartedAt -ceq '0001-01-01T00:00:00Z'){
         $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
-        if($Attached.Count -eq 1 -and $Attached[0] -ceq 'fortis-gateway-egress'){
-            # Only this never-started intermediate state is return-admissible;
-            # no ad-hoc network connect is required to resume the old Gateway.
+        $Expected=@(Get-RecordedGatewayNetworkNames $P.gatewayNetworks)
+        if($Attached -ccontains 'fortis-gateway-egress' -and
+           @($Attached|Where-Object{$Expected -cnotcontains $_}).Count -eq 0 -and
+           $Attached.Count -lt $Expected.Count){
+            # Never-started exact subset only; no network effect on Return.
             Admit $C $P -AllowUnhealthy -AllowPendingIngress
             Write-Host 'FORTIS_ACTION_CORE_RETURN_UNSTARTED_PARTIAL_NETWORK'
             return
@@ -1294,17 +1412,30 @@ function Return-Source {
 function Complete-ActionCoreNetwork {
     param($C,$P)
     if(-not $P.gatewayNetworks){return $C}
-    $Now=Read-ActionCoreBoundary
+    $UseAction=Test-RecordedGatewayNetwork $P.gatewayNetworks 'fortis-actioncore-net'
+    $UseObservatory=Test-RecordedGatewayNetwork $P.gatewayNetworks 'fortis-observatory-gw-net'
+    $Now=Read-GatewayNetworkBoundary -ActionCore:$UseAction -Observatory:$UseObservatory
     if(-not (Same-Json $Now $P.gatewayNetworks)){
-        throw 'RELEASE_ACTION_CORE_BOUNDARY_CHANGED'
+        throw 'RELEASE_GATEWAY_BOUNDARY_CHANGED'
     }
-    $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
-    if($Attached.Count -eq 1 -and $Attached[0] -ceq 'fortis-gateway-egress'){
-        # A retried owner Resume may complete an interrupted create, but may
-        # never issue a second connect or attach any arbitrary Docker network.
+    foreach($Name in @('fortis-actioncore-net','fortis-observatory-gw-net')){
+        if(-not (Test-RecordedGatewayNetwork $P.gatewayNetworks $Name)){continue}
+        $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
+        if($Attached -ccontains $Name){continue}
+        # Owner controller only: a never-started exact-subset candidate may
+        # attach the next pinned network. Reject extra/mismatched endpoints.
         Admit $C $P -AllowUnhealthy -AllowPendingIngress
-        Step 'ATTACH_ACTION_CORE_NETWORK'
-        $null=Docker-Text @('network','connect','fortis-actioncore-net',$C.Id)
+        $Fresh=Read-GatewayNetworkBoundary -ActionCore:$UseAction -Observatory:$UseObservatory
+        if(-not (Same-Json $Fresh $P.gatewayNetworks)){
+            throw 'RELEASE_GATEWAY_BOUNDARY_CHANGED'
+        }
+        if($Name -ceq 'fortis-actioncore-net'){
+            Step 'ATTACH_ACTION_CORE_NETWORK'
+            $null=Docker-Text @('network','connect','fortis-actioncore-net',$C.Id)
+        }else{
+            Step 'ATTACH_OBSERVATORY_NETWORK'
+            $null=Docker-Text @('network','connect','fortis-observatory-gw-net',$C.Id)
+        }
         $C=Container $C.Id
     }
     Admit $C $P -AllowUnhealthy
@@ -1328,9 +1459,15 @@ function Resume-Target {
         $RepoCatalog=Repo-JSON "import json;from fortis_approvals.extensions.client import default_client;print(json.dumps(default_client().catalog()))"
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         $null=Running-CLI $C.Id @('probe') $script:R.probes
-        if($P.gatewayNetworks){
+        if(Test-RecordedGatewayNetwork $P.gatewayNetworks 'fortis-actioncore-net'){
             Step 'VERIFY_ACTION_CORE_HTTP8000_DENIAL'
             Assert-ActionCoreNoHttpFromGateway $C.Id
+        }
+        if(Test-RecordedGatewayNetwork $P.gatewayNetworks 'fortis-observatory-gw-net'){
+            Step 'VERIFY_OBSERVATORY_TLS443_AUTH_GATE'
+            Assert-ObservatoryPrivateTlsRead $C.Id
+            Step 'VERIFY_OBSERVATORY_HTTP18756_DENIAL'
+            Assert-ObservatoryNoLegacyHttp $C.Id
         }
         if(Read-OwnerShellFlag $P){
             Step 'VERIFY_STAGED_OWNER_SHELL_MTLS'
@@ -1526,6 +1663,8 @@ if($Action -eq 'SelfTest'){
     }
     $Multi=@(Forward-NativeParameters @{EnableDynamicGitHubRepositories=([switch]$true)})
     if($Multi.Count -ne 1 -or $Multi[0] -cne '-EnableDynamicGitHubRepositories'){throw 'RELEASE_DYNAMIC_FLAG_FORWARDING_SELFTEST_FAILED'}
+    $ObservatoryFlag=@(Forward-NativeParameters @{EnableObservatoryNetwork=([switch]$true)})
+    if($ObservatoryFlag.Count -ne 1 -or $ObservatoryFlag[0] -cne '-EnableObservatoryNetwork'){throw 'RELEASE_OBSERVATORY_FLAG_FORWARDING_SELFTEST_FAILED'}
     $NetFlag=@(Forward-NativeParameters @{EnableActionCoreNetwork=([switch]$true)})
     if($NetFlag.Count -ne 1 -or $NetFlag[0] -cne '-EnableActionCoreNetwork'){
         throw 'RELEASE_ACTION_CORE_FLAG_FORWARDING_SELFTEST_FAILED'
@@ -1558,7 +1697,7 @@ if($Auto){
         $Config -or $Probes -or $Image -or $CheckedImageRecord -or $SourceSha -or
         $Build -or $Pull -or $CurrentRecord -or $AttemptRecord -or
         $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or
-        $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or
+        $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or
         $CiControlRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
@@ -1726,6 +1865,11 @@ if($EnableActionCoreNetwork -and ($Auto -or $Action -cnotin @('Apply','Check') -
     $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRES_APPROVED_IMAGE_BUILD'
 }
+if($EnableObservatoryNetwork -and ($Auto -or $Action -cnotin @('Apply','Check') -or
+    -not $ApprovedImageSource -or $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or
+    $AttemptRecord -or $CurrentRecord)){
+    throw 'RELEASE_OBSERVATORY_NETWORK_REQUIRES_APPROVED_IMAGE_BUILD'
+}
 if($EnableDynamicGitHubRepositories -and ($Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_DYNAMIC_REPOSITORIES_REQUIRES_APPROVED_IMAGE_BUILD'
@@ -1779,11 +1923,11 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 $script:ActionCoreNetworks=$null
-if($EnableActionCoreNetwork){
-    Step 'ACTION_CORE_NETWORK_PREFLIGHT_READ_ONLY'
-    $script:ActionCoreNetworks=Read-ActionCoreBoundary
+if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
+    Step 'GATEWAY_NETWORK_PREFLIGHT_READ_ONLY'
+    $script:ActionCoreNetworks=Read-GatewayNetworkBoundary -ActionCore:([bool]$EnableActionCoreNetwork) -Observatory:([bool]$EnableObservatoryNetwork)
 }
 if($Build){
     Step 'BUILD_IMAGE'
@@ -1900,8 +2044,11 @@ if($script:PublisherActivationVolume){
         throw 'RELEASE_PUBLISHER_SOURCE_MATERIAL_CHANGED'
     }
 }
-if($SourceForOwnerShell.runtime.gatewayNetworks -and -not $EnableActionCoreNetwork){
+if((Test-RecordedGatewayNetwork $SourceForOwnerShell.runtime.gatewayNetworks 'fortis-actioncore-net') -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_DOWNGRADE_DENIED'
+}
+if((Test-RecordedGatewayNetwork $SourceForOwnerShell.runtime.gatewayNetworks 'fortis-observatory-gw-net') -and -not $EnableObservatoryNetwork){
+    throw 'RELEASE_OBSERVATORY_NETWORK_DOWNGRADE_DENIED'
 }
 $OwnerShellEnabled=((Read-OwnerShellFlag $SourceForOwnerShell.runtime) -or [bool]$EnableOwnerShell)
 if($OwnerShellEnabled){
@@ -1915,6 +2062,10 @@ if($PublicConfig.providers.action_core -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRED'
 }
 if($EnableActionCoreNetwork){Assert-ActionCoreConfig $ConfigText}
+if($PublicConfig.providers.observatory -and -not $EnableObservatoryNetwork){
+    throw 'RELEASE_OBSERVATORY_NETWORK_REQUIRED'
+}
+if($EnableObservatoryNetwork){Assert-ObservatoryConfig $ConfigText}
 Step 'CONFIG_AND_CREDENTIAL_PREFLIGHT'
 $Report=Image-CLI @('check') $ConfigText
 if($Action -eq 'Apply'){
@@ -2009,6 +2160,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     publisherActivationDigest=$script:PublisherActivationDigest
     ownerShell=$OwnerShellEnabled;runId=$RunId}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
+if($EnableObservatoryNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
     productionBaseline=$Baseline;configurationDigest=$Report.configurationDigest;sourceReceipt=$null
     activated=$false;probesPassed=$false;probes=$ProbeText;failureStep='';failureMessage=''
@@ -2045,11 +2197,11 @@ try {
     [IO.File]::WriteAllText($EnvFile,(($EnvLines -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
     Check-ExtensionEnv $EnvLines $CompactConfig $Nonce
     Assert-PublicEnvFile $EnvFile $EnvLines
-    if($EnableActionCoreNetwork){
+    if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
         Step 'ACTION_CORE_BOUNDARY_FINAL_PREFLIGHT'
-        $FinalBoundary=Read-ActionCoreBoundary
+        $FinalBoundary=Read-GatewayNetworkBoundary -ActionCore:([bool]$EnableActionCoreNetwork) -Observatory:([bool]$EnableObservatoryNetwork)
         if(-not (Same-Json $FinalBoundary $script:ActionCoreNetworks)){
-            throw 'RELEASE_ACTION_CORE_BOUNDARY_CHANGED'
+            throw 'RELEASE_GATEWAY_BOUNDARY_CHANGED'
         }
     }
     Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
