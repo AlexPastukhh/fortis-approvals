@@ -1680,8 +1680,21 @@ import json
 from fortis_approvals.workflow.client import default_client
 c=default_client()
 sha='__EXACT_HEAD_SHA__'
-branches=c.github.list_branches('fortis-approvals',page=1,per_page=100)['items']
-assert len(branches)<100 and sum(b['name']=='main' and b['sha']==sha for b in branches)==1, 'RELEASE_REMOTE_MAIN_MISMATCH'
+branches=[]
+for page in range(1,21):
+    branch_page=c.github.list_branches('fortis-approvals',page=page,per_page=100)['items']
+    if type(branch_page) is not list or len(branch_page)>100:
+        raise RuntimeError('RELEASE_BRANCH_PAGE_INVALID')
+    branches.extend(branch_page)
+    if len(branch_page)<100:
+        break
+else:
+    raise RuntimeError('RELEASE_BRANCH_PAGE_LIMIT')
+branch_names=[b['name'] for b in branches]
+if len(branch_names)!=len(set(branch_names)):
+    raise RuntimeError('RELEASE_BRANCH_DUPLICATE')
+if sum(b['name']=='main' and b['sha']==sha for b in branches)!=1:
+    raise RuntimeError('RELEASE_REMOTE_MAIN_MISMATCH')
 caps=c.gateway.post('/v1/workspace/capabilities',{})
 assert caps.get('globalRequestInventory',{}).get('crossActorDetails') is True, 'RELEASE_GLOBAL_INVENTORY_REQUIRED'
 records=[];offset=0
