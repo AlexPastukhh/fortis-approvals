@@ -20,6 +20,7 @@ from .ingress import NATIVE_PATHS
 from .incident_read import IncidentInspector
 from .worker import Worker
 from .intents import IntentClient, WORKSPACE_COMMANDS, GITHUB_COMMANDS
+from .powershell_client import PowerShellMachineClient
 
 
 class WorkflowTransport(GatewayTransport):
@@ -41,6 +42,7 @@ class WorkflowClient:
         self._capabilities=capabilities
         self.worker_observability=worker_observability is True
         self.incidents=IncidentInspector(self)
+        self.powershell=PowerShellMachineClient(gateway)
         self.git_delivery=GitDelivery(self)
         self.automatic_recovery=automatic_recovery is True
         self.intents=IntentClient(self, **({'root':intent_root} if intent_root is not None else {}))

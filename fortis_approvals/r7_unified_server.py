@@ -51,7 +51,8 @@ def runtime_endpoints():
 def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
                    bind_host='0.0.0.0', github_pilot=None, analysis_review=None, extensions=None, release_nonce=None,
-                   publisher_profile=None, publisher_grant=None):
+                   publisher_profile=None, publisher_grant=None,
+                   machine_shell=None):
     # P1 requires exactly one owner-pinned project; no organization-wide fallback.
     if (type(project_key) is not str or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', project_key)):
@@ -72,7 +73,8 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         ingress_grant=grant,sonar_transport=transport,
         organizations=organizations,region=region,
         project_keys=(project_key,), github_pilot=github_pilot, analysis_review=analysis_review,
-        extensions=extensions, publisher_profile=publisher_profile, publisher_grant=publisher_grant)
+        extensions=extensions, publisher_profile=publisher_profile, publisher_grant=publisher_grant,
+        machine_shell=machine_shell)
     if release_nonce is not None:
         from .extensions.staging import ReleaseGate, StagedMachine, StagedOwner
         runtime = getattr(portal, '_extension_runtime', None)
@@ -162,6 +164,11 @@ def main():
     # Missing mount means disabled; no environment, Repo or PR fallback.
     from .integrations.github.publisher_owner_mount import load_owner_publisher_mount
     publisher_profile, publisher_grant = load_owner_publisher_mount()
+    # Owner-sealed fixed source path; NO environment/AI toggle or credential
+    # provisioning. Absence leaves all machine PowerShell routes DENY.
+    from .powershell_owner_mount import load_machine_shell_mount
+    from .r7_unified_candidate import ACTOR as PRIMARY_MACHINE_ACTOR
+    machine_shell = load_machine_shell_mount(expected_actor=PRIMARY_MACHINE_ACTOR)
     owner,machine=create_servers(
         state='/state/private',
         grant_path='/run/r7-grant/grant',
@@ -171,7 +178,8 @@ def main():
         region=region,organizations=organizations,
         project_key=project_key, github_pilot=github_pilot, analysis_review=analysis_review,
         extensions=extensions, release_nonce=release_nonce,
-        publisher_profile=publisher_profile, publisher_grant=publisher_grant)
+        publisher_profile=publisher_profile, publisher_grant=publisher_grant,
+        machine_shell=machine_shell)
     try:
         Thread(target=owner.serve_forever,daemon=True,
                name='r7-owner-portal').start()

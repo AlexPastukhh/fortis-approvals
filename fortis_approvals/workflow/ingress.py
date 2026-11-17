@@ -20,7 +20,8 @@ from .artifact_diagnostics import (
     bounded_artifact_error, bounded_artifact_phase, ARTIFACT_FAILURE_HEADER)
 
 NATIVE_PATHS=frozenset({'/v1/workspace/submit','/v1/workspace/claim','/v1/workspace/finish',
-    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/list_requests','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage'})
+    '/v1/workspace/result','/v1/workspace/reconcile','/v1/workspace/details','/v1/workspace/list_uncertain','/v1/workspace/list_requests','/v1/workspace/activity','/v1/workspace/heartbeat','/v1/workspace/capabilities','/v1/git/artifact','/v1/git/fetch','/v1/github/visual-review/stage',
+    '/v1/powershell/submit','/v1/powershell/result','/v1/powershell/capabilities'})
 
 
 class NativeIngress:
@@ -96,6 +97,39 @@ class NativeIngress:
 
     def _dispatch(self,path,body,credential,actor):
         core=self.broker.core
+        if path in ('/v1/powershell/submit','/v1/powershell/result',
+                    '/v1/powershell/capabilities'):
+            from ..powershell_machine import MachinePowerShellAdapter
+            adapter=core.adapters.get('powershell')
+            configured=(type(adapter) is MachinePowerShellAdapter and
+                        adapter.core is core and actor == adapter.actor and
+                        core._policy(actor,dict(service='powershell',
+                            operation='execute',target=adapter.target))=='ASK')
+            if path=='/v1/powershell/capabilities':
+                require(not body,'MACHINE_POWERSHELL_PARAMS_DENIED')
+                return dict(configured=configured,
+                            policy='ASK' if configured else 'DENY',
+                            machineExecutionAutoApprove=False,version=1)
+            require(configured,'MACHINE_POWERSHELL_DISABLED')
+            if path=='/v1/powershell/submit':
+                require(set(body)=={'requestId','target','command'},
+                        'MACHINE_POWERSHELL_PARAMS_DENIED')
+                require(body['target']==adapter.target,
+                        'MACHINE_POWERSHELL_TARGET_DENIED')
+                payload=dict(requestId=body['requestId'],service='powershell',
+                    operation='execute',target=body['target'],
+                    params={'command':body['command']},expectedVersion=0,
+                    reason='Fortis Repo AI PowerShell request: owner ASK required')
+                row=core.client(credential,'submit',payload)
+                return dict(requestId=row['requestId'],state=row['state'],
+                            fingerprint=row['fingerprint'])
+            require(set(body)=={'requestId'},'MACHINE_POWERSHELL_PARAMS_DENIED')
+            row=core.client(credential,'status',body['requestId'])
+            require(row['request']['service']=='powershell' and
+                    row['request']['target']==adapter.target,
+                    'MACHINE_POWERSHELL_RESULT_SCOPE_DENIED')
+            return dict(requestId=row['requestId'],state=row['state'],
+                        result=row['result'],failure=row['failure'])
         if path=='/v1/workspace/capabilities':
             require(not body,'WORKFLOW_PARAMS_INVALID')
             if actor == PUBLISHER_ACTOR:
