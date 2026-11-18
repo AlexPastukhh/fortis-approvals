@@ -25,6 +25,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | Read-only Core incident evidence aggregation (PR2 source candidate) | [Incident Inspector](INCIDENT-INSPECTOR.md) |
 | Upcoming work, acceptance gaps and priority P0 | [Single backlog](BACKLOG-IMPROVEMENTS.md) |
 | PowerShell baseline, Repo AI V1 ASK-only plan and future improvements | [Current owner-only contract](OWNER-POWERSHELL.md) · [Consolidated plan/history](BACKLOG-IMPROVEMENTS.md#powershell-plan) |
+| Gateway → Windows Executor Machine ASK: заявка, Reject, восстановление | [UC-GW-014/015/016](use-cases/powershell-executor.md#uc-gw-014) · [Machine ASK source contract](POWERSHELL-MACHINE-ASK-CONTRACT-V1.md) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |
 | Provider-specific implementation | [Integration catalog](../fortis_approvals/integrations/README.md) |
 | Gateway release owner procedure and UNCERTAIN drift contract | [UC-GW-005](use-cases/releases.md#uc-gw-005) · [Owner runbook](PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b) · [Read-only growth verifier](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md) |
