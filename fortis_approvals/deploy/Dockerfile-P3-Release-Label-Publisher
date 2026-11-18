@@ -32,10 +32,25 @@ RUN python3 -c 'import datetime,os,re,sys; p={"PYTHON_BASE":r"python:3[.]11-slim
 FROM publisher-deps AS publisher-runtime
 ARG PUBLISHER_OS_LOCK_SHA256
 ARG PUBLISHER_SOURCE_SHA
+ARG PUBLISHER_PY_LOCK_SHA256
+# Owner-reviewed, separate local BuildKit context; NEVER fetch Python packages
+# during this Docker build. requirements.lock MUST pin and hash the complete
+# binary-wheel dependency closure (including transitive packages). The owner
+# must verify the wheelhouse and lock independently before supplying context.
+RUN --network=none --mount=type=bind,from=publisher_python_wheels,source=/,target=/run/publisher-wheels,readonly \
+    python3 -c 'import os,re,sys; v=os.environ.get("PUBLISHER_PY_LOCK_SHA256",""); sys.exit("PUBLISHER_PY_LOCK_REQUIRED") if re.fullmatch(r"[0-9a-f]{64}",v) is None else None' \
+    && printf '%s  %s\n' "$PUBLISHER_PY_LOCK_SHA256" /run/publisher-wheels/requirements.lock | sha256sum --check --status \
+    && python3 -m pip install --disable-pip-version-check --no-cache-dir --no-index \
+         --no-compile --only-binary=:all: --require-hashes \
+         --find-links=/run/publisher-wheels/wheels \
+         -r /run/publisher-wheels/requirements.lock \
+    && python3 -m pip check \
+    && python3 -I -B -c 'import yaml,jsonschema; from importlib.metadata import version; assert version("PyYAML")=="6.0.2" and version("jsonschema")=="4.23.0"'
 RUN python3 -c 'import os,re,sys; p={"PUBLISHER_OS_LOCK_SHA256":r"[0-9a-f]{64}","PUBLISHER_SOURCE_SHA":r"[0-9a-f]{40}"}; bad=[k for k,v in p.items() if not re.fullmatch(v,os.environ.get(k,""))]; sys.exit("PUBLISHER_RUNTIME_PINS_REQUIRED:"+",".join(bad)) if bad else None' \
     && printf '%s  %s\n' "$PUBLISHER_OS_LOCK_SHA256" /usr/local/share/fortis-publisher/os-packages.lock | sha256sum --check --status
 LABEL org.opencontainers.image.revision="${PUBLISHER_SOURCE_SHA}" \
-      fortis.publisher.os-package-lock-sha256="${PUBLISHER_OS_LOCK_SHA256}"
+      fortis.publisher.os-package-lock-sha256="${PUBLISHER_OS_LOCK_SHA256}" \
+      fortis.publisher.python-requirements-sha256="${PUBLISHER_PY_LOCK_SHA256}"
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 # Exact Python-only scope; not a Gateway server or a Repo checkout.
 # Installed into system site-packages for python -I (no cwd/PYTHONPATH injection).
