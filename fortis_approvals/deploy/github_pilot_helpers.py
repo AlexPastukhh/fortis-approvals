@@ -608,6 +608,7 @@ def provision_token(token, volume='/provision', *, uid=10001, gid=10001):
 
 GATEWAY_EGRESS_NETWORK = 'fortis-gateway-egress'
 GATEWAY_ACTION_NETWORK = 'fortis-actioncore-net'
+GATEWAY_OBSERVATORY_NETWORK = 'fortis-observatory-gw-net'
 
 
 def admit_gateway_networks(container, expected, *, pilot):
@@ -622,10 +623,20 @@ def admit_gateway_networks(container, expected, *, pilot):
             require(type(actual) is dict and set(actual) == {'bridge'},
                     'PILOT_UNREVIEWED_NETWORK_ATTACHMENT')
         return
-    require(pilot and type(wanted) is dict and set(wanted) ==
-            {GATEWAY_EGRESS_NETWORK, GATEWAY_ACTION_NETWORK} and
+    # Three fixed owner-reviewed layouts only: Action Core, Observatory, or both.
+    # Never allow a caller-defined network name, arbitrary third attachment,
+    # duplicate endpoint ID, or implicit downgrade to legacy bridge.
+    names = set(wanted) if type(wanted) is dict else set()
+    expected_sets = (
+        {GATEWAY_EGRESS_NETWORK, GATEWAY_ACTION_NETWORK},
+        {GATEWAY_EGRESS_NETWORK, GATEWAY_OBSERVATORY_NETWORK},
+        {GATEWAY_EGRESS_NETWORK, GATEWAY_ACTION_NETWORK,
+         GATEWAY_OBSERVATORY_NETWORK},
+    )
+    require(pilot and names in expected_sets and
             all(type(v) is str and re.fullmatch('[0-9a-f]{64}', v)
-                for v in wanted.values()) and len(set(wanted.values())) == 2,
+                for v in wanted.values()) and
+            len(set(wanted.values())) == len(wanted),
             'PILOT_GATEWAY_NETWORK_RECORD_INVALID')
     require(host['NetworkMode'] == GATEWAY_EGRESS_NETWORK,
             'PILOT_RESOURCE_OR_NETWORK_MISMATCH')
@@ -633,8 +644,11 @@ def admit_gateway_networks(container, expected, *, pilot):
     if pending:
         # Return-only escape for a never-started candidate interrupted between
         # docker create and controller-owned network connect. Not live admission.
+        # Only a never-started, controller-created candidate may have a
+        # *subset* of the reviewed endpoints during ordered attachments.
         require(expected.get('status') == 'created' and type(actual) is dict and
-                set(actual) == {GATEWAY_EGRESS_NETWORK},
+                GATEWAY_EGRESS_NETWORK in actual and
+                set(actual) <= names and len(actual) < len(wanted),
                 'PILOT_PENDING_NETWORK_NOT_PRISTINE')
     else:
         require(type(actual) is dict and set(actual) == set(wanted),
