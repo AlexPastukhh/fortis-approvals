@@ -28,7 +28,7 @@ The Dockerfile has **no default base**: its owner must supply exact
   *only* for these explicitly pinned snapshots, and forbids fallback mirrors.
 - `PUBLISHER_DEBIAN_CODENAME`: exact `bookworm` or `trixie`, checked against
   `/etc/os-release` of the digest-pinned base.
-- `PUBLISHER_GIT_VERSION` and `PUBLISHER_CA_CERTIFICATES_VERSION`: exact
+- `PUBLISHER_GIT_VERSION`, `PUBLISHER_CA_CERTIFICATES_VERSION` and `PUBLISHER_ZLIB_VERSION`: exact
   reviewed Debian versions, not floating/latest package names. Transitive
   resolution stays on the same immutable repository snapshot.
 
@@ -111,10 +111,10 @@ For owner review only (deliberately non-executable placeholders), perform
 an **isolated dependency review build first**, then the locked final image:
 
 ```text
-docker build --no-cache --platform linux/amd64 --target publisher-deps --build-arg PYTHON_BASE=python:3.11-slim@sha256:<REVIEWED-BASE-DIGEST> --build-arg PUBLISHER_APT_SNAPSHOT=<REVIEWED-YYYYMMDDTHHMMSSZ> --build-arg PUBLISHER_DEBIAN_CODENAME=<REVIEWED-CODENAME> --build-arg PUBLISHER_GIT_VERSION=<REVIEWED-EXACT-VERSION> --build-arg PUBLISHER_CA_CERTIFICATES_VERSION=<REVIEWED-EXACT-VERSION> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <REVIEW-ONLY-DEPS-IMAGE> .
+docker build --no-cache --platform linux/amd64 --target publisher-deps --build-arg PYTHON_BASE=python:3.11-slim@sha256:<REVIEWED-BASE-DIGEST> --build-arg PUBLISHER_APT_SNAPSHOT=<REVIEWED-YYYYMMDDTHHMMSSZ> --build-arg PUBLISHER_DEBIAN_CODENAME=<REVIEWED-CODENAME> --build-arg PUBLISHER_GIT_VERSION=<REVIEWED-EXACT-VERSION> --build-arg PUBLISHER_CA_CERTIFICATES_VERSION=<REVIEWED-EXACT-VERSION> --build-arg PUBLISHER_ZLIB_VERSION=<REVIEWED-EXACT-VERSION> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <REVIEW-ONLY-DEPS-IMAGE> .
 # Owner verifies complete /usr/local/share/fortis-publisher/os-packages.lock
 # from the review image, its SHA256, signatures, versions and security posture.
-docker build --no-cache --platform linux/amd64 --target publisher-runtime <SAME-FIVE-REVIEWED-ARGS> --build-arg PUBLISHER_OS_LOCK_SHA256=<REVIEWED-64-HEX-LOCK> --build-arg PUBLISHER_SOURCE_SHA=<ACCEPTED-40-HEX-SOURCE> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <OWNER-REVIEWED-IMAGE> .
+docker build --no-cache --platform linux/amd64 --target publisher-runtime <SAME-SIX-REVIEWED-ARGS> --build-arg PUBLISHER_OS_LOCK_SHA256=<REVIEWED-64-HEX-LOCK> --build-arg PUBLISHER_SOURCE_SHA=<ACCEPTED-40-HEX-SOURCE> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <OWNER-REVIEWED-IMAGE> .
 docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 10002:10002 --network <OWNER-GATEWAY-ONLY-EGRESS> --pids-limit 64 --memory 768m --cpus 1 --mount <PRIVATE-READONLY-CONFIG+GRANT+CA> --mount <TRUSTED-READONLY-VALIDATOR> --mount <PRIVATE-RW-CACHE> --mount <PRIVATE-RW-EXISTING-INTENT-JOURNAL> <OWNER-REVIEWED-IMAGE> --config /run/publisher/config.json preview --pr 118
 ```
 These placeholders deliberately block copy-paste execution. The owner must

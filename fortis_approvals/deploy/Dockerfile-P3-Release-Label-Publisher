@@ -9,7 +9,8 @@ ARG PUBLISHER_APT_SNAPSHOT
 ARG PUBLISHER_DEBIAN_CODENAME
 ARG PUBLISHER_GIT_VERSION
 ARG PUBLISHER_CA_CERTIFICATES_VERSION
-RUN python3 -c 'import datetime,os,re,sys; p={"PYTHON_BASE":r"python:3[.]11-slim@sha256:[0-9a-f]{64}","PUBLISHER_APT_SNAPSHOT":r"[0-9]{8}T[0-9]{6}Z","PUBLISHER_DEBIAN_CODENAME":r"(bookworm|trixie)","PUBLISHER_GIT_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}","PUBLISHER_CA_CERTIFICATES_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}"}; bad=[k for k,v in p.items() if not re.fullmatch(v,os.environ.get(k,""))]; sys.exit("PUBLISHER_BUILD_PINS_REQUIRED:"+",".join(bad)) if bad else None; datetime.datetime.strptime(os.environ["PUBLISHER_APT_SNAPSHOT"],"%Y%m%dT%H%M%SZ")' \
+ARG PUBLISHER_ZLIB_VERSION
+RUN python3 -c 'import datetime,os,re,sys; p={"PYTHON_BASE":r"python:3[.]11-slim@sha256:[0-9a-f]{64}","PUBLISHER_APT_SNAPSHOT":r"[0-9]{8}T[0-9]{6}Z","PUBLISHER_DEBIAN_CODENAME":r"(bookworm|trixie)","PUBLISHER_GIT_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}","PUBLISHER_CA_CERTIFICATES_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}","PUBLISHER_ZLIB_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}"}; bad=[k for k,v in p.items() if not re.fullmatch(v,os.environ.get(k,""))]; sys.exit("PUBLISHER_BUILD_PINS_REQUIRED:"+",".join(bad)) if bad else None; datetime.datetime.strptime(os.environ["PUBLISHER_APT_SNAPSHOT"],"%Y%m%dT%H%M%SZ")' \
     && . /etc/os-release \
     && test "$ID" = debian && test "$VERSION_CODENAME" = "$PUBLISHER_DEBIAN_CODENAME" \
     && test -f /usr/share/keyrings/debian-archive-keyring.gpg \
@@ -18,7 +19,7 @@ RUN python3 -c 'import datetime,os,re,sys; p={"PYTHON_BASE":r"python:3[.]11-slim
     && printf 'deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/%s/ %s-updates main\n' "$PUBLISHER_APT_SNAPSHOT" "$PUBLISHER_DEBIAN_CODENAME" >> /etc/apt/sources.list \
     && printf 'deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n' "$PUBLISHER_APT_SNAPSHOT" "$PUBLISHER_DEBIAN_CODENAME" >> /etc/apt/sources.list \
     && apt-get -o Acquire::Retries=0 update \
-    && apt-get install -y --no-install-recommends "git=$PUBLISHER_GIT_VERSION" "ca-certificates=$PUBLISHER_CA_CERTIFICATES_VERSION" \
+    && apt-get install -y --no-install-recommends "git=$PUBLISHER_GIT_VERSION" "ca-certificates=$PUBLISHER_CA_CERTIFICATES_VERSION" "zlib1g=$PUBLISHER_ZLIB_VERSION" \
     && install -d -m 0755 /usr/local/share/fortis-publisher \
     && dpkg-query -W -f='${binary:Package}=${Version}\n' | LC_ALL=C sort > /usr/local/share/fortis-publisher/os-packages.lock \
     && sha256sum /usr/local/share/fortis-publisher/os-packages.lock \

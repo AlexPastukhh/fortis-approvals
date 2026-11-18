@@ -78,6 +78,7 @@ class PublisherImageSourceTests(unittest.TestCase):
         self.assertNotIn('https://deb.debian.org', content)
         self.assertIn('"git=$PUBLISHER_GIT_VERSION"', content)
         self.assertIn('"ca-certificates=$PUBLISHER_CA_CERTIFICATES_VERSION"', content)
+        self.assertIn('"zlib1g=$PUBLISHER_ZLIB_VERSION"', content)
         self.assertIn('os-packages.lock', content)
         self.assertIn('sha256sum --check --status', content)
         self.assertIn('org.opencontainers.image.revision=', content)
@@ -87,6 +88,7 @@ class PublisherImageSourceTests(unittest.TestCase):
             'PUBLISHER_DEBIAN_CODENAME': 'trixie',
             'PUBLISHER_GIT_VERSION': '1:2.47.0-1',
             'PUBLISHER_CA_CERTIFICATES_VERSION': '20250419',
+            'PUBLISHER_ZLIB_VERSION': '1:1.3.dfsg+really1.3.1-1+deb13u1',
         }
         run = self._pin_check('PUBLISHER_BUILD_PINS_REQUIRED', base)
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -97,6 +99,7 @@ class PublisherImageSourceTests(unittest.TestCase):
             ('PUBLISHER_DEBIAN_CODENAME', 'sid'),
             ('PUBLISHER_GIT_VERSION', 'latest'),
             ('PUBLISHER_CA_CERTIFICATES_VERSION', '1;true'),
+            ('PUBLISHER_ZLIB_VERSION', 'latest'),
         ]:
             with self.subTest(key=key, wrong=wrong):
                 bad = {**base, key: wrong}
