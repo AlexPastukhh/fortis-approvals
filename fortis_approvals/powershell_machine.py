@@ -21,9 +21,11 @@ AUDIENCE = "fortis-powershell-executor:machine-dispatch:v1"
 DOMAIN = b"fortis:machine-powershell:v1\n"
 _ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
+ACCEPTED_EXECUTOR_GIT_SHA = "3a455fd34c9b442e3480729b377680a895c5399c"
+EXECUTOR_IDENTITY = "windows-owner-nonadmin-v1"
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
 _PROFILE = "windows-powershell-5.1-nonadmin-one-shot-v1"
-_CONTRACT_DIGEST = hashlib.sha256(b"fortis-repo-machine-powershell:ASK_ONLY:v1").hexdigest()
+_CONTRACT_DIGEST = hashlib.sha256(b"fortis-repo-machine-powershell:ASK_ONLY:executor-git-sha-pin:v1").hexdigest()
 
 
 def _canonical(obj):
@@ -159,17 +161,17 @@ class _NoRedirect(request.HTTPRedirectHandler):
 class MachinePowerShellAdapter:
     """Existing Core adapter: PENDING/ASK, only trusted approved Core dispatch."""
 
-    def __init__(self, *, transport, target, actor, source_sha256, executor_identity):
+    def __init__(self, *, transport, target, actor, executor_git_sha, executor_identity):
         if (not hasattr(transport, "execute") or not hasattr(transport, "status") or
                 type(transport.key) is not bytes or len(transport.key) < 32 or
-                type(target) is not str or not _ID.fullmatch(target) or
+                type(target) is not str or not _ID.fullmatch(target) or target != "windows-owner" or
                 type(actor) is not str or not _ID.fullmatch(actor) or
-                type(source_sha256) is not str or not _HEX.fullmatch(source_sha256) or
-                type(executor_identity) is not str or not executor_identity):
+                type(executor_git_sha) is not str or executor_git_sha != ACCEPTED_EXECUTOR_GIT_SHA or
+                type(executor_identity) is not str or executor_identity != EXECUTOR_IDENTITY):
             raise ValueError("MACHINE_POWERSHELL_ADAPTER_CONFIG_INVALID")
         self.transport = transport
         self.target, self.actor = target, actor
-        self.source_sha256 = source_sha256
+        self.executor_git_sha = executor_git_sha
         self.executor_identity = executor_identity
         self.core = None
 
@@ -201,7 +203,7 @@ class MachinePowerShellAdapter:
             "actor": self.actor, "target": self.target,
             "command": command, "commandSha256": digest,
             "contractVersion": 1, "contractDigest": _CONTRACT_DIGEST,
-            "profile": _PROFILE, "sourceSha256": self.source_sha256,
+            "profile": _PROFILE, "executorGitSha": self.executor_git_sha,
             "executorIdentity": self.executor_identity,
             "workingDirectory": "Windows current user's home",
             "timeoutSeconds": 60, "outputLimitBytes": 65536,

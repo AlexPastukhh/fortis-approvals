@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from fortis_approvals.powershell_machine import ACCEPTED_EXECUTOR_GIT_SHA, EXECUTOR_IDENTITY
 from fortis_approvals.powershell_owner_mount import (
     FILES, reviewed_machine_mount_digest,
 )
@@ -17,7 +18,7 @@ VOLUME = "fortis-r7-machine-powershell"
 PROFILE = {
     "version": 1, "enabled": True, "mode": "ASK_ONLY",
     "actor": ACTOR, "target": "windows-owner",
-    "sourceSha256": "a" * 64, "executorIdentity": "owner-nonadmin",
+    "executorGitSha": ACCEPTED_EXECUTOR_GIT_SHA, "executorIdentity": EXECUTOR_IDENTITY,
 }
 
 

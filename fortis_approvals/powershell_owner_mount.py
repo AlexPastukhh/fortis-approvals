@@ -9,7 +9,10 @@ import re
 import stat
 
 from .core import loads_strict
-from .powershell_machine import MachinePowerShellAdapter, MachineShellTransport
+from .powershell_machine import (
+    ACCEPTED_EXECUTOR_GIT_SHA, EXECUTOR_IDENTITY,
+    MachinePowerShellAdapter, MachineShellTransport,
+)
 
 MOUNT = Path("/run/fortis-machine-powershell")
 FILES = frozenset({
@@ -18,9 +21,8 @@ FILES = frozenset({
 })
 _KEYS = frozenset({
     "version", "enabled", "actor", "target",
-    "sourceSha256", "executorIdentity", "mode",
+    "executorGitSha", "executorIdentity", "mode",
 })
-_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ACTOR = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 
 
@@ -78,10 +80,11 @@ def load_machine_shell_mount(*, expected_actor, root=MOUNT):
             _ACTOR.fullmatch(profile["actor"]) is None or
             type(profile["target"]) is not str or
             _ACTOR.fullmatch(profile["target"]) is None or
-            type(profile["sourceSha256"]) is not str or
-            _HEX.fullmatch(profile["sourceSha256"]) is None or
+            profile["target"] != "windows-owner" or
+            type(profile["executorGitSha"]) is not str or
+            profile["executorGitSha"] != ACCEPTED_EXECUTOR_GIT_SHA or
             type(profile["executorIdentity"]) is not str or
-            not 1 <= len(profile["executorIdentity"]) <= 100):
+            profile["executorIdentity"] != EXECUTOR_IDENTITY):
         raise RuntimeError("MACHINE_POWERSHELL_PROFILE_DENIED")
     for name in FILES - {"profile.json"}:
         _private_file(directory, name, 8192)
@@ -94,7 +97,7 @@ def load_machine_shell_mount(*, expected_actor, root=MOUNT):
             proof_file=str(directory / "proof-key"))
         return MachinePowerShellAdapter(
             transport=transport, target=profile["target"],
-            actor=profile["actor"], source_sha256=profile["sourceSha256"],
+            actor=profile["actor"], executor_git_sha=profile["executorGitSha"],
             executor_identity=profile["executorIdentity"])
     except (OSError, ValueError):
         raise RuntimeError("MACHINE_POWERSHELL_TRANSPORT_INVALID") from None

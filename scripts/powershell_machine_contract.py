@@ -18,6 +18,8 @@ class MachineShellContractError(ValueError):
 _TARGET = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _PROFILE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+ACCEPTED_EXECUTOR_GIT_SHA = "3a455fd34c9b442e3480729b377680a895c5399c"
+EXECUTOR_IDENTITY = "windows-owner-nonadmin-v1"
 MAX_COMMAND_BYTES = 8192
 
 
@@ -73,7 +75,7 @@ def frozen_preview(
     """
     body = validate_submit(submitted, registered_targets=registered_targets)
     keys = {"actor", "contractVersion", "contractDigest", "profile",
-            "executorIdentity", "workingDirectory", "sourceSha256",
+            "executorIdentity", "workingDirectory", "executorGitSha",
             "timeoutSeconds", "outputLimitBytes"}
     if type(trusted_context) is not dict or set(trusted_context) != keys:
         raise MachineShellContractError("MACHINE_SHELL_TRUSTED_CONTEXT_DENIED")
@@ -82,9 +84,9 @@ def frozen_preview(
         type(c["contractVersion"]) is not int or c["contractVersion"] < 1 or
         type(c["contractDigest"]) is not str or not _HEX_SHA256.fullmatch(c["contractDigest"]) or
         type(c["profile"]) is not str or not _PROFILE.fullmatch(c["profile"]) or
-        type(c["executorIdentity"]) is not str or not c["executorIdentity"] or
+        type(c["executorIdentity"]) is not str or c["executorIdentity"] != EXECUTOR_IDENTITY or
         type(c["workingDirectory"]) is not str or not c["workingDirectory"] or
-        type(c["sourceSha256"]) is not str or not _HEX_SHA256.fullmatch(c["sourceSha256"]) or
+        type(c["executorGitSha"]) is not str or c["executorGitSha"] != ACCEPTED_EXECUTOR_GIT_SHA or
         type(c["timeoutSeconds"]) is not int or not 1 <= c["timeoutSeconds"] <= 60 or
         type(c["outputLimitBytes"]) is not int or not 1 <= c["outputLimitBytes"] <= 65536):
         raise MachineShellContractError("MACHINE_SHELL_TRUSTED_CONTEXT_DENIED")
@@ -95,7 +97,7 @@ def frozen_preview(
         "commandSha256": hashlib.sha256(body["command"].encode("utf-8")).hexdigest(),
         "contractVersion": c["contractVersion"], "contractDigest": c["contractDigest"],
         "profile": c["profile"], "executorIdentity": c["executorIdentity"],
-        "workingDirectory": c["workingDirectory"], "sourceSha256": c["sourceSha256"],
+        "workingDirectory": c["workingDirectory"], "executorGitSha": c["executorGitSha"],
         "timeoutSeconds": c["timeoutSeconds"], "outputLimitBytes": c["outputLimitBytes"],
     }
     digest = hashlib.sha256(canonical(snapshot)).hexdigest()

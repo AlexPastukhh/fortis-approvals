@@ -74,6 +74,27 @@ subject only to the existing interpreter and transport ceilings. ASK is not
 automatic risk assessment; the owner is deciding whether to run the exact
 script under an ordinary Windows account.
 
+## Accepted Executor source pin and owner-runtime verification
+
+The ASK preview uses **`executorGitSha`** for the reviewed 40-character
+Windows Executor Git commit `3a455fd34c9b442e3480729b377680a895c5399c`,
+not the earlier ambiguous 64-character `sourceSha256`. The runtime adapter
+and private mount reject other SHA values; the offline preview validates the
+same pin. The accepted fixed `executorIdentity` is
+`windows-owner-nonadmin-v1`. This is an owner-reviewable **role label**,
+not a unique Windows user, process PID/SID or live-runtime authentication.
+The changed contract digest invalidates any earlier ASK preview.
+
+The source checks cannot prove which Python code the running Windows
+listener loaded. Before a first protected Gateway release, the owner must
+verify the installed Windows Executor checkout/source, non-admin identity,
+single listener, original current receipt DB and Script Center launch path
+separately, and conduct the cryptographic mTLS/proof/Reject/replay negative
+tests. A correct profile and handshake never substitute for that
+host-side evidence. Source upgrades require re-review of the Git pin; no
+arbitrary 64-character string, placeholder identity or automatic enabling
+is a valid workaround.
+
 ## 3. Closed typed request schema — offline helper and accepted source
 
 | Logical operation | Body | Semantics |
