@@ -26,6 +26,7 @@ tests=(
   test_owner_shell_portal.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
+  test_machine_powershell_gateway_mount_release.py
   test_powershell_machine_client.py
   test_owner_shell_release.py
   test_owner_shell_release_source.py

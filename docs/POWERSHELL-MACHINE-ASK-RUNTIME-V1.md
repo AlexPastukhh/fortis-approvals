@@ -17,6 +17,38 @@ The proof is HMAC-SHA256 with a dedicated 32+ byte owner-controlled key that is 
 - workflow/powershell_client.py — Repo-side typed facade. No Windows credentials, direct HTTP, owner-cookies, automatic retry or fallback to owner-local API.
 - runtime composition is deliberately **opt-in**. Owner mount + native registered Gateway actor/target are prerequisites; no change to the existing owner-only browser PowerShell API.
 
+## Gateway owner-managed first mount (source-only controller proposal)
+
+For an accepted Gateway owner-controller containing this change, first
+activation uses one already owner-provisioned Docker named volume
+`fortis-r7-machine-powershell`, mounted read-only at the **fixed**
+`/run/fortis-machine-powershell`. The six files must pass the existing
+runtime validation (UID 10001, directory 0700, each file 0600/no symlinks,
+exact actor, ASK_ONLY, accepted Executor source, valid dedicated TLS,
+bearer and 32+-byte proof key). The owner provisions credentials only
+through private host channels; this source does **not** generate them.
+
+The controller's explicit `-EnableMachinePowerShell` is accepted **only**
+for the manual exact-SHA, quiescence-attested immutable-image
+`Check -Build` and bound `Apply -Image ... -CheckedImageRecord ...`
+flow. First opt-in is forbidden with `-Auto`. A network-disabled,
+read-only UID-10001 image preflight validates all six files and stores
+only their domain-separated SHA256 digest and the fixed volume identity
+in the protected Check/Complete records. All later releases re-attest
+the **same** volume digest before stop and in container admission.
+Unknown host paths, mismatched volume identities, altered material,
+missing private files, wrong actor or unexpected mounts fail closed.
+The controller never creates a volume, prints secrets or runs Windows.
+
+This is an implementation of the special owner-opt-in boundary, **not**
+a new release procedure: use [UC-GW-005](use-cases/releases.md#uc-gw-005)
+and [Primary runbook](PRIMARY-GATEWAY-OPERATIONS.md), with
+[UC-GW-006](use-cases/recovery.md#uc-gw-006) for uncertain Apply and
+[UC-GW-004](use-cases/credential-lifecycle.md#uc-gw-004) for secrets.
+Do not perform owner provisioning or live Apply solely because this
+source PR merges. Confirm the existing Windows single-listener opt-in,
+same receipt DB and negative tests in a separate owner-controlled window.
+
 ## Conditions before owner release
 
 1. Owner reviews/merges the contract PR #119 and both Executor and Gateway implementation PRs after exact-head Source CI/Release Impact; source merge alone is not live deployment.
