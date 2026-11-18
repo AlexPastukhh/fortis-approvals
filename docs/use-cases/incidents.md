@@ -38,8 +38,8 @@ push + PR — один parent intentId из `git_delivery.submit(...)`. Коор
    `default_client().incidents.inspect(uuid)` сам собирает ограниченные страницы
    Core audit, worker/receipt и разрешённые GitHub READ, возвращая безопасную
    evidence-проекцию, границы полноты и `retryAuthorization=NONE`.
-   Он использует существующий `details()` (доступный для любого actor с PR #62)
-   и требует live `globalRequestInventory.crossActorDetails=true`.
+   Он использует существующий `details()` и требует
+   подтверждённой live capability `globalRequestInventory.crossActorDetails=true`.
    Для углублённой ручной проверки первоисточника остаётся read-only
    `details(uuid, event_offset=..., event_limit=...)`; его сырые params,
    preview и worker result не публиковать в отчётах. Ни один вариант не
@@ -73,8 +73,8 @@ push + PR — один parent intentId из `git_delivery.submit(...)`. Коор
 
 ### Действующий глобальный read-only API и смысл состояний
 
-**Установлено 2026-11-10 (PR #62, owner Promote).** Любой
-аутентифицированный AI-инициатор может вызвать
+**При проверенной live capability `globalRequestInventory.crossActorDetails=true`**
+любой аутентифицированный AI-инициатор может вызвать
 `POST /v1/workspace/list_requests` через `client.list_requests()`:
 глобальные метаданные всех actor с пагинацией, без фильтра по инициатору.
 `client.details(UUID)` возвращает полную карточку любого UUID
@@ -144,14 +144,13 @@ worker claim. После `DISPATCHED` или `UNCERTAIN` автоматичес�
 защищённым audit и без `DISPATCHED` даёт это подтверждение для данного
 Gateway request. Подробный общий алгоритм расследования — ниже.
 
-**Установленный переход:** 2026-11-10 владелец выполнил
-`Check → Apply → Backup → Promote` для PR #62 с точным сохранением
-двух `APPROVED` и исторического `CLAIMED`. Глобальный машинный API
-и обе исходные карточки проверены read-only после активации; сами
-`APPROVED` **не отменены** этим выпуском. Нажатие отмены/автопроверки
-в браузере владельца требует отдельного live-подтверждения.
-[Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md) содержит границы
-переноса и восстановления. Никакой ручной правки SQLite.
+Перенос `APPROVED/UNCERTAIN/CLAIMED` во время выпуска не означает
+их отмены, закрытия или повторного исполнения. Правила переноса
+принадлежат [UC-GW-005](releases.md#uc-gw-005) и
+[Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md);
+результаты конкретных выпусков — датированным evidence.
+Owner Portal click и Core readback требуют собственных доказательств.
+Никакой ручной правки SQLite.
 
 ## Самостоятельная инвентаризация и расследование: AI-first
 
@@ -297,13 +296,11 @@ while True:
 не доказывает остановку worker. Owner-only `GET /v1/owner/unresolved`
 машинным ИИ не вызывается.
 
-**Граница live evidence:** на PR #62 выполнены CI и negative tests
-для разных machine actors; на работающем Gateway подтверждены
-`globalRequestInventory.crossActorDetails=true`, глобальный список и
-полные карточки двух `APPROVED`. В текущем сохранённом наборе все
-записи принадлежат одному actor; отдельный live-запрос под **вторым
-machine grant** пока не подтверждён. Не подменять этим утверждение
-о полноценной multi-identity live acceptance.
+**Граница evidence:** наличие live capability и глобального
+readback под одним machine identity не доказывает негативные сценарии
+другого grant или полноценную multi-identity acceptance.
+Для такой оценки требуются отдельные owner-reviewed тесты.
+Датированные результаты принадлежат evidence, не этому UC.
 
 Новое поле details()['diagnostic'] различает только наблюдаемые
 стадии: worker job отсутствует, FAILED, CLAIMED, DONE или отсутствует
@@ -374,15 +371,12 @@ DISPATCHED и Gateway worker job после `finish`. `details(UUID).diagnostic`
 `rootCause` и `originalEffect` остаются неопределёнными. Исторические
 ошибки задним числом не восстанавливаются.
 
-**Граница принятия (2026-11-10):** source принят в `main` через PR #54;
-authenticated Repo увидел `workerActivity.readOnly=true` и успешный read-only
-`activity()` живого Gateway. Это **не** доказывает точный post-PR образ в
-Windows, end-to-end новых heartbeat/errors или quiescence. До отдельного
-owner release/provenance evidence и негативных тестов не объявлять полную
-live acceptance. Для самостоятельного поиска неопределённых UUID действует
-[UC-GW-009](#uc-gw-009). Эта возможность не меняет
-`-ConfirmWorkerQuiescent`, exact preservation или Backup/Promote policy.
-
+**Граница доказательства:** `activity()` — actor-scoped наблюдение,
+не подтверждение отсутствия активного worker или post-release image.
+Нужны отдельно live capability, owner quiescence и точная
+идентичность Primary при релизе [UC-GW-005](releases.md#uc-gw-005).
+Ни наблюдение heartbeat, ни старое evidence не заменяют
+`-ConfirmWorkerQuiescent`, protected preservation или Backup/Promote.
 
 **Готово:** actor-scoped readback и пределы его достоверности установлены;
 подтверждение отсутствия активного worker и release quiescence отдельно

@@ -1,27 +1,37 @@
 # Fortis Approvals Gateway — текущее состояние
 
-**Актуальная на 2026-11-14 owner-reported выпускная цепочка:** PR #94
-принят в GitHub/Docker `main` SHA
-`c473edb88737f773d2f9ec0a9943235ebb18aa3a`. Владелец сообщил о
-Windows Mirror Pull и предоставил результаты PowerShell 5.1
-`FORTIS_INTEGRATIONS_SELFTEST_PASS`, `Check -Auto READY`,
-`FORTIS_INTEGRATIONS_ACTIVATED`, `FORTIS_PRIMARY_BACKUP_PASS` и
-`FORTIS_PRIMARY_PROMOTED`. Проверенный image:
-`sha256:900456ddba50c164de202645f2e3b6859599b5a64383f13d3628665c640a509a`;
-Apply сохранил protected record
-`%LOCALAPPDATA%\Fortis\GatewayReleases\e2e0610bd2f54c268cd06dbba1d57a6c\record.json`,
-`previousRetained=true`; backup:
-`fortis-gateway-backup-2cb0d07e64a149728d0aefd5830302f0`.
-Реальный source receipt из 260 hash entries прошёл serializer preflight.
-Отдельный authenticated Repo machine READ после Promote подтвердил
-доступность typed Gateway, schema v2 и GitHub READ.
+**Последний зафиксированный owner-reported выпуск, 2026-11-18:**
+после merge PR #131 опубликованный source `main` —
+`7d7221f9b61fb3660aa2561d3445638436686da4`.
+Owner выполнил `Check -Auto READY` для image
+`sha256:a596585d72b58c51147acb83a09024ae06a6b87bfd63e62e18eb07ad4c580575`
+с configuration digest
+`972ed32d2b7242a1c8487811bc448902a11869dbaf2fe0a08c9880a1f120f6cd`.
+Затем `Apply -Auto` вернул `FORTIS_INTEGRATIONS_ACTIVATED`,
+`active=true`, `previousRetained=true`, `productionUnchanged=true`;
+protected record у владельца:
+`%LOCALAPPDATA%\Fortis\GatewayReleases\6c375631b872463c90378f1a5a08179c\record.json`.
+Owner выполнил `Backup -Auto`:
+`FORTIS_PRIMARY_BACKUP_PASS fortis-gateway-backup-bf0218ec39ac46c2a016bbee4debf179`,
+затем `Promote -Auto`: `FORTIS_PRIMARY_PROMOTED`.
+Независимый Repo TLS/machine API и integration catalog READ после Promote
+успешны; Mirror operation `get_repository` объявлена `ALLOW/ready=true`.
+Выпуск не является доказательством отдельного host restart/autostart,
+WebAuthn browser acceptance или GitHub provider WRITE acceptance.
 
-**Не подтверждено этим выпуском:** новый host `docker inspect`
-(running/healthy/unless-stopped и точный live image после Promote),
-реальный reboot Docker Desktop, browser WebAuthn/security acceptance
-и provider mutation acceptance (`PENDING_OR_NOT_APPLICABLE` в Apply).
-Не выдавать owner outputs за независимую проверку Windows runtime.
-Точные runtime IDs брать из protected records и свежего host readback.
+**Исторический релиз 2026-11-14, PR #94:** source
+`c473edb88737f773d2f9ec0a9943235ebb18aa3a`, image
+`sha256:900456ddba50c164de202645f2e3b6859599b5a64383f13d3628665c640a509a`;
+record `%LOCALAPPDATA%\Fortis\GatewayReleases\e2e0610bd2f54c268cd06dbba1d57a6c\record.json`;
+backup `fortis-gateway-backup-2cb0d07e64a149728d0aefd5830302f0`.
+Эта дата — предыдущее evidence, не текущие deployment pins.
+
+**Граница проверки 2026-11-18:** post-Promote machine readback подтверждает
+доступность Gateway API и integration catalog, но **не заменяет** независимый
+host `docker inspect` с точными image/ports/restart и проверку Docker Desktop
+restart. Не выдавать owner outputs за независимую проверку Windows runtime.
+Provider mutation acceptance в Apply: `PENDING_OR_NOT_APPLICABLE`.
+Точные runtime IDs всегда брать из protected records и свежего host readback.
 
 **Исторический срез 2026-11-10, PR #62:** ранее owner подтвердил
 `Check → Apply → Backup → Promote` для
@@ -34,10 +44,11 @@ Apply сохранил protected record
 [датированное evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
 — точными owner outputs и границами подтверждения.
 
-**Release Labels update (source candidate, 2026-11-11):** новые
-typed read/ASK методы для GitHub PR labels подготавливаются в отдельной
-ветке. Они **не** наблюдались в Primary Gateway, не являются live
-grants и не могут использоваться до отдельного owner release/acceptance.
+**Release Labels / Trusted Publisher:** принятый source сам по себе
+не доказывает наличие соответствующих capabilities/grants в текущем
+Primary. Проверять точные операции через live capability/contract и owner
+acceptance; unattended publisher требует отдельного owner-controlled
+provisioning/activation. Состояние этапов — в едином roadmap, не в этом snapshot.
 Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
 операционный релиз:
 [Primary operations](../PRIMARY-GATEWAY-OPERATIONS.md).
@@ -49,7 +60,7 @@ Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
 
 | Контур | Endpoint / роль | Последнее подтверждение |
 | --- | --- | --- |
-| Primary `fortis-gateway` | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | Owner post-promote: healthy, restart `unless-stopped`; Repo typed operations работают |
+| Primary `fortis-gateway` | Owner `http://localhost:19203`; machine `https://host.docker.internal:19204` | 2026-11-18 owner `PROMOTED`, Repo typed TLS API/capabilities readback PASS; точный host `docker inspect` после Promote не предоставлен |
 | Legacy `fortis-approvals-gateway` | Бывшие 19103/19104 | Owner остановил контейнер, `restart=no`, image/state сохранены; не штатный endpoint |
 | Fortis Repo `fortis-repo-test` | Machine client и native workspace worker | Отдельный контейнер; canonical `Repos/<repo>` и linked `Worktrees/<repo>/<task>` |
 
