@@ -8,7 +8,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from fortis_approvals.core import Denied
+from fortis_approvals.core import Denied, Core, Authenticator
 from fortis_approvals.integrations.github.contract import validate_github_action
 from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
 from fortis_approvals.integrations.github.repo_client.client import GitHubClient
@@ -114,10 +114,61 @@ class RevisionTests(unittest.TestCase):
             request=intent,preview=self.adapter.prepare(intent),
             state='DISPATCHED',decision='reject',owner='owner',actor='agent',
             policyVersion=1,expiresAt=int(time.time())+3600)
-        with self.assertRaisesRegex(Denied,'GITHUB_REVISION_OWNER_APPROVAL_REQUIRED'):
+        with self.assertRaisesRegex(Denied,'GITHUB_REVISION_CORE_ADMISSION_REQUIRED'):
             self.adapter.apply(intent)
         self.assertEqual(self.transport.comment_posts,0)
         self.assertIsNone(self.adapter.visual_evidence(self.rev_id))
+
+    def core_allow(self):
+        """Real Core admission: no owner verifier, exact private-repo ALLOW."""
+        core=Core(self.root/'core.sqlite',adapters={'github':self.adapter},
+                  policies={('agent','github','append_visual_revision'):'DENY',
+                            ('agent','github','append_visual_revision',REPO):'ALLOW'},
+                  authenticator=Authenticator({'machine-grant':'agent'}))
+        self.adapter.observation_core=core
+        return core
+
+    def test_core_allow_appends_without_owner_and_keeps_one_shot_receipt(self):
+        core=self.core_allow()
+        result=core.client('machine-grant','submit',dict(self.intent(),expectedVersion=0))
+        self.assertEqual(result['state'],'EXECUTED')
+        self.assertIsNone(result['owner'])
+        self.assertIsNone(result['decision'])
+        self.assertEqual(result['result']['revision'],2)
+        self.assertEqual(self.transport.comment_posts,1)
+        self.assertEqual(self.transport.issue['body'],self.base_body)
+        self.assertEqual(core.client('machine-grant','submit',dict(self.intent(),expectedVersion=0))['state'],
+                         'EXECUTED')
+        self.assertEqual(self.transport.comment_posts,1)
+        # Generic targets and foreign Issues cannot inherit the scoped ALLOW.
+        foreign=self.intent(str(uuid.uuid4()))
+        foreign['target']='other-repository'
+        with self.assertRaises(Denied):
+            core.client('machine-grant','submit',dict(foreign,expectedVersion=0))
+        self.assertEqual(self.transport.comment_posts,1)
+
+    def test_core_allow_stops_duplicate_after_lost_comment_ack(self):
+        core=self.core_allow()
+        actual=self.transport.request
+        def lost(method,path,**kwargs):
+            result=actual(method,path,**kwargs)
+            if method=='POST' and path.endswith('/comments'):
+                raise TimeoutError('simulated lost create-comment ACK')
+            return result
+        self.transport.request=lost
+        first=core.client('machine-grant','submit',dict(self.intent(),expectedVersion=0))
+        self.assertEqual(first['state'],'UNCERTAIN')
+        self.assertEqual(self.transport.comment_posts,1)
+        self.transport.request=actual
+        self.assertEqual(core.client('machine-grant','submit',dict(self.intent(),expectedVersion=0))['state'],
+                         'UNCERTAIN')
+        self.assertEqual(self.transport.comment_posts,1)
+        duplicate=self.intent(str(uuid.uuid4()))
+        duplicate['params']={**self.rev,'runId':'another-run'}
+        self.stage(duplicate['requestId'],duplicate['params'])
+        with self.assertRaises(Denied):
+            core.client('machine-grant','submit',dict(duplicate,expectedVersion=0))
+        self.assertEqual(self.transport.comment_posts,1)
 
     def test_contract_no_broadening_and_exact_routes(self):
         validate_github_action('append_visual_revision',REPO,self.rev)
