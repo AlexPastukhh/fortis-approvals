@@ -701,6 +701,14 @@ def admit(container, expected, *, pilot):
     if publisher_volume:
         require(pilot, 'PILOT_PUBLISHER_REQUIRES_PROTECTED_RELEASE')
         desired.add(('volume', publisher_volume, '/run/r7-publisher-activation', False))
+    # A new PowerShell machine identity is only a protected owner release
+    # mount. Never admit a caller-supplied host path, arbitrary volume or RW.
+    machine_volume = expected.get('machinePowerShellVolume', '')
+    require(type(machine_volume) is str and machine_volume in
+            ('', 'fortis-r7-machine-powershell'), 'PILOT_MACHINE_POWERSHELL_VOLUME_INVALID')
+    if machine_volume:
+        require(pilot, 'PILOT_MACHINE_POWERSHELL_REQUIRES_PROTECTED_RELEASE')
+        desired.add(('volume', machine_volume, '/run/fortis-machine-powershell', False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')

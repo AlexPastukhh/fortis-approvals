@@ -98,3 +98,34 @@ def load_machine_shell_mount(*, expected_actor, root=MOUNT):
             executor_identity=profile["executorIdentity"])
     except (OSError, ValueError):
         raise RuntimeError("MACHINE_POWERSHELL_TRANSPORT_INVALID") from None
+
+
+def reviewed_machine_mount_digest(*, expected_actor, root=MOUNT):
+    """SHA256 of all *validated* owner-sealed bytes for protected release records.
+
+    Must be called only in a network-disabled uid-10001 read-only image
+    preflight. Never return the profile, TLS keys, bearer or HMAC key.
+    """
+    import hashlib
+
+    directory = Path(root)
+    if load_machine_shell_mount(expected_actor=expected_actor, root=directory) is None:
+        raise RuntimeError("MACHINE_POWERSHELL_MOUNT_ABSENT")
+    names = tuple(sorted(FILES))
+    lengths = {"profile.json": 2048}
+    initial = {name: _private_file(directory, name, lengths.get(name, 8192))
+               for name in names}
+    if load_machine_shell_mount(expected_actor=expected_actor, root=directory) is None:
+        raise RuntimeError("MACHINE_POWERSHELL_MOUNT_CHANGED")
+    for name in names:
+        if _private_file(directory, name, lengths.get(name, 8192)) != initial[name]:
+            raise RuntimeError("MACHINE_POWERSHELL_MOUNT_CHANGED")
+    digest = hashlib.sha256(b"fortis-machine-powershell-mount-v1\x00")
+    for name in names:
+        key = name.encode("ascii")
+        data = initial[name]
+        digest.update(len(key).to_bytes(2, "big"))
+        digest.update(key)
+        digest.update(len(data).to_bytes(4, "big"))
+        digest.update(data)
+    return digest.hexdigest()

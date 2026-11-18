@@ -8,7 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnablePublisherMount, [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
+    [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
     [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -1215,6 +1215,77 @@ print('FORTIS_PUBLISHER_MOUNT_SHA256=' + reviewed_mount_digest())
     return [string]$Matches[1]
 }
 
+# Owner-provisioned immutable machine PowerShell identity: fixed Docker volume
+# only, absent in all legacy Complete release records. No secret in Repo/argv.
+function Read-MachinePowerShellVolume {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_MACHINE_POWERSHELL_RECORD_INVALID'}
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('machinePowerShellVolume')){return ''}
+        $Value=$Record['machinePowerShellVolume']
+    } else {
+        $Prop=$Record.PSObject.Properties['machinePowerShellVolume']
+        if($null -eq $Prop){return ''}
+        $Value=$Prop.Value
+    }
+    if($Value -isnot [string] -or
+       $Value -cnotin @('','fortis-r7-machine-powershell')){
+        throw 'RELEASE_MACHINE_POWERSHELL_RECORD_INVALID'
+    }
+    return [string]$Value
+}
+function Read-MachinePowerShellDigest {
+    param($Record)
+    $Volume=Read-MachinePowerShellVolume $Record
+    if($Record -is [Collections.IDictionary]){
+        if(-not $Record.Contains('machinePowerShellDigest')){
+            if($Volume){throw 'RELEASE_MACHINE_POWERSHELL_DIGEST_MISSING'}
+            return ''
+        }
+        $Value=$Record['machinePowerShellDigest']
+    } else {
+        $Prop=$Record.PSObject.Properties['machinePowerShellDigest']
+        if($null -eq $Prop){
+            if($Volume){throw 'RELEASE_MACHINE_POWERSHELL_DIGEST_MISSING'}
+            return ''
+        }
+        $Value=$Prop.Value
+    }
+    if($Value -isnot [string] -or
+       ($Volume -and $Value -cnotmatch '^[0-9a-f]{64}$') -or
+       (-not $Volume -and $Value -cne '')){
+        throw 'RELEASE_MACHINE_POWERSHELL_DIGEST_INVALID'
+    }
+    return [string]$Value
+}
+function Image-MachinePowerShell-Preflight {
+    param([string]$ImageId)
+    # Verify all six files in the owner-provisioned Docker volume offline,
+    # as the exact service UID; never copy/print key, bearer, CA or cert.
+    $Name='fortis-r7-machine-powershell'
+    Assert-Volume $Name
+    Assert-OnlyWriter $Name
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.powershell_owner_mount import reviewed_machine_mount_digest
+from fortis_approvals.r7_unified_candidate import ACTOR
+print('FORTIS_MACHINE_POWERSHELL_MOUNT_SHA256=' + reviewed_machine_mount_digest(expected_actor=ACTOR))
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<machine-powershell-mount>','exec'))"
+    $Args=@('run','--rm','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','128m',
+        '--mount',('type=volume,source='+$Name+',target=/run/fortis-machine-powershell,readonly'),
+        '--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
+    $Result=Private-Process $Args ''
+    if($Result -cnotmatch '^FORTIS_MACHINE_POWERSHELL_MOUNT_SHA256=([0-9a-f]{64})$'){
+        throw 'RELEASE_MACHINE_POWERSHELL_PREFLIGHT_FAILED'
+    }
+    return [string]$Matches[1]
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -1314,6 +1385,9 @@ function Checked-Image-Binding {
         vaultVolume=$VaultVolume
         publisherActivationVolume=$script:PublisherActivationVolume
         publisherActivationDigest=$script:PublisherActivationDigest
+        machinePowerShellVolume=$script:MachinePowerShellVolume
+        machinePowerShellDigest=$script:MachinePowerShellDigest
+        enableMachinePowerShell=[bool]$EnableMachinePowerShell
         emergencyRescueImage=$EmergencyRescueImage
         emergencyRescueArchiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
         acceptUnverifiedRestore=[bool]$AcceptUnverifiedRestore
@@ -1489,7 +1563,8 @@ function Admit {
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         ciControlRepositories=(Read-CiControlRepositories $P)
         vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)
-        publisherActivationVolume=(Read-PublisherActivationVolume $P)}
+        publisherActivationVolume=(Read-PublisherActivationVolume $P)
+        machinePowerShellVolume=(Read-MachinePowerShellVolume $P)}
     $Networks=Read-GatewayNetworks $P
     if($null -ne $Networks){$Expected.gatewayNetworks=$Networks}
     if($AllowPendingIngress){
@@ -1522,6 +1597,11 @@ function Admit {
         $Pinned=Read-PublisherActivationDigest $P
         $Observed=Image-PublisherMount-Preflight -ImageId $P.image
         if($Observed -cne $Pinned){throw 'RELEASE_PUBLISHER_VOLUME_CONTENT_CHANGED'}
+    }
+    if($Expected.machinePowerShellVolume){
+        $Pinned=Read-MachinePowerShellDigest $P
+        $Observed=Image-MachinePowerShell-Preflight -ImageId $P.image
+        if($Observed -cne $Pinned){throw 'RELEASE_MACHINE_POWERSHELL_CONTENT_CHANGED'}
     }
 }
 function Admit-ReturnCandidate {
@@ -1917,6 +1997,27 @@ if($Action -eq 'SelfTest'){
     try{$null=Read-PublisherActivationDigest ('{"publisherActivationVolume":"fortis-r7-publisher-activation"}'|ConvertFrom-Json)}
     catch{if($_.Exception.Message -cne 'RELEASE_PUBLISHER_DIGEST_RECORD_MISSING'){throw};$PublisherRejected=$true}
     if(-not $PublisherRejected){throw 'RELEASE_PUBLISHER_RECORD_SELFTEST_FAILED'}
+    $MachineOld='{"schema":1}'|ConvertFrom-Json
+    $MachineGood=('{"machinePowerShellVolume":"fortis-r7-machine-powershell","machinePowerShellDigest":"'+('a'*64)+'"}')|ConvertFrom-Json
+    $MachineBad='{"machinePowerShellVolume":"../../owner"}'|ConvertFrom-Json
+    if((Read-MachinePowerShellVolume $MachineOld) -cne '' -or
+       (Read-MachinePowerShellDigest $MachineOld) -cne '' -or
+       (Read-MachinePowerShellVolume $MachineGood) -cne 'fortis-r7-machine-powershell' -or
+       (Read-MachinePowerShellDigest $MachineGood) -cne ('a'*64)){
+        throw 'RELEASE_MACHINE_POWERSHELL_RECORD_SELFTEST_FAILED'
+    }
+    $MachineRejected=$false
+    try{$null=Read-MachinePowerShellVolume $MachineBad}
+    catch{if($_.Exception.Message -cne 'RELEASE_MACHINE_POWERSHELL_RECORD_INVALID'){throw};$MachineRejected=$true}
+    if(-not $MachineRejected){throw 'RELEASE_MACHINE_POWERSHELL_RECORD_SELFTEST_FAILED'}
+    $MachineRejected=$false
+    try{$null=Read-MachinePowerShellDigest ('{"machinePowerShellVolume":"fortis-r7-machine-powershell"}'|ConvertFrom-Json)}
+    catch{if($_.Exception.Message -cne 'RELEASE_MACHINE_POWERSHELL_DIGEST_MISSING'){throw};$MachineRejected=$true}
+    if(-not $MachineRejected){throw 'RELEASE_MACHINE_POWERSHELL_RECORD_SELFTEST_FAILED'}
+    $MachineFlag=@(Forward-NativeParameters @{EnableMachinePowerShell=([switch]$true)})
+    if($MachineFlag.Count -ne 1 -or $MachineFlag[0] -cne '-EnableMachinePowerShell'){
+        throw 'RELEASE_MACHINE_POWERSHELL_FLAG_FORWARDING_FAILED'
+    }
     $PublisherFlag=@(Forward-NativeParameters @{EnablePublisherMount=([switch]$true)})
     if($PublisherFlag.Count -ne 1 -or $PublisherFlag[0] -cne '-EnablePublisherMount'){
         throw 'RELEASE_PUBLISHER_FLAG_FORWARDING_SELFTEST_FAILED'
@@ -1965,7 +2066,7 @@ if($Auto){
         $CiControlRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
-        $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount){
+        $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount -or $EnableMachinePowerShell){
         throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
     }
     if($Action -cin @('Check','Apply')){
@@ -2198,6 +2299,13 @@ if($EnablePublisherMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
     ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
     throw 'RELEASE_PUBLISHER_REQUIRES_EXACT_OWNER_CHECKED_IMAGE'
 }
+if($EnableMachinePowerShell -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
+    -not $ConfirmWorkerQuiescent -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
+    throw 'RELEASE_MACHINE_POWERSHELL_REQUIRES_EXACT_OWNER_CHECKED_IMAGE'
+}
 if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
     @($CiControlRepositories.Split(',')|Select-Object -Unique).Count -ne @($CiControlRepositories.Split(',')).Count)){
     throw 'RELEASE_CI_CONTROL_REPOSITORIES_INVALID'
@@ -2348,6 +2456,17 @@ if($AllowUncertainGrowth){
 $script:PublisherActivationVolume=Read-PublisherActivationVolume $SourceForOwnerShell.runtime
 $PreviousPublisherDigest=Read-PublisherActivationDigest $SourceForOwnerShell.runtime
 if($EnablePublisherMount){$script:PublisherActivationVolume='fortis-r7-publisher-activation'}
+$script:MachinePowerShellVolume=Read-MachinePowerShellVolume $SourceForOwnerShell.runtime
+$PreviousMachineDigest=Read-MachinePowerShellDigest $SourceForOwnerShell.runtime
+if($EnableMachinePowerShell){$script:MachinePowerShellVolume='fortis-r7-machine-powershell'}
+$script:MachinePowerShellDigest=''
+if($script:MachinePowerShellVolume){
+    Step 'MACHINE_POWERSHELL_MATERIAL_PREFLIGHT'
+    $script:MachinePowerShellDigest=Image-MachinePowerShell-Preflight -ImageId $script:Image
+    if($PreviousMachineDigest -and $script:MachinePowerShellDigest -cne $PreviousMachineDigest){
+        throw 'RELEASE_MACHINE_POWERSHELL_SOURCE_MATERIAL_CHANGED'
+    }
+}
 $script:PublisherActivationDigest=''
 if($script:PublisherActivationVolume){
     Step 'PUBLISHER_ACTIVATION_MATERIAL_PREFLIGHT'
@@ -2481,6 +2600,8 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     vaultVolume=$VaultVolume;extensionsConfig=$CompactConfig;releaseNonce=$Nonce
     publisherActivationVolume=$script:PublisherActivationVolume
     publisherActivationDigest=$script:PublisherActivationDigest
+    machinePowerShellVolume=$script:MachinePowerShellVolume
+    machinePowerShellDigest=$script:MachinePowerShellDigest
     ownerShell=$OwnerShellEnabled;runId=$RunId}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 if($EnableObservatoryNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
@@ -2578,6 +2699,10 @@ try {
     if($Runtime.publisherActivationVolume){
         $Arguments+=@('--mount',('type=volume,source='+$Runtime.publisherActivationVolume+
             ',target=/run/r7-publisher-activation,readonly'))
+    }
+    if($Runtime.machinePowerShellVolume){
+        $Arguments+=@('--mount',('type=volume,source='+$Runtime.machinePowerShellVolume+
+            ',target=/run/fortis-machine-powershell,readonly'))
     }
     $Arguments+=@($script:Image)
     $script:R.runtime.pilotId=Docker-Text $Arguments
