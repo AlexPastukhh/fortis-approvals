@@ -276,3 +276,99 @@ class SigningRolesTests(unittest.TestCase):
                                      preview_expires_at=int(time.time())+40)
         with self.assertRaisesRegex(Denied,'MIRROR_SIGNING_APPROVAL_REQUIRED'):
             ctx.sign_mirror_dispatch(self.parameters,preview_expires_at=int(time.time())+40)
+
+    def test_public_ask_body_cannot_supply_actor_approval_or_dispatch_identity(self):
+        """Only the authenticated Core scope, never incoming params, owns actor."""
+        body = self.body()
+        with patch('fortis_approvals.integrations.mirror.signing.sign_dispatch_identity') as signer:
+            for extra in ({'actor': 'foreign'}, {'approved': True},
+                          {'repoId': 'foreign'}, {'requestId': body['requestId']},
+                          {'signingKeyId': KEY}, {'proof': {'fixture': True}}):
+                candidate = {**body, 'params': {**self.parameters, **extra}}
+                with self.subTest(extra=extra), self.assertRaisesRegex(
+                        Denied, 'INTEGRATION_SCHEMA_INVALID'):
+                    self.runtime.call(GRANT, candidate)
+            signer.assert_not_called()
+        with self.assertRaisesRegex(Denied, 'REQUEST_NOT_AVAILABLE'):
+            self.core._read(body['requestId'])
+        self.assertEqual(self.seen, [])
+
+    def test_authenticated_ask_actor_and_policy_revalidated_before_owner_approval(self):
+        """Preflight actor comes from authenticated scope, not the requested SHA."""
+        body = self.body()
+        row = self.runtime.call(GRANT, body)
+        self.assertEqual(row['state'], 'PENDING')
+        self.assertEqual(self.seen, [('preview', 'preview', 'fixture')])
+        self.assertEqual(self.core._read(body['requestId'])['actor'], 'fixture')
+        # A changed trusted Core policy while owner approval is pending must
+        # fail BEFORE signing, without changing the original pending receipt.
+        self.core.policies[('fixture', 'mirror', 'execute_windows_pull_v2',
+                            'fortis-approvals')] = 'DENY'
+        with patch('fortis_approvals.integrations.mirror.signing.sign_dispatch_identity') as signer:
+            with self.assertRaisesRegex(Denied, 'OWNER_POLICY_CHANGED'):
+                self.decide(body['requestId'], 'approve')
+            signer.assert_not_called()
+        self.assertEqual(self.core._read(body['requestId'])['state'], 'PENDING')
+
+    def _synthetic_dispatched_row(self, request_id):
+        """Strictly offline source-fixture: model the already-approved Core row.
+
+        Direct SQLite mutation is NEVER available to a client, Gateway route
+        or the real owner-decision protocol. This isolates the signer's second
+        approval/actor check and the pre-transport revocation check.
+        """
+        with self.core._db() as db:
+            db.execute('UPDATE requests SET state=?,decision=?,owner=? WHERE id=?',
+                       ('DISPATCHED', 'approve', 'offline-owner', request_id))
+        row = self.core._read(request_id)
+        self.assertEqual((row['state'], row['decision'], row['owner']),
+                         ('DISPATCHED', 'approve', 'offline-owner'))
+
+    def test_signer_refuses_forged_actor_even_if_core_row_is_dispatched(self):
+        body = self.body()
+        self.assertEqual(self.runtime.call(GRANT, body)['state'], 'PENDING')
+        self._synthetic_dispatched_row(body['requestId'])
+        # A Context reconstructed with a foreign actor (not from the Core)
+        # cannot obtain proof even if all params and request UUID match.
+        context = Context(self.runtime, self.provider, self.write,
+                          {**body, 'expectedVersion': 0}, 'execute',
+                          authenticated_actor='foreign')
+        with patch('fortis_approvals.integrations.mirror.signing.sign_dispatch_identity') as signer:
+            with self.assertRaisesRegex(Denied, 'MIRROR_SIGNING_APPROVAL_REQUIRED'):
+                context.sign_mirror_dispatch(
+                    self.parameters, preview_expires_at=int(time.time()) + 50)
+            signer.assert_not_called()
+
+    def test_signer_or_write_bearer_revoked_after_signing_blocks_http_dispatch(self):
+        """A signed proof is not a reusable POST capability after rotation."""
+        request = self.body()
+        self.assertEqual(self.runtime.call(GRANT, request)['state'], 'PENDING')
+        self._synthetic_dispatched_row(request['requestId'])
+        write = replace(self.write, routes=('dispatch',))
+        mock_http = Mock(return_value={'fixture': True})
+        provider = Provider('mirror', (self.read, write), api=SimpleNamespace(
+            routes={'dispatch': Route('dispatch', 'POST',
+                                     '/gateway/v2/repositories/{repo_id}/pull',
+                                     readonly=False)},
+            call=mock_http))
+        for alias in ('mirror-sign', 'mirror-write'):
+            with self.subTest(rotated_alias=alias):
+                context = Context(
+                    self.runtime, provider, write,
+                    {**request, 'expectedVersion': 0}, 'execute',
+                    authenticated_actor='fixture')
+                with patch('fortis_approvals.integrations.mirror.signing.sign_dispatch_identity',
+                           return_value={'fixture': 'offline-signed'}) as signer:
+                    proof = context.sign_mirror_dispatch(
+                        self.parameters, preview_expires_at=int(time.time()) + 50)
+                    signer.assert_called_once()
+                body = {'requestId':context.request_id, 'repoId':context.target,
+                        'actor':'fixture', **self.parameters, 'proof':proof}
+                old = self.vault.get(alias)
+                self.vault.provision(alias,
+                    ('OFFLINE_REVOKED_SIGNING_SEED' if alias == 'mirror-sign'
+                     else 'OFFLINE_ROTATED_WRITE_CREDENTIAL'),
+                    expected_generation=old.generation)
+                with self.assertRaisesRegex(Denied, 'MIRROR_SIGNING_CREDENTIAL_REVOKED'):
+                    context.call('dispatch', body=body)
+                mock_http.assert_not_called()
