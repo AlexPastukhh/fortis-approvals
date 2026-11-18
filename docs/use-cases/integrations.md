@@ -117,8 +117,9 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
    --check`, `scripts/test-source.sh`, PR Source CI точного SHA.
 6. **После owner merge в GitHub UI:** readback PR+CI+merge SHA, затем принять
    source в чистый Docker main по *поддерживаемому* typed пути. Изменённый сервер
-   или image-baked client требует ровно одного owner-managed `Apply/Build` и
-   `Backup/Promote` с rollback и live capability/contract acceptance; изменение
+   или image-baked client требует отдельного owner-managed выпуска **по UC-GW-005**
+   с checked-image Check/Apply, Backup/Promote, rollback и
+   live capability/contract acceptance; изменение
    только внешнего Repo-клиента иногда требует обновления source, но не image —
    выяснить по Dockerfile COPY/runtime импорту, не делать rebuild вслепую.
 
@@ -137,10 +138,13 @@ Technical contract, limitations and negative tests:
 [integrations/github/README.md](../../fortis_approvals/integrations/github/README.md#append-visual-revision-to-an-existing-issue--source-candidate-not-live).
 The older `publish_visual_review` contract remains unchanged.
 
-**P3.2 source candidate:** новый `list_head_workflow_runs` и scoped publisher
-согласованы в [техническом проекте P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md#p32-source-candidate--disabled-by-default).
-Client/schema/server меняются вместе; операция исключена из legacy auto-grants.
-Профиль выключен, credentials/grants и runtime этим source не создаются.
+**Publisher и Release Labels:** отдельные grants, trusted runner,
+source/runtime boundary и owner acceptance принадлежат
+[UC-GW-011](#uc-gw-011) и
+[проекту P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md).
+Текущее состояние этапов — в
+[едином roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
+source merge сам по себе не выдаёт grants и не активирует runtime.
 
 <a id="uc-gw-011"></a>
 
@@ -168,18 +172,15 @@ Client/schema/server меняются вместе; операция исклю�
 не попадает в Repo actor. Политика `ASK` не заменяет semantic
 revalidation перед будущим полностью автоматическим publisher.
 
-**P3:** [owner-принятый проект trusted publisher](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md)
-фиксирует отдельные principal/trigger/scope. P3.2 — `SOURCE_ACCEPTED` (#107):
-отдельный actor имеет только scoped READ и add/remove через ASK, own-request
-evidence v1, bounded exact-head CI и защиту от конкурирующих label-заявок.
-P3.3 — [trusted one-shot runner](../../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
-`SOURCE_ACCEPTED` (#115) с pin public validator, data-only source и существующим
-intent/receipt, без нового сервиса. P3.4 — [owner-sealed startup](../P3-4-PUBLISHER-OWNER-STARTUP.md)
-`SOURCE_CANDIDATE`: отдельные точные GitHub grants без унаследованных Sonar-полномочий,
-включаемые только будущим owner-private mount. Default disabled/DENY;
-grants/credentials, worker и live activation остаются отдельным owner-этапом.
-Последовательность — в
-[общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
+**Trusted publisher (отдельная активация):**
+[проект P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) фиксирует
+principal/trigger/scope;
+[trusted one-shot runner](../../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
+и [owner-sealed startup](../P3-4-PUBLISHER-OWNER-STARTUP.md)
+имеют независимые source/owner gates. Их source не выдаёт credentials/grants
+и не запускает unattended publisher. Этапы и статусы — в
+[едином roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
+здесь только повторяемые ASK/READ правила.
 
 **Методы (см. закрытый Python-контракт
 `fortis_approvals/integrations/github/contract.py`):**
@@ -189,7 +190,7 @@ grants/credentials, worker и live activation остаются отдельны�
 | READ | `list_repository_labels(repo, page, per_page)` | Постранично, только `name,color,description`; max 50/page |
 | READ | `list_pr_labels(repo, number, page, per_page)` | Только PR, не произвольный Issue |
 | READ | `get_pr_release_label_context(repo, number)` | Открытый same-repo task PR → head/base SHA, SHA-256 body и полного набора labels; тело PR и token не раскрываются |
-| READ (source candidate) | `get_pr_release_impact_evidence(repo, number, expected_head_sha)` | Отдельный bounded READ: тело PR (до 20 000 символов), head/base SHA, same-repo/head/base provenance и SHA-256 body; требует точный HEAD, open/non-draft/unmerged `task/` PR в `main`. **Не предоставляет право записи или CI PASS** |
+| READ (capability-gated) | `get_pr_release_impact_evidence(repo, number, expected_head_sha)` | Отдельный bounded READ: тело PR (до 20 000 символов), head/base SHA, same-repo/head/base provenance и SHA-256 body; требует точный HEAD, open/non-draft/unmerged `task/` PR в `main`. **Не предоставляет право записи или CI PASS** |
 | ASK | `create_release_label(repo, name, request_id, reason)` | Только `build:<target>` и перечисленные `release:<action>`; цвет/описание задаёт сервер, дубликат STOP |
 | ASK | `add_pr_release_labels(..., labels, request_id, reason)` | До 5 существующих управляемых labels; **POST добавляет**, не заменяет чужие |
 | ASK | `remove_pr_release_label(..., name, request_id, reason)` | DELETE ровно одного управляемого label; `release:review-required` и чужие labels запрещено удалять |
@@ -250,8 +251,8 @@ trusted policy, owner ASK и независимому readback.
 - `LIVE_API_VERIFIED` только после проверки
   `/v1/workspace/capabilities`, реального READ token scope,
   отказа wrong actor/repo, controlled ASK на тестовом PR,
-  точного GitHub readback и Core receipt. Пока это не
-  подтверждено, статус **SOURCE_CANDIDATE**, а не Production.
+  точного GitHub readback и Core receipt. Без live evidence
+  конкретная операция остаётся **NOT_VERIFIED**, даже при принятом source.
 - Для автоматического publisher нужны отдельные принятые trusted
   workflow/worker, независимая source metadata revalidation и
   policy acceptance; текущие ASK-методы **не являются**

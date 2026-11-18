@@ -8,7 +8,7 @@
 | [UC-GW-002](integrations.md#uc-gw-002) | Подключить новый внешний provider | Проверенный extension package, минимальные scopes, owner acceptance |
 | [UC-GW-003](integrations.md#uc-gw-003) | Добавить операцию, клиентский метод или machine API | Версионированный контракт, отрицательные тесты, сохранение старых вызовов, CI и live release |
 | [UC-GW-004](credential-lifecycle.md#uc-gw-004) | Добавить или ротировать provider credential | Owner-controlled secret lifecycle без утечки и обходов |
-| [UC-GW-005](releases.md#uc-gw-005) | Обновить Gateway с сохранением UNCERTAIN/CLAIMED и отдельной проверкой APPROVED | Owner Check/Apply, проверяемый append-only рост после установки, byte-exact transfer, Backup/Promote |
+| [UC-GW-005](releases.md#uc-gw-005) | Обновить Gateway с сохранением UNCERTAIN/CLAIMED и отдельной проверкой APPROVED | Owner Check/Apply с защищённым append-only admission, byte-exact transfer, Backup/Promote |
 | [UC-GW-006](recovery.md#uc-gw-006) | Resume/Return после неопределённой фазы | Исходный record, без слепого повторения эффекта |
 | [UC-GW-007](primary.md#uc-gw-007) | Primary/restart/autostart и Legacy | Owner-confirmed healthy и retained rollback |
 | [UC-GW-008](owner-passkey.md#uc-gw-008) | Владелец хочет добавить ещё один passkey к действующему Owner Portal | Только owner-local guarded Preview/Issue, одноразовая регистрация, проверка обоих passkey; не доступно AI/Gateway machine API |

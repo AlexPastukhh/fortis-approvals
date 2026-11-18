@@ -13,17 +13,13 @@
 WebAuthn, machine TLS, Sonar/GitHub/native readback, Repo worker.
 Затем отдельный [UC-CONT-023](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/docker.md#uc-cont-023)
 для сохранённого Legacy, без удаления volumes и образа.
-На релизе PR #62 (2026-11-10) владелец подтвердил
-`FORTIS_PRIMARY_PROMOTED` и Windows `docker inspect`:
-`/fortis-gateway | running | healthy | unless-stopped`,
-loopback-порты `19203/19204`. Repo дополнительно проверил machine
-`globalRequestInventory.crossActorDetails=true` и список заявок.
-Это **подтверждение Promote**, но не самостоятельное испытание
-autostart после реального Docker Desktop restart и не browser click
-WebAuthn. Датированная
-[cutover evidence](../../fortis_approvals/evidence/FORTIS-PRIMARY-CUTOVER-LIVE-20261107.md)
-относится к более старому переходу; host/release identity всегда
-проверять заново.
+`FORTIS_PRIMARY_PROMOTED` и post-promote `docker inspect` не
+доказывают автозапуск после реального Docker Desktop restart либо
+browser WebAuthn acceptance. Их проверяют отдельно в owner maintenance
+window. Image, mounts, Primary pointer и retained rollback сверять
+заново; результаты конкретного выпуска — в
+[current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+и датированных evidence, а не в этом UC.
 
 **Готово:** Primary healthy и autostart подтверждены владельцем, Repo TLS/API
 доступен после restart, Legacy не используется по умолчанию, recovery retained.

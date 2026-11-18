@@ -18,14 +18,21 @@ Pull; исходный GitHub/Docker merge сам по себе не обнов�
 Apply -Auto → live owner/machine readback → Backup -Auto → Promote -Auto →
 host docker inspect**. Полный порядок, вопросы подтверждения и STOP/Return —
 только в [Primary runbook](../PRIMARY-GATEWAY-OPERATIONS.md#lightweight-owner-release-path-pr4b).
-ИИ не исполняет эти owner-команды за владельца.
+Перед Apply проверить доступность обязательных upstream для release-probes
+из нужного сетевого контура, с действующими TLS/credential и scope.
+`Check READY` подтверждает image/config/catalog, но **не** upstream READ.
+Проверка не должна создавать новый Core-effect после Check и менять
+зафиксированный request scope; недоступный обязательный upstream означает
+STOP до остановки исходного Gateway.
+ИИ не исполняет owner-команды за владельца.
 
 **Что делает -Auto:** Check строит image и защищённый immutable
 binding; Apply использует **тот же** image ID без повторной сборки.
 Config/probes берутся из защищённого Complete record, Gateway READ
-собирает исходные `UNCERTAIN/CLAIMED` scopes. После owner-установки версии
-PR #128 допустимые новые `UNCERTAIN` проверяются на сохранность старого
-audit и всех остальных данных, а не автоматически доверяются Repo READ.
+собирает исходные `UNCERTAIN/CLAIMED` scopes. Совместимый
+контроллер проверяет допустимый append-only рост `UNCERTAIN` по
+защищённому исходному снимку, audit и остальным данным, а не
+автоматически доверяет Repo READ.
 При `PENDING/DISPATCHED/APPROVED`, неполных данных, drift SHA/config/state
 или отсутствии сохранённого previous image — STOP/owner review. Владелец
 независимо подтверждает worker quiescence и отдельно даёт GO на Apply.
@@ -35,27 +42,20 @@ quiescence. `UNCERTAIN` нельзя повторно исполнять, очи
 Ошибочный/неопределённый Apply не повторять: использовать исходный
 protected attempt по [UC-GW-006](recovery.md#uc-gw-006).
 
-**Состояние:** owner-reported `SelfTest`, `Check -Auto READY`,
-`FORTIS_INTEGRATIONS_ACTIVATED`, `FORTIS_PRIMARY_BACKUP_PASS` и
-`FORTIS_PRIMARY_PROMOTED` для PR #94 / source
-`c473edb88737f773d2f9ec0a9943235ebb18aa3a` (2026-11-14).
-Real sourceReceipt из 260 хешей прошёл serialization preflight; Repo
-machine READ после Promote отвечает. Это **не** заменяет независимый
-host `docker inspect` после Promote, реальный Docker Desktop restart,
-WebAuthn browser acceptance или provider mutation acceptance. Датированная
-и текущая evidence — в [current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md);
-подробные защищённые записи остаются у владельца.
-
-**Единый стандарт после принятия PR #128 и отдельной установки на Windows:**
-штатный `Check -Auto → Apply -Auto` использует
-[bounded append-only сохранение `UNCERTAIN`](../UNCERTAIN-GROWTH-RELEASE-2026-11-17.md):
-новые проверенные заявки добавляются к исходному защищённому набору;
+**Сохранение `UNCERTAIN`:** штатный `Check -Auto → Apply -Auto`
+использует [bounded append-only проверку](../UNCERTAIN-GROWTH-RELEASE-2026-11-17.md):
+допустимые новые заявки добавляются к исходному защищённому набору;
 старые заявки, audit и остальные данные остаются неизменными.
-Флаг `-AllowUncertainGrowth` для `-Auto` **не передают** — он включается
-самим контроллером. Любой drift worker/receipts, `APPROVED` или старых
+Флаг `-AllowUncertainGrowth` для `-Auto` **не передают** — его применяет
+совместимый контроллер. Drift worker/receipts, `APPROVED` или старых
 заявок остаётся STOP. Ручной проверенный Check/Apply допускает явный
 `-AllowUncertainGrowth`; без него действует строгое сравнение.
-**До owner-установки это лишь source candidate, не live-поведение.**
+Поддержку проверять по установленному source SHA, SelfTest и protected
+Check record, а не по наличию кода в Git `main`.
+
+Конкретные выпуски, SHA/image/backup и границы live-проверки принадлежат
+[датированным evidence и current state](../guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
+а не этому повторяемому UC.
 
 **Ручные исключения:** когда `-Auto` не допускается по его предусловиям,
 оператор использует отдельно проверенный полный контракт из runbook:
@@ -67,18 +67,20 @@ Apply с checkedImageId/checkedImageRecord **без** `-Build`.
 и отдельного owner review. Исключения не отключают state admission,
 previous-image retention, Backup/Promote и fail-closed recovery.
 
-**P3.4 Publisher (только source candidate):** отдельный защищённый
-[volume-opt-in контракт](../P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
-предусматривает вручную подтверждённый owner Check -Build и связанный
-Apply -CheckedImageRecord с одним уже подготовленным приватным volume.
-Обычный -Auto не умеет впервые включать отдельный publisher machine grant.
-Никакая публикация исходников не создаёт секреты и не доказывает
-фактический Docker mount; без отдельного owner release Publisher выключен.
+**Отдельные owner-opt-in mounts/identities:** если меняется состав
+приватных mounts или machine grants, обычный `-Auto` не является
+первичным разрешением на их включение. Для Publisher использовать
+[защищённый owner mount-контракт](../P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
+с ручным bound Check/Apply и независимой host-проверкой.
+Source merge не создаёт credential/volume и не доказывает их установку;
+доступный режим определяет точный установленный контроллер.
 
-**Несколько чатов:** совместимые принятые PR можно включить в один
-проверенный merged `main` SHA и один логический owner release;
-смешивать Docker images/SQLite разных чатов нельзя. Межчатовый
-release coordinator не внедрён; см. [единый backlog](../BACKLOG-IMPROVEMENTS.md).
+**Несколько чатов:** совместимые принятые PR могут входить в один
+проверенный merged `main` SHA и один owner release.
+Нельзя смешивать Docker images/SQLite/attempt records разных чатов.
+Межчатовая автоматизация не заменяет единый owner release window и
+live проверку защищённых pointers; развитие координации — в
+[едином backlog](../BACKLOG-IMPROVEMENTS.md).
 
 **Готово:** exact source SHA/image digest и protected Complete record;
 owner `FORTIS_INTEGRATIONS_ACTIVATED`, отдельные успешные Backup/Promote,

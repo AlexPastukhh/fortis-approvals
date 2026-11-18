@@ -1,6 +1,17 @@
 # Primary Fortis Gateway — operator procedure
 
-## Action Core READ / Docker network migration — source candidate
+**Operational entrypoint:** for a repeatable Gateway release use
+[UC-GW-005](use-cases/releases.md#uc-gw-005) and
+[Lightweight owner release path](#lightweight-owner-release-path-pr4b);
+for recovery use [UC-GW-006](use-cases/recovery.md#uc-gw-006).
+The dated incidents and old host IDs below are **historical evidence**, not
+current deployment state or command templates. Obtain current image, record,
+workers, capabilities and credentials from live owner/Repo readback before any
+action. Owner-only PowerShell 5.1 Check/Apply/Backup/Promote and separate
+quiescence attestations remain mandatory. This runbook does not activate or
+prove any source candidate.
+
+## Action Core READ / Docker network migration — separate opt-in gate
 
 The opt-in Action Core HTTPS/443 release introduces an additional **owner-only**
 network admission gate. The existing Manage-Integrations.ps1 supports
@@ -17,9 +28,10 @@ preflight, source CI, isolated restore and negative/positive live probes.
 
 ## Исторический actor-scoped incident read и owner closure (релиз 2026-11-09)
 
-Owner-reported `FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED`
-confirm source `a200137775eb6c6b8dcec81f31206b0d481d9003` as the
-current Primary; Repo machine `details()` for all six historical UUIDs was
+In that **historical 2026-11-09 release**, owner-reported
+`FORTIS_PRIMARY_PROMOTED` and `FORTIS_PRIMARY_VERIFIED` confirmed
+source `a200137775eb6c6b8dcec81f31206b0d481d9003` as Primary **then**;
+Repo machine `details()` for all six historical UUIDs was
 verified over the live authenticated endpoint. The single-click owner
 closure has source/TLS/WebAuthn tests, but this dated readback is not a
 separate owner-browser click acceptance.
@@ -82,15 +94,11 @@ Repo live `globalRequestInventory.crossActorDetails=true`,
 
 Точно названный владельцем список `APPROVED` передаётся в существующий
 параметр `-PreserveApprovedRequest` как **строка из UUID через запятую**
-(старый одиночный UUID остаётся допустим). Для текущего блокера:
-
-```powershell
-$approved = 'ba299f4f-f49c-4ef7-80cf-e1f31a232024,49bcd340-8d21-4a7c-906a-ea5ea56ba748'
-$claimed  = '2df32a24-efb1-4dac-97f6-3b66147d8944'
-# Вручную, только с owner-подтверждением quiescence и SHA нового merged main:
-# & $manager -Action Check -Build -SourceSha $sha -Config $configFile `
-#     -PreserveApprovedRequest $approved -PreserveClaimedJobs $claimed -ConfirmWorkerQuiescent
-```
+(старый одиночный UUID остаётся допустим). Для ручного исключения **не копировать исторические UUID** в новый релиз:
+владелец должен заново получить полный актуальный список защищённых
+`APPROVED/CLAIMED/UNCERTAIN` и применить точные параметры по
+[UC-GW-005](use-cases/releases.md#uc-gw-005). Приведённые выше UUID и
+receipt 2026-11-10 сохраняются только как датированное свидетельство.
 
 **Безопасность и стоп-условия:** это не список на исполнение или авто-ASK.
 `Check/Apply` требует точный `main` SHA, owner review и независимое
@@ -114,8 +122,8 @@ release smoke, стадию/активацию; существующие SQLite 
 `APPROVED → CANCELLED_BEFORE_DISPATCH`, каждый раз с fingerprint,
 Core writer-lock и проверками отсутствия dispatch/job/receipt. Это
 отмена, а не физическое удаление записи и не повтор старого UUID.
-Глобальная инвентаризация **уже установлена**: любой AI с
-действующей machine TLS/grant-аутентификацией видит список по всем
+При подтверждённой live capability глобальная инвентаризация доступна:
+AI с действующей machine TLS/grant-аутентификацией видит список по всем
 инициаторам через `WorkflowClient.list_requests()` и полную
 read-only карточку любого UUID через `WorkflowClient.details(uuid)`.
 `unresolved_only=True` возвращает также `PENDING`: это **не**
@@ -127,7 +135,7 @@ token. Чужие `status/result/reconcile/claim/finish` не расширены
 Глобальный live readback подтверждён для двух `APPROVED`; отдельный
 live сценарий под второй machine identity ещё не проведён.
 
-**Граница принятия:** исходный PR и Windows image 2026-11-10 приняты
+**Историческая граница принятия:** исходный PR и Windows image 2026-11-10 приняты
 владельцем как описано выше; это **не** доказательство живого owner
 browser click «Отменить до выполнения»/«Автопроверка результата»,
 cross-actor live теста под вторым grant или autostart после reboot.
@@ -137,7 +145,7 @@ release аргументы без актуального списка pending/ap
 
 ## Исторические UNCERTAIN / CLAIMED — защищённый перенос (действующий механизм)
 
-Установленный контроллер умеет переносить точный владелец-подтверждённый
+Совместимый установленный контроллер умеет переносить точный владелец-подтверждённый
 список `UNCERTAIN` через `-PreserveUncertainRequests`. Единственная
 сохранённая историческая `CLAIMED`-операция
 `2df32a24-efb1-4dac-97f6-3b66147d8944` относится к
@@ -151,7 +159,7 @@ record остаётся `CLAIMED`, а отсутствие Repo receipt не о�
 Приведённый здесь ручной `Check -Build` с точными
 `-PreserveUncertainRequests` / `-PreserveClaimedJobs` остаётся
 **исключением**, когда `-Auto` недопустим. Появление новых
-`UNCERTAIN` в версии после PR #128 допускается только через
+`UNCERTAIN` в совместимой установленной версии допускается только через
 [проверяемый механизм](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md),
 не через отключение целостности состояния.
 Независимое доказательство отсутствия активной работы обязательно:
@@ -239,11 +247,12 @@ copy its old runtime pins. Normal image releases use the next section.
    Expected same pinned ID/image/state/ports, `healthy`, `unless-stopped`.
    **STOP** for any discrepancy; no manual editing protected records.
 
-## Audited UNCERTAIN growth — source candidate (PR #128)
+## Audited UNCERTAIN growth — shared controller contract
 
 [One technical contract](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md)
 defines the shared helper for standard Auto and manual checked releases.
-Source merge or CI is not Windows/Production installation.
+Installed behavior is admitted by the exact Windows controller source,
+SelfTest and protected records; source merge or CI alone is not installation.
 
 ## P3.4 — source-only owner publisher volume mount (not activated)
 
@@ -259,29 +268,16 @@ by later -Auto releases only with its original volume and material digest.
 A source merge does not provision the volume, run Docker or enable Publisher.
 Maintain UC-GW-005 protected UNCERTAIN/CLAIMED scope and host readback.
 
-## Pending Release Labels typed API release — not yet installed
+## Release Labels image/runtime boundary
 
-The source candidate for PR label READ/ASK methods is defined in
-[UC-GW-011](use-cases/integrations.md#uc-gw-011). It changes server-side
-`fortis_approvals/integrations/github/*` and native policy/ingress code,
-so **it requires an image-baked Primary release**, not merely a Docker
-source fast-forward. Follow the existing owner-managed release procedure
-below and [UC-GW-005](use-cases/releases.md#uc-gw-005), preserving active
-APPROVED/CLAIMED/UNCERTAIN work and retained rollback.
-
-Before Apply/Build, check exact owner-merged PR HEAD, source manifest,
-tests, no unresolved effects, policy/read grants and token permissions
-(Issues or Pull requests write); **do not print token contents**. The
-label APIs must remain ASK, not blanket ALLOW. After Backup/Promote,
-read `/v1/workspace/capabilities` for the exact three read and three
-write method names; exercise read-only repository/PR context, wrong
-actor/repo/branch rejection and owner-approved label changes on an
-isolated test PR. Verify GitHub labels, Core receipts and unchanged
-human labels; only then mark `LIVE_API_VERIFIED`. A denied/absent
-permission or unknown effect is STOP, not retry or credential bypass.
-No Projects mutations or unattended publisher are activated by
-this release. Technical method schemas belong in UC-GW-011; this
-runbook deliberately does not duplicate them.
+The [Release Labels contract](use-cases/integrations.md#uc-gw-011)
+owns closed operation names, policy, and per-operation live acceptance.
+Server-side changes require the regular exact image-baked Gateway release
+under [UC-GW-005](use-cases/releases.md#uc-gw-005), not just a Docker source
+fast-forward. Check current capabilities and effective policy; an earlier
+successful pilot does not authorize new operations, automatic publisher
+startup, GitHub Projects, or an unreviewed release. Do not copy a dated
+Release Labels rollout as a second deployment procedure.
 
 ## Exact visual-media receipt SHA256 keys in bounded release records
 
@@ -378,13 +374,12 @@ PowerShell 5.1 SelfTest and a **new** source-SHA-bound Check artifact before
 a separately authorized owner-controlled Apply. An untested restore remains
 an explicitly accepted risk, never proof that restoration is available.
 
-## Checked image: one build, exact image reuse (installed in PR #94 release)
+## Checked image: one build, exact image reuse (manual pinned path)
 
-The installed owner controller supports an owner-protected Check artifact to avoid
-building the same mutable source tag twice. PR #94 was owner-merged and the
-owner reported Windows Mirror Pull, SelfTest and a successful -Auto release
-on 2026-11-14; exact current Windows/runtime identity still requires fresh
-host readback before any future release.
+The controller supports an owner-protected Check artifact to avoid
+building the same mutable source tag twice. This manual path is separate
+from normal `-Auto`; always verify current Windows source and host evidence,
+not an earlier release's image or record.
 
 After owner approval of a coordinated window and recovery readiness, the owner
 runs SelfTest, then one Check -Build -SourceSha <merged-sha> with -Config,
@@ -467,11 +462,23 @@ UUID string is required. The public config and probes are recovered only
 from the protected **current** Complete release record. Missing or invalid
 prior values are `STOP`, never replaced with a guessed template.
 
+**Before STOP_SOURCE:** verify that mandatory external upstreams for
+staged release probes are available in the intended network/identity scope.
+The owner-local [Mirror Gateway READ HTTPS listener](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/GATEWAY-READ-ONLY.md)
+is a separate foreground Windows process from Browser Mirror: a healthy
+Browser UI does not prove HTTPS/443 is running.
+`Check READY` does **not** prove external upstream reachability or bearer
+authorization. Mandatory staged probes run **after the source Gateway is stopped**.
+Prefer passive listener/TLS checks that do not submit a new Core request
+after the sealed Check; absent mandatory upstream readiness is STOP.
+Never bypass probes or blindly retry failed Apply:
+[UC-GW-006](use-cases/recovery.md#uc-gw-006) owns the original attempt.
+
 The Repo machine grant performs **read-only** global request/worker activity
 inventory. `PENDING`, `DISPATCHED` or any live `APPROVED` demand STOP/owner
-review; full and bounded pagination is mandatory. Starting with the
-owner-installed PR #128 source, Auto Check seals the original
-`UNCERTAIN/CLAIMED` scope and an offline SQL/audit witness. Auto Apply uses
+review; full and bounded pagination is mandatory. The compatible installed
+controller's Auto Check seals the original `UNCERTAIN/CLAIMED` scope and an
+offline SQL/audit witness. Auto Apply uses
 the **original sealed scope**, not the latest Repo READ list, and the same
 read-only verifier admits only [bounded new UNCERTAIN entries](UNCERTAIN-GROWTH-RELEASE-2026-11-17.md).
 The final ID list is frozen after stopping the original Gateway. Older
@@ -484,9 +491,9 @@ not retry of `Apply -Auto`.
 
 **Important:** record source SHA, `checkedImageId` and `checkedImageRecord`
 in owner-local evidence; do not paste private records or tokens.
-After owner installation of PR #128, strictly audited additions to
-`UNCERTAIN` may pass. Any other source-state drift, incomplete evidence
-or missing witness still causes STOP; never bypass the checked-image binding.
+Strictly audited additions to `UNCERTAIN` may pass only with a valid witness.
+Any other source-state drift, incomplete evidence or missing witness
+still causes STOP; never bypass the checked-image binding.
 Do not use `-Auto` against an older Windows source revision: owner Merge/Pull
 and PowerShell SelfTest must precede this workflow. The explicit manual
 controller path remains available for incident handling and exact reviewed
