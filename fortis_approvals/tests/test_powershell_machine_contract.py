@@ -3,6 +3,7 @@ import hashlib
 import unittest
 
 from scripts.powershell_machine_contract import (
+    ACCEPTED_EXECUTOR_GIT_SHA, EXECUTOR_IDENTITY,
     MachineShellContractError, canonical, frozen_preview, validate_submit,
 )
 
@@ -10,8 +11,8 @@ UUID4 = "01234567-89ab-4def-8abc-0123456789ab"
 TARGETS = frozenset({"windows-owner"})
 CTX = {
     "actor": "fortis-repo", "contractVersion": 1, "contractDigest": "a" * 64,
-    "profile": "ps-literals-v1", "executorIdentity": "owner-windows-nonadmin",
-    "workingDirectory": "%USERPROFILE%", "sourceSha256": "b" * 64,
+    "profile": "ps-literals-v1", "executorIdentity": EXECUTOR_IDENTITY,
+    "workingDirectory": "%USERPROFILE%", "executorGitSha": ACCEPTED_EXECUTOR_GIT_SHA,
     "timeoutSeconds": 60, "outputLimitBytes": 65536,
 }
 
@@ -98,7 +99,6 @@ class MachinePowerShellContractTests(unittest.TestCase):
         for name, value in [
             ("actor", "other-actor"), ("contractVersion", 2),
             ("contractDigest", "0" * 64), ("profile", "other-profile"),
-            ("executorIdentity", "other-user"), ("sourceSha256", "f" * 64),
             ("workingDirectory", "X:\\"), ("timeoutSeconds", 1),
             ("outputLimitBytes", 100),
         ]:
@@ -113,12 +113,28 @@ class MachinePowerShellContractTests(unittest.TestCase):
             {**CTX, "bearer": "x"}, {**CTX, "contractDigest": "BAD"},
             {**CTX, "contractVersion": 0}, {**CTX, "timeoutSeconds": 61},
             {**CTX, "outputLimitBytes": 65537}, {**CTX, "actor": ""},
-            {**CTX, "sourceSha256": "abc"}, {**CTX, "profile": "../bad"},
+            {**CTX, "executorGitSha": "abc"}, {**CTX, "executorGitSha": "0"*40},
+            {**CTX, "executorGitSha": "0"*64},
+            {**CTX, "executorIdentity": "another-user"}, {**CTX, "executorIdentity": ""},
+            {**CTX, "sourceSha256": "a"*64},
+            {**CTX, "profile": "../bad"},
         ]:
             with self.subTest(keys=list(bad)):
                 with self.assertRaises(MachineShellContractError):
                     frozen_preview(self.body(), registered_targets=TARGETS,
                                    trusted_context=bad)
+
+    def test_offline_contract_pin_matches_runtime_source(self):
+        from fortis_approvals.powershell_machine import (
+            ACCEPTED_EXECUTOR_GIT_SHA as runtime_sha,
+            EXECUTOR_IDENTITY as runtime_identity,
+        )
+        self.assertEqual(ACCEPTED_EXECUTOR_GIT_SHA, runtime_sha)
+        self.assertEqual(EXECUTOR_IDENTITY, runtime_identity)
+        self.assertEqual(
+            frozen_preview(self.body(), registered_targets=TARGETS,
+                           trusted_context=CTX)["preview"]["executorGitSha"],
+            runtime_sha)
 
     def test_schema_error_never_includes_command(self):
         sensitive = "password-only-in-test-marker-" + "x" * 8193

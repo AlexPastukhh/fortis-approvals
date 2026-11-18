@@ -12,7 +12,35 @@ The proof is HMAC-SHA256 with a dedicated 32+ byte owner-controlled key that is 
 
 - fortis_approvals/powershell_machine.py — fixed HTTPS transport, owner-private credential validation, Core-bound ASK-only adapter and proof issuance. No machine route is active on import.
 - fortis_approvals/powershell_owner_mount.py — strict owner-private fixed mount reader; absent mount means **disabled**. Expected mount path: /run/fortis-machine-powershell. It must be a non-symlink directory owned by the service UID and mode 0700; its six files must be owner/service-UID-owned non-symlink regular files, mode 0600, hard-link count one.
-- Exactly six mount filenames: profile.json, server-ca.pem, client-cert.pem, client-key.pem, bearer, proof-key. The profile must contain exactly version=1, enabled=true, mode=ASK_ONLY, actor (must match already authenticated Repo actor), target, sourceSha256 (accepted Windows Executor SHA), executorIdentity. No policy/ALLOW flag, URL, port, arbitrary machine route, secret value or command is selected by AI.
+- Exactly six mount filenames: profile.json, server-ca.pem, client-cert.pem, client-key.pem, bearer, proof-key. The profile contains exactly version=1, enabled=true, mode=ASK_ONLY, actor (matched to the authenticated Repo actor), target (fixed windows-owner), executorGitSha (accepted **40-hex Git commit** of Windows Executor), executorIdentity (fixed source label). Legacy sourceSha256, arbitrary 64-hex digests and other executor identities are rejected. No policy/ALLOW flag, URL, port, arbitrary machine route, secret value or command is selected by AI.
+
+### Reviewed Windows source and identity pin — still not live attestation
+
+The accepted standalone Windows Executor Git main is pinned to
+`3a455fd34c9b442e3480729b377680a895c5399c` (40 lowercase hex).
+Both the runtime mount reader and ASK adapter reject any other value in
+`profile.json.executorGitSha`. This is a reviewed **source constraint**,
+not a SHA-256 of a Git SHA string or proof that an already-running Windows
+process loaded that checkout. Changing the accepted Executor commit needs
+a separately reviewed Gateway source update.
+
+`profile.json.executorIdentity` is fixed to `windows-owner-nonadmin-v1`.
+It is a trusted configuration **role label**, not an authenticated SID,
+process fingerprint or evidence that the live Executor has that identity.
+A different label fails closed; a matching label alone establishes nothing
+about the installed Windows service. The fixed role and Git pin are bound
+into the owner ASK preview; the contract digest changes to invalidate
+pre-change previews.
+
+Before first activation the owner must **independently** confirm on Windows:
+clean reviewed Executor `main` at this exact SHA, the actual running
+non-admin Windows user/process identity, only the single approved listener
+on 127.0.0.1:10443, the current original SQLite receipt DB and the
+accepted Script Center source/launcher configuration. Verify TLS client
+identity and negative machine proof cases after guarded rollout. Neither
+this source assertion nor a successful TLS handshake is a live process
+attestation. Do not put a Windows SID, credential, certificate private key
+or receipt in a PR, Repo files, logs or chat.
 - NativeIngress typed machine endpoints: POST /v1/powershell/submit, /v1/powershell/result, /v1/powershell/capabilities. The last two cannot execute. Malformed input, other actor, unknown target or missing adapter fail closed.
 - workflow/powershell_client.py — Repo-side typed facade. No Windows credentials, direct HTTP, owner-cookies, automatic retry or fallback to owner-local API.
 - runtime composition is deliberately **opt-in**. Owner mount + native registered Gateway actor/target are prerequisites; no change to the existing owner-only browser PowerShell API.

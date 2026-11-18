@@ -9,6 +9,7 @@ import uuid
 
 from fortis_approvals.core import Authenticator, Conflict, Core, Denied, Stale
 from fortis_approvals.powershell_machine import (
+    ACCEPTED_EXECUTOR_GIT_SHA, EXECUTOR_IDENTITY,
     MachinePowerShellAdapter, _canonical, _CONTRACT_DIGEST, issue_proof,
 )
 from fortis_approvals.workflow.ingress import NativeIngress
@@ -77,7 +78,7 @@ class TestMachineGateway(unittest.TestCase):
                        owner_verifier=self.owner, clock=lambda:1000, expiry_seconds=3600)
         self.adapter=MachinePowerShellAdapter(
             transport=self.transport,target=TARGET,actor=ACTOR,
-            source_sha256="b"*64,executor_identity="windows-nonadmin-fixture")
+            executor_git_sha=ACCEPTED_EXECUTOR_GIT_SHA,executor_identity=EXECUTOR_IDENTITY)
         self.adapter.bind_core(self.core)
 
     def payload(self, command="Get-Date", ident=None):
@@ -155,9 +156,25 @@ class TestMachineGateway(unittest.TestCase):
 
     def test_stale_executor_profile_before_owner_decision(self):
         row=self.submit(self.payload())
-        self.adapter.source_sha256="c"*64
+        self.adapter.executor_git_sha="0"*40
         self.assertEqual(self.decide(row)["state"],"STALE")
         self.assertEqual(self.transport.calls,[])
+
+    def test_adapter_denies_unreviewed_executor_source_or_claimed_identity(self):
+        for source in ("0"*40, "a"*64, "BAD", "", None):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                MachinePowerShellAdapter(
+                    transport=self.transport, target=TARGET, actor=ACTOR,
+                    executor_git_sha=source, executor_identity=EXECUTOR_IDENTITY)
+        for identity in ("other-user", "", None, "admin-windows"):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                MachinePowerShellAdapter(
+                    transport=self.transport, target=TARGET, actor=ACTOR,
+                    executor_git_sha=ACCEPTED_EXECUTOR_GIT_SHA, executor_identity=identity)
+        with self.assertRaises(ValueError):
+            MachinePowerShellAdapter(
+                transport=self.transport, target="another-target", actor=ACTOR,
+                executor_git_sha=ACCEPTED_EXECUTOR_GIT_SHA, executor_identity=EXECUTOR_IDENTITY)
 
     def test_unknown_after_lost_ack_reconcile_original_uuid_no_repeat(self):
         self.transport.lose_ack=True
