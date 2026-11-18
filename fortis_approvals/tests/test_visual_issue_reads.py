@@ -158,10 +158,11 @@ class Tests(unittest.TestCase):
             self.assertEqual(caps['visualReview']['publishPolicy'],'ALLOW')
             self.assertIn('publish_visual_review',caps['allowGitHub'])
             self.assertNotIn('publish_visual_review',caps['askGitHub'])
-            self.assertEqual(policy('append_visual_revision','visual-workspace'),'ASK')
+            self.assertEqual(policy('append_visual_revision','visual-workspace'),'ALLOW')
             self.assertEqual(policy('append_visual_revision','other'),'DENY')
-            self.assertIn('append_visual_revision',caps['askGitHub'])
-            self.assertNotIn('append_visual_revision',caps['allowGitHub'])
+            self.assertNotIn('append_visual_revision',caps['askGitHub'])
+            self.assertIn('append_visual_revision',caps['allowGitHub'])
+            self.assertEqual(caps['visualReview']['appendRevisionPolicy'],'ALLOW')
             self.assertEqual(caps['githubIssueReads'],['list_issues','get_issue','list_issue_comments'])
 
     def test_details_includes_append_evidence_but_not_unrelated_operations(self):

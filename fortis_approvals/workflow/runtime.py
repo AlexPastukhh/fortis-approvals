@@ -51,10 +51,11 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
     # Owner-approved scoped autonomy: visual PNG publication only in the pinned
     # private visual-workspace repository. GitHub merges and other writes stay ASK.
     core.policies[(actor,'github','publish_visual_review','visual-workspace')]='ALLOW'
-    # A draft revision is a NEW owner-controlled comment effect, not a v1
-    # create-Issue retry. Grant ASK only to this exact private repository.
+    # A bounded append-only revision is allowed ONLY for this private repo,
+    # and ONLY after the adapter verifies the original Fortis-created Issue,
+    # durable version chain and one-shot Core dispatch. Generic comments DENY.
     core.policies[(actor,'github','append_visual_revision')]='DENY'
-    core.policies[(actor,'github','append_visual_revision','visual-workspace')]='ASK'
+    core.policies[(actor,'github','append_visual_revision','visual-workspace')]='ALLOW'
     # CI control stays DENY until the operator explicitly pins repositories.
     if config.ci_control_repositories:
         writes=writes|CI_ACTIONS

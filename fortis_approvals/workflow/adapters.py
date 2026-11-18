@@ -106,8 +106,8 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         and the live GitHub identity must both agree before any media upload.
         """
         core=self.observation_core
-        require(core is not None and core._policy(self.actor,request)=='ASK',
-                'GITHUB_REVISION_OWNER_ASK_REQUIRED')
+        require(core is not None and core._policy(self.actor,request) in ('ASK','ALLOW'),
+                'GITHUB_REVISION_POLICY_DENIED')
         p=request['params'];repo=request['target']
         preview=self._visual_prepare(request)
         number=p['issueNumber'];base_run=p['baseRunId']
@@ -187,17 +187,20 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         preview=self._revision_prepare(request)
         core=self.observation_core
         row=core._read(ident)
-        # An ASK snapshot is not a suggestion: revalidate the *exact* owner-
-        # approved request and preview at DISPATCHED, before any remote effect.
-        require(row['state']=='DISPATCHED' and row['decision']=='approve' and
-                type(row['owner']) is str and bool(row['owner']) and
+        # Both scopes require the SAME immutable Core DISPATCHED admission.
+        # ASK needs explicit owner approval; ALLOW must have no owner decision.
+        # Neither a preview nor a manually fabricated request is authorization.
+        policy=core._policy(self.actor,request)
+        authorized=(policy=='ALLOW' and row['decision'] is None and row['owner'] is None or
+                    policy=='ASK' and row['decision']=='approve' and
+                    type(row['owner']) is str and bool(row['owner']))
+        require(row['state']=='DISPATCHED' and authorized and
                 int(core.clock()) < row['expiresAt'] and
                 row['policyVersion']==core.policy_version and
                 core.auth.active(row['actor']) and row['actor']==self.actor and
-                core._policy(self.actor,request)=='ASK' and
                 canonical(row['request'])==canonical(request) and
                 canonical(row['preview'])==canonical(preview),
-                'GITHUB_REVISION_OWNER_APPROVAL_REQUIRED')
+                'GITHUB_REVISION_CORE_ADMISSION_REQUIRED')
         number=p['issueNumber']
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')

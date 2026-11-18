@@ -215,7 +215,7 @@ requests or omit receipts. New E2E still needs separate source/release
 approval and never blindly replays an old request.
 
 
-## Append visual revision to an existing Issue — SOURCE CANDIDATE (NOT LIVE)
+## Append visual revision to an existing Issue — scoped ALLOW source candidate (NOT LIVE)
 
 Visual review iterations should normally use **one Issue per logical asset/order**:
 create/edit and QA in a Docker task worktree, show v1, gather owner feedback,
@@ -224,7 +224,7 @@ comment, and create **one source PR only after owner acceptance**. Existing
 `publish_visual_review` stays unchanged for the first Issue. An already opened
 source PR is not a requirement for review iterations.
 
-The source-only typed operation `github.append_visual_revision` takes the exact
+The typed operation `github.append_visual_revision` takes the exact
 `issueNumber`, the original `baseRunId`, immutable new `runId`, bounded `assetId`,
 `revision` (v2 and onward), `sourceSha`, description, QA, duration and 1–5 PNGs.
 The Repo client supports pure `prepare_visual_revision(...)` for a content hash
@@ -246,22 +246,30 @@ the previous comment still exists, is bound to the expected marker, and the
 previous version has a durable comment ID. This is a comment-delivery proof,
 not a byte-level check of the remotely hosted PNG.
 
-**Security/release:** This is a new Core action (UC-GW-003). The reviewed
-server source installs **ASK only for visual-workspace** and DENY for generic
-targets; it never inherits the v1 `publish_visual_review` ALLOW grant. The API is
-**DENY in the current live Gateway until owner-managed promoted image**;
-all text/images/Issue numbers provided by agents are untrusted. A local source
-merge alone does not enable it. `UNCERTAIN`/lost comment/upload response:
-inspect the same request and durable `visualReview` evidence; do not blind
-replay with a new UUID or advance a version across unresolved partial effects.
-Owner approval remains passkey/WebAuthn. Scope explicitly excludes video,
-3D source delivery, arbitrary comments/Issue edits, deleting old versions,
-and generating a source PR for every draft.
+**Security/release:** This is a separate Core action (UC-GW-003). The new
+source installs **ALLOW only for visual-workspace** and DENY for generic
+targets and other actors. This does not enable arbitrary comment or Issue
+editing, nor inherit v1 Issue-publication privileges. An ALLOW revision still
+requires the exact immutable Core DISPATCHED record, actor/policy/preview binding,
+original Fortis-created private Issue, durable one-shot revision reservation
+and verified sequential history. The legacy ASK/owner-approved admission path
+continues to fail closed when used. No user-supplied Issue number alone grants
+the right to comment.
 
-**Acceptance still required:** full Gateway/Core ASK negative tests, owner
-policy rollout, exact-head CI, image activation, live v2 comment E2E, owner
-browser check of actual PNG bytes, and review of revision history. No live
-revision effect is claimed by source-level unit tests.
+**Live boundary:** the previously deployed Primary advertised
+`appendRevisionPolicy=ASK`; this source change is **not activated** by Git
+merge. It requires an independently owner-managed image release and live
+capability readback before ALLOW may be claimed. All text/images/Issue numbers
+provided by agents remain untrusted. UNCERTAIN/lost comment/upload response:
+inspect the same request and durable visualReview evidence; do not blind
+replay with a new UUID or advance a version across unresolved partial effects.
+Generic replies, video, 3D source delivery, deletion of old versions, and
+generating a source PR per draft remain out of scope.
+
+**Acceptance still required:** full Gateway/Core ALLOW+ASK negative tests,
+exact-head CI, owner-reviewed image activation, live v2 comment E2E,
+owner browser check of actual PNG bytes, and review of revision history.
+Source-level unit tests do not prove a live GitHub write.
 
 ## Release Labels typed methods — SOURCE CANDIDATE, NOT LIVE
 
