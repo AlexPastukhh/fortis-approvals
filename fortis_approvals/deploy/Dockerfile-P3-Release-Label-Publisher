@@ -2,14 +2,40 @@
 # The owner MUST pass a reviewed python:3.11-slim@sha256:<digest> base.
 # No default base: a missing owner-pinned build argument fails the build.
 ARG PYTHON_BASE
-FROM ${PYTHON_BASE}
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
-# No shell at runtime. Git is used only by the reviewed, data-only source reader.
-RUN python3 -c "import sys; assert sys.version_info[:2] == (3,11)" \
-    && apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+FROM ${PYTHON_BASE} AS publisher-deps
+# Every input is owner-reviewed. No fallback to mutable Debian mirrors.
+ARG PYTHON_BASE
+ARG PUBLISHER_APT_SNAPSHOT
+ARG PUBLISHER_DEBIAN_CODENAME
+ARG PUBLISHER_GIT_VERSION
+ARG PUBLISHER_CA_CERTIFICATES_VERSION
+RUN python3 -c 'import datetime,os,re,sys; p={"PYTHON_BASE":r"python:3[.]11-slim@sha256:[0-9a-f]{64}","PUBLISHER_APT_SNAPSHOT":r"[0-9]{8}T[0-9]{6}Z","PUBLISHER_DEBIAN_CODENAME":r"(bookworm|trixie)","PUBLISHER_GIT_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}","PUBLISHER_CA_CERTIFICATES_VERSION":r"[0-9][0-9A-Za-z.+:~_-]{0,99}"}; bad=[k for k,v in p.items() if not re.fullmatch(v,os.environ.get(k,""))]; sys.exit("PUBLISHER_BUILD_PINS_REQUIRED:"+",".join(bad)) if bad else None; datetime.datetime.strptime(os.environ["PUBLISHER_APT_SNAPSHOT"],"%Y%m%dT%H%M%SZ")' \
+    && . /etc/os-release \
+    && test "$ID" = debian && test "$VERSION_CODENAME" = "$PUBLISHER_DEBIAN_CODENAME" \
+    && test -f /usr/share/keyrings/debian-archive-keyring.gpg \
+    && rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
+    && printf 'deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/%s/ %s main\n' "$PUBLISHER_APT_SNAPSHOT" "$PUBLISHER_DEBIAN_CODENAME" > /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/%s/ %s-updates main\n' "$PUBLISHER_APT_SNAPSHOT" "$PUBLISHER_DEBIAN_CODENAME" >> /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n' "$PUBLISHER_APT_SNAPSHOT" "$PUBLISHER_DEBIAN_CODENAME" >> /etc/apt/sources.list \
+    && apt-get -o Acquire::Retries=0 update \
+    && apt-get install -y --no-install-recommends "git=$PUBLISHER_GIT_VERSION" "ca-certificates=$PUBLISHER_CA_CERTIFICATES_VERSION" \
+    && install -d -m 0755 /usr/local/share/fortis-publisher \
+    && dpkg-query -W -f='${binary:Package}=${Version}\n' | LC_ALL=C sort > /usr/local/share/fortis-publisher/os-packages.lock \
+    && sha256sum /usr/local/share/fortis-publisher/os-packages.lock \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10002 publisher \
     && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin publisher
+
+# The review-only publisher-deps target prints the complete OS package-lock digest.
+# The executable publisher-runtime target cannot be built without owner pinning it.
+FROM publisher-deps AS publisher-runtime
+ARG PUBLISHER_OS_LOCK_SHA256
+ARG PUBLISHER_SOURCE_SHA
+RUN python3 -c 'import os,re,sys; p={"PUBLISHER_OS_LOCK_SHA256":r"[0-9a-f]{64}","PUBLISHER_SOURCE_SHA":r"[0-9a-f]{40}"}; bad=[k for k,v in p.items() if not re.fullmatch(v,os.environ.get(k,""))]; sys.exit("PUBLISHER_RUNTIME_PINS_REQUIRED:"+",".join(bad)) if bad else None' \
+    && printf '%s  %s\n' "$PUBLISHER_OS_LOCK_SHA256" /usr/local/share/fortis-publisher/os-packages.lock | sha256sum --check --status
+LABEL org.opencontainers.image.revision="${PUBLISHER_SOURCE_SHA}" \
+      fortis.publisher.os-package-lock-sha256="${PUBLISHER_OS_LOCK_SHA256}"
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
 # Exact Python-only scope; not a Gateway server or a Repo checkout.
 # Installed into system site-packages for python -I (no cwd/PYTHONPATH injection).
 COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/diagnostic_contract.py fortis_approvals/repo_action_contract.py fortis_approvals/repo_ingress.py /usr/local/lib/python3.11/site-packages/fortis_approvals/

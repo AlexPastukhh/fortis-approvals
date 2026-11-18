@@ -2,6 +2,7 @@
 import glob
 import json
 import os
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -56,6 +57,63 @@ class PublisherImageSourceTests(unittest.TestCase):
                           'FORTIS_GITHUB_TOKEN=', 'machine-grant=', 'curl ',
                           '--privileged', '/var/run/docker.sock'):
             self.assertNotIn(forbidden,content)
+
+    @staticmethod
+    def _pin_check(marker, environment):
+        # Execute the exact inline build-arg validator without a Docker daemon.
+        command = next(line for line in DOCKERFILE.read_text().splitlines()
+                       if line.startswith('RUN python3 -c ') and marker in line)
+        argv = shlex.split(command.removeprefix('RUN ').removesuffix(' \\'))
+        assert argv[:2] == ['python3', '-c'], command
+        return subprocess.run([sys.executable, '-c', argv[2]], env=environment,
+                              capture_output=True, text=True, timeout=5)
+
+    def test_dependency_snapshot_and_runtime_lock_are_mandatory(self):
+        content = DOCKERFILE.read_text()
+        self.assertIn('FROM ${PYTHON_BASE} AS publisher-deps', content)
+        self.assertIn('FROM publisher-deps AS publisher-runtime', content)
+        self.assertIn('https://snapshot.debian.org/archive/debian/', content)
+        self.assertIn('https://snapshot.debian.org/archive/debian-security/', content)
+        self.assertIn('signed-by=/usr/share/keyrings/debian-archive-keyring.gpg', content)
+        self.assertNotIn('https://deb.debian.org', content)
+        self.assertIn('"git=$PUBLISHER_GIT_VERSION"', content)
+        self.assertIn('"ca-certificates=$PUBLISHER_CA_CERTIFICATES_VERSION"', content)
+        self.assertIn('os-packages.lock', content)
+        self.assertIn('sha256sum --check --status', content)
+        self.assertIn('org.opencontainers.image.revision=', content)
+        base = {
+            'PYTHON_BASE': 'python:3.11-slim@sha256:'+'a'*64,
+            'PUBLISHER_APT_SNAPSHOT': '20261117T120000Z',
+            'PUBLISHER_DEBIAN_CODENAME': 'trixie',
+            'PUBLISHER_GIT_VERSION': '1:2.47.0-1',
+            'PUBLISHER_CA_CERTIFICATES_VERSION': '20250419',
+        }
+        run = self._pin_check('PUBLISHER_BUILD_PINS_REQUIRED', base)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for key, wrong in [
+            ('PYTHON_BASE', 'python:3.11-slim'),
+            ('PUBLISHER_APT_SNAPSHOT', 'latest'),
+            ('PUBLISHER_APT_SNAPSHOT', '20261317T120000Z'),
+            ('PUBLISHER_DEBIAN_CODENAME', 'sid'),
+            ('PUBLISHER_GIT_VERSION', 'latest'),
+            ('PUBLISHER_CA_CERTIFICATES_VERSION', '1;true'),
+        ]:
+            with self.subTest(key=key, wrong=wrong):
+                bad = {**base, key: wrong}
+                self.assertNotEqual(self._pin_check('PUBLISHER_BUILD_PINS_REQUIRED', bad).returncode, 0)
+        for key in base:
+            with self.subTest(missing=key):
+                bad = {k:v for k,v in base.items() if k != key}
+                self.assertNotEqual(self._pin_check('PUBLISHER_BUILD_PINS_REQUIRED', bad).returncode, 0)
+        final = {'PUBLISHER_OS_LOCK_SHA256': 'b'*64, 'PUBLISHER_SOURCE_SHA': 'c'*40}
+        self.assertEqual(self._pin_check('PUBLISHER_RUNTIME_PINS_REQUIRED', final).returncode, 0)
+        for bad in [
+            {'PUBLISHER_OS_LOCK_SHA256':'latest', 'PUBLISHER_SOURCE_SHA':'c'*40},
+            {'PUBLISHER_OS_LOCK_SHA256':'b'*64, 'PUBLISHER_SOURCE_SHA':'main'},
+            {'PUBLISHER_OS_LOCK_SHA256':'b'*64},
+            {},
+        ]:
+            self.assertNotEqual(self._pin_check('PUBLISHER_RUNTIME_PINS_REQUIRED', bad).returncode, 0)
 
     def test_only_selected_python_modules_are_packaged(self):
         with tempfile.TemporaryDirectory() as directory:

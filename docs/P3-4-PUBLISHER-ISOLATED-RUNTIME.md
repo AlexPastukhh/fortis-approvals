@@ -17,12 +17,40 @@ Git for read-only verified bundles, and CA roots. No code is copied from
 the PR or the shared Fortis Repo worktree at execution time. Only the separately
 reviewed *public action validator* may be mounted as trusted data/code.
 
-The Dockerfile intentionally has **no default base**: its owner must supply
-`PYTHON_BASE=python:3.11-slim@sha256:<exact reviewed digest>`. Reject unpinned
-tags and verify the complete built image ID/source identity. The apt package
-resolution is not reproducible merely by pinning the base: a future production
-build needs an owner-reviewed immutable package source or an exact captured
-dependency manifest. This PR supplies no built image and claims no Docker test.
+The Dockerfile has **no default base**: its owner must supply exact
+`PYTHON_BASE=python:3.11-slim@sha256:<reviewed 64-hex digest>` and explicit
+`--platform linux/amd64` (or separately review another architecture). The
+`publisher-deps` review-only build stage requires **all** immutable OS inputs:
+
+- `PUBLISHER_APT_SNAPSHOT`: exact Debian archive/security snapshot timestamp
+  (`YYYYMMDDTHHMMSSZ`). The image replaces mutable default APT sources with
+  signed HTTPS snapshot archives, disables historical Release expiration
+  *only* for these explicitly pinned snapshots, and forbids fallback mirrors.
+- `PUBLISHER_DEBIAN_CODENAME`: exact `bookworm` or `trixie`, checked against
+  `/etc/os-release` of the digest-pinned base.
+- `PUBLISHER_GIT_VERSION` and `PUBLISHER_CA_CERTIFICATES_VERSION`: exact
+  reviewed Debian versions, not floating/latest package names. Transitive
+  resolution stays on the same immutable repository snapshot.
+
+The review stage installs no publisher source, carries no grant or validator,
+and prints the SHA256 of the entire sorted `dpkg-query` installed package set
+at `/usr/local/share/fortis-publisher/os-packages.lock`. Owner independently
+reviews that **full** lock file and security posture (a historical snapshot
+is not a vulnerability exemption), then supplies `PUBLISHER_OS_LOCK_SHA256`
+and `PUBLISHER_SOURCE_SHA` (accepted exact 40-hex Git source SHA) for the
+`publisher-runtime` final build stage. Missing/malformed build arguments,
+wrong Debian distribution or package closure, or a different lock digest
+fail the final build; there is no unlocked production fallback. The source
+revision OCI label is advisory and never substitutes independent Git/image
+content verification. Both review and final builds require the *same* immutable
+base, platform, snapshot and exact package versions. Record all pins, lock
+bytes/hash, source commit, final image ID, and independent final image content
+readback in owner-private release evidence (no grants or credentials in logs).
+
+This bounds dependency drift; it does **not** prove bit-for-bit identical
+Docker layers or live isolation. Only an owner-controlled build/rebuild and
+independent image verification can accept the produced image. This source PR
+supplies no real package versions, base digest, image build or runtime test.
 
 ## Owner-provisioned private paths — never in Git/Repo/Workfiles
 
@@ -79,9 +107,14 @@ outside AI-writable directories; the image never generates them.
 6. Run it only on owner demand; exit after one operation. A timer/webhook
    or an always-running listener is a **separate** unapproved future change.
 
-For an owner-review illustration only, the command *shape* is:
+For owner review only (deliberately non-executable placeholders), perform
+an **isolated dependency review build first**, then the locked final image:
+
 ```text
-docker build --build-arg PYTHON_BASE=python:3.11-slim@sha256:<REVIEWED-DIGEST> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <OWNER-REVIEWED-IMAGE> .
+docker build --no-cache --platform linux/amd64 --target publisher-deps --build-arg PYTHON_BASE=python:3.11-slim@sha256:<REVIEWED-BASE-DIGEST> --build-arg PUBLISHER_APT_SNAPSHOT=<REVIEWED-YYYYMMDDTHHMMSSZ> --build-arg PUBLISHER_DEBIAN_CODENAME=<REVIEWED-CODENAME> --build-arg PUBLISHER_GIT_VERSION=<REVIEWED-EXACT-VERSION> --build-arg PUBLISHER_CA_CERTIFICATES_VERSION=<REVIEWED-EXACT-VERSION> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <REVIEW-ONLY-DEPS-IMAGE> .
+# Owner verifies complete /usr/local/share/fortis-publisher/os-packages.lock
+# from the review image, its SHA256, signatures, versions and security posture.
+docker build --no-cache --platform linux/amd64 --target publisher-runtime <SAME-FIVE-REVIEWED-ARGS> --build-arg PUBLISHER_OS_LOCK_SHA256=<REVIEWED-64-HEX-LOCK> --build-arg PUBLISHER_SOURCE_SHA=<ACCEPTED-40-HEX-SOURCE> -f fortis_approvals/deploy/Dockerfile-P3-Release-Label-Publisher -t <OWNER-REVIEWED-IMAGE> .
 docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 10002:10002 --network <OWNER-GATEWAY-ONLY-EGRESS> --pids-limit 64 --memory 768m --cpus 1 --mount <PRIVATE-READONLY-CONFIG+GRANT+CA> --mount <TRUSTED-READONLY-VALIDATOR> --mount <PRIVATE-RW-CACHE> --mount <PRIVATE-RW-EXISTING-INTENT-JOURNAL> <OWNER-REVIEWED-IMAGE> --config /run/publisher/config.json preview --pr 118
 ```
 These placeholders deliberately block copy-paste execution. The owner must
