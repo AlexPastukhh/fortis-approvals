@@ -20,3 +20,9 @@ credential: предыдущее успешное обращение не явл
 
 **Готово:** защищённый receipt ротации, проверенный доступ нужного provider и
 перечень непроверенных write permissions; при неопределённом restart plan — STOP.
+
+**Будущий owner wizard (PLANNED):** показывать только alias/scopes/readiness
+и границы затрагиваемых providers, никогда содержимое секрета. ИИ может
+подготовить запрос/план, но не вводить, читать, сохранять или ротировать
+credential через machine API; owner-only ввод и отдельный receipt остаются
+обязательными. Policy WebAuthn не заменяет upstream credential authorization.

@@ -47,6 +47,15 @@ READ или остановить; не выдавать `scaffold`, CI или `C
 [backlog](../BACKLOG-IMPROVEMENTS.md); методические детали остаются у
 extension owner, а не дублируются в UC.
 
+**Будущая автоматизация (PLANNED, не шаг этого UC):** intake/OpenAPI и выбор
+методов должны порождать **draft** typed provider/публичный config diff, plan
+с безопасными STOP-гейтами и source PR/CI, а не автоматически исполнять
+недоверенную спецификацию или ставить provider из URL. Мастер в Owner Portal
+позже использует те же стадии и отдельные owner approvals/release; никакой
+общей machine записи для grants/credentials/policy не следует из успешного
+scaffold. Точные требования owner UI/AI proposal — в
+[Gateway roadmap](../BACKLOG-IMPROVEMENTS.md#api-onboarding-program).
+
 ## UC-GW-003
 
 **Когда:** нужно расширить существующий provider новой операцией.
@@ -61,6 +70,16 @@ provider ID, не выбирать policy/URL из AI payload. Запустит�
 доставить source через UC-CONT-002 и при изменении server image — UC-GW-005.
 
 **Граница типов изменений — сначала выбрать нужный путь:**
+
+**Для будущего Owner Portal:** изменение provider method ≠ изменение доступа.
+Первое требует source schema/handler/version/CI/при необходимости release;
+второе — отдельного owner-authorized policy diff для точных
+provider+operation+actor+target, свежего WebAuthn, precondition/digest и
+проверки in-flight ASK/UNCERTAIN. Нынешний actor-scoped catalog не является
+полной owner-инвентаризацией. ИИ вправе предложить изменение, но не может
+назначить себе ALLOW/credential/grant. Пока editor не реализован, использовать
+только проверенную конфигурацию и существующий owner release путь.
+
 
 1. **Новая операция готового `extensions/` provider:** оставить существующий
    `/v1/integrations/*` клиент и transport, расширить только его закрытую schema,
