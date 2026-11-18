@@ -13,6 +13,16 @@
 **Цель:** один повторяемый процесс для Windows и Docker upstream, с
 закрытыми операциями, владельцами доверия, отдельным least-privileged
 credential, отрицательными тестами и подтверждённым реальным READ.
+
+**Граница автоматизации:** этот профиль/manifest checker V1 проверяет только
+GET/READ/ALLOW и не устанавливает произвольный API «в один клик». Общий
+UC-GW-002 и extensions могут описывать другие операции, но ASK/WRITE,
+исполняемый Windows shell и управление provider policy требуют своих
+reviewed effect/transport contracts, owner consent, proof/receipt и
+независимой приёмки. Будущий master/AI helper сначала формирует source-only
+proposal и план, а не даёт возможности менять URL/grant/policy через payload.
+Требования к owner inventory, ASK/ALLOW editor и WebAuthn на точный diff — в
+[Gateway roadmap](../BACKLOG-IMPROVEMENTS.md#api-onboarding-program).
 Source/tests/CI, owner release и живой результат — разные уровни доказательств.
 
 **Как:** последовательно выбрать проверенный upstream transport, описать

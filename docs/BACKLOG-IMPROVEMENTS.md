@@ -11,6 +11,49 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+<a id="api-onboarding-program"></a>
+
+## API onboarding → управляемые providers и owner policy — целевая программа (2026-11-18)
+
+**Статус: PLANNED / НЕ РЕАЛИЗОВАНО.** Канонический источник приоритетов и технических задач Gateway — этот backlog. Исходный Workfile-план `Workfiles/fortis-api-onboarding-priority-20261110/PLAN.md` от 2026-11-10 — историческая проработка, не текущий источник разрешений. Для Action Core действуют отдельные план/hand-off от 2026-11-17, отмеченные в том Workfile. Общее руководство владельца/ИИ принадлежит [Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#api-onboarding-workflow); технические маршруты остаются [UC-GW-002](use-cases/integrations.md#uc-gw-002), [003](use-cases/integrations.md#uc-gw-003), [004](use-cases/credential-lifecycle.md#uc-gw-004), [012](use-cases/own-api.md#uc-gw-012).
+
+**Что подтверждено сейчас.** Trusted provider extensions имеют source scaffold, strict operation schemas, fixed transports, config policy и actor-scoped catalog; каталог НЕ является owner-инвентаризацией всех providers/методов. `ExtensionConfig`/policy устанавливаются из доверенной конфигурации при активации Gateway; Owner Portal WebAuthn подтверждает ASK-заявку, но не редактирует provider registry, target grants или policy. Стандартный own-API toolkit V1 ограничен GET/READ/ALLOW, хотя общие extensions допускают разные kinds. Windows Executor имеет отдельный ASK-only proof/receipt, **не** «универсальный WRITE installer». Новые providers или ASK/ALLOW из UI ещё не реализованы.
+
+**Почему отдельная программа, а не переписывание UC.** Подключение Executor и Mirror выявило повторяемые проверяемые стадии (transport, trust, provider, credential, source PR, release, owner decision, exact result), но не доказало автоматическую установку произвольного API. Два направления не смешивать: Fortis → API — эта программа; внешний API → Fortis/new machine actor — отдельный UC-CONT-008, DEFERRED до реального клиента. Native GitHub/Sonar/workspace и extensions имеют разные контракты; один UI может их показывать, но не переписывать одним generic handler.
+
+### P0 — безопасный профиль подключения и детерминированный plan/check
+
+- [ ] **API intake в явной типизированной форме:** владелец/ИИ задаёт сервис, среду, версионированную OpenAPI/spec, разрешённые методы, фиксированный origin, trust/identity, scope, тип/read-vs-effect и test target. Спецификация считается **недоверенными данными**, не исполняемым кодом. Итог: `SUPPORTED_AS_IS / NEEDS_TRUSTED_TRANSPORT / INSUFFICIENT_SPEC / UNSAFE_WRITE`, причины STOP и проверяемый diff; без URL/auth из runtime AI payload.
+- [ ] **One-shot source-only assistant/toolkit:** переиспользовать scaffold, manifest checker, Doctor, typed schemas, fixtures, CI и отдельный upstream owner. Генератор готовит **кандидат source и PR** в зарегистрированном task worktree, а не live provider из загруженного OpenAPI. В отдельном preview показывать, что меняется: provider/operations/policy/credentials/transport/source SHA/CI/Windows tasks/release/rollback. Выбирать trusted custom transport при несовместимых CA/mTLS/non-443/OAuth/JSON; НЕ ослаблять стандартный JSONAPI или GET/READ/ALLOW linter.
+- [ ] **Раздельное принятие эффекта:** read-only пилот (Action Core HTTPS/443 остаётся OPEN до owner gates) → для разрешённого WRITE отдельный reviewed effect manifest с read-only immutable preview, preconditions, idempotency и bound receipt/upstream readback. Никакого автоматического replay при UNKNOWN, нет обещания exactly-once от generic connector. Испытать второго независимого API, прежде чем объявлять onboarding toolkit воспроизводимым.
+- [ ] **Происхождение и этапы:** `DRAFT → SOURCE_READY → PR_MERGED → IMAGE_ACTIVATED → LIVE_API_VERIFIED`; для каждого API хранить точные evidence, scope, installed source/image, отдельный upstream live status, отрицательные auth/actor/target/redirect/timeout/replay проверки. Нет deployment/credential write из Repo в обход owner review, UC-GW-005 и protected state.
+
+### P1 — Owner Portal: список providers, методы, политики и версии
+
+- [ ] **Отдельный owner-authorized inventory READ:** полный список packaged/deployed native и extension providers, методов/версий, available-vs-configured-vs-active, kind/effect risk, actor/target grants, effective ALLOW/ASK/DENY, разрешённый readiness/credential alias status, last verified result. Текущий `/v1/integrations/catalog` остаётся **actor-scoped** и не расширяется до выдачи чужих grants/secrets ИИ. Разделить owner view от machine actor view, реализовать pagination/filters/redaction.
+- [ ] **Policy editor только для owner:** выбрать точный provider+operation+actor+target/environment и желаемый `DENY / ASK / ALLOW`, увидеть old/new diff, влияние на незавершённые ASK и prereqs. **Не выводить ALLOW из GET** и не разрешать ALLOW для неограниченного shell/непроверенного high-impact effect. Для native/extension методов учитывать разные trusted policy storage и совместимость. Отсутствующие/неизвестные операции DENY.
+- [ ] **WebAuthn на каждое изменение полномочий:** отдельная **fresh strong owner authorization** на exact policy change (policyVersion/source digest/actor/target/ops/grant/credential generation/expiry). Защита CSRF/session/origin и stale races, fail-closed validation/re-read, audit/receipt и возврат к прежней политике. WebAuthn «одобрить заявку на действие» не равен WebAuthn «изменить настройки доступа».
+- [ ] **Два уровня разрешений для ИИ:** ИИ через typed Gateway может READ **свои** capabilities, подготовить `proposal/preview` на provider/operation/policy и попросить owner review (ASK). Самостоятельно выставлять policy, менять credential, runtime/config, grant, назначать себя actor, обходить WebAuthn или снимать блокирующие условия ИИ **не может**. Owner-only UI выполняет и утверждает чувствительные изменения; некоторые действия (секрет, machine identity/grant, первичная активация) не имеют machine-write route даже после AI proposal.
+- [ ] **Безопасное применение:** первоначально versioned declarative config → checked plan/PR/CI → owner-controlled release; не обещать hot-reload. Dynamic policy commit/atomic activation — отдельный дизайн и threat review: persist/durability, recovery, cache invalidation, in-flight ASK/UNCERTAIN, provider revoke и proof/version invalidation.
+
+### P2 — мастер установки + provider lifecycle и AI-assisted workflow
+
+- [ ] **UI wizard «Добавить API»**: import spec/выбор пакета → compatibility/security checks → список typed методов → credential alias с owner-only secret entry → actor/target/scopes → policy diff → source PR/CI → owner-reviewed activate/rollback → live test/readback. Проходить шаги по status, давать resumable read-only progress по исходным UUID и явное `MANUAL_REQUIRED` для Windows/Docker/CA/network/ACL; не скрывать эти gates кнопкой «Подключить».
+- [ ] **Provider registry lifecycle:** install/version/upgrade/disable/revoke/rotate/retire, несовместимые схемы и client API versioning, зависимые consumer checks и reverse compatibility; native methods показывать отдельно от extension plugin code. Никакой remote URL-import исполняемого Python или unrestricted HTTP proxy.
+- [ ] **Автоматизация для ИИ на тех же typed contracts:** discover permitted ops, propose changes, generate reviewed source/fixtures/negative tests, submit exact plan; по статусам ASK/CI/release/verification возобновлять исходную операцию, без retry неизвестного эффекта. Секреты вводит только владелец, изменения прав подтверждает WebAuthn. Если UI не может доказать разрешения upstream, статус остаётся `NOT_VERIFIED`.
+- [ ] **Тестирование/приёмка:** owner-vs-machine inventory isolation; no privilege escalation; denied/ASK/ALLOW policy matrix; forged WebAuthn/CSRF/stale approval; concurrent policy changes/revocations; transport/SSRF/redirect/auth; credential scope/rotation; unknown effects, lost ACK, replay, rollback. Пилоты на изолированных ресурсах и отдельный owner GO для реального runtime.
+
+**Порядок:** P0 profile/second real API → P1 owner inventory + policy change evidence → P2 UI wizard/AI workflow. Для конкретных write/broker capabilities отдельный security design/owner review обязателен; не выдавать этот backlog за доступную функциональность.
+
+### Снимок статусов 2026-11-18 и сохранение истории
+
+- Windows Machine ASK V1 **активирован**; один `Get-Date` прошёл `PENDING→APPROVED→DISPATCHED→EXECUTED` с exitCode=0 и одной bound machine receipt в исходной SQLite (с сохранением owner-only receipt). Отдельный Reject подтверждён Core `PENDING→REJECTED` и отсутствием новой machine receipt/binding в Windows SQLite. Gateway UC-GW-014/015/016 приняты в [PR #141](https://github.com/AlexPastukhh/fortis-approvals/pull/141); Windows Executor и Script Center UC приняты в исходных repo. **Full live fault injection (forged proof, replay, timeout/lost ACK/restart) OPEN**, не считать полную PS-AI-V1-10 закрытой.
+- Release Labels typed READ и ASK операции доступны в текущем Gateway (проверялись live ранее в этой сессии), owner ASK `update_pull_request` реально использована для PR #141; автоматический publisher и GitHub Projects V2 остаются разными незавершёнными задачами. Ниже разделы от 11/17 ноября со словами «SOURCE CANDIDATE», «ещё не выполнен Windows cutover» и «machine ASK не реализован» — **исторический контекст на дату записи**, не текущий статус. Не переписывать dated evidence задним числом.
+- Action Core READ: не обновлять на `LIVE_API_VERIFIED` без независимого upstream HTTPS/443 и Gateway acceptance; historical P0 Workfile утверждал, что пилот ещё не выбран, но Action Core уже выбран как source candidate. Его host/runtime gates остаются отдельными.
+- Этот status snapshot не заменяет [current-state guide](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) и protected owner release records; при конфликте с live runtime STOP и независимый readback.
+
+---
+
 ## Mirror unified API — P0 security/contract review (2026-11-15)
 
 [P0 Mirror contract][mirror-unified] — PROPOSED; accepted provider остаётся
@@ -37,7 +80,7 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 
 ## Release Labels / GitHub Projects — Gateway typed API (2026-11-11)
 
-**Status: SOURCE CANDIDATE, НЕ УСТАНОВЛЕНО.** По запросу владельца
+**Исторический статус на 2026-11-11: SOURCE CANDIDATE, тогда не установлено.** Сверить с актуальным снимком выше: typed Release Labels READ/ASK уже использовались live, но publisher/Projects остаются открыты. По запросу владельца
 расширяется native GitHub provider без generic HTTP/GraphQL proxy.
 Предлагается READ `list_repository_labels`, `list_pr_labels`,
 `get_pr_release_label_context` и owner ASK `create_release_label`,
@@ -212,9 +255,11 @@ PowerShell и Docker image/record pointer. Для GitHub отсутствие в
 source-пакет и изменения Script Center подготовлены; Docker bootstrap нового
 repo завершён, Windows clone/cutover ещё не пройдены.
 
-Актуализировано **2026-11-17** по исходникам, истории и решениям владельца
-в текущей задаче. Это **план**, не новая machine capability и не разрешение
-активировать Windows/Gateway. Выполнение из Repo пока не реализовано.
+**Исторический снимок 2026-11-17** по исходникам, истории и решениям владельца
+на ту дату. Ниже остаётся последовательность задач и контракт V1; утверждение
+«не реализовано» более не является текущим: live Machine ASK и Reject E2E
+подтверждены в снимке 2026-11-18 выше. Полная fault-injection приёмка OPEN;
+этот план не разрешает новую Windows/Gateway activation.
 
 ### Согласованная цель и граница версии
 
