@@ -182,7 +182,8 @@ class G2WebAuthnTest(unittest.TestCase):
             expected_source_digest=change['sourceDigest'],
             expected_credential_generation_digest=change['credentialGenerationDigest'],
             expected_policy_version='v1',reason_code='OWNER_DRAFT_REVIEW')
-        with self.assertRaises(Denied):
+        from fortis_approvals.core import Stale
+        with self.assertRaisesRegex(Stale,'POLICY_CHANGE_STALE_REVISION'):
             self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
                 self.key.assert_(start),change,ledger)
         self.assertEqual('DENY',ledger.snapshot()['drafts'][0]['draftPolicy'])
