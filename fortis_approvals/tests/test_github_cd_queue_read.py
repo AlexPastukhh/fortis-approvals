@@ -4,8 +4,15 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+import uuid
+from dataclasses import replace
+from types import SimpleNamespace
 
-from fortis_approvals.core import Denied
+from fortis_approvals.core import Denied, Core, Authenticator
+from fortis_approvals.repo_action_contract import RepoIntentBroker
+from fortis_approvals.integrations.github.pilot import GitHubPilotConfig, config_from_environment
+from fortis_approvals.workflow.runtime import install
+from fortis_approvals.workflow.ingress import NativeIngress
 from fortis_approvals.integrations.github.contract import (
     DEPLOYMENT_READ_OPERATIONS, LEGACY_READ_OPERATIONS, GITHUB_ACTION_OPERATIONS,
     validate_github_read, validate_github_read_projection,
@@ -312,6 +319,161 @@ class DeploymentReadTests(unittest.TestCase):
                 validate_github_read("get_deployment_status",REPO,params)
         with self.assertRaises(Denied):
             validate_github_read("get_deployment","foreign",dict(deploymentId=-4))
+
+
+class DeploymentReadActivationTests(unittest.TestCase):
+    """Source contract only; tests NEVER configure live policy or credentials."""
+
+    def setUp(self):
+        tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root=Path(tmp.name)
+        self.transport=FakeReadTransport()
+        self.config=GitHubPilotConfig(
+            OWNER,REPO,file_pr_branch='fortis-e2e/11111111-1111-4111-8111-111111111111-approve',
+            ci_reads=True,native_worktree=True,required_workflows=(101,))
+
+    def native(self, config, *, actor='agent'):
+        core=Core(self.root/'core.sqlite',adapters={},policies={},
+                  authenticator=Authenticator({
+                      'reader-one':'agent','reader-two':'outsider'}))
+        broker=RepoIntentBroker(core,actor_operations={})
+        portal=SimpleNamespace(strong_operations=frozenset())
+        install(core=core,portal=portal,broker=broker,config=config,
+                root=self.root,actor=actor,transport=self.transport)
+        ingress=NativeIngress(SimpleNamespace(broker=broker),
+            github=SimpleNamespace(config=config),workspace=None,store=None,actor=actor)
+        return core,broker,ingress
+
+    def query(self,repo=REPO,operation='list_deployments'):
+        params={'page':1,'perPage':10,'sha':SHA,'environment':ENV}
+        if operation=='get_deployment':params={'deploymentId':12}
+        if operation=='list_deployment_statuses':
+            params={'deploymentId':12,'page':1,'perPage':10}
+        if operation=='get_deployment_status':params={'deploymentId':12,'statusId':34}
+        return dict(requestId=str(uuid.uuid4()),service='github',operation=operation,
+                    target=repo,params=params,reason='P4 source-only read test')
+
+    def test_default_closed_without_broker_grants_or_transport_use(self):
+        core,broker,ingress=self.native(self.config)
+        for op in DEPLOYMENT_READ_OPERATIONS:
+            self.assertEqual(core.policies[('agent',op[0],op[1])],'DENY')
+            self.assertNotIn(op,broker.actor_read_operations['agent'])
+        with self.assertRaisesRegex(Denied,'REPO_READ_GRANT_DENIED'):
+            broker.read('reader-one',self.query())
+        with self.assertRaisesRegex(Denied,'GITHUB_CD_READ_REPOSITORY_NOT_ADMITTED'):
+            core.adapters['github'].read(self.query())
+        caps=ingress._dispatch('/v1/workspace/capabilities',{},'reader-one','agent')
+        self.assertEqual(caps['githubDeploymentReads']['repositories'],[])
+        self.assertFalse(caps['githubDeploymentReads']['enabled'])
+        self.assertEqual(caps['githubDeploymentReads']['operations'],[])
+        self.assertFalse(caps['githubDeploymentReads']['writeEnabled'])
+        self.assertFalse(caps['githubDeploymentReads']['installedStateProof'])
+        self.assertEqual(self.transport.calls,[])
+
+    def test_explicit_exact_repo_read_only_and_denies_wrong_actor_and_repo(self):
+        config=replace(self.config,cd_read_repositories=(REPO,))
+        core,broker,ingress=self.native(config)
+        for service,op in DEPLOYMENT_READ_OPERATIONS:
+            self.assertEqual(core.policies[('agent',service,op)],'DENY')
+            self.assertEqual(core.policies[('agent',service,op,REPO)],'ALLOW')
+            self.assertNotIn(('agent',service,op,'other-repo'),core.policies)
+            self.assertIn((service,op),broker.actor_read_operations['agent'])
+            output=broker.read('reader-one',self.query(operation=op))
+            self.assertEqual(output['data']['evidenceClass'],'GITHUB_PROJECTION_ONLY')
+            self.assertEqual(output['data']['operation'],op)
+            with self.assertRaises(Denied):
+                broker.read('reader-one',self.query(repo='other-repo',operation=op))
+            with self.assertRaisesRegex(Denied,'GITHUB_CD_READ_REPOSITORY_NOT_ADMITTED'):
+                core.adapters['github'].read(self.query(repo='other-repo',operation=op))
+            with self.assertRaises(Denied):
+                broker.read('reader-two',self.query(operation=op))
+        caps=ingress._dispatch('/v1/workspace/capabilities',{},'reader-one','agent')
+        self.assertTrue(caps['githubDeploymentReads']['enabled'])
+        self.assertEqual(caps['githubDeploymentReads']['repositories'],[REPO])
+        self.assertEqual(set(caps['githubDeploymentReads']['operations']), {
+            op for _,op in DEPLOYMENT_READ_OPERATIONS})
+        self.assertFalse(caps['githubDeploymentReads']['writeEnabled'])
+        self.assertNotIn(('github','create_cd_projection'),
+                         broker.actor_operations['agent'])
+        self.assertNotIn(('github','append_cd_status'),
+                         broker.actor_operations['agent'])
+        self.assertTrue(all(call[0]=='GET' and call[3] is None
+                            for call in self.transport.calls))
+
+    def test_dynamic_two_exact_repositories_no_third_repo_grant(self):
+        config=replace(self.config,dynamic_repositories=True,
+                       cd_read_repositories=(REPO,'fortis-container'))
+        core,broker,ingress=self.native(config)
+        for repo in (REPO,'fortis-container'):
+            for service,operation in DEPLOYMENT_READ_OPERATIONS:
+                broker.authorize_read('reader-one',self.query(repo=repo,operation=operation))
+                self.assertEqual(core._policy('agent',dict(
+                    service=service,operation=operation,target=repo)),'ALLOW')
+        for service,operation in DEPLOYMENT_READ_OPERATIONS:
+            self.assertEqual(core._policy('agent',dict(
+                service=service,operation=operation,target='tunnel')),'DENY')
+            with self.assertRaises(Denied):
+                broker.authorize_read('reader-one',
+                    self.query(repo='tunnel',operation=operation))
+        caps=ingress._dispatch('/v1/workspace/capabilities',{},'reader-one','agent')
+        self.assertEqual(caps['githubDeploymentReads']['repositories'],
+                         ['fortis-container',REPO])
+        self.assertTrue(caps['githubDeploymentReads']['enabled'])
+        self.assertEqual(self.transport.calls,[])
+
+    def test_caps_fail_closed_on_partial_grant_or_policy(self):
+        config=replace(self.config,cd_read_repositories=(REPO,))
+        core,broker,ingress=self.native(config)
+        opname=next(iter(DEPLOYMENT_READ_OPERATIONS))
+        broker.actor_read_operations['agent']-=frozenset({opname})
+        caps=ingress._dispatch('/v1/workspace/capabilities',{},'reader-one','agent')
+        self.assertFalse(caps['githubDeploymentReads']['enabled'])
+        self.assertEqual(caps['githubDeploymentReads']['repositories'],[])
+        broker.actor_read_operations['agent']|=frozenset({opname})
+        core.policies[('agent',opname[0],opname[1],REPO)]='DENY'
+        caps=ingress._dispatch('/v1/workspace/capabilities',{},'reader-one','agent')
+        self.assertFalse(caps['githubDeploymentReads']['enabled'])
+        self.assertEqual(caps['githubDeploymentReads']['repositories'],[])
+
+    def test_config_default_disabled_and_explicit_env_parser(self):
+        self.assertEqual(self.config.cd_read_repositories,())
+        base={
+            'FORTIS_GITHUB_PILOT':'1','FORTIS_GITHUB_OWNER':OWNER,
+            'FORTIS_GITHUB_REPOSITORY':REPO,
+            'FORTIS_GITHUB_FILE_PR_BRANCH':self.config.file_pr_branch,
+            'FORTIS_GITHUB_CI_READS':'1','FORTIS_GITHUB_NATIVE_WORKTREE':'1',
+            'FORTIS_GITHUB_REQUIRED_WORKFLOWS':'101',
+            'FORTIS_GITHUB_NATIVE_MULTI_REPO':'1',
+        }
+        self.assertEqual(config_from_environment(base).cd_read_repositories,())
+        enabled=config_from_environment({
+            **base,'FORTIS_GITHUB_CD_READ_REPOSITORIES':'sandbox,fortis-container'})
+        self.assertEqual(enabled.cd_read_repositories,('sandbox','fortis-container'))
+        with self.assertRaisesRegex(ValueError,'GITHUB_PILOT_PARTIAL_CONFIGURATION'):
+            config_from_environment({
+                'FORTIS_GITHUB_PILOT':'0','FORTIS_GITHUB_CD_READ_REPOSITORIES':REPO})
+        for raw in ('sandbox,sandbox','../x','sandbox/production', 'sandbox,',
+                    'sandbox,other/scope','sandbox,*','a'*101,',sandbox'):
+            with self.assertRaises(ValueError,msg=raw):
+                config_from_environment({
+                    **base,'FORTIS_GITHUB_CD_READ_REPOSITORIES':raw})
+        for bad in (
+            dict(cd_read_repositories='sandbox'),
+            dict(cd_read_repositories=(REPO,REPO)),
+            dict(cd_read_repositories=('sandbox','SANDBOX')),
+            dict(cd_read_repositories=('..',)),
+            dict(cd_read_repositories=(REPO,)*11),
+        ):
+            with self.assertRaises(ValueError,msg=str(bad)):
+                replace(self.config,**bad)
+        with self.assertRaisesRegex(ValueError,'GITHUB_CD_READ_SCOPE_INVALID'):
+            replace(self.config,native_worktree=False,ci_reads=False,
+                    required_workflows=(),cd_read_repositories=(REPO,))
+        with self.assertRaisesRegex(ValueError,'GITHUB_CD_READ_SCOPE_INVALID'):
+            replace(self.config,cd_read_repositories=('fortis-container',))
+
+
 
 
 if __name__ == "__main__":
