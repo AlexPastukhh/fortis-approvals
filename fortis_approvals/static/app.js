@@ -405,6 +405,7 @@ $('pending-tab').onclick=action(async()=>{switchWorkspaceTab('pending');selected
 $('history-tab').onclick=action(async()=>{switchWorkspaceTab('history');selected=null;$('detail').replaceChildren();await refresh();});
 $('unresolved-tab').onclick=action(async()=>{switchWorkspaceTab('unresolved');selected=null;$('detail').replaceChildren();await refresh();});
 $('powershell-tab').onclick=action(async()=>{switchWorkspaceTab('powershell');await loadOwnerShell();});
+let policyPreviewRow=null;
 let providerInventory=null;
 function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
@@ -416,7 +417,7 @@ function displayProviderInventory(){
  $('providers-summary').textContent=`${rows.length} из ${providerInventory.operations.length} правил · ${providerInventory.providers.length} провайдеров · ${providerInventory.coverage}`;
  const table=document.createElement('table');
  const head=document.createElement('thead');const tr=document.createElement('tr');
- for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Эффективно','Готовность']){
+ for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Эффективно','Готовность','Предпросмотр']){
   const th=document.createElement('th');th.textContent=label;tr.append(th);
  }
  head.append(tr);table.append(head);
@@ -428,14 +429,62 @@ function displayProviderInventory(){
    (row.active?'active':'inactive')+' / '+row.credentialStatus+' / upstream '+row.upstreamStatus];
   const tr=document.createElement('tr');
   for(const value of cells){const td=document.createElement('td');td.textContent=value;tr.append(td);}
+  const cell=document.createElement('td');
+  if(row.scope==='exact'&&row.configured&&row.active&&
+     ['DENY','ASK','ALLOW'].includes(row.configuredPolicy)&&
+     ['DENY','ASK','ALLOW'].includes(row.effectivePolicy)){
+   const button=document.createElement('button');button.type='button';button.textContent='Выбрать';
+   button.onclick=()=>{
+    policyPreviewRow=row;
+    $('policy-preview-selection').textContent=[row.provider,row.operation,row.actor,row.target].join(' · ');
+    $('policy-preview-value').value=row.configuredPolicy;
+    $('policy-preview-value').disabled=false;
+    $('policy-preview-button').disabled=false;
+    $('policy-preview-output').textContent='Можно запросить только предпросмотр. Сохранение недоступно.';
+   };
+   cell.append(button);
+  }
+  tr.append(cell);
   body.append(tr);
  }
  table.append(body);target.append(table);
 }
 async function loadProviderInventory(){
  providerInventory=await api('/v1/owner/provider-inventory');
+ policyPreviewRow=null;
+ $('policy-preview-selection').textContent='Правило не выбрано.';
+ $('policy-preview-value').disabled=true;
+ $('policy-preview-button').disabled=true;
+ $('policy-preview-output').textContent='Изменения политик не разрешены этим интерфейсом.';
  displayProviderInventory();
 }
+$('policy-preview-button').onclick=action(async()=>{
+ if(!policyPreviewRow||!providerInventory)return;
+ const row=policyPreviewRow;
+ $('policy-preview-button').disabled=true;
+ $('policy-preview-output').textContent='Проверяю текущее правило…';
+ try{
+  const result=await api('/v1/owner/policy/preview',{
+    provider:row.provider,operation:row.operation,actor:row.actor,target:row.target,
+    desiredPolicy:$('policy-preview-value').value,
+    expectedConfiguredPolicy:row.configuredPolicy,
+    expectedPolicyVersion:providerInventory.policyVersion
+  },true);
+  $('policy-preview-output').textContent=[
+   'Правило: '+result.identity.provider+' / '+result.identity.operation,
+   'Actor: '+result.identity.actor+' · Target: '+result.identity.target,
+   'Сейчас: '+result.current.configuredPolicy+' (эффективно '+result.current.effectivePolicy+')',
+   'Предлагается: '+result.proposed.configuredPolicy,
+   'Изменение: '+(result.changed?'да':'нет')+' · Риск: '+result.risk,
+   'Незавершённые заявки: '+JSON.stringify(result.unresolvedRequests),
+   'Для применения понадобятся: '+result.requires.join(', '),
+   'Применение: НЕДОСТУПНО. Никакие права не изменены.'
+  ].join('\n');
+ }catch(error){
+  $('policy-preview-output').textContent='Предпросмотр отклонён: '+error.message+'. Обновите инвентаризацию.';
+  throw error;
+ }finally{$('policy-preview-button').disabled=false;}
+});
 $('providers-filter').addEventListener('input',displayProviderInventory);
 $('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});
 
