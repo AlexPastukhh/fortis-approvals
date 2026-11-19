@@ -38,7 +38,13 @@ locations: `contract.py`, `gateway/transport.py`, `gateway/adapter.py`,
 `repo_client/client.py` and `../../tests/test_github_cd_queue_read.py`.
 They are **not** added to legacy native READ ALLOW/grants, are not in the
 installed Gateway capabilities, and do **not** imply Deployments token
-permission. No Deployment/Status WRITE route exists. Future activation is
+permission. No Deployment/Status WRITE route exists.
+The Repo-side `GitHubClient.list_cd_projection_inventory(repo, target, environment)`
+source helper performs bounded exact target/environment pagination and second
+READ checks, failing closed on drift, repeated identity or exhausted budgets.
+It returns *GitHub projection only*, `paginationComplete` without an atomic
+snapshot claim, and `actualState=UNKNOWN` regardless of GitHub status;
+protected controller receipts/live readback remain separate and required. Future activation is
 owner-controlled via [UC-GW-003](../../../docs/use-cases/integrations.md#uc-gw-003)
 and [UC-GW-005](../../../docs/use-cases/releases.md#uc-gw-005); the normative
 identity/evidence requirements remain in the
