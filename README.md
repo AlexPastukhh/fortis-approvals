@@ -61,7 +61,10 @@ See [current state](docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md),
 [Owner PowerShell contract](docs/OWNER-POWERSHELL.md) and the
 [single backlog](docs/BACKLOG-IMPROVEMENTS.md#powershell-plan).
 
-The consolidated plan distinguishes the existing owner-only baseline from
-**Repo AI V1 (planned)**: every PowerShell execution is ASK, with owner-editable
-command restrictions. It also records implementation gates, acceptance and
-future improvements; this documentation does not enable machine execution.
+The machine route is already active in **ASK-only V1**; no automatic command
+ALLOW or owner command-policy editor is installed. The [PowerShell plan](docs/BACKLOG-IMPROVEMENTS.md#powershell-plan)
+defines the next architecture: an owner-editable **outer method policy**
+(`DENY/ASK/ALLOW` for all Gateway providers) and an Executor-only **inner
+Dynamic ASK** per command. Outer ALLOW never bypasses Windows evaluation.
+The [Executor backlog](https://github.com/AlexPastukhh/fortis-powershell-executor/blob/main/docs/BACKLOG-IMPROVEMENTS.md#executor-dynamic-ask)
+owns Windows rules and acceptance. Source changes alone enable neither layer.
