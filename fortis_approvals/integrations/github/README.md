@@ -54,10 +54,12 @@ provisioned) is required; it grants only these four READs for exactly those
 repository targets and leaves the generic actor policy `DENY`. The native
 capability `githubDeploymentReads` reports actual broker grants **and**
 per-repository Core ALLOW together, with `writeEnabled=false` and
-`installedStateProof=false`. The Windows owner controller currently does
-**not** forward this new flag: no active scope can result from a source PR,
-ordinary image rebuild or an arbitrary AI environment variable. A separate
-reviewed protected owner configuration and image activation are mandatory,
+`installedStateProof=false`. The Windows owner controller source supports the
+new flag only through an explicit owner-checked manual Check/Apply binding;
+an already-accepted source PR does **not** activate it in the running controller.
+No active scope can result from a source PR, ordinary image rebuild or an
+arbitrary AI environment variable. A separate reviewed protected owner
+configuration and image activation are mandatory,
 with upstream Deployments **read** permission independently checked by owner.
 Verify the live capability, allowlisted GET, non-allowlisted/other-actor 403
 and no new POST before declaring P4 LIVE accepted. Any incomplete page,

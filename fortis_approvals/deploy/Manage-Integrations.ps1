@@ -9,7 +9,7 @@ param(
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
     [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
-    [string]$CiControlRepositories='', [string]$PreserveUncertainRequests='',
+    [string]$CiControlRepositories='', [string]$CdReadRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
 )
@@ -933,6 +933,26 @@ function Read-CiControlRepositories {
     }
     return $Value
 }
+# P4: old complete release records legitimately have no CD READ scope.
+# A present field must be exact, bounded and free of case-insensitive duplicates.
+# The source-only flag cannot be inherited from an untrusted Docker environment.
+function Read-CdReadRepositories {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_CD_READ_RECORD_INVALID'}
+    $Value=''
+    if($Record -is [Collections.IDictionary]){
+        if($Record.Contains('cdReadRepositories')){$Value=$Record['cdReadRepositories']}
+    } else {
+        $Prop=$Record.PSObject.Properties['cdReadRepositories']
+        if($null -ne $Prop){$Value=$Prop.Value}
+    }
+    if($Value -isnot [string]){throw 'RELEASE_CD_READ_RECORD_INVALID'}
+    if($Value -and ($Value -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,9}$' -or
+        @($Value.Split(',')|Select-Object -Unique).Count -ne @($Value.Split(',')).Count)){
+        throw 'RELEASE_CD_READ_RECORD_INVALID'
+    }
+    return $Value
+}
 # Optional Action Core network identity on protected primary records.
 # Legacy records (bridge-only) legitimately lack gatewayNetworks. StrictMode
 # must never interpret that missing field as a property exception; however a
@@ -1397,6 +1417,7 @@ function Checked-Image-Binding {
         enableObservatoryNetwork=[bool]$EnableObservatoryNetwork
         gatewayNetworks=$script:ActionCoreNetworks
         ciControlRepositories=$CiControlRepositories
+        cdReadRepositories=$CdReadRepositories
         preserveUncertainRequests=$script:PreserveUncertainRequests
         allowUncertainGrowth=[bool]$AllowUncertainGrowth
         preserveClaimedJobs=$script:PreserveClaimedJobs
@@ -1562,6 +1583,7 @@ function Admit {
         nativeWorktree=$P.nativeWorktree;requiredWorkflows=$P.requiredWorkflows;bootstrapTask=$P.bootstrapTask
         dynamicRepositories=(Read-DynamicRepositoriesFlag $P)
         ciControlRepositories=(Read-CiControlRepositories $P)
+        cdReadRepositories=(Read-CdReadRepositories $P)
         vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)
         publisherActivationVolume=(Read-PublisherActivationVolume $P)
         machinePowerShellVolume=(Read-MachinePowerShellVolume $P)}
@@ -1875,6 +1897,22 @@ if($Action -eq 'SelfTest'){
     try{$null=Read-CiControlRepositories $CiBadRecord}
     catch{if($_.Exception.Message -cne 'RELEASE_CI_CONTROL_RECORD_INVALID'){throw};$CiRejected=$true}
     if(-not $CiRejected){throw 'RELEASE_CI_CONTROL_RECORD_VALIDATION_SELFTEST_FAILED'}
+    $CdOldRecord='{"schema":1}' | ConvertFrom-Json
+    $CdNewRecord='{"cdReadRepositories":"fortis-approvals,rd-graphs"}' | ConvertFrom-Json
+    $CdBadRecord='{"cdReadRepositories":"rd-graphs,rd-graphs"}' | ConvertFrom-Json
+    if((Read-CdReadRepositories $CdOldRecord) -cne '' -or
+       (Read-CdReadRepositories $CdNewRecord) -cne 'fortis-approvals,rd-graphs'){
+        throw 'RELEASE_CD_READ_RECORD_COMPATIBILITY_SELFTEST_FAILED'
+    }
+    $CdRejected=$false
+    try{$null=Read-CdReadRepositories $CdBadRecord}
+    catch{if($_.Exception.Message -cne 'RELEASE_CD_READ_RECORD_INVALID'){throw};$CdRejected=$true}
+    if(-not $CdRejected){throw 'RELEASE_CD_READ_RECORD_VALIDATION_SELFTEST_FAILED'}
+    $CdForward=@(Forward-NativeParameters @{CdReadRepositories='fortis-approvals'})
+    if($CdForward.Count -ne 2 -or $CdForward -cnotcontains '-CdReadRepositories' -or
+       $CdForward[1] -cne 'fortis-approvals'){
+        throw 'RELEASE_CD_READ_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $CiForward=@(Forward-NativeParameters @{CiControlRepositories='rd-graphs'})
     if($CiForward.Count -ne 2 -or $CiForward -cnotcontains '-CiControlRepositories' -or
         $CiForward[1] -cne 'rd-graphs'){
@@ -2063,7 +2101,7 @@ if($Auto){
         $Build -or $Pull -or $CurrentRecord -or $AttemptRecord -or
         $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $AllowUncertainGrowth -or
         $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or
-        $CiControlRepositories -or
+        $CiControlRepositories -or $CdReadRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
         $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount -or $EnableMachinePowerShell){
@@ -2285,6 +2323,17 @@ if($CiControlRepositories -and ($Action -cnotin @('Apply','Check') -or -not $App
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord)){
     throw 'RELEASE_CI_CONTROL_REQUIRES_APPROVED_IMAGE_BUILD'
 }
+if($CdReadRepositories -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
+    -not $ConfirmWorkerQuiescent -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
+    throw 'RELEASE_CD_READ_REQUIRES_EXACT_OWNER_CHECKED_IMAGE'
+}
+if($CdReadRepositories -and ($CdReadRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,9}$' -or
+    @($CdReadRepositories.Split(',')|Select-Object -Unique).Count -ne @($CdReadRepositories.Split(',')).Count)){
+    throw 'RELEASE_CD_READ_REPOSITORIES_INVALID'
+}
 if($AllowUncertainGrowth -and ($Action -cnotin @('Check','Apply') -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
     -not $ConfirmWorkerQuiescent -or
@@ -2340,7 +2389,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $CiControlRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 $script:ActionCoreNetworks=$null
 if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
     Step 'GATEWAY_NETWORK_PREFLIGHT_READ_ONLY'
@@ -2593,6 +2642,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     ciReads=$true;nativeWorktree=$true;requiredWorkflows=$Source.runtime.requiredWorkflows;bootstrapTask=$Source.runtime.bootstrapTask
     dynamicRepositories=((Read-DynamicRepositoriesFlag $Source.runtime) -or [bool]$EnableDynamicGitHubRepositories)
     ciControlRepositories=$(if($CiControlRepositories){$CiControlRepositories}else{Read-CiControlRepositories $Source.runtime})
+    cdReadRepositories=$(if($CdReadRepositories){$CdReadRepositories}else{Read-CdReadRepositories $Source.runtime})
     preserveUncertainRequests=$script:PreserveUncertainRequests
     preserveClaimedJobs=$script:PreserveClaimedJobs
     preserveApprovedRequest=$script:PreserveApprovedRequest
@@ -2632,9 +2682,11 @@ try {
         -not $_.StartsWith('FORTIS_RELEASE_NONCE=') -and
         -not $_.StartsWith('FORTIS_GITHUB_NATIVE_MULTI_REPO=') -and
         -not $_.StartsWith('FORTIS_GITHUB_CI_CONTROL_REPOSITORIES=') -and
+        -not $_.StartsWith('FORTIS_GITHUB_CD_READ_REPOSITORIES=') -and
         -not $_.StartsWith('FORTIS_OWNER_SHELL_CONFIG=')})
     if($Runtime.dynamicRepositories){$EnvLines+='FORTIS_GITHUB_NATIVE_MULTI_REPO=1'}
     if($Runtime.ciControlRepositories){$EnvLines+='FORTIS_GITHUB_CI_CONTROL_REPOSITORIES='+$Runtime.ciControlRepositories}
+    if($Runtime.cdReadRepositories){$EnvLines+='FORTIS_GITHUB_CD_READ_REPOSITORIES='+$Runtime.cdReadRepositories}
     $EnvLines+=@(Extension-EnvLines $CompactConfig $Nonce)
     $EnvLines+=@(OwnerShell-EnvLines $Runtime.ownerShell)
     Check-OwnerShellEnv $EnvLines $Runtime.ownerShell
