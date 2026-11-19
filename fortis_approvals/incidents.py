@@ -7,12 +7,14 @@ owner-facing operations, never mutating legacy tables or machine routes.
 import hashlib
 import json
 import re
+import sqlite3
 
-from .core import Core, Denied, ApprovalError, canonical
+from .core import Core, Denied, ApprovalError, Stale, canonical
 from .owner_auth import OwnerWebAuthn, _hash
 from .owner_shell_portal import OwnerShellPortal
 from .extensions.owner_inventory import owner_policy_inventory
 from .extensions.owner_policy_preview import preview_policy_change
+from .extensions.owner_policy_review_http import OwnerPolicyReviewHTTP
 
 
 class IncidentCore(Core):
@@ -362,6 +364,13 @@ class IncidentOwnerWebAuthn(OwnerWebAuthn):
 class IncidentOwnerPortal(OwnerShellPortal):
     # The historic approvals, WebAuthn, PowerShell and static routes remain
     # delegated through OwnerShellPortal -> protected OwnerPortal.
+    def __init__(self, core, authenticator, *, policy_review_ledger=None, **kwargs):
+        super().__init__(core, authenticator, **kwargs)
+        # No default source/DB discovery or permission grant; a trusted host
+        # must explicitly provide a pre-bound inactive ledger instance.
+        self._policy_review = (OwnerPolicyReviewHTTP(core, authenticator, policy_review_ledger)
+            if policy_review_ledger is not None else None)
+
     def _owner_view(self, row):
         action = (row['request']['service'], row['request']['operation'])
         return {**row, 'requiresStrongProof': self._strong(row),
@@ -375,6 +384,10 @@ class IncidentOwnerPortal(OwnerShellPortal):
         path=env.get('PATH_INFO','')
         get_inventory=method=='GET' and path=='/v1/owner/provider-inventory'
         post_policy_preview=method=='POST' and path=='/v1/owner/policy/preview'
+        get_policy_review_caps=(method=='GET' and
+            path=='/v1/owner/policy/review/capabilities')
+        post_policy_review=(method=='POST' and path in (
+            '/v1/owner/policy/review/begin','/v1/owner/policy/review/finish'))
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
@@ -383,7 +396,8 @@ class IncidentOwnerPortal(OwnerShellPortal):
             '/v1/owner/incidents/assess',
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
-        if not (get_inventory or post_policy_preview or get_unresolved or post_incident):
+        if not (get_inventory or post_policy_preview or get_policy_review_caps or
+                post_policy_review or get_unresolved or post_incident):
             return super().__call__(env,start)
         try:
             if (env.get('HTTP_HOST') != self.host or env.get('QUERY_STRING') or
@@ -396,6 +410,13 @@ class IncidentOwnerPortal(OwnerShellPortal):
                 self.auth.session(token)
                 return self._reply(start,200,owner_policy_inventory(
                     self.core,getattr(self,'_extension_runtime',None)))
+            if get_policy_review_caps:
+                self.auth.session(token)
+                if self._policy_review is None or self.read_only_banner:
+                    return self._reply(start,200,{'configured':False,
+                        'kind':'OWNER_POLICY_DRAFT_REVIEW_ONLY','requiresStrongWebAuthn':True,
+                        'canApply':False})
+                return self._reply(start,200,self._policy_review.capabilities())
             if get_unresolved:
                 self.auth.session(token)
                 rows=self.core.owner_unresolved()
@@ -410,6 +431,18 @@ class IncidentOwnerPortal(OwnerShellPortal):
             if post_policy_preview:
                 return self._reply(start,200,preview_policy_change(
                     self.core,getattr(self,'_extension_runtime',None),body))
+            if post_policy_review:
+                if self.read_only_banner or self._policy_review is None:
+                    raise Denied('OWNER_POLICY_REVIEW_NOT_CONFIGURED')
+                runtime=getattr(self,'_extension_runtime',None)
+                if path=='/v1/owner/policy/review/begin' and set(body)=={'candidate'}:
+                    return self._reply(start,200,self._policy_review.begin(
+                        token,csrf,body['candidate'],runtime))
+                if path=='/v1/owner/policy/review/finish' and set(body)=={
+                        'ceremonyId','response','change'}:
+                    return self._reply(start,200,self._policy_review.finish(
+                        token,csrf,body['ceremonyId'],body['response'],body['change'],runtime))
+                raise Denied('OWNER_POLICY_REVIEW_REQUEST_SCHEMA')
             if self.read_only_banner and path!='/v1/owner/incidents/assess':
                 raise Denied('INCIDENT_OWNER_WRITE_NOT_ENABLED')
             if path=='/v1/owner/incidents/assess' and set(body)=={'requestId'}:
@@ -455,7 +488,9 @@ class IncidentOwnerPortal(OwnerShellPortal):
             return self._reply(start,404,{'error':'ROUTE_NOT_FOUND'})
         except Denied as exc:
             return self._reply(start,403,{'error':str(exc)})
+        except Stale as exc:
+            return self._reply(start,409,{'error':str(exc)})
         except (ApprovalError,ValueError,TypeError,KeyError,UnicodeError):
             return self._reply(start,400,{'error':'REQUEST_INVALID'})
-        except (OSError,RuntimeError):
+        except (OSError,RuntimeError,sqlite3.DatabaseError):
             return self._reply(start,500,{'error':'OUTCOME_UNCONFIRMED'})
