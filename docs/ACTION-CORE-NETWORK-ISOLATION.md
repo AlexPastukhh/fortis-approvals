@@ -82,6 +82,53 @@ labels, network IDs, firewall rule, config, receipts or partial container
 identity also stop release; the ordinary Return/attempt journal is preserved.
 These tests are not equivalent to a live proof until performed on Windows.
 
+## Upstream PostgreSQL admission before Primary Gateway release
+
+Action Core Compose configuration is not proof that its Windows PostgreSQL,
+API or native HTTPS upstream have been deployed. Its `db` service joins the
+existing `feedbrain_default` and the new internal `fortis-actioncore-db`,
+which may require **recreating the running PostgreSQL container**. That is
+a separate upstream owner maintenance effect, not part of the Fortis Gateway
+owner release and not authorized by a source merge or network Check.
+
+**STOP Gateway Check/Apply** until the Action Core owner has separately:
+
+1. Verified an application-scoped PostgreSQL backup with independent isolated
+   restore, pinned original image and exact retained RW production PGDATA
+   volume; retained private baseline runtime configuration and reviewed
+   **operational rollback** to the prior DB network with a single writer.
+   Neither a historical Compose file, an encrypted Docker-inspect snapshot,
+   nor a successful logical restore proves an executable zero-loss rollback.
+2. Enforced a coordinated **no-new-write** maintenance window for RSS/Action
+   workers, scheduler, API write ingress and other DB clients; verified no
+   in-flight jobs, external effects or transactions **after** admission was
+   fenced. A single zero-count snapshot or worker SIGTERM is not quiescence.
+   Approved any necessary API interruption separately.
+3. Completed only the explicitly owner-approved, reviewed service-scoped
+   PostgreSQL/network change **without** running Alembic migrations, doing
+   blanket Compose service reconciliation or replacing PGDATA. Confirmed
+   correct Compose-managed internal network IDs/labels, original default
+   network retention, PostgreSQL health/data, Windows-local API live/ready
+   endpoints, clients and workers reconnect, and owner restoration of
+   admission after checks.
+4. Provisioned the **separate** ingress bridge, upstream TLS/443 listener,
+   reviewed SAN/CA and scoped verifier/credential, with direct HTTPS probe
+   evidence. This must precede Gateway Check/Apply; never stage an HTTP/8000
+   fallback, and never manually attach the Primary Gateway.
+
+The Fortis owner independently assesses collateral Docker-backend-wide
+TCP/8000 Firewall impact, obtains separate approval and verifies both
+HTTP bypass negatives plus the Windows localhost positive check. Only the
+Fortis owner release controller attaches the Gateway to ingress and admits
+the exact pinned two-network topology; a pre-created egress bridge alone
+does not prove this release-ready state.
+
+The upstream recovery and quiescence contract is owned by the Action Core
+`docs/GATEWAY-COMPOSE.md` runbook and UC-CONT-021/022. Existing
+UC-GW-009 global unresolved/claimed work, previous immutable Gateway image,
+protected state records, manual first `-EnableActionCoreNetwork` Check/Apply
+and UC-GW-005/006/007 controls remain **separate**, mandatory STOP gates.
+
 ## Owner preparation and separate approvals
 
 1. Obtain owner-approved upstream PR #19 and Gateway source PR; verify both
