@@ -11,7 +11,7 @@ import re
 from .core import Core, Denied, ApprovalError, canonical
 from .owner_auth import OwnerWebAuthn, _hash
 from .owner_shell_portal import OwnerShellPortal
-from .owner_inventory import owner_policy_inventory
+from .extensions.owner_inventory import owner_policy_inventory
 
 
 class IncidentCore(Core):

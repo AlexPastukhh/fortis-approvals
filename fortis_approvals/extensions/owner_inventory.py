@@ -4,7 +4,7 @@ This is a read model, not a policy editor or an authorization source.
 Only the currently loaded/configured runtime is visible: it is *not* a
 filesystem scan of all possible plugins or proof of remote provider health.
 """
-from .extensions.model import bounded
+from .model import bounded
 
 
 POLICIES = frozenset(('DENY', 'ASK', 'ALLOW'))

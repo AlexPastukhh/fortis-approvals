@@ -17,7 +17,6 @@ buildUnits:
       - fortis_approvals/core.py
       - fortis_approvals/owner_auth.py
       - fortis_approvals/owner_portal.py
-      - fortis_approvals/owner_inventory.py
       - fortis_approvals/owner_shell.py
       - fortis_approvals/powershell_machine.py
       - fortis_approvals/powershell_owner_mount.py

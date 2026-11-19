@@ -6,7 +6,7 @@ import unittest
 
 from fortis_approvals.core import Denied
 from fortis_approvals.incidents import IncidentOwnerPortal
-from fortis_approvals.owner_inventory import owner_policy_inventory
+from fortis_approvals.extensions.owner_inventory import owner_policy_inventory
 
 
 class Owner:

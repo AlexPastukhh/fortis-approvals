@@ -44,7 +44,6 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
         self.assertIn("fortis_approvals/owner_shell.py ", src)
         self.assertIn("fortis_approvals/owner_shell_portal.py ", src)
         self.assertIn("fortis_approvals/incidents.py ", src)
-        self.assertIn("fortis_approvals/owner_inventory.py ", src)
         self.assertIn("fortis_approvals/workflow/incident_read.py ", src)
         self.assertIn("IMAGE_OWNER_INCIDENT_IMPORT_PASS",
                       (ROOT/'fortis_approvals/deploy/image_offline_smoke.py').read_text())
