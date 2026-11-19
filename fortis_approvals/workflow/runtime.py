@@ -5,7 +5,7 @@ from .git_backend import GitHubGitBackend
 from .ingress import NativeIngress
 from .store import Store
 from ..integrations.github.publisher_profile import PublisherProfile
-from ..integrations.github.contract import LEGACY_READ_OPERATIONS
+from ..integrations.github.contract import LEGACY_READ_OPERATIONS, DEPLOYMENT_READ_OPERATIONS
 from ..integrations.github.analysis_contract import READS as CI_READS, ACTIONS as CI_ACTIONS
 from ..integrations.github.gateway.transport import GitHubHTTPTransport
 from ..integrations.github.registration import register_github_integration
@@ -62,6 +62,17 @@ def install(*,core,portal,broker,config,root,actor,transport=None,backend=None,w
         for service,operation in CI_ACTIONS:
             for ci_repo in config.ci_control_repositories:
                 core.policies[(actor,service,operation,ci_repo)]='ASK'
+    # P4: these READs never inherit legacy/dynamic-Repo access. A trusted,
+    # owner-reviewed exact repository list is necessary to add broker grants.
+    # The per-actor generic policy stays DENY even when repository opt-in exists.
+    for service,operation in DEPLOYMENT_READ_OPERATIONS:
+        core.policies[(actor,service,operation)]='DENY'
+    cd_repos=config.cd_read_repositories
+    if cd_repos:
+        reads=reads|DEPLOYMENT_READ_OPERATIONS
+        for service,operation in DEPLOYMENT_READ_OPERATIONS:
+            for repository in cd_repos:
+                core.policies[(actor,service,operation,repository)]='ALLOW'
     broker.actor_read_operations[actor]=broker.actor_read_operations.get(actor,frozenset())|reads
     broker.actor_operations[actor]=broker.actor_operations.get(actor,frozenset())|writes
     workspace=WorkspaceAdapter(core=core,github=adapter,store=store,actor=actor,wait_seconds=worker_wait)

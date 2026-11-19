@@ -17,7 +17,7 @@ ACTION = ('github', 'create_branch')
 FILE_PR_READS = frozenset({('github', 'get_file'), ('github', 'list_pull_requests'), ('github', 'get_pull_request')})
 FILE_PR_ACTIONS = frozenset({('github', 'push_files'), ('github', 'create_pull_request')})
 CI_READS = frozenset({('github', 'list_workflow_runs')})
-CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS', 'FORTIS_GITHUB_NATIVE_WORKTREE', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS', 'FORTIS_GITHUB_BOOTSTRAP_TASK', 'FORTIS_GITHUB_NATIVE_MULTI_REPO', 'FORTIS_GITHUB_CI_CONTROL_REPOSITORIES')
+CONFIG_KEYS = ('FORTIS_GITHUB_OWNER', 'FORTIS_GITHUB_REPOSITORY', 'FORTIS_GITHUB_BRANCH_PREFIX', 'FORTIS_GITHUB_FILE_PR_BRANCH', 'FORTIS_GITHUB_CI_READS', 'FORTIS_GITHUB_NATIVE_WORKTREE', 'FORTIS_GITHUB_REQUIRED_WORKFLOWS', 'FORTIS_GITHUB_BOOTSTRAP_TASK', 'FORTIS_GITHUB_NATIVE_MULTI_REPO', 'FORTIS_GITHUB_CI_CONTROL_REPOSITORIES', 'FORTIS_GITHUB_CD_READ_REPOSITORIES')
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class GitHubPilotConfig:
     bootstrap_task: str = ''
     dynamic_repositories: bool = False  # Trusted opt-in, not part of legacy review profiles.
     ci_control_repositories: tuple = ()  # Exact owner-scoped ASK allowlist; default disabled.
+    cd_read_repositories: tuple = ()  # P4 exact repo-scoped READs; default DENY.
 
     def __post_init__(self):
         if type(self.owner) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', self.owner):
@@ -83,6 +84,18 @@ class GitHubPilotConfig:
                     (not self.dynamic_repositories and ci_repos != (self.repository,))))):
             raise ValueError('GITHUB_CI_CONTROL_SCOPE_INVALID')
 
+        cd_repos=self.cd_read_repositories
+        if (type(cd_repos) is not tuple or len(cd_repos)>10 or
+                len(cd_repos)!=len(set(cd_repos)) or
+                any(type(repo) is not str for repo in cd_repos) or
+                len({repo.casefold() for repo in cd_repos})!=len(cd_repos) or
+                any(type(repo) is not str or not re.fullmatch(
+                    r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}',repo) or repo in ('.','..')
+                    for repo in cd_repos) or
+                (cd_repos and (not self.native_worktree or
+                    (not self.dynamic_repositories and cd_repos != (self.repository,))))):
+            raise ValueError('GITHUB_CD_READ_SCOPE_INVALID')
+
         if (type(self.bootstrap_task) is not str or
                 (self.bootstrap_task and (not self.native_worktree or not re.fullmatch('[a-z0-9][a-z0-9-]{0,99}',self.bootstrap_task)))):
             raise ValueError('GITHUB_BOOTSTRAP_TASK_INVALID')
@@ -118,6 +131,10 @@ def config_from_environment(environment):
     if type(control) is not str or (control and
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}',control)):
         raise ValueError('GITHUB_CI_CONTROL_SCOPE_INVALID')
+    cd_reads=environment.get('FORTIS_GITHUB_CD_READ_REPOSITORIES','')
+    if type(cd_reads) is not str or (cd_reads and
+            not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,9}',cd_reads)):
+        raise ValueError('GITHUB_CD_READ_SCOPE_INVALID')
     return GitHubPilotConfig(
         owner=environment.get(CONFIG_KEYS[0], ''),
         repository=environment.get(CONFIG_KEYS[1], ''),
@@ -125,7 +142,8 @@ def config_from_environment(environment):
         file_pr_branch=environment.get(CONFIG_KEYS[3], ''), ci_reads=ci == '1',
         native_worktree=native == '1', required_workflows=tuple(map(int,required.split(','))) if required else (),
         bootstrap_task=environment.get(CONFIG_KEYS[7],''),dynamic_repositories=multi == '1',
-        ci_control_repositories=tuple(control.split(',')) if control else ())
+        ci_control_repositories=tuple(control.split(',')) if control else (),
+        cd_read_repositories=tuple(cd_reads.split(',')) if cd_reads else ())
 
 
 class GitHubPilotAdapter(GitHubAdapter):

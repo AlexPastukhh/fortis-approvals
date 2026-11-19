@@ -44,7 +44,27 @@ source helper performs bounded exact target/environment pagination and second
 READ checks, failing closed on drift, repeated identity or exhausted budgets.
 It returns *GitHub projection only*, `paginationComplete` without an atomic
 snapshot claim, and `actualState=UNKNOWN` regardless of GitHub status;
-protected controller receipts/live readback remain separate and required. Future activation is
+protected controller receipts/live readback remain separate and required.
+
+**P4 read activation is separate from source merge.** Native GitHub runtime
+keeps all four operations `DENY` for the admitted machine actor by default.
+An explicit, *owner-reviewed* `GitHubPilotConfig.cd_read_repositories`
+tuple (parsed from `FORTIS_GITHUB_CD_READ_REPOSITORIES` when independently
+provisioned) is required; it grants only these four READs for exactly those
+repository targets and leaves the generic actor policy `DENY`. The native
+capability `githubDeploymentReads` reports actual broker grants **and**
+per-repository Core ALLOW together, with `writeEnabled=false` and
+`installedStateProof=false`. The Windows owner controller currently does
+**not** forward this new flag: no active scope can result from a source PR,
+ordinary image rebuild or an arbitrary AI environment variable. A separate
+reviewed protected owner configuration and image activation are mandatory,
+with upstream Deployments **read** permission independently checked by owner.
+Verify the live capability, allowlisted GET, non-allowlisted/other-actor 403
+and no new POST before declaring P4 LIVE accepted. Any incomplete page,
+ambiguous GitHub historical status or missing controller receipt remains
+`UNKNOWN`; this does not activate P5/P6 or repeat the P3.4 Publisher pilot.
+
+Future activation is
 owner-controlled via [UC-GW-003](../../../docs/use-cases/integrations.md#uc-gw-003)
 and [UC-GW-005](../../../docs/use-cases/releases.md#uc-gw-005); the normative
 identity/evidence requirements remain in the

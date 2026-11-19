@@ -8,7 +8,8 @@ from ..core import Denied, Stale, canonical
 from ..integrations.github.gateway.adapter import GitHubAdapter
 from ..integrations.github.gateway.analysis_adapter import AnalysisGitHubAdapter
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
-from ..integrations.github.contract import validate_github_action, validate_github_read, validate_github_read_projection
+from ..integrations.github.contract import (DEPLOYMENT_READ_NAMES,
+    validate_github_action, validate_github_read, validate_github_read_projection)
 from .error_diagnostics import observe_adapter
 from ..integrations.github.publisher_profile import PublisherProfile
 from ..integrations.github.release_label_ci import ServerCIReader, collect_ci
@@ -352,6 +353,11 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         return repo
 
     def read(self,request):
+        # P4 defence in depth: even if an old broker grant/policy is inherited,
+        # no Deployments read may leave this adapter outside exact owner config.
+        if type(request) is dict and request.get('operation') in DEPLOYMENT_READ_NAMES:
+            if request.get('target') not in self.config.cd_read_repositories:
+                raise Denied('GITHUB_CD_READ_REPOSITORY_NOT_ADMITTED')
         if type(request) is dict and request.get('operation') in CI_READ_NAMES:
             self._access(request.get('target'))
             return AnalysisGitHubAdapter.read(self,request)

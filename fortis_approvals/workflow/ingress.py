@@ -14,6 +14,7 @@ from .common import (MAX_BUNDLE, WORKSPACE_OPS, branch, require, sha, slug,
 from .incident_read import list_uncertain, list_requests, diagnose, diagnose_v2
 from ..integrations.github.analysis_contract import READ_NAMES as CI_READ_NAMES, ACTION_NAMES as CI_ACTION_NAMES
 from ..diagnostic_contract import advertised_diagnostic_capability
+from ..integrations.github.contract import DEPLOYMENT_READ_OPERATIONS
 from ..integrations.github.publisher_profile import (ACTOR as PUBLISHER_ACTOR, REPOSITORY as PUBLISHER_REPOSITORY, PublisherProfile)
 from ..integrations.github.release_label_evidence import release_label_receipt_matches
 from .artifact_diagnostics import (
@@ -144,6 +145,14 @@ class NativeIngress:
             revision_policy=core._policy(actor,dict(service='github',operation='append_visual_revision',target='visual-workspace'))
             dynamic=getattr(self.github.config,'dynamic_repositories',False)
             require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
+            # Report only operations actually available under BOTH broker grant
+            # and Core exact actor/target ALLOW. Source presence is not access.
+            candidate_repos=getattr(self.github.config,'cd_read_repositories',())
+            granted=getattr(self.broker,'actor_read_operations',{}).get(actor,frozenset())
+            cd_enabled=sorted(repo for repo in candidate_repos
+                if all(op in granted and core._policy(actor,dict(
+                    service=op[0],operation=op[1],target=repo))=='ALLOW'
+                    for op in DEPLOYMENT_READ_OPERATIONS))
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
                 allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
@@ -159,6 +168,11 @@ class NativeIngress:
                 githubReleaseLabelReads=['list_repository_labels','list_pr_labels',
                     'get_pr_release_label_context'],
                 githubReleaseImpactReads=['get_pr_release_impact_evidence'],
+                githubDeploymentReads={'version':1,'evidenceClass':'GITHUB_PROJECTION_ONLY',
+                    'enabled':bool(cd_enabled),'repositories':cd_enabled,
+                    'operations':sorted(op for _,op in DEPLOYMENT_READ_OPERATIONS)
+                        if cd_enabled else [],
+                    'writeEnabled':False,'installedStateProof':False},
                 githubReleaseLabelWrites={'policy':'ASK','commands':[
                     'create_release_label','add_pr_release_labels','remove_pr_release_label'],
                     'scope':'registered-open-same-repo-task-PR-only',
