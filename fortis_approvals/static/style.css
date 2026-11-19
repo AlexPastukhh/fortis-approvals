@@ -26,3 +26,9 @@
 .incident-close input[type=text],.incident-close textarea{display:block;width:100%;box-sizing:border-box;
  margin-top:4px;padding:6px;background:Canvas;color:CanvasText;border:1px solid #888;border-radius:4px}
 .incident-close input[type=checkbox]{margin-right:6px}
+
+#providers-results{max-width:100%;overflow-x:auto}
+#providers-results table{border-collapse:collapse;width:100%;font-size:.875rem}
+#providers-results th,#providers-results td{border:1px solid #8887;padding:6px 8px;text-align:left;vertical-align:top}
+#providers-results tbody tr:nth-child(even){background:color-mix(in srgb,Canvas 94%,CanvasText 6%)}
+#providers-filter{max-width:100%;width:26rem}
