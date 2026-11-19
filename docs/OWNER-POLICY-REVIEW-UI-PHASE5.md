@@ -1,6 +1,6 @@
 # P1 phase 5 — owner WebAuthn review browser bridge (source only)
 
-**Status:** source PR candidate, not yet merged, not installed; **no policy apply**.
+**Status (2026-11-20):** source merged in [PR #157](https://github.com/AlexPastukhh/fortis-approvals/pull/157) after all required CI checks; **not thereby installed, opt-in configured or live browser-accepted. No policy apply**.
 
 ## Enabling boundary
 
@@ -21,9 +21,9 @@ Trusted host configuration is deferred: a protected root/owner-controlled ledger
 
 ## Tests
 
-- `test_owner_policy_review_http.py`: 8 portable server-boundary tests using **fake crypto** (not proof of signature) for owner-only host/origin/CSRF, disabled-by-default, legacy route absence, exact rule, stale/unknown grants, no-op, one-use, session-only rejection, unchanged Core/SQLite.
+- `test_owner_policy_review_http.py`: 10 portable server-boundary tests using **fake crypto** (not proof of signature) for owner-only host/origin/CSRF, disabled-by-default, legacy route absence, exact rule, stale/unknown grants, no-op, one-use, session-only rejection, unchanged Core/SQLite.
 - `test_owner_policy_review_http_crypto.py`: **real virtual P-256 FIDO2** cryptographic tests in CI for login + reviewer session, RP/origin/UV, tampering, replay and post-auth live state drift. Minimal Fortis Repo image lacks `fido2/cryptography`; CI is authoritative.
-- `scripts/test-source.sh`, `scripts/update-source-manifests.py --check`, `scripts/check-release-storage-source.py`, curated image smoke and Owner Portal regressions. Do not merge on failing CI.
+- `scripts/test-source.sh`, `scripts/update-source-manifests.py --check`, `scripts/check-release-storage-source.py`, curated image smoke and Owner Portal regressions. This phase was merged with green required source CI; future changes still must not merge on failing CI.
 
 ## Still missing before owner policy editor can go live
 

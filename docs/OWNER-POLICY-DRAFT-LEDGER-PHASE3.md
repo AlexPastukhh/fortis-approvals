@@ -1,6 +1,6 @@
 # P1 Phase 3 — inactive versioned policy draft ledger (source only)
 
-**Status:** PR source candidate, 2026-11-19; no live or deployed policy editor.
+**Status (2026-11-20):** merged source in [PR #152](https://github.com/AlexPastukhh/fortis-approvals/pull/152); **no live, active or deployed policy editor**.
 
 ## Scope
 
