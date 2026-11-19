@@ -1,10 +1,13 @@
 # P3.4 — isolated one-shot Release Label Publisher image
 
-**SOURCE_CANDIDATE / NOT INSTALLED / MANUAL-PENDING.** This describes a
+**Historical source recipe; isolated one-shot owner runtime E2E PASS 2026-11-19.** This describes a
 separate image for the accepted [P3.3 runner](../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
 and [P3.4 owner-sealed Gateway identity](P3-4-PUBLISHER-OWNER-STARTUP.md).
 It does not install a service, create a credential, change the Primary,
-issue an ASK, or implement an unattended trigger. Pilot PR #118 stays open.
+issue an ASK, or implement an unattended trigger. Pilot PR #118 stays open. The owner-built runtime image
+`fortis-publisher-runtime:p34-e349d2aa-pydeps7` and one ASK/WebAuthn/
+original receipt passed; [exact acceptance](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+No scheduler, mass processing or deployment was accepted.
 
 ## Image and authority
 
@@ -49,8 +52,8 @@ readback in owner-private release evidence (no grants or credentials in logs).
 
 This bounds dependency drift; it does **not** prove bit-for-bit identical
 Docker layers or live isolation. Only an owner-controlled build/rebuild and
-independent image verification can accept the produced image. This source PR
-supplies no real package versions, base digest, image build or runtime test.
+independent image verification can accept the produced image. The original source PR supplied no real package versions, base digest,
+image build or runtime test; the later pinned owner image and pilot are separate.
 
 ## Owner-provisioned private paths — never in Git/Repo/Workfiles
 
@@ -75,7 +78,10 @@ All paths must be absolute, immutable-configured and checked against the
 runner's strict `RunnerConfig` rules. The owner creates those files/mounts
 outside AI-writable directories; the image never generates them.
 
-## Owner-only runtime admission (no command in this PR runs Docker)
+## Owner-only runtime admission (historical pilot checklist)
+
+Do not re-run the original `request` or first-time activation. These
+commands describe source gates, not permission to re-execute the pilot.
 
 1. Accept the source/PR and exact image provenance. Review the fixed build
    argument and package supply-chain; inspect the image's copied files,

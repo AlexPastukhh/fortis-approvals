@@ -1,9 +1,12 @@
-# P3.4 — owner-sealed startup composition (source candidate)
+# P3.4 — owner-sealed startup composition
 
-**Status: SOURCE_CANDIDATE / DEFAULT_DENY / NO DEPLOYMENT.** This change adds a
+**Source is default-deny; bounded owner one-shot E2E PASS 2026-11-19.** This change adds a
 narrow optional **second** Gateway actor, not a daemon, scheduler, publisher
 credential or production activation. Never treat a source merge, unit tests,
 GitHub labels or Gateway image build as the owner's release approval.
+The separate accepted owner activation and original request evidence are in
+[Gateway current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+No unattended publisher, scheduler, repeat request or deployment was accepted.
 
 ## Trusted boundary
 
@@ -66,13 +69,17 @@ CI artifacts.
 
 A separate [protected P3.4 Gateway mount source candidate](P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
 now proposes the fixed, optional owner-provisioned readonly Docker volume
-fortis-r7-publisher-activation. The owner mount is NOT installed by a source
-merge, and no credential/volume is created by that source change. First-time
+fortis-r7-publisher-activation. The owner mount was not installed by the source merge. It was later
+separately provisioned and accepted by the owner; the source change alone
+creates no credential/volume. First-time
 activation requires manual reviewed Check/Apply with a protected binding,
 then separate owner image release and live principal readback. Auto cannot
 activate the previously disabled principal.
 
-## Required pilot release gates
+## Pilot release gates (original checklist; accepted for one PR on 2026-11-19)
+
+Do not rerun the original request or Gateway activation for documentation
+verification; use the original receipt and independent read-only evidence.
 
 1. Owner accepts exact source HEAD, profile/validator pins, no broad grants and
    a reproducible image; a source merge is not a release.
@@ -98,7 +105,8 @@ activate the previously disabled principal.
    read-only root filesystem, no Repo/Workfiles/Docker/owner mounts, fixed
    Gateway TLS-only egress, private data cache and existing Intent Journal;
    no direct GitHub egress. The separate [P3.4 one-shot image source](P3-4-PUBLISHER-ISOLATED-RUNTIME.md)
-   defines an owner-review candidate but does not build, deploy or launch it.
+   originally defined an owner-review candidate; the owner later built and
+accepted the one-shot image. This source contract is not a launcher.
 5. Keep [pilot PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118)
    **open** and non-draft. Revalidate its **latest** exact-head CI,
    stable PR/labels/base, registered task and one permitted managed delta

@@ -1,10 +1,12 @@
 # P3.4 — protected Gateway mount for the Publisher principal
 
-**SOURCE_CANDIDATE / DISABLED BY DEFAULT / NO OWNER CREDENTIALS.**
+**Default-deny source opt-in; owner mount and one-shot E2E accepted 2026-11-19.**
 This is a source-only owner-reviewed extension of the existing Windows
 PowerShell 5.1 Gateway Manage-Integrations.ps1 release procedure. It
 enables one optional fixed publisher-principal mount; it does NOT provision
-credentials, launch the Publisher runner or authorize GitHub label ASK.
+credentials, launch the Publisher runner or authorize GitHub label ASK. Separate owner activation and ASK are documented
+in [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+Do not rerun first activation or the original request for status checks.
 
 ## Exact trusted path and scope
 
@@ -74,7 +76,8 @@ live volume is rejected; it requires separate reviewed release planning.
    verification are mandatory. No timer, webhook, direct GitHub egress or
    unattended release.
 
-**Status: SOURCE ONLY — no live publisher grant or runtime installed.**
+**Status (2026-11-19): owner-installed private mount and one-shot Publisher
+E2E PASS; unattended trigger, automatic WRITE and deployment not authorized.**
 
 Normative docs: docs/use-cases/releases.md (UC-GW-005),
 docs/PRIMARY-GATEWAY-OPERATIONS.md, docs/use-cases/incidents.md (UC-GW-009),
