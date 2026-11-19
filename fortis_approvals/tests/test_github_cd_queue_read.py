@@ -1,6 +1,7 @@
 """P4 source-only typed GitHub Deployments READ: strict scope, no WRITE."""
 from copy import deepcopy
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -72,13 +73,20 @@ class FakeReadTransport:
                     (not params.get("environment") or x["environment"] == params["environment"])]
             start = (params["page"] - 1) * params["per_page"]
             return deepcopy(rows[start:start + params["per_page"]])
-        if path == BASE + "/deployments/12":
-            return deepcopy(self.items[0])
-        if path == BASE + "/deployments/12/statuses":
-            start = (params["page"] - 1) * params["per_page"]
-            return deepcopy(self.statuses[start:start + params["per_page"]])
-        if path == BASE + "/deployments/12/statuses/34":
-            return deepcopy(self.statuses[0])
+        if path.startswith(BASE + "/deployments/"):
+            suffix = path[len(BASE + "/deployments/"):]
+            match = re.fullmatch(r"([1-9][0-9]*)(?:/statuses(?:/([1-9][0-9]*))?)?", suffix)
+            if match is None:
+                raise AssertionError(("unexpected path", path))
+            ident=int(match.group(1))
+            if match.group(2) is not None:
+                return deepcopy(next(x for x in self.statuses
+                                     if x["id"] == int(match.group(2))))
+            if suffix.endswith("/statuses"):
+                rows=[x for x in self.statuses if x["deployment_url"].endswith("/deployments/"+str(ident))]
+                start = (params["page"] - 1) * params["per_page"]
+                return deepcopy(rows[start:start + params["per_page"]])
+            return deepcopy(next(x for x in self.items if x["id"] == ident))
         raise AssertionError(("unexpected path", path))
 
 
@@ -93,6 +101,17 @@ class DeploymentReadTests(unittest.TestCase):
     def read(self, operation, params, repo=REPO):
         return self.adapter.read(dict(service="github", operation=operation,
                                       target=repo, params=params))
+
+    def client(self):
+        adapter=self.adapter
+        class Broker:
+            def post(self, path, request):
+                if path != "/v1/reads":
+                    raise AssertionError("Client must use typed READ route")
+                data=adapter.read(request)
+                return dict(requestId=request["requestId"], service="github",
+                            operation=request["operation"], data=data)
+        return GitHubClient(gateway=Broker())
 
     def test_closed_read_surface_no_inherited_grants_or_deployment_write(self):
         self.assertTrue(DEPLOYMENT_READ_OPERATIONS)
@@ -125,15 +144,7 @@ class DeploymentReadTests(unittest.TestCase):
                             for call in self.transport.calls))
 
     def test_client_closed_broker_read_and_response(self):
-        adapter=self.adapter
-        class Broker:
-            def post(self, path, request):
-                if path != "/v1/reads":
-                    raise AssertionError("Client must use typed READ route")
-                data=adapter.read(request)
-                return dict(requestId=request["requestId"], service="github",
-                            operation=request["operation"], data=data)
-        c=GitHubClient(gateway=Broker())
+        c=self.client()
         self.assertEqual(c.list_deployments(REPO)["items"][0]["id"],12)
         self.assertEqual(c.get_deployment(REPO,12)["deployment"]["sha"],SHA)
         self.assertEqual(c.list_deployment_statuses(REPO,12)["items"][0]["state"],"queued")
@@ -142,6 +153,95 @@ class DeploymentReadTests(unittest.TestCase):
             c.list_deployments(REPO, environment="../../secrets")
         with self.assertRaises(Denied):
             c.get_deployment_status(REPO,12,False)
+
+    def test_inventory_only_github_projection_never_actual_install(self):
+        c=self.client()
+        for github_status in ("queued", "in_progress", "success", "failure"):
+            self.transport.statuses=[status(state=github_status)]
+            result=c.list_cd_projection_inventory(REPO,"api","production")
+            self.assertEqual(result["evidenceClass"],"GITHUB_PROJECTION_ONLY")
+            self.assertTrue(result["paginationComplete"])
+            self.assertFalse(result["atomicSnapshot"])
+            self.assertEqual(result["actualState"],"UNKNOWN")
+            self.assertIsNone(result["actualInstalledVersion"])
+            self.assertEqual(result["items"][0]["observedGitHubStatuses"],[github_status])
+            self.assertEqual(result["items"][0]["fortisState"],"UNKNOWN")
+            self.assertEqual(result["items"][0]["linkedPRsClaimed"],[1,2])
+            self.assertEqual(result["items"][0]["buildUnitClaimed"],"feedbrain-app-image")
+            self.assertIsNone(result["items"][0]["actualInstalledVersion"])
+        self.assertTrue(all(call[0]=="GET" and call[3] is None
+                            for call in self.transport.calls))
+
+    def test_inventory_empty_does_not_prove_installed_absence(self):
+        self.transport.items=[]
+        result=self.client().list_cd_projection_inventory(REPO,"api","production")
+        self.assertEqual(result["items"],[])
+        self.assertTrue(result["paginationComplete"])
+        self.assertEqual(result["actualState"],"UNKNOWN")
+
+    def test_inventory_paginates_cross_pages_and_rechecks(self):
+        self.transport.items=[deployment(12),deployment(13)]
+        self.transport.items[1]["payload"]["projectionId"]="e"*64
+        self.transport.statuses=[status(34,12),status(35,13,state="success")]
+        result=self.client().list_cd_projection_inventory(REPO,"api","production",per_page=1)
+        self.assertEqual([x["deploymentId"] for x in result["items"]],[12,13])
+        self.assertEqual([x["observedGitHubStatuses"] for x in result["items"]],[["queued"],["success"]])
+        self.assertTrue(result["paginationComplete"])
+        self.assertEqual(result["actualState"],"UNKNOWN")
+
+    def test_inventory_rejects_budgets_scope_and_duplicate_identity(self):
+        c=self.client()
+        for kwargs in (
+            dict(target="../api",environment="production"),
+            dict(target="api",environment="bad/environment"),
+            dict(target="api",environment="production",per_page=11),
+            dict(target="api",environment="production",max_pages=0),
+            dict(target="api",environment="production",max_status_pages=4),
+        ):
+            with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_SCOPE_DENIED"):
+                c.list_cd_projection_inventory(REPO,**kwargs)
+        self.transport.items=[deployment(12),deployment(13)]
+        with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_LIMIT_UNKNOWN"):
+            c.list_cd_projection_inventory(REPO,"api","production",per_page=1,max_pages=1)
+        self.transport.items=[deployment(12),deployment(12)]
+        with self.assertRaises(Denied):
+            c.list_cd_projection_inventory(REPO,"api","production",per_page=1)
+        self.transport.items=[deployment(12),deployment(13)]
+        with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_REPEATED_PROJECTION_UNKNOWN"):
+            c.list_cd_projection_inventory(REPO,"api","production",per_page=1)
+
+    def test_inventory_status_page_exhaustion_is_unknown_not_partial_success(self):
+        self.transport.statuses=[status(34),status(35),status(36),status(37)]
+        with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_LIMIT_UNKNOWN"):
+            self.client().list_cd_projection_inventory(REPO,"api","production",
+                                                    per_page=1,max_status_pages=2)
+
+    def test_inventory_race_and_changed_detail_fail_closed(self):
+        c=self.client()
+        request=self.transport.request
+        counter=[0]
+        def race(method,path,**kwargs):
+            if method=="GET" and path==BASE+"/deployments":
+                counter[0]+=1
+                if counter[0]==2:
+                    self.transport.items.insert(0,deployment(13))
+                    self.transport.items[0]["payload"]["projectionId"]="e"*64
+            return request(method,path,**kwargs)
+        self.transport.request=race
+        with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_RACE_UNKNOWN"):
+            c.list_cd_projection_inventory(REPO,"api","production",per_page=10)
+        self.transport.request=request
+        self.transport.items=[deployment()]
+        counter=[0]
+        def change_detail(method,path,**kwargs):
+            if method=="GET" and path==BASE+"/deployments/12":
+                counter[0]+=1
+                if counter[0]==1:
+                    self.transport.items[0]["payload"]["projectionId"]="e"*64
+            return request(method,path,**kwargs)
+        self.transport.request=change_detail
+        with self.assertRaisesRegex(Denied,"GITHUB_CD_INVENTORY_DEPLOYMENT_CHANGED"):
+            c.list_cd_projection_inventory(REPO,"api","production")
 
     def test_empty_page_not_proof_of_not_deployed(self):
         self.transport.items=[]

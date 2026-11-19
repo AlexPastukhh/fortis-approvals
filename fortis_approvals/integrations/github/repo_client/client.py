@@ -295,6 +295,108 @@ class GitHubClient:
         return self.read("get_deployment_status", repo, {
             "deploymentId": deployment_id, "statusId": status_id})
 
+    def list_cd_projection_inventory(self, repo, target, environment, *,
+                                     per_page=10, max_pages=3,
+                                     max_status_pages=3):
+        """Bounded READ-only GitHub projection snapshot, never installed truth.
+
+        Completeness is only over requested GitHub list pages at observation
+        time; error, missing permission, exhaustion or drift means UNKNOWN to
+        callers. The actual installed version and merged PR lineage are NEVER
+        inferred from provider projection/status or client-provided fields.
+        """
+        import re
+        slug = r"[a-z0-9][a-z0-9-]{0,62}"
+        if (type(target) is not str or re.fullmatch(slug, target) is None or
+                type(environment) is not str or re.fullmatch(slug, environment) is None or
+                type(per_page) is not int or not 1 <= per_page <= 10 or
+                type(max_pages) is not int or not 1 <= max_pages <= 3 or
+                type(max_status_pages) is not int or not 1 <= max_status_pages <= 3):
+            raise Denied("GITHUB_CD_INVENTORY_SCOPE_DENIED")
+        namespace = "fortis-cd/" + target + "/" + environment
+
+        def scan(fetch, limit):
+            rows = []
+            seen_ids = set()
+            first = None
+            for page in range(1, limit + 1):
+                result = fetch(page)
+                # Every typed READ was individually validated at the broker.
+                # Enforce cross-page consistency in addition to DTO shape.
+                if (result.get("page") != page or result.get("perPage") != per_page or
+                        result.get("evidenceClass") != "GITHUB_PROJECTION_ONLY"):
+                    raise Denied("GITHUB_CD_INVENTORY_PAGE_CHANGED")
+                if first is None:
+                    first = result
+                for row in result["items"]:
+                    ident = row["id"]
+                    if ident in seen_ids:
+                        raise Denied("GITHUB_CD_INVENTORY_DUPLICATE")
+                    seen_ids.add(ident)
+                    rows.append(row)
+                if not result["hasNextPage"]:
+                    break
+            else:
+                raise Denied("GITHUB_CD_INVENTORY_LIMIT_UNKNOWN")
+            if fetch(1) != first:
+                raise Denied("GITHUB_CD_INVENTORY_RACE_UNKNOWN")
+            return rows, first
+
+        def deployment_page(page):
+            return self.list_deployments(repo,page=page,per_page=per_page,
+                                         sha=None,environment=namespace)
+
+        deployments, deployment_first = scan(deployment_page,max_pages)
+        projections = []
+        projection_ids = set()
+        for row in deployments:
+            data = row["payload"]
+            if (row["environment"] != namespace or data["target"] != target or
+                    data["environment"] != environment):
+                raise Denied("GITHUB_CD_INVENTORY_TARGET_MISMATCH")
+            if data["projectionId"] in projection_ids:
+                # Repeated/uncertain publisher effect: never collapse attempts.
+                raise Denied("GITHUB_CD_INVENTORY_REPEATED_PROJECTION_UNKNOWN")
+            projection_ids.add(data["projectionId"])
+            detail = self.get_deployment(repo,row["id"])
+            if (detail.get("evidenceClass") != "GITHUB_PROJECTION_ONLY" or
+                    detail["deployment"] != row):
+                raise Denied("GITHUB_CD_INVENTORY_DEPLOYMENT_CHANGED")
+
+            def status_page(page):
+                return self.list_deployment_statuses(
+                    repo,row["id"],page=page,per_page=per_page)
+            statuses, status_first = scan(status_page,max_status_pages)
+            if any(item["deploymentId"] != row["id"] or
+                   item["environment"] != namespace for item in statuses):
+                raise Denied("GITHUB_CD_INVENTORY_STATUS_MISMATCH")
+            if status_first["deploymentId"] != row["id"]:
+                raise Denied("GITHUB_CD_INVENTORY_STATUS_MISMATCH")
+            # A status can appear after page scan; recheck this exact deployment.
+            if self.get_deployment(repo,row["id"])["deployment"] != row:
+                raise Denied("GITHUB_CD_INVENTORY_DEPLOYMENT_CHANGED")
+            projections.append({
+                "deploymentId":row["id"],
+                "projectionId":data["projectionId"],
+                "desiredSourceSha":data["desiredSourceSha"],
+                "catalogShaClaimed":data["catalogSha"],
+                "buildUnitClaimed":data["buildUnit"],
+                "artifactDigestClaimed":data["artifactDigest"],
+                "actionsClaimed":list(data["actions"]),
+                "linkedPRsClaimed":list(data["linkedPRs"]),
+                "observedGitHubStatuses":[item["state"] for item in statuses],
+                "retainedGitHubStatusCount":len(statuses),
+                "fortisState":"UNKNOWN",
+                "actualInstalledVersion":None,
+            })
+        if deployment_page(1) != deployment_first:
+            raise Denied("GITHUB_CD_INVENTORY_RACE_UNKNOWN")
+        return dict(repository=repo,target=target,environment=environment,
+                    evidenceClass="GITHUB_PROJECTION_ONLY",
+                    paginationComplete=True,atomicSnapshot=False,
+                    actualInstalledVersion=None,actualState="UNKNOWN",
+                    items=projections)
+
     def get_pr_release_label_context(self, repo, number):
         """Read SHA/body and complete-label fingerprints for exact-head ASK writes."""
         return self.read("get_pr_release_label_context",repo,{"number":number})
