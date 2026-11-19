@@ -12,6 +12,7 @@ from .core import Core, Denied, ApprovalError, canonical
 from .owner_auth import OwnerWebAuthn, _hash
 from .owner_shell_portal import OwnerShellPortal
 from .extensions.owner_inventory import owner_policy_inventory
+from .extensions.owner_policy_preview import preview_policy_change
 
 
 class IncidentCore(Core):
@@ -373,6 +374,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
         method=env.get('REQUEST_METHOD')
         path=env.get('PATH_INFO','')
         get_inventory=method=='GET' and path=='/v1/owner/provider-inventory'
+        post_policy_preview=method=='POST' and path=='/v1/owner/policy/preview'
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
@@ -381,7 +383,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
             '/v1/owner/incidents/assess',
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
-        if not (get_inventory or get_unresolved or post_incident):
+        if not (get_inventory or post_policy_preview or get_unresolved or post_incident):
             return super().__call__(env,start)
         try:
             if (env.get('HTTP_HOST') != self.host or env.get('QUERY_STRING') or
@@ -405,6 +407,9 @@ class IncidentOwnerPortal(OwnerShellPortal):
             csrf=env.get('HTTP_X_FORTIS_CSRF')
             if not csrf:raise Denied('CSRF_REQUIRED')
             self.auth.session(token,csrf)
+            if post_policy_preview:
+                return self._reply(start,200,preview_policy_change(
+                    self.core,getattr(self,'_extension_runtime',None),body))
             if self.read_only_banner and path!='/v1/owner/incidents/assess':
                 raise Denied('INCIDENT_OWNER_WRITE_NOT_ENABLED')
             if path=='/v1/owner/incidents/assess' and set(body)=={'requestId'}:

@@ -30,6 +30,8 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 
 ### P1 — Owner Portal: список providers, методы, политики и версии
 
+**Второй этап SOURCE CANDIDATE (2026-11-19, task/owner-policy-preview-phase2-20261119):** owner-only `POST /v1/owner/policy/preview` (только вычисление, без изменения Core/policy) и форма предварительного просмотра на вкладке «API и политики». Ограничен существующими точными actor/target правилами, stale version+rule проверяются, unresolved Core состояния подсчитываются отдельно. Нет пути `apply`, storage CAS или WebAuthn изменения прав. [Границы P1 preview](OWNER-POLICY-PREVIEW-PHASE2.md). P1 чекбоксы остаются открытыми.
+
 **Частичный SOURCE CANDIDATE (2026-11-19, task/owner-policy-inventory-phase1-20261119):** owner-only `GET /v1/owner/provider-inventory` и вкладка «API и политики» только на чтение. Покрытие ограничено loaded Gateway runtime, без editor, fresh WebAuthn mutation и утверждений о deployment. [Границы и недостающие пункты](OWNER-PROVIDER-INVENTORY-PHASE1.md). Все P1 чекбоксы остаются открыты.
 
 - [ ] **Отдельный owner-authorized inventory READ:** полный список packaged/deployed native и extension providers, методов/версий, available-vs-configured-vs-active, kind/effect risk, actor/target grants, effective ALLOW/ASK/DENY, разрешённый readiness/credential alias status, last verified result. Текущий `/v1/integrations/catalog` остаётся **actor-scoped** и не расширяется до выдачи чужих grants/secrets ИИ. Разделить owner view от machine actor view, реализовать pagination/filters/redaction.

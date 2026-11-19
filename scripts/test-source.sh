@@ -25,6 +25,7 @@ tests=(
   test_worker_observability.py
   test_owner_shell_portal.py
   test_owner_inventory.py
+  test_owner_policy_preview.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py
