@@ -1568,7 +1568,24 @@ function Assert-Previous-Image-Retained {
 }
 
 function Admit {
-    param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress)
+    param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress,
+          [string]$MountPreflightImageId='')
+    # The original Docker image identity remains mandatory for State-Helper
+    # admission. In one owner-accepted UC-GW-013 recovery only the two OFFLINE
+    # volume-content digest checks may run under the verified rescue snapshot.
+    # The caller has already revalidated old-image absence, archive SHA, exact
+    # backup receipt and rescue offline smoke via Assert-Previous-Image-Retained.
+    $MountImage=$P.image
+    if($MountPreflightImageId){
+        if($MountPreflightImageId -cne $P.image -and
+           (-not $AcceptUnverifiedRestore -or
+            $MountPreflightImageId -cne $EmergencyRescueImage -or
+            $P.image -ceq $script:Image -or
+            $C.Image -cne $P.image)){
+            throw 'RELEASE_EMERGENCY_SOURCE_MOUNT_IMAGE_DENIED'
+        }
+        $MountImage=$MountPreflightImageId
+    }
     if($P.pilotId -and $C.Id -cne $P.pilotId){throw 'RELEASE_CONTAINER_ID_CHANGED'}
     if($C.Config.Labels.'io.fortis.review-update' -cne $P.runId){throw 'RELEASE_CONTAINER_PROVENANCE_INVALID'}
     $Public=Public-Inspect $C
@@ -1617,14 +1634,25 @@ function Admit {
     $null=State-Helper @{action='admit';container=$Public;expected=$Expected;pilot=$true}
     if($Expected.publisherActivationVolume){
         $Pinned=Read-PublisherActivationDigest $P
-        $Observed=Image-PublisherMount-Preflight -ImageId $P.image
+        $Observed=Image-PublisherMount-Preflight -ImageId $MountImage
         if($Observed -cne $Pinned){throw 'RELEASE_PUBLISHER_VOLUME_CONTENT_CHANGED'}
     }
     if($Expected.machinePowerShellVolume){
         $Pinned=Read-MachinePowerShellDigest $P
-        $Observed=Image-MachinePowerShell-Preflight -ImageId $P.image
+        $Observed=Image-MachinePowerShell-Preflight -ImageId $MountImage
         if($Observed -cne $Pinned){throw 'RELEASE_MACHINE_POWERSHELL_CONTENT_CHANGED'}
     }
+}
+function Admit-Source {
+    param($C,$Source)
+    # Mandatory before EACH source admission, including the final pre-stop
+    # admission. Ordinary releases require the original image to exist.
+    # Emergency releases first verify an exact owner-sealed rescue image/TAR,
+    # archived state receipt and offline smoke, with explicit risk acceptance.
+    Assert-Previous-Image-Retained $Source
+    $MountImage=$Source.runtime.image
+    if($AcceptUnverifiedRestore){$MountImage=$EmergencyRescueImage}
+    Admit $C $Source.runtime -MountPreflightImageId $MountImage
 }
 function Admit-ReturnCandidate {
     param($C,$P)
@@ -2578,7 +2606,10 @@ if($Action -eq 'Check'){
         }
     }
     if($Build){
-        if($EmergencyRequested){Assert-Previous-Image-Retained $Source}
+        # Check may report READY only if the exact old image is retained,
+        # or the full owner-accepted UC-GW-013 rescue gate has passed.
+        # Do not defer the missing-image error until Apply SOURCE_ADMISSION.
+        Assert-Previous-Image-Retained $Source
         $Path=Save-Checked-Image $Source $Report $CheckReceipt
         $Report|Add-Member -NotePropertyName checkedImageId -NotePropertyValue $script:Image
         $Report|Add-Member -NotePropertyName checkedImageRecord -NotePropertyValue $Path
@@ -2618,7 +2649,7 @@ Step 'SOURCE_ADMISSION'
 $Source=Get-SourceRecord
 if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
     -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
-$Old=Container $Source.runtime.pilotId;Admit $Old $Source.runtime
+$Old=Container $Source.runtime.pilotId;Admit-Source $Old $Source
 if($Old.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
 Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'
 Assert-Previous-Image-Retained $Source
@@ -2700,7 +2731,7 @@ try {
             throw 'RELEASE_GATEWAY_BOUNDARY_CHANGED'
         }
     }
-    Step 'STOP_SOURCE';Assert-Release-Production;Admit (Container $Old.Id) $Source.runtime
+    Step 'STOP_SOURCE';Assert-Release-Production;Admit-Source (Container $Old.Id) $Source
     if($CheckedImageRecord){Verify-Checked-Image $Source $Report}
     Assert-Previous-Image-Retained $Source
     # Durable recovery pointer must exist before the first source effect,

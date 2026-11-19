@@ -33,10 +33,12 @@ class EmergencyImageSourceTests(unittest.TestCase):
                       'Assert-Checked-Source-Receipt $script:R.sourceReceipt'):
             self.assertIn(value, SCRIPT)
         check = SCRIPT.index("Step 'SOURCE_STATE_PREFLIGHT_READ_ONLY'")
-        verify = SCRIPT.index("if($EmergencyRequested){Assert-Previous-Image-Retained $Source}", check)
+        verify = SCRIPT.index('Assert-Previous-Image-Retained $Source', check)
         save = SCRIPT.index("Save-Checked-Image $Source $Report $CheckReceipt", verify)
         self.assertLess(check, verify)
         self.assertLess(verify, save)
+        self.assertNotIn('if($EmergencyRequested){Assert-Previous-Image-Retained $Source}',
+                         SCRIPT[check:save])
 
     def test_default_image_missing_still_stops_and_invalid_not_accepted(self):
         fn = SCRIPT.split('function Assert-Previous-Image-Retained {', 1)[1].split('function Admit {', 1)[0]

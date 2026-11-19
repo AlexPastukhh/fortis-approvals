@@ -82,6 +82,50 @@ smoke, source state receipt, immutable bindings и отсутствие дрей
 image вместо исходного в protected records и не считать его source
 revision текущего merged main.
 
+**SOURCE_ADMISSION при отсутствующем старом image (исправление UC-GW-013):**
+обычный `Check -Build` останавливается с
+`RELEASE_PREVIOUS_IMAGE_MISSING` **до выдачи READY**, если точный
+старый image не доступен. В явно owner-accepted emergency после
+проверок `Assert-Previous-Image-Retained` только два **offline
+content-digest preflight** для томов Publisher и Machine PowerShell
+могут выполняться в проверенном `EmergencyRescueImage`.
+Для обоих сохраняются `--network none`, `--read-only`, `--pull never`,
+UID 10001, readonly mounts и сравнение с исходными pinned digest.
+Полный Docker metadata admission по-прежнему использует оригинальный
+контейнер, его ID, provenance и исходный `source.runtime.image`.
+
+Rescue image, архив SHA256, source backup receipt и offline smoke
+перепроверяются **перед первым SOURCE_ADMISSION и повторно перед
+STOP_SOURCE**; неизменяемые bindings/source receipts дополнительно
+проверяются непосредственно до STOP и после него. Rescue не становится
+production image, не подменяет $P.image в protected record и не
+снимает Publisher/Machine-проверки. Если original image снова
+доступен, emergency отклоняется `RELEASE_EMERGENCY_UNNECESSARY`.
+
+**P4 инцидент 2026-11-19:** прежний image
+`sha256:60febecf08f1aafabd7369914141b779250b786a74a1d21500c54cbdc0642fb3`
+отсутствует. Старый `Check READY` был выдан до исправления
+и НЕ подходит для нового release после source fix: нужны новый
+Git commit, CI/owner merge, owner Windows exact-main update,
+PowerShell 5.1 SelfTest и отдельный bound Check/Apply.
+Старый rescue TAR от 2026-11-13 с несовпадающими image ID/RunId
+не подходит. Новую owner-local rescue image/TAR допустимо
+готовить только после исправления незащищённого ACL `GatewayRecovery`
+(owner review, наследование выключено, без постороннего чтения).
+При небезопасном ACL — STOP, не снимать защиту ради выпуска.
+Нельзя запускать `Backup` с отсутствующим старым image.
+Наборы `15 UNCERTAIN`, `1 CLAIMED` и `2 APPROVED` требуют
+отдельной owner-проверки exact preservation и worker quiescence;
+новый P4 scope через `-Auto` запрещён.
+
+**Ограничение аварийного возврата:** `Return-Source` не получает
+автоматического права применять rescue вместо original image.
+Если после первого эффекта возврат не может пройти source admission,
+переходить только в UC-GW-006 `RECOVERY_REQUIRED`.
+`RESTORE_TESTED` и полноценную recovery-гарантию не заявлять.
+Проверка source-тестами не заменяет owner Windows 5.1
+parser/SelfTest и отдельный изолированный негативный missing-image test.
+
 **Критический риск:** Apply всё ещё останавливает исходный writer,
 копирует state и переключает контейнеры. `Return-Source` может суметь
 запустить сохранённый контейнер, но при потере его layers/identity
