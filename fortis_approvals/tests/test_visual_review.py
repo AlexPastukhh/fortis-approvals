@@ -81,6 +81,39 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Denied):self.store.stage_visual_png('agent',self.id,REPO,RUN,0,'Preview','0'*64,PNG)
         with self.assertRaises(Denied):self.store.stage_visual_png('agent',self.id,REPO,RUN,0,'Preview',
                                                                     hashlib.sha256(b'exe').hexdigest(),b'exe')
+    def test_public_repository_is_admitted_with_strict_identity(self):
+        self.stage()
+        original=self.transport.request
+        def public(method,path,**kwargs):
+            response=original(method,path,**kwargs)
+            if method=='GET' and path=='/repos/PilotOwner/visual-workspace':
+                return {**response,'private':False}
+            return response
+        self.transport.request=public
+        result=self.adapter.apply(self.intent())
+        self.assertEqual(result['issueNumber'],42)
+        self.assertEqual(self.transport.posts,1)
+
+    def test_repository_metadata_remains_strict_with_public_support(self):
+        self.stage()
+        original=self.transport.request
+        for overrides in ({'private':'false'},{'private':None},
+                          {'full_name':'OtherOwner/visual-workspace'},
+                          {'has_issues':False},{'id':0}):
+            with self.subTest(overrides=overrides):
+                def modified(method,path,**kwargs):
+                    response=original(method,path,**kwargs)
+                    if method=='GET' and path=='/repos/PilotOwner/visual-workspace':
+                        return {**response,**overrides}
+                    return response
+                self.transport.request=modified
+                error=('GITHUB_REPOSITORY_ACCESS_UNCONFIRMED' if 'full_name' in overrides
+                       else 'VISUAL_REVIEW_REPO_INVALID')
+                with self.assertRaisesRegex(Denied,error):
+                    self.adapter.prepare(self.intent())
+        self.assertEqual(self.transport.posts,0)
+        self.assertEqual(self.transport.uploads,0)
+
     def test_missing_stage_blocks_create(self):
         with self.assertRaises(Denied):self.adapter.prepare(self.intent())
         self.assertEqual(self.transport.posts,0)
