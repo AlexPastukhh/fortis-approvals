@@ -1,12 +1,14 @@
 # P3 — Trusted Release Label Publisher: security/owner review
 
+**Owner live acceptance (2026-11-19):** A separate isolated, owner-invoked P3.4 Publisher completed one `preview → request → WebAuthn → original receipt` cycle for [PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118). Original request `ed0dce76-8402-4230-941e-a89b5639460d` is `EXECUTED`; UUID-bound receipt and independent `release:no-deployment` GitHub readback passed. This acceptance covers **one addition only**, not unattended automation, a removal E2E, CD Queue, merge or deployment. Exact evidence: [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md). The initial source-only statements below describe the historical design stage, not the latest runtime status. Never replay the original request.
+
 **Status: DESIGN_ACCEPTED ([owner PR #104](https://github.com/AlexPastukhh/fortis-approvals/pull/104));
 P3.2 SOURCE_ACCEPTED ([owner PR #107](https://github.com/AlexPastukhh/fortis-approvals/pull/107));
 P3.3 SOURCE_ACCEPTED ([owner PR #115](https://github.com/AlexPastukhh/fortis-approvals/pull/115));
-P3.4 STARTUP SOURCE_CANDIDATE, 2026-11-17.** D1–D7 remain the accepted direction.
+P3.4 owner one-shot E2E PASS, 2026-11-19.** D1–D7 remain the accepted direction.
 The source below does not provision a principal, grant, credential, worker,
 timer or runtime. Source acceptance and owner activation remain separate
-steps. P3 is not DONE.
+steps. P3 **manual pilot** is DONE; unattended operation is not accepted.
 
 The [current roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md)
 owns sequence and status. Classification/catalog semantics stay with the
@@ -79,7 +81,7 @@ fails closed for this scoped principal. P3.3 must wire the reviewed validator,
 source acquisition and one-shot entrypoint to the versioned client/CI contract;
 P3.4 owns provisioning and the live controlled pilot. No publisher is started here.
 
-## P3.3 trusted runner — source candidate (disabled)
+## P3.3 trusted runner — original source stage, later owner activation
 
 [Technical owner and one-shot CLI](../fortis_approvals/integrations/github/PUBLISHER-RUNNER.md)
 cover exact-SHA Gateway bundles, data-only raw Git blobs, pinned public
@@ -88,10 +90,10 @@ read-only original receipt/target evidence. The private existing IntentJournal
 stores optional non-authorizing admission evidence. Source tests include
 real pinned public action integration; the runner has **not** been provisioned
 or activated, and CI passing is not a live publisher demonstration.
-P3.4 isolation, credential/grant issuance, runtime activation and owner pilot
-remain **MANUAL-PENDING**. No scheduler, GitHub Projects or CD steps are started.
+P3.4 isolation, grant issuance and owner pilot were **MANUAL-PENDING at source acceptance**;
+they were subsequently performed and verified by the owner on 2026-11-19. No scheduler, GitHub Projects or CD steps are started.
 
-## P3.4 trusted startup source candidate — disabled by default
+## P3.4 trusted startup — source opt-in, accepted one-shot pilot
 
 [Owner-sealed startup composition](P3-4-PUBLISHER-OWNER-STARTUP.md) introduces
 one fixed read-only private mount for a second machine credential and exact
@@ -100,8 +102,9 @@ profile is explicitly excluded from inherited Sonar/extension grants; it is
 limited to fixed-repository GitHub READ and add/remove ASK. No grant, mount,
 credential, worker, timer or active runtime is deployed by this source change.
 [PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118) stays open
-for a future owner pilot. The separate protected Windows Gateway release,
-private runner isolation and owner WebAuthn pilot remain MANUAL-PENDING.
+for the completed owner pilot. The separate protected Windows Gateway release,
+private runner isolation and owner WebAuthn pilot passed within the narrow
+2026-11-19 evidence scope. Do not repeat them to check status.
 
 ## P3.1 verified baseline and gaps
 

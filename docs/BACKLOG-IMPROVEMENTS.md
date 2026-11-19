@@ -47,8 +47,24 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 
 ### Снимок статусов 2026-11-18 и сохранение истории
 
+**Дополнение 2026-11-19 (P3.4):** отдельный owner-invoked
+Release Label Publisher прошёл live ASK/WebAuthn/receipt E2E для одного
+добавления метки на PR #118. Исходный request `ed0dce76-8402-4230-941e-a89b5639460d`
+`EXECUTED`, независимый readback PASS; [точные рамки acceptance](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+Отдельный unattended publisher/таймер, live E2E удаления метки,
+CD Queue и Deployment Publisher **не готовы**. Общий P4–P8 roadmap —
+только в `fortis-container`; эти Gateway-specific разделы не создают
+второго плана.
+
 - Windows Machine ASK V1 **активирован**; один `Get-Date` прошёл `PENDING→APPROVED→DISPATCHED→EXECUTED` с exitCode=0 и одной bound machine receipt в исходной SQLite (с сохранением owner-only receipt). Отдельный Reject подтверждён Core `PENDING→REJECTED` и отсутствием новой machine receipt/binding в Windows SQLite. Gateway UC-GW-014/015/016 приняты в [PR #141](https://github.com/AlexPastukhh/fortis-approvals/pull/141); Windows Executor и Script Center UC приняты в исходных repo. **Full live fault injection (forged proof, replay, timeout/lost ACK/restart) OPEN**, не считать полную PS-AI-V1-10 закрытой.
-- Release Labels typed READ и ASK операции доступны в текущем Gateway (проверялись live ранее в этой сессии), owner ASK `update_pull_request` реально использована для PR #141; автоматический publisher и GitHub Projects V2 остаются разными незавершёнными задачами. Ниже разделы от 11/17 ноября со словами «SOURCE CANDIDATE», «ещё не выполнен Windows cutover» и «machine ASK не реализован» — **исторический контекст на дату записи**, не текущий статус. Не переписывать dated evidence задним числом.
+- Release Labels typed READ и ASK доступны в Gateway. На 2026-11-19
+  подтверждён **ручной** отдельный Publisher E2E; `update_pull_request`
+  owner ASK ранее использована для PR #141. Unattended публикация
+  **не принята**. GitHub Projects V2 исключён из текущего Release Planning
+  roadmap в пользу собственной Release Board. Разделы от 11/17 ноября
+  со словами `SOURCE CANDIDATE` и старым планом Projects —
+  исторический контекст, а не live статус; датированные evidence
+  не переписывать задним числом.
 - Action Core READ: не обновлять на `LIVE_API_VERIFIED` без независимого upstream HTTPS/443 и Gateway acceptance; historical P0 Workfile утверждал, что пилот ещё не выбран, но Action Core уже выбран как source candidate. Его host/runtime gates остаются отдельными.
 - Этот status snapshot не заменяет [current-state guide](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) и protected owner release records; при конфликте с live runtime STOP и независимый readback.
 
@@ -78,9 +94,9 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 
 [mirror-unified]: https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/MIRROR_API_CONTRACT_V1.md
 
-## Release Labels / GitHub Projects — Gateway typed API (2026-11-11)
+## Release Labels — исторический Gateway typed API snapshot (2026-11-11)
 
-**Исторический статус на 2026-11-11: SOURCE CANDIDATE, тогда не установлено.** Сверить с актуальным снимком выше: typed Release Labels READ/ASK уже использовались live, но publisher/Projects остаются открыты. По запросу владельца
+**Исторический статус на 2026-11-11: SOURCE CANDIDATE, тогда не установлено.** Сверить с актуальным снимком выше: typed Release Labels READ/ASK и owner-invoked Publisher уже прошли live E2E, но unattended режим и CD Queue ещё не приняты. По запросу владельца
 расширяется native GitHub provider без generic HTTP/GraphQL proxy.
 Предлагается READ `list_repository_labels`, `list_pr_labels`,
 `get_pr_release_label_context` и owner ASK `create_release_label`,
@@ -91,11 +107,12 @@ native `workflow/runtime.py`; описание не дублирует полн�
 
 **Незакрытые gates:** source tests/CI, Owner Merge, Primary image
 UC-GW-005, live capabilities + реальный scope/readback и negative
-actor/repository tests. Привилегированный автоматический publisher
-остаётся выключенным до отдельной trusted CI admission, no-PR-code
-review, race/UNCERTAIN E2E и owner принятия. GitHub Projects V2 —
-следующая типизированная операция только после проверки owner Project
-ID и GraphQL token scope; **никаких живых Project writes сейчас**.
+actor/repository tests. Этот абзац — первоначальные условия допуска:
+  owner-invoked Publisher уже прошёл изолированный live E2E добавления
+  управляемой метки; unattended запуск и расширение прав всё ещё
+  требуют отдельного security/owner review. GitHub Projects V2
+  **не входит** в текущий Release Planning roadmap, где выбрана
+  отдельная read-only Fortis Release Board.
 Нормативный Release Planning контракт один —
 `fortis-container/docs/RELEASE-PLANNING-CONTRACT.md`.
 

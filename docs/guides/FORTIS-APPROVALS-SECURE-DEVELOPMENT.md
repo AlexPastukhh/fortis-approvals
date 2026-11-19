@@ -44,17 +44,46 @@ Provider mutation acceptance в Apply: `PENDING_OR_NOT_APPLICABLE`.
 [датированное evidence](../../fortis_approvals/evidence/OWNER-SHELL-RELEASE-AND-GET-DATE-20261110.md)
 — точными owner outputs и границами подтверждения.
 
-**Release Labels / Trusted Publisher:** принятый source сам по себе
-не доказывает наличие соответствующих capabilities/grants в текущем
-Primary. Проверять точные операции через live capability/contract и owner
-acceptance; unattended publisher требует отдельного owner-controlled
-provisioning/activation. Состояние этапов — в едином roadmap, не в этом snapshot.
-Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
-операционный релиз:
+**Release Labels / Trusted Publisher — owner-reported live E2E PASS,
+2026-11-19.** Владелец активировал отдельный `release-label-publisher-v1`
+в текущем Gateway, изолированный одноразовый runner и Gateway-only TLS relay.
+После закреплённого `preview` по [PR #118](https://github.com/AlexPastukhh/fortis-approvals/pull/118)
+owner создал ровно один ASK, подтвердил его WebAuthn, затем выполнил
+read-only original-receipt проверку. Исходный intent
+`7a1017be-9171-5ee5-9db5-1b62e1f1dea0`, request
+`ed0dce76-8402-4230-941e-a89b5639460d`:
+`P34_ORIGINAL_CORE_REQUEST_EXECUTED_PASS`,
+`P34_ORIGINAL_UUID_BOUND_RECEIPT_VERIFIED_PASS`,
+`P34_ORIGINAL_RECEIPT_AND_LIVE_LABELS_MATCH_PASS`,
+`P34_PUBLISHER_PR118_E2E_ORIGINAL_RECEIPT_READBACK_PASS`.
+Независимый GitHub readback подтвердил добавление ровно
+`release:no-deployment` на прежний HEAD
+`c6f6cf09cecf825c0d4c7595a2bdb153b129ce00`; PR оставлен
+OPEN, merge и deployment не выполнялись. Private IntentJournal:
+один intent, одна попытка, без повторного request/reconcile.
+
+Принятый one-shot runner image
+`fortis-publisher-runtime:p34-e349d2aa-pydeps7`,
+Docker manifest image `sha256:17718280a289cbd5a94e406af36ab7738173a00d25aa96515a2eb0ecbf5b9591`,
+source `e349d2aa37ce1bbd5ac86b31107b6e4412cf9607`.
+Установленный основной Gateway **не** отождествлять с этим runner image
+или поздним GitHub `main`. TLS relay ранее остановился с exit 137,
+владелец восстановил тот же контейнер и подтвердил TLS route/deny direct
+egress; устойчивость после restart/reboot и unattended mode этим не приняты.
+Нельзя повторно запускать исходный `request`.
+
+**Scope:** owner-invoked, один PR/операция, fixed `fortis-approvals`,
+`ASK` add/remove существующих управляемых меток, read-only `preview/inspect`.
+Live E2E **добавления** подтверждён; отдельного E2E удаления, нескольких
+targets, scheduler/webhook, автоматических повторов, CD Queue и Deployment
+Publisher нет. Подробные контракты и запреты —
+[Publisher review](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md),
+[UC-GW-011](../use-cases/integrations.md#uc-gw-011),
 [Primary operations](../PRIMARY-GATEWAY-OPERATIONS.md).
-Нормативные правила меток принадлежат приватному
-`fortis-container/docs/RELEASE-PLANNING-CONTRACT.md`,
-а вычисление — публичному `fortis-release-impact-action`.
+Нормативный Release Impact/labels остаётся у
+`fortis-container/docs/RELEASE-PLANNING-CONTRACT.md`, единый
+валидатор — `fortis-release-impact-action`; дальнейшие задачи —
+в [общем roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
 ## Развёрнутые контуры
 
