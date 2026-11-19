@@ -21,6 +21,8 @@ from fido2.utils import websafe_encode
 
 from fortis_approvals.core import Authenticator, Core, Denied
 from fortis_approvals.owner_auth import OwnerWebAuthn
+from fortis_approvals.extensions.owner_policy_change_challenge import PURPOSE
+from fortis_approvals.extensions.owner_policy_draft_ledger import PolicyDraftLedger
 from fortis_approvals.owner_portal import OwnerPortal
 from fortis_approvals.synthetic import SyntheticAdapter
 
@@ -109,6 +111,82 @@ class G2WebAuthnTest(unittest.TestCase):
         self.assertEqual(code,200,b)
         self.assertIn('HttpOnly',h['Set-Cookie']);self.assertIn('SameSite=Strict',h['Set-Cookie'])
         return h['Set-Cookie'].split(';',1)[0].split('=',1)[1],b['csrf']
+
+    def _policy_review_fixture(self):
+        from time import time
+        root=Path(self.temp.name)
+        coordinate=('agent-1','synthetic','set_ask','R3')
+        source=hashlib.sha256(b'reviewed-gateway-source').hexdigest()
+        creds=hashlib.sha256(b'credential-generation').hexdigest()
+        ledger=PolicyDraftLedger(root/'drafts.sqlite',baseline={coordinate:'ASK'},
+            source_digest=source,credential_generation_digest=creds,policy_version='v1')
+        snap=ledger.snapshot()
+        change={'purpose':PURPOSE,'requestId':str(uuid.uuid4()),
+            'actor':coordinate[0],'provider':coordinate[1],'operation':coordinate[2],
+            'target':coordinate[3],'oldPolicy':'ASK','newPolicy':'DENY',
+            'expectedRevision':snap['revision'],'expectedAuditHash':snap['auditHash'],
+            'baselineDigest':snap['baselineDigest'],'sourceDigest':source,
+            'credentialGenerationDigest':creds,'policyVersion':'v1',
+            'reasonCode':'OWNER_DRAFT_REVIEW','expiresAt':int(time())+90}
+        return ledger,change
+
+    def test_policy_change_strong_webauthn_uv_and_one_use(self):
+        """Real P-256 virtual-key WebAuthn; policy draft remains inert."""
+        self.enroll();cookie,csrf=self.login()
+        ledger,change=self._policy_review_fixture()
+        start=self.owner.begin_policy_change_review(cookie,csrf,change,ledger)
+        self.assertFalse(start['canApply'])
+        result=self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+            self.key.assert_(start),change,ledger)
+        self.assertTrue(result['verified'])
+        self.assertFalse(result['canApply'])
+        self.assertFalse(result['policyActivated'])
+        self.assertIsNone(result['authorizationToken'])
+        with self.assertRaises(Denied):
+            self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                self.key.assert_(start),change,ledger)
+        self.assertEqual(0,ledger.snapshot()['revision'])
+        self.assertEqual('ASK',ledger.snapshot()['drafts'][0]['draftPolicy'])
+        self.assertEqual(self.adapter.get('R3')['version'],0)
+
+    def test_policy_change_strong_webauthn_rejects_wrong_uv_origin_and_change(self):
+        self.enroll();cookie,csrf=self.login()
+        ledger,change=self._policy_review_fixture()
+        for assertion in (lambda b:self.key.assert_(b,uv=False),
+                          lambda b:self.key.assert_(b,origin='https://evil.test')):
+            with self.subTest(assertion=assertion):
+                start=self.owner.begin_policy_change_review(cookie,csrf,change,ledger)
+                with self.assertRaises(Denied):
+                    self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                        assertion(start),change,ledger)
+                with self.assertRaises(Denied):
+                    self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                        self.key.assert_(start),change,ledger)
+        start=self.owner.begin_policy_change_review(cookie,csrf,change,ledger)
+        wrong={**change,'newPolicy':'ALLOW'}
+        with self.assertRaises(Denied):
+            self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                self.key.assert_(start),wrong,ledger)
+        with self.assertRaises(Denied):
+            self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                self.key.assert_(start),change,ledger)
+        self.assertEqual(0,ledger.snapshot()['revision'])
+        self.assertEqual(self.adapter.get('R3')['version'],0)
+
+    def test_policy_change_strong_webauthn_rejects_stale_ledger(self):
+        self.enroll();cookie,csrf=self.login()
+        ledger,change=self._policy_review_fixture()
+        start=self.owner.begin_policy_change_review(cookie,csrf,change,ledger)
+        ledger.stage_draft(('agent-1','synthetic','set_ask','R3'),desired_policy='DENY',
+            request_id=str(uuid.uuid4()),expected_revision=0,expected_policy='ASK',
+            expected_source_digest=change['sourceDigest'],
+            expected_credential_generation_digest=change['credentialGenerationDigest'],
+            expected_policy_version='v1',reason_code='OWNER_DRAFT_REVIEW')
+        with self.assertRaises(Denied):
+            self.owner.finish_policy_change_review(cookie,csrf,start['ceremonyId'],
+                self.key.assert_(start),change,ledger)
+        self.assertEqual('DENY',ledger.snapshot()['drafts'][0]['draftPolicy'])
+        self.assertEqual(self.adapter.get('R3')['version'],0)
 
     def test_full_enroll_login_and_approve_exact(self):
         record=self.core.client('agent-secret','submit',self.action())

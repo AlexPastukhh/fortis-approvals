@@ -297,6 +297,51 @@ class OwnerWebAuthn:
                 raise Denied('DECISION_BINDING_MISMATCH')
             return self._finish_assertion(state, data, proof['response'])
 
+    def begin_policy_change_review(self, session, csrf, change, ledger):
+        """Strong WebAuthn review for one exact *inactive* draft transition.
+
+        Not exposed on HTTP, not transferable to Core, not usable as grant apply.
+        A login assertion or session-only permit is never sufficient here.
+        """
+        from .extensions.owner_policy_change_challenge import checked_change
+        with self.lock:
+            self.session(session, csrf)
+            details = checked_change(ledger, change, int(self.clock()))
+            begin = self._begin_assertion('policy_change_review',
+                session_hash=_hash(session), change_digest=details['digest'],
+                expires_at=details['expiry'])
+            return {'ceremonyId': begin['ceremonyId'], 'options': begin['options'],
+                    'kind': 'OWNER_POLICY_DRAFT_REVIEW_ONLY',
+                    'changeDigest': details['digest'], 'canApply': False}
+
+    def finish_policy_change_review(self, session, csrf, ceremony, response, change, ledger):
+        """Consume one strong UV assertion, bound to the same exact change.
+
+        Returns an informational one-off readback, NEVER an apply authorization.
+        The uninstalled draft ledger and active policy remain unchanged.
+        """
+        from .extensions.owner_policy_change_challenge import checked_change
+        with self.lock:
+            self.session(session, csrf)
+            # Consume before checking the supplied change, making mismatch one-use.
+            state, data = self._take(ceremony, 'policy_change_review')
+            details = checked_change(ledger, change, int(self.clock()))
+            if (data['session_hash'] != _hash(session) or
+                data['change_digest'] != details['digest'] or
+                data['expires_at'] != details['expiry']):
+                raise Denied('POLICY_CHANGE_ASSERTION_BINDING_MISMATCH')
+            owner = self._finish_assertion(state, data, response)
+            # Fail closed if even the in-memory/SQLite draft changed during
+            # cryptographic user verification. No stored authorization token.
+            again = checked_change(ledger, change, int(self.clock()))
+            if again['digest'] != details['digest']:
+                raise Denied('POLICY_CHANGE_ASSERTION_STALE')
+            return {'verified': True, 'owner': owner,
+                    'kind': 'OWNER_POLICY_DRAFT_REVIEW_ONLY',
+                    'changeDigest': details['digest'],
+                    'canApply': False, 'authorizationToken': None,
+                    'policyActivated': False}
+
     def revoke_credentials(self):
         """Operator-local only; NOT exposed through HTTP."""
         with self.lock, self._db() as db:
