@@ -360,9 +360,10 @@ $('enroll').onsubmit=action(async()=>{const begin=await api('/v1/enroll/begin',{
  $('invitation').value='';$('registration').hidden=true;status('Ключ зарегистрирован. Теперь войдите.');});
 function switchWorkspaceTab(which){
  tab=which;
- $('approval-view').hidden=which==='powershell';
+ $('approval-view').hidden=which==='powershell'||which==='providers';
  $('powershell-view').hidden=which!=='powershell';
- for(const id of ['pending','unresolved','history','powershell']){
+ $('providers-view').hidden=which!=='providers';
+ for(const id of ['pending','unresolved','history','powershell','providers']){
   $(''+id+'-tab').setAttribute('aria-pressed',String(which===id));
  }
 }
@@ -404,8 +405,42 @@ $('pending-tab').onclick=action(async()=>{switchWorkspaceTab('pending');selected
 $('history-tab').onclick=action(async()=>{switchWorkspaceTab('history');selected=null;$('detail').replaceChildren();await refresh();});
 $('unresolved-tab').onclick=action(async()=>{switchWorkspaceTab('unresolved');selected=null;$('detail').replaceChildren();await refresh();});
 $('powershell-tab').onclick=action(async()=>{switchWorkspaceTab('powershell');await loadOwnerShell();});
+let providerInventory=null;
+function displayProviderInventory(){
+ const target=$('providers-results');target.replaceChildren();
+ if(!providerInventory)return;
+ const search=$('providers-filter').value.trim().toLowerCase();
+ const rows=providerInventory.operations.filter(row=>[
+  row.provider,row.operation,row.actor,row.target,row.configuredPolicy,row.effectivePolicy
+ ].some(value=>String(value??'').toLowerCase().includes(search)));
+ $('providers-summary').textContent=`${rows.length} из ${providerInventory.operations.length} правил · ${providerInventory.providers.length} провайдеров · ${providerInventory.coverage}`;
+ const table=document.createElement('table');
+ const head=document.createElement('thead');const tr=document.createElement('tr');
+ for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Эффективно','Готовность']){
+  const th=document.createElement('th');th.textContent=label;tr.append(th);
+ }
+ head.append(tr);table.append(head);
+ const body=document.createElement('tbody');
+ for(const row of rows){
+  const cells=[row.provider+' ('+row.providerType+')',row.operation+' · '+(row.version??'неизвестна'),
+   row.kind,(row.scope==='unconfigured'?'не назначен':(row.actor??'все'))+' / '+(row.target??'все'),
+   row.configuredPolicy,row.effectivePolicy,
+   (row.active?'active':'inactive')+' / '+row.credentialStatus+' / upstream '+row.upstreamStatus];
+  const tr=document.createElement('tr');
+  for(const value of cells){const td=document.createElement('td');td.textContent=value;tr.append(td);}
+  body.append(tr);
+ }
+ table.append(body);target.append(table);
+}
+async function loadProviderInventory(){
+ providerInventory=await api('/v1/owner/provider-inventory');
+ displayProviderInventory();
+}
+$('providers-filter').addEventListener('input',displayProviderInventory);
+$('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});
+
 $('powershell-execute').onclick=action(ownerPowerShellExecute);
-$('refresh').onclick=action(refresh);
+$('refresh').onclick=action(async()=>{await refresh();if(tab==='providers')await loadProviderInventory();});
 $('notifications').onclick=action(allowNotifications);
 setInterval(()=>{if(csrf)refresh();},pollingIntervalMs);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&csrf)refresh();});

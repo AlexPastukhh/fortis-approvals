@@ -11,6 +11,7 @@ import re
 from .core import Core, Denied, ApprovalError, canonical
 from .owner_auth import OwnerWebAuthn, _hash
 from .owner_shell_portal import OwnerShellPortal
+from .extensions.owner_inventory import owner_policy_inventory
 
 
 class IncidentCore(Core):
@@ -371,6 +372,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
     def __call__(self, env, start):
         method=env.get('REQUEST_METHOD')
         path=env.get('PATH_INFO','')
+        get_inventory=method=='GET' and path=='/v1/owner/provider-inventory'
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
@@ -379,7 +381,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
             '/v1/owner/incidents/assess',
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
-        if not (get_unresolved or post_incident):
+        if not (get_inventory or get_unresolved or post_incident):
             return super().__call__(env,start)
         try:
             if (env.get('HTTP_HOST') != self.host or env.get('QUERY_STRING') or
@@ -388,6 +390,10 @@ class IncidentOwnerPortal(OwnerShellPortal):
                         'HTTP_PROXY_AUTHORIZATION','HTTP_AUTHORIZATION'))):
                 raise Denied('HOST_DENIED')
             token=self._cookie(env)
+            if get_inventory:
+                self.auth.session(token)
+                return self._reply(start,200,owner_policy_inventory(
+                    self.core,getattr(self,'_extension_runtime',None)))
             if get_unresolved:
                 self.auth.session(token)
                 rows=self.core.owner_unresolved()
