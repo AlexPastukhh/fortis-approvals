@@ -35,10 +35,19 @@ GITHUB_ACTION_OPERATIONS = frozenset({
     ("github", "create_release_label"), ("github", "add_pr_release_labels"),
     ("github", "remove_pr_release_label"),
 })
+# P4 candidate: closed typed READs exist in source but MUST NOT inherit the
+# native actor's legacy ALLOW/read grants. Activation needs separate owner review.
 LEGACY_READ_OPERATIONS = GITHUB_READ_OPERATIONS
+DEPLOYMENT_READ_NAMES = frozenset({
+    "list_deployments", "get_deployment",
+    "list_deployment_statuses", "get_deployment_status",
+})
+DEPLOYMENT_READ_OPERATIONS = frozenset({
+    ("github", name) for name in DEPLOYMENT_READ_NAMES
+})
 # Additive P3 transport. Registration never inherits a legacy actor ALLOW.
 HEAD_READ_OPERATIONS = frozenset({("github", "list_head_workflow_runs")})
-GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS | HEAD_READ_OPERATIONS
+GITHUB_READ_OPERATIONS = GITHUB_READ_OPERATIONS | ANALYSIS_READS | HEAD_READ_OPERATIONS | DEPLOYMENT_READ_OPERATIONS
 GITHUB_ACTION_OPERATIONS = GITHUB_ACTION_OPERATIONS | ANALYSIS_ACTIONS
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
@@ -111,6 +120,31 @@ def validate_github_read(operation, target, params):
         _page({"page": params["page"], "perPage": params["perPage"]})
         if params["perPage"] != 20 or params["page"] > 5:
             raise Denied("GITHUB_HEAD_RUNS_LIMIT")
+    elif operation == "list_deployments":
+        if set(params) != {"page", "perPage", "sha", "environment"}:
+            raise Denied("GITHUB_DEPLOYMENT_QUERY_DENIED")
+        _page({"page": params["page"], "perPage": params["perPage"]})
+        if params["perPage"] > 30:
+            raise Denied("GITHUB_DEPLOYMENT_PAGE_LIMIT")
+        if params["sha"] is not None:
+            _sha(params["sha"])
+        env = params["environment"]
+        if env is not None and (type(env) is not str or
+                re.fullmatch(r"fortis-cd/[a-z0-9][a-z0-9-]{0,62}/[a-z0-9][a-z0-9-]{0,62}", env) is None):
+            raise Denied("GITHUB_DEPLOYMENT_ENVIRONMENT_DENIED")
+    elif operation in ("get_deployment", "list_deployment_statuses", "get_deployment_status"):
+        expected = ({"deploymentId"} if operation == "get_deployment" else
+                    {"deploymentId", "page", "perPage"} if operation == "list_deployment_statuses" else
+                    {"deploymentId", "statusId"})
+        if set(params) != expected or type(params.get("deploymentId")) is not int or not 0 < params["deploymentId"] < 2**63:
+            raise Denied("GITHUB_DEPLOYMENT_ID_DENIED")
+        if operation == "get_deployment_status":
+            if type(params["statusId"]) is not int or not 0 < params["statusId"] < 2**63:
+                raise Denied("GITHUB_DEPLOYMENT_STATUS_ID_DENIED")
+        if operation == "list_deployment_statuses":
+            _page({"page": params["page"], "perPage": params["perPage"]})
+            if params["perPage"] > 30:
+                raise Denied("GITHUB_DEPLOYMENT_PAGE_LIMIT")
     elif operation in ("list_branches", "list_commits", "list_workflow_runs"):
         _page(params)
     elif operation in ("list_issues", "list_issue_comments"):
@@ -415,8 +449,93 @@ def validate_github_read_projection(operation, result):
         return (type(items) is list and len(items) <= 100 and
                 all(exact(item, fields) for item in items))
 
+    def deployment(row):
+        fields = ("id", "sha", "ref", "task", "environment", "createdAt",
+                  "updatedAt", "payload")
+        if not exact(row, fields) or not positive(row["id"]) or not sha(row["sha"]):
+            return False
+        data = row["payload"]
+        if not exact(data, ("schemaVersion", "kind", "repository", "target",
+                           "environment", "desiredSourceSha", "catalogSha",
+                           "buildUnit", "artifactDigest", "actions", "linkedPRs",
+                           "projectionId", "operationId")):
+            return False
+        target = data["target"]; env = data["environment"]
+        slug = r"[a-z0-9][a-z0-9-]{0,62}"
+        return (
+            type(data["schemaVersion"]) is int and data["schemaVersion"] == 1 and
+            data["kind"] == "fortis-cd-projection" and
+            text(data["repository"], 201) and
+            bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", data["repository"])) and
+            type(target) is str and re.fullmatch(slug, target) is not None and
+            type(env) is str and re.fullmatch(slug, env) is not None and
+            row["task"] == "fortis-cd-projection" and
+            row["environment"] == "fortis-cd/" + target + "/" + env and
+            row["sha"] == data["desiredSourceSha"] and
+            sha(data["catalogSha"]) and
+            (data["buildUnit"] is None or
+             (type(data["buildUnit"]) is str and re.fullmatch(slug, data["buildUnit"]) is not None)) and
+            (data["artifactDigest"] is None or
+             (type(data["artifactDigest"]) is str and
+              re.fullmatch(r"sha256:[0-9a-f]{64}", data["artifactDigest"]) is not None)) and
+            type(data["actions"]) is list and 1 <= len(data["actions"]) <= 8 and
+            len(data["actions"]) == len(set(map(str, data["actions"]))) and
+            all(type(x) is str and x in {
+                "image-rebuild", "config-deploy", "windows-update",
+                "package-build", "migration-required", "unknown",
+            } for x in data["actions"]) and
+            type(data["linkedPRs"]) is list and len(data["linkedPRs"]) <= 100 and
+            all(positive(x) and x <= 1_000_000 for x in data["linkedPRs"]) and
+            len(data["linkedPRs"]) == len(set(data["linkedPRs"])) and
+            type(data["projectionId"]) is str and bool(re.fullmatch(r"[0-9a-f]{64}", data["projectionId"])) and
+            type(data["operationId"]) is str and bool(re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                data["operationId"])) and
+            text(row["ref"], 200) and text(row["createdAt"], 80) and
+            text(row["updatedAt"], 80)
+        )
+
+    def deployment_status(row):
+        return (exact(row, ("id", "deploymentId", "state", "environment",
+                            "createdAt", "updatedAt", "description", "logUrl")) and
+                positive(row["id"]) and positive(row["deploymentId"]) and
+                row["state"] in ("error", "failure", "inactive", "in_progress",
+                                 "queued", "pending", "success") and
+                text(row["environment"], 190) and row["environment"].startswith("fortis-cd/") and
+                text(row["createdAt"], 80) and text(row["updatedAt"], 80) and
+                text(row["description"], 140) and https_url(row["logUrl"], optional=True))
+
     valid = False
-    if operation == "get_pr_release_impact_evidence":
+    if operation == "list_deployments":
+        valid = (result.get("evidenceClass") == "GITHUB_PROJECTION_ONLY" and
+                 exact(result, ("operation", "evidenceClass", "items", "page", "perPage", "hasNextPage")) and
+                 type(result["items"]) is list and len(result["items"]) <= 30 and
+                 all(deployment(item) for item in result["items"]) and
+                 positive(result["page"]) and positive(result["perPage"]) and
+                 result["perPage"] <= 30 and type(result["hasNextPage"]) is bool and
+                 result["hasNextPage"] == (len(result["items"]) == result["perPage"]) and
+                 len({x["id"] for x in result["items"]}) == len(result["items"]))
+    elif operation == "get_deployment":
+        valid = (result.get("evidenceClass") == "GITHUB_PROJECTION_ONLY" and
+                 exact(result, ("operation", "evidenceClass", "deployment")) and deployment(result["deployment"]))
+    elif operation == "list_deployment_statuses":
+        valid = (result.get("evidenceClass") == "GITHUB_PROJECTION_ONLY" and
+                 exact(result, ("operation", "evidenceClass", "deploymentId", "items",
+                                "page", "perPage", "hasNextPage")) and
+                 positive(result["deploymentId"]) and type(result["items"]) is list and
+                 len(result["items"]) <= 30 and
+                 all(deployment_status(item) and item["deploymentId"] == result["deploymentId"]
+                     for item in result["items"]) and
+                 len({x["id"] for x in result["items"]}) == len(result["items"]) and
+                 positive(result["page"]) and positive(result["perPage"]) and
+                 result["perPage"] <= 30 and type(result["hasNextPage"]) is bool and
+                 result["hasNextPage"] == (len(result["items"]) == result["perPage"]))
+    elif operation == "get_deployment_status":
+        valid = (result.get("evidenceClass") == "GITHUB_PROJECTION_ONLY" and
+                 exact(result, ("operation", "evidenceClass", "deploymentId", "status")) and
+                 positive(result["deploymentId"]) and deployment_status(result["status"]) and
+                 result["deploymentId"] == result["status"]["deploymentId"])
+    elif operation == "get_pr_release_impact_evidence":
         fields = ("operation", "number", "headSha", "baseSha", "headRepository",
                   "baseRepository", "headBranch", "baseBranch", "body",
                   "bodySha256", "state", "draft", "merged")

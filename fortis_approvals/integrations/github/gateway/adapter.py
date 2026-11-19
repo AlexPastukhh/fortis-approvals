@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from ....core import Denied, Stale, canonical
 from ..contract import (
-    GITHUB_ACTION_OPERATIONS, GITHUB_READ_OPERATIONS,
+    GITHUB_ACTION_OPERATIONS, GITHUB_READ_OPERATIONS, DEPLOYMENT_READ_NAMES,
     validate_github_action, validate_github_read,
     validate_github_read_projection,
 )
@@ -170,6 +170,95 @@ class GitHubAdapter:
                                  "pullRequest": projected})
         return projected
 
+    def _cd_deployment(self, repo, row):
+        """Strictly scoped provider projection; NEVER controller installation proof."""
+        if type(row) is not dict or type(row.get("payload")) is not dict:
+            raise Denied("GITHUB_CD_DEPLOYMENT_INVALID")
+        number=row.get("id")
+        if type(number) is not int or not 0 < number < 2**63:
+            raise Denied("GITHUB_CD_DEPLOYMENT_INVALID")
+        expected=self._path(repo, "deployments/"+str(number))
+        data=row["payload"]
+        if (row.get("url") != "https://api.github.com"+expected or
+                row.get("repository_url") != "https://api.github.com"+self._path(repo) or
+                row.get("task") != "fortis-cd-projection" or
+                data.get("repository") != self.owner+"/"+repo or
+                row.get("sha") != data.get("desiredSourceSha")):
+            raise Denied("GITHUB_CD_DEPLOYMENT_BINDING_DENIED")
+        result=dict(id=number,sha=row.get("sha"),ref=row.get("ref"),
+                    task=row.get("task"),environment=row.get("environment"),
+                    createdAt=row.get("created_at"),updatedAt=row.get("updated_at"),
+                    payload=dict(data))
+        validate_github_read_projection("get_deployment",
+            dict(operation="get_deployment",evidenceClass="GITHUB_PROJECTION_ONLY",
+                 deployment=result))
+        return result
+
+    def _cd_status(self, repo, deployment, row):
+        if type(row) is not dict or type(row.get("id")) is not int or not 0 < row["id"] < 2**63:
+            raise Denied("GITHUB_CD_STATUS_INVALID")
+        ident=deployment["id"];number=row["id"]
+        url="https://api.github.com"+self._path(
+            repo,"deployments/"+str(ident)+"/statuses/"+str(number))
+        deployment_url="https://api.github.com"+self._path(repo,"deployments/"+str(ident))
+        if (row.get("url") != url or row.get("deployment_url") != deployment_url or
+                row.get("environment") != deployment["environment"] or
+                row.get("repository_url") != "https://api.github.com"+self._path(repo)):
+            raise Denied("GITHUB_CD_STATUS_BINDING_DENIED")
+        result=dict(id=number,deploymentId=ident,state=row.get("state"),
+                    environment=row.get("environment"),createdAt=row.get("created_at"),
+                    updatedAt=row.get("updated_at"),description=row.get("description") or "",
+                    logUrl=row.get("log_url") or "")
+        validate_github_read_projection("get_deployment_status",
+            dict(operation="get_deployment_status",evidenceClass="GITHUB_PROJECTION_ONLY",
+                 deploymentId=ident,status=result))
+        return result
+
+    def _cd_read(self, operation, repo, params):
+        base=self._path(repo,"deployments")
+        if operation=="list_deployments":
+            query=dict(page=params["page"],per_page=params["perPage"],task="fortis-cd-projection")
+            for key in ("sha","environment"):
+                if params[key] is not None:query[key]=params[key]
+            rows=self._api("GET",base,params=query)
+            if type(rows) is not list or len(rows)>params["perPage"]:
+                raise Denied("GITHUB_CD_DEPLOYMENT_PAGE_INVALID")
+            items=[self._cd_deployment(repo,row) for row in rows]
+            if any(params["sha"] is not None and x["sha"] != params["sha"] or
+                   params["environment"] is not None and x["environment"] != params["environment"]
+                   for x in items):
+                raise Denied("GITHUB_CD_DEPLOYMENT_FILTER_MISMATCH")
+            return dict(operation=operation,evidenceClass="GITHUB_PROJECTION_ONLY",
+                        items=items,page=params["page"],
+                        perPage=params["perPage"],hasNextPage=len(items)==params["perPage"])
+        ident=params["deploymentId"]
+        raw=self._api("GET",base+"/"+str(ident))
+        deployment=self._cd_deployment(repo,raw)
+        if deployment["id"]!=ident:
+            raise Denied("GITHUB_CD_DEPLOYMENT_ID_MISMATCH")
+        if operation=="get_deployment":
+            return dict(operation=operation,evidenceClass="GITHUB_PROJECTION_ONLY",
+                        deployment=deployment)
+        status_base=base+"/"+str(ident)+"/statuses"
+        if operation=="list_deployment_statuses":
+            rows=self._api("GET",status_base,params={
+                "page":params["page"],"per_page":params["perPage"]})
+            if type(rows) is not list or len(rows)>params["perPage"]:
+                raise Denied("GITHUB_CD_STATUS_PAGE_INVALID")
+            items=[self._cd_status(repo,deployment,row) for row in rows]
+            return dict(operation=operation,evidenceClass="GITHUB_PROJECTION_ONLY",
+                        deploymentId=ident,items=items,
+                        page=params["page"],perPage=params["perPage"],
+                        hasNextPage=len(items)==params["perPage"])
+        if operation=="get_deployment_status":
+            raw=self._api("GET",status_base+"/"+str(params["statusId"]))
+            status=self._cd_status(repo,deployment,raw)
+            if status["id"]!=params["statusId"]:
+                raise Denied("GITHUB_CD_STATUS_ID_MISMATCH")
+            return dict(operation=operation,evidenceClass="GITHUB_PROJECTION_ONLY",
+                        deploymentId=ident,status=status)
+        raise Denied("GITHUB_CD_READ_UNSUPPORTED")
+
     @staticmethod
     def _visual_issue_links(body):
         """GitHub Markdown references only; NOT authenticated attachment-byte verification."""
@@ -225,6 +314,10 @@ class GitHubAdapter:
             return result
         self._repo(repo)
         base = self._path(repo)
+        if operation in DEPLOYMENT_READ_NAMES:
+            result=self._cd_read(operation,repo,params)
+            validate_github_read_projection(operation,result)
+            return result
         if operation == "get_repository":
             raw = self._api("GET", base)
             if type(raw) is not dict:
