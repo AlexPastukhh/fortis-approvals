@@ -28,6 +28,8 @@ tests=(
   test_owner_policy_preview.py
   test_owner_policy_draft_ledger.py
   test_owner_policy_change_challenge.py
+  test_owner_policy_review_http.py
+  test_owner_policy_review_http_crypto.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py

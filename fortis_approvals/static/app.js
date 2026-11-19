@@ -45,6 +45,8 @@ function signedOut(message){
  $('workspace').hidden=true;$('signin').hidden=false;$('detail').replaceChildren();
  $('powershell-command').value='';$('powershell-result').textContent='Команды ещё не выполнялись.';
  shellConfigured=false;$('powershell-execute').disabled=true;
+ if($('policy-review-button'))clearPolicyReview('Сессия владельца завершена.');
+ policyPreviewRow=null;providerInventory=null;policyReviewCapabilities=null;
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
@@ -407,6 +409,13 @@ $('unresolved-tab').onclick=action(async()=>{switchWorkspaceTab('unresolved');se
 $('powershell-tab').onclick=action(async()=>{switchWorkspaceTab('powershell');await loadOwnerShell();});
 let policyPreviewRow=null;
 let providerInventory=null;
+let policyPreviewCandidate=null,policyReviewCapabilities=null,policyReviewBusy=false;
+function clearPolicyReview(message='Для подтверждения сначала выполните предпросмотр.'){
+ policyPreviewCandidate=null;
+ $('policy-review-button').disabled=true;
+ $('policy-review-output').textContent=message;
+}
+
 function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
  if(!providerInventory)return;
@@ -435,12 +444,14 @@ function displayProviderInventory(){
      ['DENY','ASK','ALLOW'].includes(row.effectivePolicy)){
    const button=document.createElement('button');button.type='button';button.textContent='Выбрать';
    button.onclick=()=>{
+    if(policyReviewBusy)return;
     policyPreviewRow=row;
     $('policy-preview-selection').textContent=[row.provider,row.operation,row.actor,row.target].join(' · ');
     $('policy-preview-value').value=row.configuredPolicy;
     $('policy-preview-value').disabled=false;
     $('policy-preview-button').disabled=false;
     $('policy-preview-output').textContent='Можно запросить только предпросмотр. Сохранение недоступно.';
+    clearPolicyReview();
    };
    cell.append(button);
   }
@@ -451,6 +462,16 @@ function displayProviderInventory(){
 }
 async function loadProviderInventory(){
  providerInventory=await api('/v1/owner/provider-inventory');
+ policyReviewCapabilities=null;
+ try{
+  policyReviewCapabilities=await api('/v1/owner/policy/review/capabilities');
+ }catch(error){
+  if(error.httpStatus!==404)throw error;
+ }
+ $('policy-review-availability').textContent=policyReviewCapabilities?.configured===true?
+  'Доступно только подтверждение просмотра через свежий WebAuthn. Применение прав отключено.':
+  'Подтверждение просмотра отключено: защищённый журнал черновиков не подключён.';
+ clearPolicyReview();
  policyPreviewRow=null;
  $('policy-preview-selection').textContent='Правило не выбрано.';
  $('policy-preview-value').disabled=true;
@@ -461,15 +482,17 @@ async function loadProviderInventory(){
 $('policy-preview-button').onclick=action(async()=>{
  if(!policyPreviewRow||!providerInventory)return;
  const row=policyPreviewRow;
+ clearPolicyReview();
  $('policy-preview-button').disabled=true;
  $('policy-preview-output').textContent='Проверяю текущее правило…';
  try{
-  const result=await api('/v1/owner/policy/preview',{
+  const candidate={
     provider:row.provider,operation:row.operation,actor:row.actor,target:row.target,
     desiredPolicy:$('policy-preview-value').value,
     expectedConfiguredPolicy:row.configuredPolicy,
     expectedPolicyVersion:providerInventory.policyVersion
-  },true);
+  };
+  const result=await api('/v1/owner/policy/preview',candidate,true);
   $('policy-preview-output').textContent=[
    'Правило: '+result.identity.provider+' / '+result.identity.operation,
    'Actor: '+result.identity.actor+' · Target: '+result.identity.target,
@@ -480,10 +503,47 @@ $('policy-preview-button').onclick=action(async()=>{
    'Для применения понадобятся: '+result.requires.join(', '),
    'Применение: НЕДОСТУПНО. Никакие права не изменены.'
   ].join('\n');
+  if(result.changed===true&&result.canApply===false&&policyReviewCapabilities?.configured===true){
+   policyPreviewCandidate=candidate;
+   $('policy-review-button').disabled=false;
+   $('policy-review-output').textContent='После проверки параметров потребуется отдельное касание WebAuthn-ключа. Правило не изменится.';
+  }
  }catch(error){
   $('policy-preview-output').textContent='Предпросмотр отклонён: '+error.message+'. Обновите инвентаризацию.';
   throw error;
  }finally{$('policy-preview-button').disabled=false;}
+});
+$('policy-preview-value').addEventListener('change',()=>clearPolicyReview());
+$('policy-review-button').onclick=action(async()=>{
+ if(!policyPreviewCandidate||policyReviewCapabilities?.configured!==true||policyReviewBusy)return;
+ const candidate={...policyPreviewCandidate};
+ clearPolicyReview('Проверяю точное правило и готовлю одноразовый вызов WebAuthn…');
+ policyReviewBusy=true;
+ $('policy-preview-value').disabled=true;
+ $('policy-preview-button').disabled=true;
+ try{
+  const begin=await api('/v1/owner/policy/review/begin',{candidate},true);
+  if(begin.canApply!==false||begin.policyActivated!==false||begin.kind!=='OWNER_POLICY_DRAFT_REVIEW_ONLY'){
+   throw Error('Сервер вернул неожиданную возможность применения. Операция остановлена.');
+  }
+  $('policy-review-output').textContent='Подтвердите только просмотр этого правила ключом WebAuthn. Изменение прав не произойдёт.';
+  const response=await ceremony(begin);
+  const result=await api('/v1/owner/policy/review/finish',{
+   ceremonyId:begin.ceremonyId,response,change:begin.change
+  },true);
+  if(result.verified!==true||result.canApply!==false||result.policyActivated!==false||
+     result.changeDigest!==begin.changeDigest){
+   throw Error('Ответ сервера не подтверждает безопасный просмотр.');
+  }
+  $('policy-review-output').textContent='WebAuthn-подтверждение просмотра проверено. Права и черновик не изменены.';
+ }catch(error){
+  $('policy-review-output').textContent='Подтверждение просмотра не завершено: '+error.message+'. Обновите инвентаризацию и выполните новый предпросмотр.';
+  throw error;
+ }finally{
+  policyReviewBusy=false;
+  $('policy-preview-value').disabled=!policyPreviewRow;
+  $('policy-preview-button').disabled=!policyPreviewRow;
+ }
 });
 $('providers-filter').addEventListener('input',displayProviderInventory);
 $('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});

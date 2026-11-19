@@ -32,6 +32,11 @@
    </select>
    <button id="policy-preview-button" type="button" disabled>Показать последствия (без сохранения)</button>
    <pre id="policy-preview-output" aria-live="polite">Изменения политик не разрешены этим интерфейсом.</pre>
+   <h3>WebAuthn · подтверждение просмотра черновика</h3>
+   <p class="small">Это отдельное подтверждение владельца, <strong>не изменение прав</strong>. Новое значение не применяется и не записывается. Для реального изменения потребуется другой механизм.</p>
+   <p id="policy-review-availability" role="status">Проверка режима подтверждения…</p>
+   <button id="policy-review-button" type="button" disabled>Подтвердить просмотр через WebAuthn (без применения)</button>
+   <pre id="policy-review-output" role="status" aria-live="polite">Подтверждение просмотра недоступно.</pre>
   </section>
 </section>
 <section id="powershell-view" hidden aria-label="PowerShell Windows">
