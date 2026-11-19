@@ -9,7 +9,9 @@ current deployment state or command templates. Obtain current image, record,
 workers, capabilities and credentials from live owner/Repo readback before any
 action. Owner-only PowerShell 5.1 Check/Apply/Backup/Promote and separate
 quiescence attestations remain mandatory. This runbook does not activate or
-prove any source candidate.
+prove any source candidate. A merged controller fix is source-only and is
+not Windows/Production installation; it needs separate owner-controlled
+Windows synchronization, parse/SelfTest and guarded acceptance.
 
 ## Action Core READ / Docker network migration — separate opt-in gate
 
@@ -405,6 +407,16 @@ before STOP_SOURCE. A retained running container is not sufficient. A present
 image is a necessary precondition, NOT proof of isolated restore or DR. If the
 old image is missing: RELEASE_PREVIOUS_IMAGE_MISSING and STOP. Do not stop the
 Gateway, fabricate a matching image/tag/record or auto-export a live container.
+The corrected controller enforces this on ordinary Check -Build too, before
+issuing READY. A READY from the older controller does NOT make an image-missing
+Apply safe. For an explicitly owner-accepted emergency see
+[UC-GW-013](use-cases/recovery.md#uc-gw-013): a verified rescue image may
+run only the two offline source mount-digest preflights; the original
+container/image/protected record identity remains mandatory.
+The controller source change requires owner PowerShell 5.1 SelfTest and a
+NEW exact-source Check/Apply binding; do not reuse the pre-fix P4 image-check
+record. This does not restore the lost image or prove rollback. Do not perform
+ordinary Backup, Promote, prune or restart while investigating.
 
 The original Check -Build followed by Apply -Build remains a compatibility
 path that builds twice, and is NOT immutable. The pinned artifact cannot

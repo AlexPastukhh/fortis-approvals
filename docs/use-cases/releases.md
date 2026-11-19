@@ -73,7 +73,10 @@ previous-image retention, Backup/Promote и fail-closed recovery.
 [защищённый owner mount-контракт](../P3-4-PUBLISHER-GATEWAY-MOUNT-RELEASE.md)
 с ручным bound Check/Apply и независимой host-проверкой.
 Source merge не создаёт credential/volume и не доказывает их установку;
-доступный режим определяет точный установленный контроллер.
+доступный режим определяет точный установленный контроллер. Даже после
+CI/merge controller fix остаётся source-only и не считается live до
+отдельной owner-установки на Windows с exact SHA, PowerShell SelfTest
+и защищённым Check/Apply; UC-GW-013 требует отдельного owner GO.
 
 **Несколько чатов:** совместимые принятые PR могут входить в один
 проверенный merged `main` SHA и один owner release.
