@@ -413,6 +413,47 @@ After successful Apply, owner live readback, Backup and Promote remain separate
 mandatory operations; an uncertain attempt requires the original record and
 UC-GW-006, never blind retry.
 
+## P4 GitHub Deployments READ — first owner activation (not yet live)
+
+The accepted P4 source exposes only four typed GitHub Deployments GET operations
+and the per-repository githubDeploymentReads capability. Owner activation is a
+**separate, manually checked Windows release**, not a GitHub PR merge, token
+rotation, unattended CD, ordinary -Auto release, or reuse of the P3.4
+Publisher pilot.
+
+The protected owner controller accepts -CdReadRepositories as a strict,
+comma-separated **exact repository list**, maximum ten, with no duplicate,
+case-insensitive aliases or path syntax. Its default is empty. A *new* nonempty
+scope is allowed **only** in explicit -Action Check -Build -SourceSha (exact SHA)
+and corresponding -Action Apply -CheckedImageRecord (protected original check)
+-Image (exact checked image) -SourceSha (same exact SHA), with
+-ConfirmWorkerQuiescent and the identical -CdReadRepositories at both phases.
+Use the controller's existing full manual owner release contract to supply
+all other required current protected inputs, and take the owner GO decisions
+separately. These phrases are constraints, not a ready-to-execute command
+template; never copy an earlier image ID, state receipt or UUID. -Auto
+**rejects** this new input; Backup/Promote reject it too.
+
+The checked-image record includes the exact requested list. The resulting
+protected release record must contain runtime.cdReadRepositories and the
+controller must regenerate FORTIS_GITHUB_CD_READ_REPOSITORIES from that
+protected value, discarding unreviewed inherited env. The offline state
+helper requires exact Docker environment equality; a missing, extra, duplicate
+or reordered list is STOP. Legacy records without the field are admitted as
+empty, not as newly granted access. Later ordinary -Auto releases may only
+carry an *already reviewed* scope from a protected Complete source record.
+
+**Live acceptance is still blocked** until source PR/CI, owner Windows 5.1
+SelfTest, protected exact-SHA Check / Apply, unchanged historical
+UNCERTAIN/CLAIMED receipts, separate independent worker quiescence,
+Gateway capability readback and both positive/negative typed REST GET evidence.
+The owner must independently verify GitHub Deployments READ token permission
+without adding WRITE. Test disallowed repository, other machine actor and
+absent Deployments POST. GitHub statuses are projection evidence only and
+**never** prove installed state. After accepted readback, the normal fresh
+owner approvals for Backup / Promote apply; on uncertainty, use original
+attempt/UC-GW-006 rather than retrying effects. No step here authorizes P5-P8.
+
 <a id="lightweight-owner-release-path-pr4b"></a>
 
 ## Lightweight owner release path (installed owner -Auto workflow)

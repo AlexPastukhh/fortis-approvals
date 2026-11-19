@@ -120,7 +120,7 @@ class RevisionTests(unittest.TestCase):
         self.assertIsNone(self.adapter.visual_evidence(self.rev_id))
 
     def core_allow(self):
-        """Real Core admission: no owner verifier, exact private-repo ALLOW."""
+        """Real Core admission: no owner verifier, exact owner-repo ALLOW."""
         core=Core(self.root/'core.sqlite',adapters={'github':self.adapter},
                   policies={('agent','github','append_visual_revision'):'DENY',
                             ('agent','github','append_visual_revision',REPO):'ALLOW'},
@@ -146,6 +146,22 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaises(Denied):
             core.client('machine-grant','submit',dict(foreign,expectedVersion=0))
         self.assertEqual(self.transport.comment_posts,1)
+
+    def test_public_repository_can_append_to_original_issue(self):
+        original=self.transport.request
+        def public(method,path,**kwargs):
+            response=original(method,path,**kwargs)
+            if method=='GET' and path=='/repos/PilotOwner/visual-workspace':
+                return {**response,'private':False}
+            return response
+        self.transport.request=public
+        core=self.core_allow()
+        result=core.client('machine-grant','submit',dict(self.intent(),expectedVersion=0))
+        self.assertEqual(result['state'],'EXECUTED')
+        self.assertEqual(result['result']['issueNumber'],42)
+        self.assertEqual(result['result']['revision'],2)
+        self.assertEqual(self.transport.comment_posts,1)
+        self.assertEqual(self.transport.issue['body'],self.base_body)
 
     def test_core_allow_stops_duplicate_after_lost_comment_ack(self):
         core=self.core_allow()

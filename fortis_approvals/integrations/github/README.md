@@ -54,10 +54,12 @@ provisioned) is required; it grants only these four READs for exactly those
 repository targets and leaves the generic actor policy `DENY`. The native
 capability `githubDeploymentReads` reports actual broker grants **and**
 per-repository Core ALLOW together, with `writeEnabled=false` and
-`installedStateProof=false`. The Windows owner controller currently does
-**not** forward this new flag: no active scope can result from a source PR,
-ordinary image rebuild or an arbitrary AI environment variable. A separate
-reviewed protected owner configuration and image activation are mandatory,
+`installedStateProof=false`. The Windows owner controller source supports the
+new flag only through an explicit owner-checked manual Check/Apply binding;
+an already-accepted source PR does **not** activate it in the running controller.
+No active scope can result from a source PR, ordinary image rebuild or an
+arbitrary AI environment variable. A separate reviewed protected owner
+configuration and image activation are mandatory,
 with upstream Deployments **read** permission independently checked by owner.
 Verify the live capability, allowlisted GET, non-allowlisted/other-actor 403
 and no new POST before declaring P4 LIVE accepted. Any incomplete page,
@@ -180,7 +182,7 @@ The existing publisher still performs the one-shot reservation and actual
 typed stage/action. Do not invent another UUID for a lost HTTP response or
 an incomplete PNG upload.
 
-The Gateway creates one private Issue, uploads bounded PNG user attachments
+The Gateway creates one owner-repository Issue (public when the repository is public), uploads bounded PNG user attachments
 to the pinned GitHub upload host, updates the Issue and reads it back. The
 final URL is returned by `WorkflowClient.result(request_id)` after EXECUTED.
 `GitHubClient.list_issues(repo, state='all', page=1, per_page=30)`,
@@ -256,7 +258,7 @@ requests or omit receipts. New E2E still needs separate source/release
 approval and never blindly replays an old request.
 
 
-## Append visual revision to an existing Issue — scoped ALLOW source candidate (NOT LIVE)
+## Append visual revision to an existing Issue — scoped ALLOW; public-repository support pending release
 
 Visual review iterations should normally use **one Issue per logical asset/order**:
 create/edit and QA in a Docker task worktree, show v1, gather owner feedback,
@@ -271,7 +273,8 @@ The typed operation `github.append_visual_revision` takes the exact
 The Repo client supports pure `prepare_visual_revision(...)` for a content hash
 and `append_visual_revision(...,request_id=...,reason=...,
 expected_payload_sha256=...)` for one staged action. The original v1 GitHub
-Issue must be an **open private ordinary Issue created by the same Gateway**,
+Issue must be an **open ordinary Issue created by the same Gateway** in the
+exact owner-scoped `visual-workspace` repository (public or private),
 with its original run marker and durable local reservation still present;
 manual/unrelated Issues, PRs, cross-repository targets and missing proof are
 refused. The owner cannot redirect a revision to a different Issue via payload.
@@ -292,15 +295,16 @@ source installs **ALLOW only for visual-workspace** and DENY for generic
 targets and other actors. This does not enable arbitrary comment or Issue
 editing, nor inherit v1 Issue-publication privileges. An ALLOW revision still
 requires the exact immutable Core DISPATCHED record, actor/policy/preview binding,
-original Fortis-created private Issue, durable one-shot revision reservation
+original Fortis-created Issue in the exact owner-scoped repository, durable one-shot revision reservation
 and verified sequential history. The legacy ASK/owner-approved admission path
 continues to fail closed when used. No user-supplied Issue number alone grants
 the right to comment.
 
-**Live boundary:** the previously deployed Primary advertised
-`appendRevisionPolicy=ASK`; this source change is **not activated** by Git
-merge. It requires an independently owner-managed image release and live
-capability readback before ALLOW may be claimed. All text/images/Issue numbers
+**Live boundary:** the Gateway checked on 2026-11-19 advertised
+`appendRevisionPolicy=ALLOW` for `visual-workspace`, but still rejected public
+repository metadata under the older `private is True` preflight. Support for
+public or private `visual-workspace` needs this source change in a separately
+owner-managed Gateway image release. Source merge is not image activation. All text/images/Issue numbers
 provided by agents remain untrusted. UNCERTAIN/lost comment/upload response:
 inspect the same request and durable visualReview evidence; do not blind
 replay with a new UUID or advance a version across unresolved partial effects.
