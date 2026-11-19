@@ -278,6 +278,23 @@ class GitHubClient:
         return self.read("list_pr_labels",repo,
                          {"number":number,"page":page,"perPage":per_page})
 
+    # P4 source-only READ candidate. Calls remain DENIED until separate
+    # owner-reviewed native actor grants and Gateway image rollout.
+    def list_deployments(self, repo, *, page=1, per_page=30, sha=None, environment=None):
+        return self.read("list_deployments", repo, {
+            "page": page, "perPage": per_page, "sha": sha, "environment": environment})
+
+    def get_deployment(self, repo, deployment_id):
+        return self.read("get_deployment", repo, {"deploymentId": deployment_id})
+
+    def list_deployment_statuses(self, repo, deployment_id, *, page=1, per_page=30):
+        return self.read("list_deployment_statuses", repo, {
+            "deploymentId": deployment_id, "page": page, "perPage": per_page})
+
+    def get_deployment_status(self, repo, deployment_id, status_id):
+        return self.read("get_deployment_status", repo, {
+            "deploymentId": deployment_id, "statusId": status_id})
+
     def get_pr_release_label_context(self, repo, number):
         """Read SHA/body and complete-label fingerprints for exact-head ASK writes."""
         return self.read("get_pr_release_label_context",repo,{"number":number})

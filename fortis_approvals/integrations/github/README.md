@@ -29,6 +29,21 @@ active single-repo or dynamic mode, as described in that contract. Never infer a
 provider token alone. Reads use closed public projections, not arbitrary provider
 responses or raw file contents; `get_file` reports verified hashes/size.
 
+## P4 GitHub Deployments READ — source candidate only
+
+The closed `list_deployments`, `get_deployment`,
+`list_deployment_statuses` and `get_deployment_status` methods expose
+bounded GitHub projections through the typed machine broker. Source/test
+locations: `contract.py`, `gateway/transport.py`, `gateway/adapter.py`,
+`repo_client/client.py` and `../../tests/test_github_cd_queue_read.py`.
+They are **not** added to legacy native READ ALLOW/grants, are not in the
+installed Gateway capabilities, and do **not** imply Deployments token
+permission. No Deployment/Status WRITE route exists. Future activation is
+owner-controlled via [UC-GW-003](../../../docs/use-cases/integrations.md#uc-gw-003)
+and [UC-GW-005](../../../docs/use-cases/releases.md#uc-gw-005); the normative
+identity/evidence requirements remain in the
+[Release Planning Contract](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-PLANNING-CONTRACT.md#p4--cd-queue--github-deployments-api-design-candidate-not-live).
+
 ## Optional analysis review
 
 The [analysis-review source contract](../../../docs/ANALYSIS-REVIEW-CONTRACT.md) owns the new run/attempt, jobs/logs, check/annotation and artifact/manifest reads plus ASK CI controls. The CI-only router can admit explicitly configured repositories without widening native Git scope. This source profile is not deployed and has no default grants.

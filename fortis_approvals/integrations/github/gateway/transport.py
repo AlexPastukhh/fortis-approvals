@@ -25,6 +25,11 @@ _ROUTES = (
     ("GET", re.compile(_BASE + r"/(branches|commits|pulls|issues|actions/runs)$")),
     ("GET", re.compile(_BASE + r"/branches/[A-Za-z0-9_.%~-]+$")),
     ("GET", re.compile(_BASE + r"/labels$")),
+    # P4 read-only endpoints. NO deployment/status POST is allowlisted.
+    ("GET", re.compile(_BASE + r"/deployments$")),
+    ("GET", re.compile(_BASE + r"/deployments/[1-9][0-9]*$")),
+    ("GET", re.compile(_BASE + r"/deployments/[1-9][0-9]*/statuses$")),
+    ("GET", re.compile(_BASE + r"/deployments/[1-9][0-9]*/statuses/[1-9][0-9]*$")),
     ("GET", re.compile(_BASE + r"/issues/[1-9][0-9]*/labels$")),
     ("POST", re.compile(_BASE + r"/labels$")),
     ("POST", re.compile(_BASE + r"/issues/[1-9][0-9]*/labels$")),
@@ -63,7 +68,7 @@ _ROUTES += (
     ("POST", re.compile(_BASE + r"/actions/jobs/[1-9][0-9]*/rerun$")),
     ("POST", re.compile(_BASE + r"/actions/runs/[1-9][0-9]*/rerun-failed-jobs$")),
 )
-_QUERY_KEYS = frozenset({"head_sha", "event", "branch", "page", "per_page", "state", "head", "base", "ref", "affiliation"})
+_QUERY_KEYS = frozenset({"head_sha", "event", "branch", "page", "per_page", "state", "head", "base", "ref", "affiliation", "sha", "task", "environment"})
 
 
 class GitHubTransportError(RuntimeError):
