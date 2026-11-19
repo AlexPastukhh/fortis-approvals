@@ -1,14 +1,17 @@
 # Fortis Repo → Gateway → Windows PowerShell — ASK-only V1 contract
 
-**Status:** PS-AI-V1-02 CONTRACT UPDATE CANDIDATE (2026-11-17).
-**Implementation evidence:** Gateway and Windows source integrations exist in
-accepted repositories, but the *installed Gateway* still returns HTTP 404 for
-`POST /v1/powershell/capabilities`. Source inclusion is not live enablement.
-**Decision of owner:** for the first machine version, **every admitted PowerShell
-command from the AI requires an individual owner ASK**. No editable allow/deny
-command rules, AST policy, or configurable bypass of ASK in V1. Those are
-separate later V2 tasks. This source change does **not** activate a machine
-API, grant credentials, launch Windows, alter TLS/config or migrate receipt DB.
+**Scope:** accepted **ASK-only V1 wire/security contract**; not a live status
+page or the plan for future policy. **Historical 2026-11-17:** this was a
+source-only candidate and the then-installed Gateway returned HTTP 404.
+**2026-11-18:** Machine ASK route was activated, Get-Date/Reject E2E verified;
+full security/recovery negatives remain OPEN. See [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md).
+**V1 design:** every admitted command requires a separate strong owner ASK;
+no installed editable command policies/automatic ALLOW. The **newly agreed
+future** method-policy Dashboard plus Executor-only Dynamic ASK is specified
+in the [Gateway plan](BACKLOG-IMPROVEMENTS.md#powershell-plan) and
+[Executor backlog](https://github.com/AlexPastukhh/fortis-powershell-executor/blob/main/docs/BACKLOG-IMPROVEMENTS.md#executor-dynamic-ask).
+This V1 contract cannot authorize Windows restart, credentials, listener,
+TLS/config or receipt DB changes.
 
 Canonical requirements: [unified PowerShell plan](BACKLOG-IMPROVEMENTS.md#powershell-plan).
 Owners: `fortis-approvals` for Core/Gateway/WebAuthn and Repo client;

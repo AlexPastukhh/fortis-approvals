@@ -1,6 +1,12 @@
 # Gateway → Windows ASK-only PowerShell V1 — source integration
 
-**Status: 2026-11-17 source candidate only.** This repo task is not an installed Gateway image, enabled route, issued credential, owner-approved release or Windows machine cutover. Windows owner-only Executor and its prior TLS/config/receipt DB continue unchanged until a separate guarded installation.
+**Historical source integration record (2026-11-17):** source-only at the
+time of writing. Machine ASK-only V1 was subsequently activated and
+Get-Date/Reject verified 2026-11-18; full fault-injection/restart negatives
+remain OPEN. The implementation details below describe V1 and do **not**
+implement the new Dynamic ASK/ALLOW architecture. Use [current state](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
+for installed readback and [PowerShell backlog](BACKLOG-IMPROVEMENTS.md#powershell-plan)
+for next steps. This record does not authorize another installation.
 
 ## Behaviour
 

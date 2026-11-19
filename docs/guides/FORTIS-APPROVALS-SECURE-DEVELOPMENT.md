@@ -92,9 +92,17 @@ Use Case: [UC-GW-011](../use-cases/integrations.md#uc-gw-011);
 Owner Portal browser cancel/assess click и restart/autostart после
 Docker Desktop reboot также остаются непроверенными.
 
-**PowerShell planning update, 2026-11-17:** [Repo AI V1 plan](../BACKLOG-IMPROVEMENTS.md#powershell-plan)
-requires ASK for every execution and owner-editable command restrictions.
-This is a plan, not a new installed capability or host acceptance.
+**PowerShell live readback, 2026-11-19:** typed Gateway
+`powershell.capabilities()` вернул `configured=true`, `policy=ASK`,
+`machineExecutionAutoApprove=false`, `version=1`. Датированное owner
+Machine ASK Get-Date/Reject E2E — 2026-11-18; full forged proof/replay/
+timeout/lost-ACK/restart fault-injection **OPEN**, от одного live
+capabilities не следует полная security acceptance. Действующий V1
+**требует ASK для каждой команды**. Новая цель — независимые слои:
+общий owner method-policy editor и отдельный Executor-only Dynamic ASK
+для точной команды. Оба **ещё не реализованы**; текущий V1 на ALLOW
+не переключён. Канонический [Gateway plan](../BACKLOG-IMPROVEMENTS.md#powershell-plan)
+и [Executor backlog](https://github.com/AlexPastukhh/fortis-powershell-executor/blob/main/docs/BACKLOG-IMPROVEMENTS.md#executor-dynamic-ask).
 
 ## Историческая owner acceptance — PS-V1-09 (предыдущий релиз)
 

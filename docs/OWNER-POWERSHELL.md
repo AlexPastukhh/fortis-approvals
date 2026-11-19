@@ -10,16 +10,21 @@ and the [single backlog](BACKLOG-IMPROVEMENTS.md). The optional PowerShell tab
 belongs to the existing Owner Portal; Pending/History and machine API remain
 separate. **Do not infer full security acceptance from one successful command.**
 
-## План Repo AI V1 и историческая граница
+## Отдельный Owner Portal и действующий machine ASK
 
-[Единый план](BACKLOG-IMPROVEMENTS.md#powershell-plan) и [кандидат контракта machine ASK](POWERSHELL-MACHINE-ASK-CONTRACT-V1.md) собирает историю,
-первую версию доступа ИИ и будущие улучшения. Уточнённое решение владельца 2026-11-17:
-V1: любой запрос команды от допущенного Repo actor требует ASK владельца
-через существующий Core/Owner Portal/WebAuthn; нет настраиваемых списков
-команд или ALLOW execution. Ограничения команд и выбор ASK/ALLOW
-перенесены в будущую V2 и требуют отдельного review. Исходный код machine ASK принят отдельно, но установленный Gateway
-пока не предоставляет machine API (capabilities: HTTP 404). Описанный ниже owner-only контракт остаётся baseline;
-его старые PS-V1 IDs не являются приёмкой machine API.
+Описанный далее `/v1/owner/powershell/*` — **owner-local baseline**, не
+машинный API. Windows machine route уже активирован в **ASK-only V1**:
+проверенные Get-Date/Reject E2E датированы 2026-11-18, дополнительные
+security/restart negatives остаются открытыми. Старый вывод HTTP 404
+относился к состоянию **2026-11-17**, до активации, а не к текущему Gateway.
+Технический baseline — [Machine ASK V1](POWERSHELL-MACHINE-ASK-CONTRACT-V1.md).
+
+Актуальная цель — [Gateway backlog: внешний метод + Dynamic ASK](BACKLOG-IMPROVEMENTS.md#powershell-plan).
+Внешний owner dashboard определяет DENY/ASK/ALLOW по методу; только
+Executor дополнительно решает DENY/ASK/ALLOW для **точной команды**. Это
+не включено в текущий V1 и не меняет owner-local маршрут. Windows правила,
+настройки и security tests описаны только в
+[Executor backlog](https://github.com/AlexPastukhh/fortis-powershell-executor/blob/main/docs/BACKLOG-IMPROVEMENTS.md#executor-dynamic-ask).
 
 ## Interaction
 
