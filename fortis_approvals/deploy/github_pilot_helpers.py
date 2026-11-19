@@ -753,6 +753,19 @@ def admit(container, expected, *, pilot):
         require(pilot and expected.get('nativeWorktree') is True,
                 'PILOT_CI_CONTROL_REQUIRES_NATIVE')
         required['FORTIS_GITHUB_CI_CONTROL_REPOSITORIES']=ci_repos
+    # P4: protected owner record is the only source of a Deployments READ
+    # allowlist. An unpinned environment flag, even with a token, is denied.
+    cd_repos=expected.get('cdReadRepositories','')
+    require(type(cd_repos) is str and (not cd_repos or bool(re.fullmatch(
+        r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,9}',cd_repos))) and
+        (not cd_repos or len(cd_repos.split(','))==len({
+            repo.casefold() for repo in cd_repos.split(',')})),
+        'PILOT_CD_READ_CONFIG_INVALID')
+    if cd_repos:
+        require(pilot and expected.get('nativeWorktree') is True and
+                (multi or cd_repos == expected['repository']),
+                'PILOT_CD_READ_REQUIRES_NATIVE_SCOPE')
+        required['FORTIS_GITHUB_CD_READ_REPOSITORIES']=cd_repos
     owner_shell=expected.get('ownerShell',False)
     require(type(owner_shell) is bool and (not owner_shell or pilot and bool(expected.get('vaultVolume'))),
             'PILOT_OWNER_SHELL_CONFIGURATION_INVALID')
