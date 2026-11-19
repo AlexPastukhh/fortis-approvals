@@ -14,7 +14,7 @@ import uuid
 from fortis_approvals.core import Denied, Stale
 from fortis_approvals.extensions.owner_policy_draft_ledger import PolicyDraftLedger
 from fortis_approvals.extensions.owner_policy_change_challenge import (
-    PURPOSE, checked_change)
+    PURPOSE, checked_change, OwnerPolicyChangeReview)
 from fortis_approvals.owner_auth import OwnerWebAuthn, _hash
 
 BASE = ('repo-ai','github','create_pull_request','fortis-approvals')
@@ -66,13 +66,14 @@ class ChallengeTests(unittest.TestCase):
             return obj.owner
         self.owner._begin_assertion=MethodType(fake_begin,self.owner)
         self.owner._finish_assertion=MethodType(fake_finish,self.owner)
+        self.review=OwnerPolicyChangeReview(self.owner)
 
     def begin(self, **overrides):
-        return self.owner.begin_policy_change_review(TOKEN,CSRF,
+        return self.review.begin_policy_change_review(TOKEN,CSRF,
             {**self.change,**overrides},self.ledger)
 
     def finish(self,begin,change=None,session=TOKEN,csrf=CSRF,response=None):
-        return self.owner.finish_policy_change_review(session,csrf,begin['ceremonyId'],
+        return self.review.finish_policy_change_review(session,csrf,begin['ceremonyId'],
             {'testStrongUV':True} if response is None else response,
             self.change if change is None else change,self.ledger)
 
@@ -114,9 +115,9 @@ class ChallengeTests(unittest.TestCase):
 
     def test_csrf_session_and_expiry_fails_closed(self):
         with self.assertRaisesRegex(Denied,'CSRF_DENIED'):
-            self.owner.begin_policy_change_review(TOKEN,'bad',self.change,self.ledger)
+            self.review.begin_policy_change_review(TOKEN,'bad',self.change,self.ledger)
         with self.assertRaisesRegex(Denied,'OWNER_SESSION_REQUIRED'):
-            self.owner.begin_policy_change_review('other',CSRF,self.change,self.ledger)
+            self.review.begin_policy_change_review('other',CSRF,self.change,self.ledger)
         start=self.begin()
         with self.assertRaisesRegex(Denied,'CSRF_DENIED'):
             self.finish(start,csrf='bad')
@@ -191,10 +192,10 @@ class ChallengeTests(unittest.TestCase):
     def test_other_webauthn_uses_cannot_be_redeemed_as_policy_proof(self):
         decision=self.owner._remember('decision',{'fake':'state'},session_hash=_hash(TOKEN))
         with self.assertRaisesRegex(Denied,'CEREMONY_UNAVAILABLE'):
-            self.owner.finish_policy_change_review(TOKEN,CSRF,decision,
+            self.review.finish_policy_change_review(TOKEN,CSRF,decision,
                 {'testStrongUV':True},self.change,self.ledger)
         with self.assertRaisesRegex(Denied,'CEREMONY_UNAVAILABLE'):
-            self.owner.finish_policy_change_review(TOKEN,CSRF,decision,
+            self.review.finish_policy_change_review(TOKEN,CSRF,decision,
                 {'testStrongUV':True},self.change,self.ledger)
         self.assertEqual(0,self.ledger.snapshot()['revision'])
 

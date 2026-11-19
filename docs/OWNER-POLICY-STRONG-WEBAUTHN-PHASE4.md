@@ -1,10 +1,10 @@
 # Owner WebAuthn policy-change review — phase 4 source candidate
 
-**Status:** source-only PR candidate (2026-11-19), not merged/deployed or exposed in owner web UI. **No policy activation** is enabled by this phase.
+**Status:** source-only PR candidate (2026-11-19), not merged/deployed or exposed in owner web UI. **No policy activation** is enabled by this phase. The pinned immutable `owner_auth.py` remains unchanged; review ceremony is a separate trusted adapter in `extensions/owner_policy_change_challenge.py`.
 
 ## Exact contract
 
-`OwnerWebAuthn.begin_policy_change_review(session, csrf, change, ledger)` and `finish_policy_change_review(session, csrf, ceremony, response, change, ledger)` are **trusted host-callable Python methods**, not WSGI routes. The owner must have an existing WebAuthn login session with matching CSRF. Every change triggers a fresh FIDO2 `authenticate_begin(..., user_verification=REQUIRED)` via the existing owner authenticator; `authenticate_complete` checks signature, RP ID, origin, user-verification flag, credential counter, active enrolled credential and session. This deliberately **does not** accept the existing session-only decision permit or a normal request-approval assertion.
+`OwnerPolicyChangeReview(owner_auth).begin_policy_change_review(session, csrf, change, ledger)` and `.finish_policy_change_review(session, csrf, ceremony, response, change, ledger)` are **trusted host-callable Python methods**, not WSGI routes. The owner must have an existing WebAuthn login session with matching CSRF. Every change triggers a fresh FIDO2 `authenticate_begin(..., user_verification=REQUIRED)` via the existing owner authenticator; `authenticate_complete` checks signature, RP ID, origin, user-verification flag, credential counter, active enrolled credential and session. This deliberately **does not** accept the existing session-only decision permit or a normal request-approval assertion.
 
 The strict change object pins:
 
