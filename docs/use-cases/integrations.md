@@ -148,12 +148,15 @@ provider+operation+actor+target, свежего WebAuthn, precondition/digest и
 `PR_MERGED`, `IMAGE_ACTIVATED` и `LIVE_API_VERIFIED`.
 
 
-**Visual iteration scoped ALLOW source candidate (not live):** the closed
+**Visual iteration scoped ALLOW (live on 2026-11-19):** the closed
 `github.append_visual_revision` action adds a PNG revision comment only to
-the *same* verified Fortis-created private Issue. Its independent Core policy
+the *same* verified Fortis-created Issue in `visual-workspace`. Its independent Core policy
 remains DENY outside visual-workspace and requires an exact DISPATCHED request,
 preview/actor/policy checks and one-shot durable run/revision reservation.
-Live Gateway may still advertise ASK until the next owner-controlled release. No per-draft PR; source PR only after owner accepts the asset.
+The current Gateway advertises ALLOW, but its installed preflight still requires
+`private=true` and therefore blocks today's public repository. The public/private
+visibility fix requires a separate owner-managed Gateway image release; no per-draft
+PR, source PR only after owner acceptance.
 Technical contract, limitations and negative tests:
 [integrations/github/README.md](../../fortis_approvals/integrations/github/README.md#append-visual-revision-to-an-existing-issue--scoped-allow-source-candidate-not-live).
 The older `publish_visual_review` contract remains unchanged.

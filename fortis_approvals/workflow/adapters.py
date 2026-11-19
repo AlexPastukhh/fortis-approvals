@@ -73,7 +73,7 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         require(repo=='visual-workspace','VISUAL_REVIEW_REPOSITORY_DENIED')
         raw=self._api('GET',self._path(repo))
         require(type(raw) is dict and raw.get('full_name')==self.owner+'/'+repo and
-                raw.get('private') is True and raw.get('has_issues') is True and
+                type(raw.get('private')) is bool and raw.get('has_issues') is True and
                 type(raw.get('id')) is int and 0<raw['id']<2**63,
                 'VISUAL_REVIEW_REPO_INVALID')
         for row in p['media']:
