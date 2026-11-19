@@ -24,6 +24,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | Release Label Publisher — owner-invoked P3.4 one-shot E2E PASS (2026-11-19); unattended mode not active | [Technical/security contract](RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) · [Current owner-reported evidence](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
 | Read-only Core incident evidence aggregation (PR2 source candidate) | [Incident Inspector](INCIDENT-INSPECTOR.md) |
 | Upcoming work, acceptance gaps and priority P0 | [Single backlog](BACKLOG-IMPROVEMENTS.md) |
+| Owner method policies, Dashboard, ASK/ALLOW/DENY, phases 1–5 and read-only next-chat handoff | [Owner policy handoff 2026-11-20](OWNER-POLICY-HANDOFF-2026-11-20.md) · [Single backlog P1](BACKLOG-IMPROVEMENTS.md#api-onboarding-program) |
 | PowerShell baseline, Repo AI V1 ASK-only plan and future improvements | [Current owner-only contract](OWNER-POWERSHELL.md) · [Consolidated plan/history](BACKLOG-IMPROVEMENTS.md#powershell-plan) |
 | Gateway → Windows Executor Machine ASK: заявка, Reject, восстановление | [UC-GW-014/015/016](use-cases/powershell-executor.md#uc-gw-014) · [Machine ASK source contract](POWERSHELL-MACHINE-ASK-CONTRACT-V1.md) |
 | Source modules and test entry points | [Package source map](../fortis_approvals/README.md) |

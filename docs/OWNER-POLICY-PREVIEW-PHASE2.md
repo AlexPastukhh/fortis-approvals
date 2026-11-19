@@ -1,6 +1,6 @@
 # Owner Policy Preview — source-only Phase 2 (2026-11-19)
 
-**Status:** isolated source PR candidate; not merged, built, installed or activated.
+**Status (2026-11-20):** merged source in [PR #149](https://github.com/AlexPastukhh/fortis-approvals/pull/149); **not thereby built, installed or activated**.
 
 ## Behavior
 

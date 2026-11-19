@@ -1,6 +1,6 @@
-# Owner provider inventory — Phase 1 source candidate (2026-11-19)
+# Owner provider inventory — Phase 1 merged source (2026-11-19)
 
-**Status:** source candidate in isolated task branch; **not merged, built, deployed or accepted in the owner browser**. The broader [P1 program](BACKLOG-IMPROVEMENTS.md#api-onboarding-program) remains open.
+**Status (2026-11-20):** merged source in [PR #147](https://github.com/AlexPastukhh/fortis-approvals/pull/147); **not thereby built, deployed, enabled or accepted in the owner browser**. The broader [P1 program](BACKLOG-IMPROVEMENTS.md#api-onboarding-program) remains open.
 
 ## Endpoint and trust boundary
 

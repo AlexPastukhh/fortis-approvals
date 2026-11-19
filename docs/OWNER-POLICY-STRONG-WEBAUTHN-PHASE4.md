@@ -1,6 +1,6 @@
-# Owner WebAuthn policy-change review — phase 4 source candidate
+# Owner WebAuthn policy-change review — phase 4 merged source
 
-**Status:** source-only PR candidate (2026-11-19), not merged/deployed or exposed in owner web UI. **No policy activation** is enabled by this phase. The pinned immutable `owner_auth.py` remains unchanged; review ceremony is a separate trusted adapter in `extensions/owner_policy_change_challenge.py`.
+**Status (2026-11-20):** merged source in [PR #154](https://github.com/AlexPastukhh/fortis-approvals/pull/154), **not thereby deployed**. Phase 4 itself has no owner HTTP route; the later merged [Phase 5 bridge](OWNER-POLICY-REVIEW-UI-PHASE5.md) is opt-in and review-only. **No policy activation** is enabled by either phase. The pinned immutable `owner_auth.py` remains unchanged; review ceremony is a separate trusted adapter in `extensions/owner_policy_change_challenge.py`.
 
 ## Exact contract
 
@@ -22,4 +22,4 @@ The in-memory ceremony is consumed once (including on invalid change). Sessions 
 
 ## Deferred before live policy edits
 
-Implement owner-origin-only authenticated/CSRF-checked browser ceremony workflow and UI, persist a versioned trusted owner policy store with independently anchored audit, atomic live Core/ExtensionRuntime policy activation/rollback and startup readback, invalidate all pending requests/revoked credentials, check source/credential rotation and concurrency again under the commit lock, and separately validate Windows Dynamic ASK/ALLOW/DENY. **No new live ALLOW from this PR**.
+The later [Phase 5](OWNER-POLICY-REVIEW-UI-PHASE5.md) supplies an **opt-in, review-only** owner-origin browser workflow in merged source, not an apply path or live deployment. Still required: persist a versioned trusted **active** owner policy store with independently anchored audit; atomic live Core/ExtensionRuntime activation/rollback and startup readback; explicit safe behavior for in-flight requests and revoked credentials; source/credential-rotation and concurrency rechecks under the commit lock; and separately validated Windows Dynamic ASK/ALLOW/DENY. **No new live ALLOW from either phase**.
