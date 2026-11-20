@@ -45,6 +45,7 @@ tests=(
   test_owner_policy_legacy_fence_phase6c5.py
   test_owner_policy_actor_scoped_deny_phase6c6.py
   test_owner_policy_cross_process_phase6c7.py
+  test_owner_policy_worker_census_phase6c8.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py
