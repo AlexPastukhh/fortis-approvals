@@ -1,0 +1,25 @@
+# Owner policy Phase 6C.0 — local deny-only Core adapter (no external history)
+
+**Status 2026-11-20: SOURCE-ONLY / NOT CONNECTED / NO POLICY EDIT ROUTE OR OWNER-HOST RELEASE.** Owner has deferred the separate immutable/monotonic audit service for the limited MVP. This is a conscious trust reduction, not proof that backup/snapshot rollback or compromised host administrator is prevented. Existing Phase 6B.1–6B.4 standalone prototypes are not production authority and remain disconnected.
+
+## Source implementation and preserved immutability
+
+`fortis_approvals/extensions/owner_policy_local_core_phase6c.py` introduces `LocalDenyCore(Core)`, a **separately selected** implementation. **The pinned `fortis_approvals/core.py` is untouched**: `scripts/check-release-storage-source.py` must continue to PASS using its original immutable hashes. Default production constructors remain plain `Core` with their existing rules and request fingerprints. No feature is silently activated by merging this source.
+
+The explicit subclass initializes two small tables in the **same SQLite database as Core requests**: `owner_local_policy_meta` (single versioned revision and READY/PREPARED hold gate) and `owner_local_denials` (literal exact actor/service/operation/target and a SQL CHECK permitting only `DENY`). There is no UI or API to write these tables. The only mutation in tests is direct SQLite fixture SQL, **never acceptable on a live host**.
+
+With `LocalDenyCore` selected by trusted installation code, `policy_version` becomes `<base-policy-version>|owner-local-deny:<revision>`. Existing unmodified Core automatically binds that version into immutable request fingerprints, owner proofs, and request rows. On owner approval Core verifies the version both before and after the owner proof; immediately before dispatch it checks version/effective policy while holding Core's same-DB `BEGIN IMMEDIATE` transaction lock. A changed revision stales a queued APPROVED request and rejects an old PENDING approval. PREPARED or missing/inconsistent policy metadata causes a denial; an incomplete local schema refuses startup. Already DISPATCHED/UNCERTAIN external effects are not undone, retried or falsified.
+
+`LocalDenyCore._policy` first invokes the configured trusted Core policy (including existing callable restrictions and upstream service checks) and then optionally narrows an exact match to DENY. It never turns DENY or ASK into ALLOW and never grants an unknown operation; `powershell.execute` cannot gain an outer ALLOW. Actor identity is authenticated by existing Core. No owner WebAuthn change ceremony is invented, and there is no machine route to modify policy.
+
+## Critical launch STOP: unmodified Core bypass
+
+A plain `Core` instantiated on the **same SQLite database** still uses its static source policies; it does NOT enforce `owner_local_denials`. An offline negative test explicitly demonstrates this to prevent falsely claiming persistent revocation security. **Do not activate or treat these denials as authoritative** until the full installed Gateway (all ingress paths, owner inventory, worker processes, release and restore paths) is verified to select `LocalDenyCore` consistently and fail closed on misconfiguration. A previous binary/source version that lacks this class likewise cannot honor the overlay. Source merging only makes the class available; it does not alter live policy.
+
+The local database does **not** have independently anchored tamper or rollback resistance. Restoring an old legitimate Core DB, old image or credential generation may resurrect grants. A separate monotonic history service is **deferred for this MVP**; this risk must be explicitly accepted in any future owner release plan. Conventional local audit, checked backup/restore, change-level CAS and fresh owner WebAuthn UV apply remain prerequisites for a practical owner editor; no append-only remote service is being developed in this stage.
+
+## Verification and next work
+
+New focused tests cover intact pinned Core, default-off vs opt-in, exact DENY-only scope, current ALLOW unchanged without an overlay, policy revision-bound fingerprint, owner-proof race, queued PENDING and APPROVED invalidation, restart, PREPARED gate, corrupt local schema, pre-opt-in request staleness, forbidden machine apply and the critical plain-Core bypass. Run `python3 -B -m unittest fortis_approvals.tests.test_owner_policy_local_core_phase6c -v`, plus the existing Core and static WebAuthn tests, source manifests and release-storage source compatibility. No live integration or production test was performed.
+
+**Next:** fully owner-bound local transactional CAS with separate **apply-specific** fresh UV-required WebAuthn, local Core audit event, explicit revocation/restore semantics, and a covered runtime readback/inventory. Do not expose Save/Apply to machines, allow unreviewed ALLOW expansion or change the Windows Executor while these are missing. Future external monotonic protection is optional hardening after this reduced MVP, not a claim of completed security.
