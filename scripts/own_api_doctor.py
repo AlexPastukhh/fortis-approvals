@@ -5,6 +5,7 @@ Static checks are reusable from check-own-api-manifest.py. Optional authenticate
 catalog/Core inventory reads do not prove upstream TLS, host state or quiescence.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -17,6 +18,82 @@ CHECKER = Path(__file__).with_name("check-own-api-manifest.py")
 spec = importlib.util.spec_from_file_location("own_api_manifest_checker", CHECKER)
 manifest_checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(manifest_checker)
+
+
+class TypedParamsStop(ValueError):
+    """Bounded rejection code, never raw caller parameters."""
+
+
+def parse_params_json(raw):
+    """Reject duplicate keys, NaN, non-objects and oversized input."""
+    if type(raw) is not str:
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+    try:
+        size = len(raw.encode("utf-8"))
+    except UnicodeError:
+        raise TypedParamsStop("PARAMS_JSON_INVALID") from None
+    if not 1 <= size <= 2048:
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+
+    def pairs(rows):
+        value = {}
+        for key, item in rows:
+            if key in value:
+                raise TypedParamsStop("PARAMS_JSON_INVALID")
+            value[key] = item
+        return value
+
+    def constant(_):
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise TypedParamsStop("PARAMS_JSON_INVALID") from None
+    if type(value) is not dict:
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+    return value
+
+
+def params_digest(params):
+    if type(params) is not dict:
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+    try:
+        data = json.dumps(params, sort_keys=True, separators=(",", ":"),
+                          allow_nan=False, ensure_ascii=True).encode("ascii")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise TypedParamsStop("PARAMS_JSON_INVALID") from None
+    if len(data) > 2048:
+        raise TypedParamsStop("PARAMS_JSON_INVALID")
+    return hashlib.sha256(data).hexdigest()
+
+
+def typed_source_operation(manifest, operation, target, params, version=None):
+    """Only local packaged provider code. Never a live upstream or grant."""
+    rows = [row for row in manifest["operations"]
+            if row["name"] == operation and target in row["targets"] and
+            row["effect"] == "READ" and row["policy"] == "ALLOW"]
+    if len(rows) != 1:
+        raise TypedParamsStop("OPERATION_NOT_ALLOWLISTED")
+    params_digest(params)
+    from fortis_approvals.extensions.model import discover
+    try:
+        selected = discover((manifest["serviceId"],))
+    except Exception:
+        raise TypedParamsStop("PROVIDER_SOURCE_UNAVAILABLE") from None
+    if len(selected) != 1:
+        raise TypedParamsStop("PROVIDER_SOURCE_UNAVAILABLE")
+    ops = [op for op in selected[0].operations if op.name == operation]
+    if (len(ops) != 1 or ops[0].kind != "read" or ops[0].ready is not True or
+            version is not None and ops[0].version != version):
+        raise TypedParamsStop("PROVIDER_SOURCE_VERSION_CHANGED")
+    try:
+        normalized = ops[0].params(params)
+    except Exception:
+        raise TypedParamsStop("PROVIDER_PARAMS_SCHEMA_INVALID") from None
+    if type(normalized) is not dict or normalized != params:
+        raise TypedParamsStop("PROVIDER_PARAMS_SCHEMA_INVALID")
+    return ops[0], normalized
 
 
 def catalog_rows(value, manifest):
@@ -68,7 +145,8 @@ def core_summary(requests, activity):
     }
 
 
-def diagnose(manifest, *, catalog=None, requests=None, activity=None):
+def diagnose(manifest, *, catalog=None, requests=None, activity=None,
+             operation=None, target=None, params=None):
     validated = manifest_checker.validate(manifest)
     result = {
         "status": "SOURCE_MANIFEST_VALID",
@@ -85,6 +163,16 @@ def diagnose(manifest, *, catalog=None, requests=None, activity=None):
         "liveRead": "NOT_EXECUTED",
         "workerQuiescence": "NOT_PROVEN",
     }
+    if operation is not None or target is not None or params is not None:
+        if type(operation) is not str or type(target) is not str:
+            raise TypedParamsStop("SOURCE_OPERATION_SELECTION_INVALID")
+        op, normalized = typed_source_operation(manifest, operation, target,
+                                               {} if params is None else params)
+        result["typedParameters"] = {
+            "status": "SOURCE_VALIDATED", "operation": operation,
+            "target": target, "providerVersion": op.version,
+            "paramsDigest": params_digest(normalized), "liveVerified": False,
+        }
     if catalog is not None:
         result["catalog"] = catalog_rows(catalog, manifest)
         result["status"] = ("CATALOG_READY_READ_NOT_TESTED"
@@ -100,6 +188,9 @@ def diagnose(manifest, *, catalog=None, requests=None, activity=None):
 def main(argv=None, *, catalog_client=None, workflow_client=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--operation", help="Optional source-only typed READ operation")
+    parser.add_argument("--target", help="Closed operation target from manifest")
+    parser.add_argument("--params-json", help="Bounded strict JSON params (default {})")
     parser.add_argument("--live-catalog", action="store_true",
                         help="Authenticated catalog READ; does NOT invoke an upstream API")
     parser.add_argument("--core-inventory", action="store_true",
@@ -107,6 +198,11 @@ def main(argv=None, *, catalog_client=None, workflow_client=None):
     args = parser.parse_args(argv)
     try:
         manifest = manifest_checker.load(args.manifest)
+        if (args.operation is None) != (args.target is None) or (
+                args.params_json is not None and args.operation is None):
+            raise TypedParamsStop("SOURCE_OPERATION_SELECTION_INVALID")
+        params = (parse_params_json(args.params_json or "{}")
+                  if args.operation is not None else None)
         catalog = requests = activity = None
         if args.live_catalog:
             if catalog_client is None:
@@ -120,10 +216,11 @@ def main(argv=None, *, catalog_client=None, workflow_client=None):
             requests = workflow_client.list_requests(offset=0, limit=100,
                                                        unresolved_only=True)
             activity = workflow_client.activity(offset=0, limit=100)
-        report = diagnose(manifest, catalog=catalog, requests=requests, activity=activity)
+        report = diagnose(manifest, catalog=catalog, requests=requests, activity=activity,
+                          operation=args.operation, target=args.target, params=params)
         print(json.dumps(report, sort_keys=True))
         return 2 if report["status"].startswith("STOP") else 0
-    except manifest_checker.ManifestStop as exc:
+    except (manifest_checker.ManifestStop, TypedParamsStop) as exc:
         print(json.dumps({"status": "STOP", "code": str(exc)}, sort_keys=True))
         return 2
     except (ValueError, TypeError):
