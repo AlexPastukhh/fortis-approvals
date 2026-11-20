@@ -20,6 +20,7 @@ application-specific scenarios; central cross-project rules stay in Fortis Conta
 | Add another Owner Portal passkey | [UC-GW-008](use-cases/owner-passkey.md) · [Owner-only invitation script](../fortis_approvals/deploy/Invite-Primary-Owner.ps1) |
 | AI use, trust boundaries and adding a service | [Gateway agent guide](GATEWAY-AGENT-GUIDE.md) |
 | Optional analysis-review source operations (not deployed) | [Analysis review contract](ANALYSIS-REVIEW-CONTRACT.md) |
+| Fortis Release Registry P5 post-merge evidence (offline DTO only; no new READ grant) | [Gateway evidence envelope contract](RELEASE-REGISTRY-P5-POST-MERGE-GATEWAY-CONTRACT.md) |
 | Native Git/worktree operations, policy and command contract | [Native workflow](NATIVE-WORKTREE-GATEWAY-2026-11-06.md) |
 | Release Label Publisher — owner-invoked P3.4 one-shot E2E PASS (2026-11-19); unattended mode not active | [Technical/security contract](RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) · [Current owner-reported evidence](guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md) |
 | Read-only Core incident evidence aggregation (PR2 source candidate) | [Incident Inspector](INCIDENT-INSPECTOR.md) |
