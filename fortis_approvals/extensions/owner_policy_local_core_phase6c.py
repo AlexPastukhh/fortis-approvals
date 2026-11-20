@@ -23,7 +23,8 @@ class LocalDenyCore(Core):
             existing = {row['name'] for row in db.execute(
                 """SELECT name FROM sqlite_master WHERE type='table'
                    AND name LIKE 'owner_local_%'""")}
-            required = {'owner_local_policy_meta', 'owner_local_denials'}
+            required = {'owner_local_policy_meta', 'owner_local_denials',
+                        'owner_local_policy_events'}
             if existing and existing != required:
                 raise Denied('OWNER_LOCAL_POLICY_SCHEMA_INCOMPLETE')
             db.executescript('''
@@ -38,6 +39,14 @@ class LocalDenyCore(Core):
                     operation TEXT NOT NULL, target TEXT NOT NULL,
                     decision TEXT NOT NULL CHECK(decision='DENY'),
                     PRIMARY KEY(actor,service,operation,target)
+                );
+                CREATE TABLE IF NOT EXISTS owner_local_policy_events(
+                    request_id TEXT PRIMARY KEY,
+                    at INTEGER NOT NULL,
+                    owner TEXT NOT NULL,
+                    change TEXT NOT NULL,
+                    expected_revision INTEGER NOT NULL CHECK(expected_revision>=0),
+                    applied_revision INTEGER NOT NULL CHECK(applied_revision>0)
                 );
             ''')
             if not existing:
