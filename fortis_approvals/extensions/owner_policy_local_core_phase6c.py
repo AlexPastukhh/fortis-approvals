@@ -5,10 +5,11 @@ policy edit route and no privilege-expanding ALLOW. Uses unmodified pinned Core:
 existing signed fingerprint, version check and pre-dispatch SQLite lock all
 apply to the exact local policy revision through a virtual policy_version.
 """
-from ..core import Core, Denied
+from ..core import Denied
+from ..incidents import IncidentCore
 
 
-class LocalDenyCore(Core):
+class LocalDenyCore(IncidentCore):
     """Explicit opt-in Core subclass, same request SQLite DB, DENY-only.
 
     No method to alter the active revision or deny rules is provided. A future
