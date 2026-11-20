@@ -15,6 +15,10 @@ Unknown method remains DENY; owner-reviewed UC-GW-003 is a separate step.
 `post_merge_proof_bindings.py` additionally verifies supplied byte/digest
 consistency offline; matching hashes remain **untrusted** and never authorize
 Registry ingestion or deployment. No new method is registered.
+`post_merge_git_lineage.py` additionally checks SHA-1 commit-object hashes,
+ordinary two-parent merge links and first-parent ancestry using only
+caller-supplied bytes; it **does not** authenticate GitHub refs, signatures
+or grant release authority.
 
 ## Source map
 
