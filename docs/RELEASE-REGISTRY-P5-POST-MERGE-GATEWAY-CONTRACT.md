@@ -86,6 +86,60 @@ Even perfect matches require separately protected immutable review-cutoff
 capture, Git commit/ancestry checks, trusted CI policy and a reviewed exact
 actor/operation grant **before** authoritative Registry admission.
 
+## Offline Git merge graph checking (source-only follow-up)
+
+`fortis_approvals/integrations/github/post_merge_git_lineage.py::check_claimed_first_parent`
+can independently check the **internal consistency of caller-supplied Git
+commit objects**, not their provider origin. This adds a different proof
+surface to the prior byte/digest binder:
+
+- Input is the same untrusted v1 evidence envelope and a bounded array of
+  `{ "sha": "40-char-lowercase-hex", "rawHex": "lowercase-hex-Git-commit-bytes" }`
+  objects. These are **raw uncompressed Git commit payload bytes**, not the
+  zlib object store representation or generic JSON commit metadata. The
+  candidate verifier recomputes the legacy Git SHA-1 object ID over
+  `b"commit " + decimal_byte_length + b"\0" + raw_commit_bytes`.
+- Each object must carry a `tree` header, ordered `parent` headers, author,
+  committer and the standard header/message separator; malformed or
+  duplicate object identities stop. Signed commits with multiline `gpgsig`
+  headers are parsed as *unverified bytes*, **not cryptographically verified
+  signatures**. This source-only v1 handles 40-hex-character SHA-1 objects,
+  not 64-character Git SHA-256 repositories or replace/graft refs.
+- The claimed selected `main` SHA must be represented by such an object. A
+  bounded **first-parent chain** from this SHA must reach each claimed PR
+  merge SHA. The merge object must have **exactly two parents**, with the
+  second parent exactly the claimed PR HEAD SHA, and the HEAD object must
+  itself be present and hash-consistent. This reflects the accepted ordinary
+  GitHub merge-commit flow; squash/rebase, octopus merge and missing ancestry
+  nodes STOP for separate review. It does not require traversing all of
+  Git history or accept a commit subject as evidence of parentage.
+- All supplied objects must be relevant to that first-parent route or to
+  the claimed PR head objects; duplicate, missing, truncated, inconsistent
+  or unrelated object material fails closed. The result includes only the
+  number of first-parent **edges between selected main and oldest matched
+  merge** (zero when selected main is the only merge), matched merge SHA
+  sequence and a normalized material digest; it does not echo full commit bytes.
+
+**Limitation is fundamental:** an attacker can supply a self-consistent Git
+SHA-1 object graph, and legacy SHA-1 has known collision limits. This module
+neither authenticates GitHub's selected main ref nor verifies owner merge,
+immutable reviewed PR body, required CI policy, catalog tree/blob content,
+protected collector identity or live installation. It always returns
+`SOURCE_GIT_DAG_MATCH_UNTRUSTED`, `evidenceVerified=false`,
+`admissionAllowed=false`, and `deploymentAllowed=false` after a match. No
+policy, route, network operation, local Git command or Registry WRITE is
+added. Later trusted source collection must bind an authenticated, complete
+provider ref and capture to these hash-bound objects, with independent
+owner-reviewed proof and SHA-1 transition considerations.
+
+Offline unit fixtures cover valid single/multiple PR first-parent chains,
+changed SHA/object content, forged second parent, omitted/extra objects,
+unsupported merge method, malformed headers, signed-header continuation
+and no-authority results. One read-only check against locally available
+Git commit objects for merged PR #174 and #175 produced a two-node
+first-parent match (2026-11-20); local object presence is **not** a remote
+GitHub identity or permission attestation.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
