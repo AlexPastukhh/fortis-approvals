@@ -16,6 +16,19 @@ Opt-in authenticated reads (no upstream call, no Gateway state changes):
     python3 -B scripts/own_api_doctor.py --manifest "$PWD/docs/templates/own-api/mirror-read.example.json" --live-catalog --core-inventory
 
 \`CATALOG_READY_READ_NOT_TESTED\` is NOT live upstream acceptance.
+For READ v2, validate typed params entirely offline (without
+`--live-catalog` and without `--submit-read`):
+
+    python3 -B scripts/own_api_doctor.py --manifest "$PWD/docs/templates/own-api/mirror-read-v2.source.json" --operation list_repositories_v2 --target mirror-pilot --params-json '{"offset":0,"limit":10,"inventoryRevision":null}'
+
+`typedParameters.status=SOURCE_VALIDATED` proves local provider schema and
+closed manifest scope **only**, not catalog or Windows readiness. Unknown
+keys, non-objects, duplicate JSON keys, malformed UUIDv4 and stale paging
+revisions fail closed. The output contains a parameter digest, not values.
+For an exact receipt lookup use the separate previous operation request UUIDv4
+in `{"requestId":"<uuid-v4>"}`, operation `get_windows_pull_result_v2`, and
+`--target fortis-approvals`. Source validation does not grant principal access.
+
 The Doctor cannot prove Windows listener, TLS, isolated restore, exact
 production container image or worker quiescence from the Repo machine alone.
 An incomplete Core inventory must be labelled incomplete, never interpreted as
@@ -39,13 +52,20 @@ target and digest; prints READY_FOR_ONE_SHOT_READ without submitting:
 
 A **separate, explicit** \`--submit-read\` performs one typed READ and
 validates the returned data against trusted installed source provider schema.
-Before READY or submission, the installed-source operation/version and empty
-params schema must match the catalog. The journal must be written completely;
+Before READY or submission, the installed-source operation/version and exact
+params schema must match the catalog. For READ v2, the same `--params-json`
+argument is required on preview, one-shot submission and journal readback.
+Pagination uses `offset`, `limit`, and `inventoryRevision` (nullable on page
+one); receipt lookup uses `requestId`. An omitted argument is `{}` for v1 or
+unparameterized v2 reads. Nonempty parameter objects are SHA-256-bound to the
+journal without storing their values; changing parameters with the same UUID
+fails closed. The journal must be written completely;
 both the file and new directory entry are fsynced **before** calling Gateway.
 A short write or sync failure stops before call. Result bounds use the manifest
 limit (within V1's 256 KiB ceiling), then the provider's own closed schema. A second invocation
 with the same journal only calls \`result(uuid,reconcile=False)\`, never
-\`call()\` again, even after a network timeout or UNKNOWN.
+\`call()\` again, even after a network timeout or UNKNOWN. V2 upstream errors, mismatched
+result targets or receipt UUIDs do not qualify as verified live READ.
 
 Output contains request ID, validated operation/target/digest and bounded
 result size but not response body, credentials, token or secret paths.
