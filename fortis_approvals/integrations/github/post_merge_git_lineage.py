@@ -128,7 +128,8 @@ def check_claimed_first_parent(envelope, commit_objects):
         'candidateDigest': source['candidateDigest'],
         'objectProofDigest': hashlib.sha256(normalized).hexdigest(),
         'selectedMainSha': source['selectedMainSha'],
-        'firstParentDepth': len(first_parent_path),
+        # Depth is the number of traversed links, not the number of visited nodes.
+        'firstParentDepth': len(first_parent_path) - 1,
         'observedMergeShasNewestFirst': found,
         'evidenceVerified': False,
         'admissionAllowed': False,

@@ -68,7 +68,7 @@ class OfflineGitLineageTests(unittest.TestCase):
         result=check_claimed_first_parent(env,objects)
         self.assertEqual(result['result'],'SOURCE_GIT_DAG_MATCH_UNTRUSTED')
         self.assertEqual(result['observedMergeShasNewestFirst'],[env['mergedPullRequests'][0]['mergeSha']])
-        self.assertEqual(result['firstParentDepth'],1)
+        self.assertEqual(result['firstParentDepth'],0)
         self.assertFalse(result['evidenceVerified'])
         self.assertFalse(result['admissionAllowed'])
         self.assertFalse(result['deploymentAllowed'])
@@ -77,10 +77,16 @@ class OfflineGitLineageTests(unittest.TestCase):
     def test_two_prs_first_parent_link_and_newer_commit(self):
         env,objects=fixture(two_prs=True,later_main=True)
         result=check_claimed_first_parent(env,objects)
-        self.assertEqual(result['firstParentDepth'],3)
+        self.assertEqual(result['firstParentDepth'],2)
         self.assertEqual(result['observedMergeShasNewestFirst'],[
             env['mergedPullRequests'][1]['mergeSha'],env['mergedPullRequests'][0]['mergeSha']])
         self.assertFalse(result['admissionAllowed'])
+
+    def test_two_adjacent_merge_nodes_have_one_edge(self):
+        env, objects = fixture(two_prs=True)
+        result = check_claimed_first_parent(env, objects)
+        self.assertEqual(result['firstParentDepth'], 1)
+        self.assertEqual(len(result['observedMergeShasNewestFirst']), 2)
 
     def test_fixture_order_independent_digest(self):
         env,objects=fixture(two_prs=True,later_main=True)

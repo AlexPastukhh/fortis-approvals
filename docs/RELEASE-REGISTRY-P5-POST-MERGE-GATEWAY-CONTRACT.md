@@ -116,8 +116,9 @@ surface to the prior byte/digest binder:
 - All supplied objects must be relevant to that first-parent route or to
   the claimed PR head objects; duplicate, missing, truncated, inconsistent
   or unrelated object material fails closed. The result includes only the
-  number of first-parent edges examined, matched merge SHA sequence and a
-  normalized material digest; it does not echo full commit bytes.
+  number of first-parent **edges between selected main and oldest matched
+  merge** (zero when selected main is the only merge), matched merge SHA
+  sequence and a normalized material digest; it does not echo full commit bytes.
 
 **Limitation is fundamental:** an attacker can supply a self-consistent Git
 SHA-1 object graph, and legacy SHA-1 has known collision limits. This module
