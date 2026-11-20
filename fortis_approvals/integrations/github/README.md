@@ -12,6 +12,9 @@ owns accepted source/image and deployed scope; do not copy old container IDs.
 `post_merge_registry_envelope.py` define a pure structural candidate, not a
 registered Gateway READ, collector, actor grant or canonical Registry proof.
 Unknown method remains DENY; owner-reviewed UC-GW-003 is a separate step.
+`post_merge_proof_bindings.py` additionally verifies supplied byte/digest
+consistency offline; matching hashes remain **untrusted** and never authorize
+Registry ingestion or deployment. No new method is registered.
 
 ## Source map
 

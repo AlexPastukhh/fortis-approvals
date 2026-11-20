@@ -31,6 +31,61 @@ an already merged PR and retrying a scope/precondition `403` cannot fill the
 gap. The existing `get_pull_request`, check-run and bounded commit projections
 likewise cannot reconstruct immutable complete historical release evidence.
 
+## P5 claimed-byte bindings (source-only follow-up)
+
+`fortis_approvals/integrations/github/post_merge_proof_bindings.py::bind_claimed_material`
+adds a **pure, no-I/O** layer that compares supplied raw PR-body/catalog
+bytes and canonical-JSON path, component-map, dependency and CI-policy
+structures against the SHA-256 fields of the source-only envelope. This is
+an improvement over format-only 64-character digest checks, but **not**
+provider authentication. Its only success is
+`SOURCE_BYTES_MATCH_UNTRUSTED` with `evidenceVerified=false`,
+`admissionAllowed=false`, `deploymentAllowed=false`. It does not call the
+Gateway or GitHub, open files or write a Registry record.
+
+The bundle has exact fields `catalogText`, `componentMap`,
+`dependencyEdges` and ordered `pullRequests`. A PR material entry supplies
+`number`, `reviewedBodyText`, ordered `changedPathRecords` and
+`ciRequiredPolicy`. Material lists must match the envelope's full PR count
+and identifiers. In this **candidate encoding**:
+
+- A text SHA-256 uses its exact UTF-8 bytes, with no implicit trimming or
+  newline normalization. `catalog.contentSha256` and
+  `reviewedBody.bodySha256` are bound this way. The separate
+  `catalog.blobSha256` is **not** verified: validating real Git blobs at the
+  pinned object database remains a trusted-collector task.
+- For JSON arrays and mappings, compute SHA-256 of UTF-8 JSON with sorted
+  object keys, `ensure_ascii=False`, no NaN, separators `(',', ':')` and no
+  extra newline. This applies to `componentMapSha256`,
+  `dependencyClosure.digest`, `changedPaths.sha256` and `ci.policySha256`.
+- The bounded Release Impact value is exactly one fenced `yaml` block between
+  the accepted `<!-- fortis-release-impact:start -->` and
+  `<!-- fortis-release-impact:end -->` markers. `releaseImpactSha256` binds
+  the exact UTF-8 YAML substring **excluding the single delimiter newline**
+  immediately before the closing fence. Matching syntax/hash is not the
+  accepted semantic Release Impact validation: independently run the pinned
+  shared validator against complete trusted changed paths and exact HEAD.
+- Path records are sorted by `path`, `status`, `previousPath` and carry all
+  three keys; rename entries have different `previousPath` and `path`.
+  Canonical POSIX relative paths allow `.github` and `.dockerignore`, but
+  forbid traversal, `.git` internals, absolute/Windows paths, CR/LF and NUL.
+  The source-only set of changed paths cannot attest its own completeness.
+- `ciRequiredPolicy` is exactly `{'requiredChecks': [sorted unique names]}`.
+  Exact-byte hash agreement is not proof those checks were **required** by
+  GitHub branch rules when the PR merged, or that `runId` and `attempt`
+  genuinely came from the provider. A second self-consistent forged JSON
+  fixture can still produce matching hashes.
+- Component-map entries bind ordered target IDs to claimed component and
+  shared-resource IDs. Digest agreement does **not** prove catalog parsing,
+  active component topology, installed version or a release mutex.
+
+The material is bounded (2 MiB total; 250 KiB catalog, 50 KiB each PR body),
+missing/duplicated/unsorted records and unknown fields fail closed. It
+returns only aggregate digests/counts and does not echo body or path bytes.
+Even perfect matches require separately protected immutable review-cutoff
+capture, Git commit/ancestry checks, trusted CI policy and a reviewed exact
+actor/operation grant **before** authoritative Registry admission.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
