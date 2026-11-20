@@ -149,6 +149,34 @@ class OptInR7BuilderTests(unittest.TestCase):
         self.assertFalse(result['allWorkersVerified'])
         self.assertEqual(0,self.sonar.calls)
 
+    def test_actor_scoped_r7_sonar_ask_can_be_denied_for_one_issue_only(self):
+        core,owner,portal,ingress=self.build(self.candidate())
+        self.assertEqual('ASK',core.policies[(ACTOR,'sonarcloud','accept_issue')])
+        candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',
+                       target='ISSUE-1',expectedConfiguredPolicy='ASK',
+                       expectedConfiguredScope='actor',
+                       expectedPolicyVersion=core.policy_version,
+                       expectedRevision=0,reasonCode='OWNER_DENY_ONE_ISSUE')
+        apply=portal._local_deny_apply
+        begun=apply.begin_deny(owner._session,owner._csrf,candidate)
+        receipt=apply.finish_deny(owner._session,owner._csrf,
+            begun['ceremonyId'],{'syntheticTestOnlyUv':True},begun['change'])
+        self.assertTrue(receipt['localDenyCommitted'])
+        self.assertEqual('DENY',core._policy(ACTOR,dict(
+            service='sonarcloud',operation='accept_issue',target='ISSUE-1')))
+        self.assertEqual('ASK',core._policy(ACTOR,dict(
+            service='sonarcloud',operation='accept_issue',target='ISSUE-2')))
+        self.assertEqual('ASK',core.policies[(ACTOR,'sonarcloud','accept_issue')])
+        from fortis_approvals.extensions.owner_policy_local_bundle_phase6c3 import owner_local_deny_inventory
+        rows=owner_local_deny_inventory(core)['operations']
+        narrowed=[r for r in rows if r['scope']=='exact' and
+                  r['provider']=='sonarcloud' and r['operation']=='accept_issue']
+        self.assertEqual(1,len(narrowed))
+        self.assertEqual('ISSUE-1',narrowed[0]['target'])
+        self.assertEqual('actor',narrowed[0]['configuredSourceScope'])
+        self.assertEqual('DENY',narrowed[0]['effectivePolicy'])
+        self.assertEqual(0,self.sonar.calls)
+
     def test_bad_opt_in_fails_before_creating_new_state(self):
         with self.assertRaises(Denied):
             R7LocalDenySourceOptIn('bad',CREDS)

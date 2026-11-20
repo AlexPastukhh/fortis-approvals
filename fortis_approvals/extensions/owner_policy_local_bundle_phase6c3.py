@@ -39,6 +39,26 @@ def owner_local_deny_inventory(core, extension_runtime=None):
         seen.add(coord)
         row['effectivePolicy']='DENY'
         row['localDenialApplied']=True
+    for coord in sorted(denied - seen):
+        # An actor-scoped ASK/ALLOW may be narrowed for ONE exact target,
+        # not converted to an actor-wide policy or an implied new grant.
+        # Refuse exact shadowing or unknown/callable/global-only policies.
+        if coord in core.policies:
+            raise Denied('OWNER_LOCAL_INVENTORY_DENIAL_UNRESOLVED')
+        parent = core.policies.get(coord[:3])
+        if type(parent) is not str or parent not in ('ASK','ALLOW'):
+            raise Denied('OWNER_LOCAL_INVENTORY_DENIAL_UNRESOLVED')
+        matching = [row for row in result['operations']
+            if row['scope']=='actor' and row['actor']==coord[0] and
+               row['provider']==coord[1] and row['operation']==coord[2] and
+               row['providerType']=='native' and row['configuredPolicy']==parent]
+        if len(matching)!=1:
+            raise Denied('OWNER_LOCAL_INVENTORY_DENIAL_UNRESOLVED')
+        inherited = dict(matching[0], scope='exact', target=coord[3],
+                         configuredPolicy=parent, effectivePolicy='DENY',
+                         configuredSourceScope='actor', localDenialApplied=True)
+        result['operations'].append(inherited)
+        seen.add(coord)
     if seen!=denied:
         raise Denied('OWNER_LOCAL_INVENTORY_DENIAL_UNRESOLVED')
     result.update(localPolicyRevision=revision,localDenyOnly=True,
