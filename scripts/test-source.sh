@@ -36,6 +36,8 @@ tests=(
   test_owner_policy_monotonic_fence_phase6b3.py
   test_owner_policy_recovery_evidence_phase6b4.py
   test_owner_policy_local_core_phase6c.py
+  test_owner_policy_local_deny_apply_phase6c1.py
+  test_owner_policy_local_deny_apply_crypto.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py
