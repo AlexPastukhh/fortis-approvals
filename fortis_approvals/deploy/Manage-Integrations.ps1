@@ -1569,17 +1569,28 @@ function Assert-Previous-Image-Retained {
 
 function Admit {
     param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress,
-          [string]$MountPreflightImageId='')
+          [string]$MountPreflightImageId='', [string]$VerifiedPromoteRescueImage='')
     # The original Docker image identity remains mandatory for State-Helper
     # admission. In one owner-accepted UC-GW-013 recovery only the two OFFLINE
     # volume-content digest checks may run under the verified rescue snapshot.
     # The caller has already revalidated old-image absence, archive SHA, exact
     # backup receipt and rescue offline smoke via Assert-Previous-Image-Retained.
     $MountImage=$P.image
+    if($VerifiedPromoteRescueImage -and
+       ($Action -cne 'Promote' -or $AcceptUnverifiedRestore -or
+        $VerifiedPromoteRescueImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        $MountPreflightImageId -cne $VerifiedPromoteRescueImage)){
+        throw 'RELEASE_EMERGENCY_PROMOTE_MOUNT_DENIED'
+    }
     if($MountPreflightImageId){
+        # Promote may reuse only the rescue artifact independently verified
+        # against the immutable Complete release and original prior primary.
+        $VerifiedPromoteMount=($Action -ceq 'Promote' -and
+            $VerifiedPromoteRescueImage -ceq $MountPreflightImageId)
         if($MountPreflightImageId -cne $P.image -and
-           (-not $AcceptUnverifiedRestore -or
-            $MountPreflightImageId -cne $EmergencyRescueImage -or
+           (((-not $AcceptUnverifiedRestore -or
+              $MountPreflightImageId -cne $EmergencyRescueImage) -and
+              -not $VerifiedPromoteMount) -or
             $P.image -ceq $script:Image -or
             $C.Image -cne $P.image)){
             throw 'RELEASE_EMERGENCY_SOURCE_MOUNT_IMAGE_DENIED'
@@ -1884,6 +1895,7 @@ if($Action -eq 'SelfTest'){
     Set-StrictMode -Version Latest
     Assert-BoundedReleaseJsonSelfTest
     Assert-OptionalActionCoreSelfTest
+    Assert-Emergency-Promote-BindingSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or

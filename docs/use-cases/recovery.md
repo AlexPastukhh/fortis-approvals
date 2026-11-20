@@ -113,10 +113,67 @@ PowerShell 5.1 SelfTest и отдельный bound Check/Apply.
 готовить только после исправления незащищённого ACL `GatewayRecovery`
 (owner review, наследование выключено, без постороннего чтения).
 При небезопасном ACL — STOP, не снимать защиту ради выпуска.
-Нельзя запускать `Backup` с отсутствующим старым image.
+До аварийного Apply нельзя останавливать **старый** Gateway ради Backup,
+когда прежний image отсутствует; после успешного Apply допускается
+штатный Backup **новой кандидатной версии** с доступным новым image.
 Наборы `15 UNCERTAIN`, `1 CLAIMED` и `2 APPROVED` требуют
 отдельной owner-проверки exact preservation и worker quiescence;
 новый P4 scope через `-Auto` запрещён.
+
+**Завершение через Backup/Promote после успешного аварийного Apply:**
+`Backup` относится уже к **новому** активированному Gateway с доступным
+новым image, а не к остановленному старому экземпляру. Его
+`primary-backup.json` указывает на новый backup, поэтому вызов
+`Assert-Emergency-Rescue` из Check/Apply с этой записью был бы неверным:
+он требовал историческую копию прежнего Gateway. Оригинальные backup
+volume и owner-protected `primary-backup-<id>/record.json` сохраняются
+отдельно; не заменять старый backup новым и не переписывать указатели.
+
+Штатный `Promote -ConfirmWorkerQuiescent` после отдельного owner GO
+сначала проверяет действующий Complete release, новую `primary-backup.json`
+и точный receipt нового backup, running/healthy кандидат и единственного
+writer. Если предыдущий image доступен по **оригинальному** ID,
+проверка прежнего контейнера идёт обычным `Admit` без исключения.
+Если original image отсутствует, аварийное продолжение разрешается
+**только при всех условиях**:
+
+- вызов `Promote` ручной, без `-Auto`, новых rescue/restore-флагов и
+  `-Build`; владелец заново удостоверил отсутствие активной работы;
+- неизменённая owner-protected запись **этого** Complete/activated/probed
+  выпуска содержит `emergencyRecovery.ownerAcceptedUnverifiedRestore=true`,
+  `isolatedRestoreTested=false` и точные `rescueImage`/`archiveSha256`;
+- сохранённые в выпуске `source.path`, `source.hash` и вся предыдущая
+  runtime identity совпадают с прежним `primary.json`, прежний original
+  source record не изменился; old container имеет исходные ID/image,
+  provenance, имя `fortis-gateway` и статус `exited`;
+- существует как минимум один сохранённый owner-protected **исторический**
+  `primary-backup-<id>/record.json` для того старого primary,
+  привязанный к прежнему source/image/container/state, с совпадающим
+  актуальным digest его backup volume. Текущий P4 backup проверяется
+  штатным Promote **отдельно**;
+- rescue image по точному SHA256 inspectable, архив в зафиксированном
+  owner-local каталоге с закрытым ACL имеет прежний SHA256; повторно
+  проходит offline smoke без сети и секретов.
+
+Только после этих проверок старый контейнер проходит полный Docker
+metadata admission под своим **исходным** image ID. Для двух offline
+проверок Publisher/Machine PowerShell допускается проверенный rescue image,
+но оригинальный image ID в records и ожидаемом runtime **не меняется**.
+Все перечисленные проверки выполняются **до первого**
+`docker rename`/`docker update` и изменения `primary.json`.
+Любая ошибка означает STOP без начала переключения, не повод запускать
+повторный Apply или редактировать protected pointers вручную.
+Успешный Promote не подтверждает isolated restore, возврат
+`Return-Source` не расширяется и DR не объявляется.
+
+**Для будущих релизов:** это не новый обычный метод развёртывания из
+`docker commit`. Допуск относится только к ранее принятому владельцем
+UC-GW-013 и к единственному конкретному Complete release. После
+его Promote последующие релизы снова используют UC-GW-005 и обязаны
+иметь inspectable предыдущий image. Перед использованием доработанного
+Promote обязательны CI, Windows PowerShell 5.1 parser/SelfTest, owner
+exact-main update и отдельный owner GO на Promote; source-тесты не
+заменяют изолированную проверку восстановления.
 
 **Ограничение аварийного возврата:** `Return-Source` не получает
 автоматического права применять rescue вместо original image.
