@@ -434,7 +434,22 @@ for the original image identity and never proves rollback. Owner Windows
 An uncertain attempt requires the original record and
 UC-GW-006, never blind retry.
 
-## P4 GitHub Deployments READ — first owner activation (not yet live)
+## P4 GitHub Deployments READ — first-activation reference (already live)
+
+**Current-state note (2026-11-20; not a new release instruction):** the owner
+reported that the P4 `Check/Apply/Backup/Promote` cycle was completed. An
+independent authenticated Repo → Gateway capability readback confirms
+`githubDeploymentReads.enabled=true`, `repositories=["fortis-approvals"]`,
+exactly four typed GET operations and `writeEnabled=false`;
+`installedStateProof=false` means this API is **not** technical evidence of a
+deployed source/image. The current Windows host, image identity, controller
+records and recovery path were not independently inspected for this docs edit.
+P4 READ is **not** awaiting first activation and must **not** be released again
+because of the historical checklist below. Future scope/image changes require
+fresh protected owner admission and the ordinary UC-GW-005/006 gates.
+
+The following first-activation procedure and safeguards are retained as
+historical operational reference, not as outstanding tasks for P4.
 
 The accepted P4 source exposes only four typed GitHub Deployments GET operations
 and the per-repository githubDeploymentReads capability. Owner activation is a
@@ -464,10 +479,13 @@ or reordered list is STOP. Legacy records without the field are admitted as
 empty, not as newly granted access. Later ordinary -Auto releases may only
 carry an *already reviewed* scope from a protected Complete source record.
 
-**Live acceptance is still blocked** until source PR/CI, owner Windows 5.1
-SelfTest, protected exact-SHA Check / Apply, unchanged historical
-UNCERTAIN/CLAIMED receipts, separate independent worker quiescence,
-Gateway capability readback and both positive/negative typed REST GET evidence.
+**Historical first-activation acceptance checklist:** before the completed
+P4 release, the required gates were source PR/CI, owner Windows 5.1 SelfTest,
+protected exact-SHA Check/Apply, unchanged historical UNCERTAIN/CLAIMED
+receipts, separate independent worker quiescence, Gateway capability readback
+and both positive/negative typed REST GET evidence. These are not new pending
+P4 steps; the owner's completion report and the confirmed live READ capability
+are not substitutes for independently reopening historical protected receipts.
 The owner must independently verify GitHub Deployments READ token permission
 without adding WRITE. Test disallowed repository, other machine actor and
 absent Deployments POST. GitHub statuses are projection evidence only and
