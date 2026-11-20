@@ -137,6 +137,23 @@ class BrowserDenyVirtualFIDO2(unittest.TestCase):
         self.assertEqual('ASK',self.core._policy('agent-1',dict(
             service='synthetic',operation='set_ask',target='R3')))
 
+    def test_real_signed_uv_actor_source_exact_target_via_owner_http(self):
+        self.core.policies.pop(COORD)
+        self.core.policies[COORD[:3]]='ASK'
+        candidate={**self.candidate,'expectedConfiguredScope':'actor'}
+        code,started=self.call(_PREFIX+'/begin',{'candidate':candidate})
+        self.assertEqual(200,code,started)
+        self.assertEqual('actor',started['change']['expectedConfiguredScope'])
+        code,result=self.finish(started,self.key.assert_(started))
+        self.assertEqual(200,code,result)
+        self.assertTrue(result['localDenyCommitted'])
+        self.assertEqual('DENY',self.core._policy('agent-1',dict(
+            service='synthetic',operation='set_ask',target='R3')))
+        self.assertEqual('ASK',self.core._policy('agent-1',dict(
+            service='synthetic',operation='set_ask',target='R4')))
+        self.assertEqual('ASK',self.core.policies[COORD[:3]])
+        self.assertEqual(403,self.finish(started,self.key.assert_(started))[0])
+
     def test_stale_revision_returns_409_even_with_real_valid_fido2(self):
         code,started=self.begin()
         self.assertEqual(200,code)

@@ -104,6 +104,35 @@ class LocalDenyRealVirtualWebAuthn(unittest.TestCase):
         self.assertEqual('ASK',self.core._policy('agent-1',dict(
             service='synthetic',operation='set_ask',target='R3')))
 
+    def test_real_uv_actor_parent_deny_is_exact_target_only(self):
+        self.core.policies.pop(COORD)
+        self.core.policies[COORD[:3]]='ASK'
+        candidate={**self.candidate(),
+                   'expectedConfiguredScope':'actor'}
+        started=self.apply.begin_deny(self.session,self.csrf,candidate)
+        self.assertEqual('actor',started['change']['expectedConfiguredScope'])
+        result=self.finish(started,self.key.assert_(started))
+        self.assertTrue(result['localDenyCommitted'])
+        self.assertEqual('DENY',self.core._policy('agent-1',dict(
+            service='synthetic',operation='set_ask',target='R3')))
+        self.assertEqual('ASK',self.core._policy('agent-1',dict(
+            service='synthetic',operation='set_ask',target='R4')))
+        self.assertEqual('ASK',self.core.policies[COORD[:3]])
+        with self.assertRaises(Denied):
+            self.finish(started,self.key.assert_(started))
+
+    def test_real_uv_actor_parent_rejects_wrong_origin_and_consumes_proof(self):
+        self.core.policies.pop(COORD)
+        self.core.policies[COORD[:3]]='ASK'
+        candidate={**self.candidate(),'expectedConfiguredScope':'actor'}
+        started=self.apply.begin_deny(self.session,self.csrf,candidate)
+        with self.assertRaises(Denied):
+            self.finish(started,self.key.assert_(started,origin='https://evil.example'))
+        with self.assertRaises(Denied):
+            self.finish(started,self.key.assert_(started))
+        self.assertEqual('ASK',self.core._policy('agent-1',dict(
+            service='synthetic',operation='set_ask',target='R3')))
+
     def _one_db(self):
         db=self.core._db()
         connection=db.__enter__()

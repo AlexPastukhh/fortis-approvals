@@ -18,9 +18,12 @@ _CEREMONY = 'owner_local_exact_deny_apply_v1'
 _KEYS = frozenset(('actor', 'provider', 'operation', 'target',
                    'expectedConfiguredPolicy', 'expectedPolicyVersion',
                    'expectedRevision', 'reasonCode'))
+_SCOPE = 'expectedConfiguredScope'
+_ACTOR_KEYS = _KEYS | frozenset((_SCOPE,))
 _DESCRIPTOR = _KEYS | frozenset(('purpose', 'requestId', 'newPolicy',
                                  'sourceDigest', 'credentialGenerationDigest',
                                  'expiresAt'))
+_ACTOR_DESCRIPTOR = _DESCRIPTOR | frozenset((_SCOPE,))
 _COORDINATE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
 _DIGEST = re.compile(r'[0-9a-f]{64}\Z')
 _REASON = re.compile(r'[A-Z][A-Z0-9_]{1,79}\Z')
@@ -52,8 +55,11 @@ class OwnerLocalDenyApply:
 
     @staticmethod
     def _candidate(candidate):
-        if type(candidate) is not dict or set(candidate) != _KEYS:
+        if (type(candidate) is not dict or
+                set(candidate) not in (_KEYS, _ACTOR_KEYS)):
             raise Denied('OWNER_LOCAL_APPLY_CANDIDATE_SCHEMA')
+        if _SCOPE in candidate and candidate[_SCOPE] != 'actor':
+            raise Denied('OWNER_LOCAL_APPLY_CONFIGURED_SCOPE_INVALID')
         coord = tuple(candidate[k] for k in ('actor','provider','operation','target'))
         if any(type(k) is not str or not _COORDINATE.fullmatch(k) for k in coord):
             raise Denied('OWNER_LOCAL_APPLY_COORDINATES_INVALID')
@@ -75,9 +81,19 @@ class OwnerLocalDenyApply:
         current = self.core._baseline_policy_version + '|owner-local-deny:' + str(revision)
         if candidate['expectedPolicyVersion'] != current:
             raise Stale('OWNER_LOCAL_APPLY_STALE_POLICY_VERSION')
-        configured = self.core.policies.get(coord)
-        if type(configured) is not str or configured != candidate['expectedConfiguredPolicy']:
-            raise Denied('OWNER_LOCAL_APPLY_EXACT_CONFIGURED_GRANT_REQUIRED')
+        if candidate.get(_SCOPE) == 'actor':
+            # The owner authorizes a DENY for ONE exact target inherited from
+            # a configured actor-scoped literal rule, never an actor-wide edit.
+            # An exact override, including DENY/callable, must not be hidden.
+            if coord in self.core.policies:
+                raise Denied('OWNER_LOCAL_APPLY_ACTOR_SCOPE_SHADOWED')
+            configured = self.core.policies.get(coord[:3])
+            if type(configured) is not str or configured != candidate['expectedConfiguredPolicy']:
+                raise Denied('OWNER_LOCAL_APPLY_ACTOR_SCOPE_NOT_LITERAL')
+        else:
+            configured = self.core.policies.get(coord)
+            if type(configured) is not str or configured != candidate['expectedConfiguredPolicy']:
+                raise Denied('OWNER_LOCAL_APPLY_EXACT_CONFIGURED_GRANT_REQUIRED')
         if coord[1] not in self.core.adapters or not self.core.auth.active(coord[0]):
             raise Denied('OWNER_LOCAL_APPLY_GRANT_NOT_ACTIVE')
         if db.execute('''SELECT 1 FROM owner_local_denials WHERE
@@ -124,9 +140,12 @@ class OwnerLocalDenyApply:
         with owner.lock:
             owner.session(session, csrf)
             state, data = owner._take(ceremony, _CEREMONY)
-            if type(change) is not dict or set(change) != _DESCRIPTOR:
+            if (type(change) is not dict or
+                    set(change) not in (_DESCRIPTOR, _ACTOR_DESCRIPTOR)):
                 raise Denied('OWNER_LOCAL_APPLY_DESCRIPTOR_SCHEMA')
             core_fields = {key:change[key] for key in _KEYS}
+            if _SCOPE in change:
+                core_fields[_SCOPE] = change[_SCOPE]
             self._candidate(core_fields)
             try:
                 if type(change['requestId']) is not str or str(uuid.UUID(change['requestId'])) != change['requestId']:

@@ -189,6 +189,23 @@ class OwnerDenyWSGITests(unittest.TestCase):
         self.assertEqual(403,self.finish(started)[0])
         self.assertEqual(0,self.audit_count())
 
+    def test_actor_scoped_source_target_deny_via_existing_http_contract(self):
+        self.core.policies.pop(COORD)
+        self.core.policies[COORD[:3]]='ASK'
+        candidate={**self.candidate, 'expectedConfiguredScope':'actor'}
+        code,started,_=self.call(_PREFIX+'/begin',{'candidate':candidate})
+        self.assertEqual(200,code,started)
+        self.assertEqual('actor',started['change']['expectedConfiguredScope'])
+        code,result,_=self.finish(started)
+        self.assertEqual(200,code,result)
+        self.assertTrue(result['localDenyCommitted'])
+        self.assertEqual('DENY',self.core._policy(ACTOR,dict(
+            service='synthetic',operation='set_ask',target='record')))
+        self.assertEqual('ASK',self.core._policy(ACTOR,dict(
+            service='synthetic',operation='set_ask',target='other')))
+        self.assertEqual('ASK',self.core.policies[COORD[:3]])
+        self.assertEqual(1,self.audit_count())
+
     def test_stale_revision_is_409_and_never_partial_commit(self):
         _,started,_=self.begin()
         with self.core._db() as db:
