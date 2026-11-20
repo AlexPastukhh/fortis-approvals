@@ -75,6 +75,8 @@ tests=(
   test_release_checked_image_source.py
   test_release_auto_owner.py
   test_release_emergency_image_source.py
+  test_release_emergency_source_mount_preflight.py
+  test_release_emergency_promote_source.py
   test_analysis_review.py
   test_extensions.py
   test_mirror_signing.py

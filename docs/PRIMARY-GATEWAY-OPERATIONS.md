@@ -422,7 +422,16 @@ The original Check -Build followed by Apply -Build remains a compatibility
 path that builds twice, and is NOT immutable. The pinned artifact cannot
 authorize an unsafe release, a new set of UNKNOWN UUIDs, or missing rollback.
 After successful Apply, owner live readback, Backup and Promote remain separate
-mandatory operations; an uncertain attempt requires the original record and
+mandatory operations. For UC-GW-013 only, a missing historical image may also
+block the OLD-container admission during Promote even after the NEW Gateway
+has passed Backup. The narrowly guarded emergency Promote continuation in
+[UC-GW-013](use-cases/recovery.md#uc-gw-013) rechecks the historical backup
+record (the current `primary-backup.json` now targets the NEW candidate),
+immutable previous-primary/source identity and sealed rescue image/TAR,
+before rename or restart-policy mutation. It never substitutes the rescue
+for the original image identity and never proves rollback. Owner Windows
+5.1 SelfTest and an exact reviewed controller update are mandatory.
+An uncertain attempt requires the original record and
 UC-GW-006, never blind retry.
 
 ## P4 GitHub Deployments READ — first owner activation (not yet live)
