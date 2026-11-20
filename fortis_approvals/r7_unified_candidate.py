@@ -75,12 +75,18 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               project_keys=None, github_pilot=None,
                               github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None,
                               publisher_profile=None, publisher_grant=None,
-                              machine_shell=None):
+                              machine_shell=None, local_deny_source_opt_in=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
     the same actor NEVER receives owner decisions, raw service token or POST.
     """
+    # An explicit source-only test selector; the default production server
+    # never passes it. It is NOT attestation of installed source or workers.
+    if local_deny_source_opt_in is not None:
+        from .extensions.owner_policy_r7_optin_phase6c4 import R7LocalDenySourceOptIn
+        if type(local_deny_source_opt_in) is not R7LocalDenySourceOptIn:
+            raise Denied('R7_LOCAL_DENY_SOURCE_OPT_IN_REJECTED')
     if (type(owner_origin) is not str or
             owner_origin in _RESERVED_OWNER_ORIGINS or
             not re.fullmatch(r'http://localhost:[0-9]{4,5}', owner_origin) or
@@ -167,13 +173,29 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     policies.update({(actor, *G4_OPERATION): 'ASK' for actor in actors})
     if enabled:
         policies.update(profile.owner_policy_map())
-    core = IncidentCore(root/'approvals.sqlite',adapters={'sonarcloud':writer},
+    if local_deny_source_opt_in is not None:
+        from .extensions.owner_policy_local_core_phase6c import LocalDenyCore
+        core_type = LocalDenyCore
+    else:
+        core_type = IncidentCore
+    core = core_type(root/'approvals.sqlite',adapters={'sonarcloud':writer},
                 policies=policies,authenticator=auth,owner_verifier=owner,
                 policy_version='r7-p1-sonar-accept-issue-write-v1')
     from .owner_shell import OwnerShellClient
-    portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
-                             read_only_banner=False,
-                             owner_shell=OwnerShellClient.from_environment())
+    if local_deny_source_opt_in is None:
+        portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
+                                 read_only_banner=False,
+                                 owner_shell=OwnerShellClient.from_environment())
+    else:
+        from .extensions.owner_policy_local_deny_apply_phase6c1 import OwnerLocalDenyApply
+        from .extensions.owner_policy_local_bundle_phase6c3 import OwnerLocalDenyInventoryPortal
+        apply_adapter = OwnerLocalDenyApply(
+            core,owner,source_digest=local_deny_source_opt_in.source_digest,
+            credential_generation_digest=local_deny_source_opt_in.credential_generation_digest)
+        portal = OwnerLocalDenyInventoryPortal(
+            core,owner,local_deny_apply=apply_adapter,
+            strong_operations={G4_OPERATION},read_only_banner=False,
+            owner_shell=OwnerShellClient.from_environment())
     broker_actions = {actor:{G4_OPERATION} for actor in actors}
     broker_reads = {actor: SONAR_READ_OPERATIONS for actor in actors}
     if enabled:

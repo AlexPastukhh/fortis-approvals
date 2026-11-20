@@ -1,0 +1,23 @@
+# Phase 6C.4 — R7 source-builder opt-in for same guarded Core
+
+**2026-11-20: SOURCE CANDIDATE; NO RUNTIME DEPLOYMENT OR OWNER POLICY ACTIVATION.** PR #171 merged the single-process local policy bundle. The currently deployed/standard R7 server still calls `build_r7_unified_candidate` **without** a local-policy selector. Production continues using `IncidentCore` and `IncidentOwnerPortal` with no local policy routes enabled.
+
+## What this stage actually changes
+
+The native `build_r7_unified_candidate` now accepts optional **`local_deny_source_opt_in=None`**. With the default `None`, it retains the original incident-aware Core, owner portal, grant configuration, broker, extension/native installations and machine ingress unchanged. With a separately constructed exact `R7LocalDenySourceOptIn` instance, the same builder instead creates `LocalDenyCore`, matching owner-only `OwnerLocalDenyInventoryPortal` and `OwnerLocalDenyApply` using the **same** `IncidentOwnerWebAuthn` and Core. The R7 `RepoIntentBroker` and `RepoIngress`, including subsequent native/extension installers, receive that same guarded Core object. The owner portal retains incident and existing strong WebAuthn approval behavior.
+
+An invalid selector or malformed SHA-256 digests fails before private state initialization. The owner-only apply workflow remains **exact ASK/ALLOW → DENY only**. It cannot create new ALLOW, turn off PowerShell command gating, permit a new actor, or suppress WebAuthn. The incoming source/credential digest strings are merely **constructor data**, not attestation of the installed image, owner credential generation, network listener or Windows controller. Their validation is syntactic only. The selector advertises `runtime_verified=False` and cannot authorize a production rollout by itself.
+
+**No** modifications are made to `r7_unified_server.create_servers`, its `main` entrypoint, Dockerfile, Windows/owner scripts, live Host/Origin mappings, granted credentials, or static policy literals. The server does not expose an environment variable or a machine argument to choose the local Core. A source merge therefore **does not activate** this mode. Release-pinned Core/WebAuthn/Portal/Gateway and persistence source hashes remain byte-exact unchanged.
+
+## Concrete integration limits and safety gates
+
+Existing R7 native Sonar ASK policies are generally **actor-scoped**, not exact target-specific; the narrow local DENY editor intentionally requires a configured exact (actor, provider, operation, target) **literal ASK/ALLOW** entry. This source stage does not manufacture exact grants or convert inherited/global rules into editable rules. A unit test injects an exact Sonar ASK grant **as an offline fixture** to validate the restrictive path, and makes no claim that this is already a usable Dashboard policy row.
+
+The independent immutable/monotonic history service remains deferred by owner decision. Restoring an old backup, old image or running a plain `Core` can resurrect prior rights; no independent anti-rollback or complete revocation is claimed. Before any actual owner-host enablement, a reviewed runtime selector must be protected by owner-controlled installation and source/credential attestation, **every** installed Core/Ingress/worker/replica must be proven to enforce the local restrictions, and owner inventory, backup/restore, migration and in-flight request states must pass external negative acceptance. Do not give the AI a route to select LocalDenyCore or modify the authority. All installed/runtime checks remain OPEN.
+
+## Testing and release boundary
+
+`test_owner_policy_r7_optin_phase6c4.py` uses a synthetic owner-only test fixture and a Sonar transport that **cannot call network**. It verifies old defaults untouched, explicit guarded R7 Core and owner/ingress broker identity, exact local-deny policy and inventory readback, no Sonar effect on denied submit, and invalid source selector rejected before marker/DB creation. The test owner is **not a cryptographic credential**. The full existing R7 real TLS/WebAuthn acceptance suite and earlier Phase 6C.1/6C.2 VirtualKey negative tests must still PASS in crypto-capable exact-head Source CI; minimal Repo image does not include `fido2`.
+
+This is source integration progress, not an approval to run a Gateway container or change active policies. The next technical gate is **all-worker/restore-path source identity and enforcement verification on the trusted owner host**, followed by owner-controlled deployment planning that explicitly acknowledges backup rollback risk. No runtime rollout is part of this PR.
