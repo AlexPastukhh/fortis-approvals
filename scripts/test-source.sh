@@ -31,6 +31,7 @@ tests=(
   test_owner_policy_review_http.py
   test_owner_policy_review_http_crypto.py
   test_owner_policy_authority_phase6.py
+  test_owner_policy_active_store_phase6b.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py
