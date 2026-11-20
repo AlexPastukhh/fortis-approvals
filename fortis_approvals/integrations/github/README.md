@@ -6,6 +6,13 @@
 later releases changed the runtime image. [Current state](../../../docs/guides/FORTIS-APPROVALS-SECURE-DEVELOPMENT.md)
 owns accepted source/image and deployed scope; do not copy old container IDs.
 
+## P5 Registry post-merge envelope (offline candidate, NOT LIVE)
+
+[Contract](../../../docs/RELEASE-REGISTRY-P5-POST-MERGE-GATEWAY-CONTRACT.md) and
+`post_merge_registry_envelope.py` define a pure structural candidate, not a
+registered Gateway READ, collector, actor grant or canonical Registry proof.
+Unknown method remains DENY; owner-reviewed UC-GW-003 is a separate step.
+
 ## Source map
 
 | Concern | Location |
@@ -250,7 +257,7 @@ separately; the attachment must be opened by the owner to verify the bytes.
 
 The running Gateway must be separately released; source-only changes
 cannot activate it. Preserve UNCERTAIN, CLAIMED and native worker evidence
-under [UC-GW-005](../../docs/use-cases/releases.md#uc-gw-005), using the
+under [UC-GW-005](../../../docs/use-cases/releases.md#uc-gw-005), using the
 single owner controller and its protected checked-image workflow. The
 owner-installed PR #128 Auto mode admits only independently audited
 append-only UNCERTAIN additions; this is not permission to change existing
