@@ -64,14 +64,20 @@ def load(path):
         raise ManifestStop("MANIFEST_INPUT_INVALID") from None
 
 
-def check_route(value, binding):
+def check_route(value, binding, path_parameters=None):
+    """An additional typed receipt UUID is metadata, never a caller route."""
     check(type(value) is str and 1 <= len(value) <= 200 and
           value.startswith("/") and value != "/" and
           all(ROUTE_SEGMENT.fullmatch(part) and part not in (".", "..")
               for part in value[1:].split("/")), "ROUTE_NOT_CLOSED")
+    check(path_parameters is None or
+          type(path_parameters) is dict and path_parameters == {"request_id": "uuid4"},
+          "ROUTE_PATH_PARAMETERS_INVALID")
+    extra = [] if path_parameters is None else ["request_id"]
     found = PLACEHOLDER.findall(value)
-    check((binding is None and not found) or
-          (type(binding) is str and ID.fullmatch(binding) and found == [binding]),
+    check((binding is None and not found and not extra) or
+          (type(binding) is str and ID.fullmatch(binding) and
+           binding not in extra and found == [binding] + extra),
           "ROUTE_TARGET_BINDING_INVALID")
 
 
@@ -141,9 +147,10 @@ def validate(value):
           "MANIFEST_OPERATIONS_INVALID")
     names = set()
     for op in ops:
-        fields(op, ("name", "method", "path", "targetBinding",
-                    "targets", "effect", "policy", "maxResponseBytes"),
-               "MANIFEST_OPERATION_FIELDS_INVALID")
+        required = ("name", "method", "path", "targetBinding",
+                    "targets", "effect", "policy", "maxResponseBytes")
+        optional = ("pathParameters",) if "pathParameters" in op else ()
+        fields(op, required + optional, "MANIFEST_OPERATION_FIELDS_INVALID")
         name = op["name"]
         check(type(name) is str and ID.fullmatch(name) and name not in names,
               "MANIFEST_OPERATION_ID_INVALID")
@@ -152,7 +159,11 @@ def validate(value):
         # separately reviewed effect/preview/receipt-specific contract.
         check(op["method"] == "GET" and op["effect"] == "READ" and
               op["policy"] == "ALLOW", "MANIFEST_READ_ONLY_REQUIRED")
-        check_route(op["path"], op["targetBinding"])
+        if "pathParameters" in op:
+            check(type(op["pathParameters"]) is dict and
+                  op["pathParameters"] == {"request_id": "uuid4"},
+                  "ROUTE_PATH_PARAMETERS_INVALID")
+        check_route(op["path"], op["targetBinding"], op.get("pathParameters"))
         targets = op["targets"]
         check(type(targets) is list and 1 <= len(targets) <= 30 and
               len(set(str(x) for x in targets)) == len(targets) and
