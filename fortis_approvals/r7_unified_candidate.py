@@ -159,6 +159,12 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               organization_keys=organizations, region=region,
                               allowed_project_keys=project_keys)
     root = _fresh_r7_state(state)
+    if local_deny_source_opt_in is None:
+        # A new plain R7 worker must not silently ignore an opt-in local
+        # DENY database left by an earlier guarded worker. Fail closed before
+        # constructing receipts, owner credentials or broker/ingress.
+        from .extensions.owner_policy_legacy_fence_phase6c5 import refuse_legacy_core_with_local_policy
+        refuse_legacy_core_with_local_policy(root)
     writer = SonarIssueAdapter(
         sonar_transport,
         project_keys=() if project_keys is None else tuple(project_keys),

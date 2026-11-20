@@ -42,6 +42,7 @@ tests=(
   test_owner_policy_local_deny_http_crypto.py
   test_owner_policy_local_bundle_phase6c3.py
   test_owner_policy_r7_optin_phase6c4.py
+  test_owner_policy_legacy_fence_phase6c5.py
   test_powershell_machine_gateway.py
   test_powershell_owner_mount.py
   test_machine_powershell_gateway_mount_release.py
