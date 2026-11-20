@@ -21,6 +21,26 @@ python3 -B scripts/check-own-api-manifest.py --manifest "$PWD/docs/templates/own
 Both fixtures must produce SOURCE_MANIFEST_VALID with
 liveVerified=false and readyToDeploy=false.
 
+
+### Mirror READ v2 source-only manifest (UC-GW-012 / P5 S1)
+
+`mirror-read-v2.source.json` lists the unchanged v1 operation plus eight
+source-defined READ v2 GET routes. It pins the reviewed Windows source SHA
+and the narrow `mirror-pilot` / `fortis-approvals` scope. This is a
+**proposal**, not a production Gateway grant, credential change or listener.
+
+For `get_windows_pull_result_v2` only, the source checker accepts the
+additional closed `pathParameters: {"request_id": "uuid4"}` declaration.
+The target still binds exactly to `repo_id` and the second path segment is
+not a generic caller-selected URL. Runtime UUID validation belongs to the
+trusted provider. Unknown markers, extra keys, reordered parameters,
+POST/ASK/WRITE and expanded target scopes still fail closed.
+
+    python3 -B scripts/check-own-api-manifest.py --manifest "$PWD/docs/templates/own-api/mirror-read-v2.source.json"
+
+The V1 source linter validates static READ routes, **not** required paging
+params, live grants or release readiness. Typed paging acceptance is S2.
+
 The real source-only [Action Core READ manifest](action-core-read.json) pins
 `feed_and_search_and_bank_and_brain/main` at the owner-merged PR #16 SHA.
 It declares only `action_core.read_action` for Actions 3/4 and the **proposed**

@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "serviceId": "mirror",
+  "ownerRepository": "docke-windows-mirror",
+  "sourceSha": "77382f489bbf057aac53e3ee99664df87f017732",
+  "transport": {
+    "profile": "WIN-HTTPS",
+    "origin": "https://host.docker.internal:443",
+    "tlsServerName": "host.docker.internal",
+    "pinnedCaPath": "/run/fortis-secrets/mirror-read/ca.pem",
+    "gatewayDockerNetwork": null
+  },
+  "credential": {
+    "vaultAlias": "mirror-link",
+    "upstreamPrincipal": "mirror-gateway-read",
+    "vaultOwner": "OWNER_ONLY"
+  },
+  "operations": [
+    {
+      "name": "get_repository",
+      "method": "GET",
+      "path": "/gateway/v1/repositories/{repo_id}",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "list_repositories_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories",
+      "targetBinding": null,
+      "targets": [
+        "mirror-pilot"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "get_repository_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "list_worktrees_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}/worktrees",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "get_github_status_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}/github",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "get_available_actions_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}/actions",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "get_capabilities_v2",
+      "method": "GET",
+      "path": "/gateway/v2/capabilities",
+      "targetBinding": null,
+      "targets": [
+        "mirror-pilot"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "preview_windows_pull_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}/pull-preview",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536
+    },
+    {
+      "name": "get_windows_pull_result_v2",
+      "method": "GET",
+      "path": "/gateway/v2/repositories/{repo_id}/pull-results/{request_id}",
+      "targetBinding": "repo_id",
+      "targets": [
+        "fortis-approvals"
+      ],
+      "effect": "READ",
+      "policy": "ALLOW",
+      "maxResponseBytes": 65536,
+      "pathParameters": {
+        "request_id": "uuid4"
+      }
+    }
+  ]
+}
