@@ -1,5 +1,8 @@
 # Owner policy editor V2 — source candidate
 
+> **Историческая спецификация V2, не текущий статус production.** Последующий owner-reported релиз `UNIFIED_V2 + OWNER_LABELS_V1` был активирован, а PR #214 с исправлением интерфейса merged source; завершение Backup/Promote того релиза требуется подтвердить по защищённой Windows записи. Полное управление DENY/ASK/ALLOW для *каждого* метода пока разрабатывается: см. [план 2026-11-21](OWNER-ALL-METHOD-POLICY-PLAN-2026-11-21.md) и [текущий handoff](OWNER-ALL-METHOD-POLICY-HANDOFF-2026-11-21.md). Перечисленные ниже ASK-only потолки описывают **старую модель admission** и не являются новым продуктовым требованием.
+
+
 Status: **explicit R7 source opt-in implemented; not deployed or live accepted**.
 The existing SONAR_ACCEPT_ISSUE_V1 release is unchanged. V2 is selected only by
 the owner-reviewed full release config with `"ownerPolicyEditor":"UNIFIED_V2"`
