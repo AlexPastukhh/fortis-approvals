@@ -247,7 +247,15 @@ class RegistryStateJournal:
             _private(self.path.parent,True);_private(self.path)
             for suffix in ('-wal','-shm','-journal'):
                 side=Path(str(self.path)+suffix)
-                if side.exists() or side.is_symlink():_private(side)
+                if side.exists() or side.is_symlink():
+                    try:
+                        _private(side)
+                    except FileNotFoundError:
+                        # SQLite may unlink its transient -wal/-shm files
+                        # between the existence check and lstat. A newly
+                        # appearing sidecar must still pass the full guard.
+                        if side.exists() or side.is_symlink():
+                            _private(side)
         except OSError:
             raise Denied('REGISTRY_STATE_UNAVAILABLE') from None
 
