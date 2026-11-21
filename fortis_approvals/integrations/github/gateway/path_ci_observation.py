@@ -25,7 +25,7 @@ def _safe_path(value):
 
 
 def observe_path_ci(adapter, *, number, expected_head_sha, expected_base_sha,
-                    expected_body_sha256, clock=time.monotonic):
+                    expected_body_sha256, clock=time.monotonic, policy_bound=False):
     """Fixed pilot; only current open-PR observations, never a merge decision.
 
     The adapter must be owner-composed with existing CI workflow bindings.
@@ -151,8 +151,15 @@ def observe_path_ci(adapter, *, number, expected_head_sha, expected_base_sha,
     first = pr()
     files = paths(first['changedFiles'])
     policy = rules()
-    ci = collect_workflow_evidence(ServerCIReader(adapter, clock=clock), owner=adapter.owner,
-                                   head=expected_head_sha, number=number, branch=first['branch'])
+    binding = None
+    if policy_bound:
+        from .p5_ci_binding import P5CIReader, collect_policy_ci
+        ci, binding = collect_policy_ci(P5CIReader(adapter, clock=clock), owner=adapter.owner, head=expected_head_sha,
+                                        base=expected_base_sha, number=number,
+                                        branch=first['branch'], rules=policy)
+    else:
+        ci = collect_workflow_evidence(ServerCIReader(adapter, clock=clock), owner=adapter.owner,
+                                       head=expected_head_sha, number=number, branch=first['branch'])
     # Compare rule and path projections again; current rule names are NOT assumed
     # to be satisfied by similarly named workflow jobs or legacy statuses.
     if rules() != policy or paths(first['changedFiles']) != files or pr() != first:
@@ -160,6 +167,8 @@ def observe_path_ci(adapter, *, number, expected_head_sha, expected_base_sha,
     main()
     observation = {'repository': origin, 'number': number, 'pr': first,
                    'paths': files, 'currentRules': policy, 'pinnedWorkflowCI': ci}
+    if binding is not None:
+        observation['ciPolicyBinding'] = binding
     return {'result':'PRE_MERGE_PATH_CI_OBSERVED', 'observation':observation,
             'observationDigest':_digest(observation), 'historicalPolicyVerified':False,
             'requiredPolicySatisfied':False, 'reviewAttested':False,
