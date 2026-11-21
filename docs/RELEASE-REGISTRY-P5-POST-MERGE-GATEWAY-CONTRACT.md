@@ -718,6 +718,68 @@ synthetic second retained receipt to exercise exact range matching and
 missing-middle rejection, not two live captures. Real protected baseline
 acceptance and full multi-PR semantic attribution remain prerequisites.
 
+## Registry-specific review/policy binding (source candidate)
+
+The owner-accepted [container PR #43](https://github.com/AlexPastukhh/fortis-container/blob/3a404cd61df842641a68ed508dd4177ea0267bef/docs/RELEASE-REGISTRY-P5-DESIGN.md#registry-specific-review-cutoff-and-ci-policy-proposed-alternative-2026-11-21)
+permits a separately protected Registry-specific review policy rather than
+claiming a reconstruction of historical GitHub merge protection. Existing
+GitHub rules, four required candidate jobs and manual owner merge remain
+unchanged. This increment is an unregistered candidate implementation,
+not that protected policy lifecycle or live admission.
+
+`registry_review_policy.py` adds a host-composed exact immutable policy
+reference reader with a separate fixed digest. Schema 1, canonical
+repository, enrollment UUID, baseline SHA, first policy revision 1,
+zero previousDigest, acceptanceReceiptDigest, effectiveAt (UTC epoch
+seconds), maxReviewToMergeSeconds (1–86400), clockToleranceSeconds
+(0–60), and exact full existing four-job profile are required. The bounds
+are source guards, not owner-selected live clock/interval settings.
+Later policy revisions, transitions and mismatched pins stop.
+AcceptanceReceiptDigest is a reference, not verified owner enrollment
+authority. No default policy is enrolled or selected.
+
+The separate `RegistryPolicyReviewAdapter` reuses the existing Core ASK
+bundle operation only in an offline composition. It requires v2 retained
+material, exact policy profile and capture at/after policy effectiveAt.
+It binds enrollment, baseline, policy revision, profile digest,
+reference digest and acceptance receipt digest in the **Core preview**
+before the owner approves. Existing Core fingerprint, prepare/apply/
+confirm exact preview rechecks are used. Neither request JSON nor
+post-merge code may attach a new policy to an old receipt. The legacy
+adapter is unchanged; receipts missing this binding cannot pass the
+new observer. Independent protected policy and Core/owner ceremony
+acceptance, exact scope and transport remain prerequisites.
+
+`observe_registry_review` reuses the actual selected-main composition
+and original owner decision, checks the Core preview fingerprint and
+policy binding, re-reads original capture under checkpoint and requires
+check completion <= capture < owner approval <= execution < merge,
+merge no later than composed clock plus tolerance, and bounded
+approval-to-merge interval. It independently rereads the merged PR's
+exact identity/body as a drift check (not as release planning input),
+latest attempt inventory, original run/job IDs and check/App witnesses.
+Post-merge empty PR association is permitted only after the original
+pre-merge association was bound by the reviewed v2 bundle; a conflicting
+nonempty association stops. A later rerun or changed body/check/job
+fails closed. The shared exact check witness helper is factored from
+the existing P5 source collector without weakening pre-merge checks.
+Readback is bounded (existing P5CIReader budget), current main, policy,
+capture checkpoint and original Core decision rechecked before return.
+This is current consistency, not an atomic provider history proof.
+
+Result REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE binds the original
+policy/cutoff, owner/bundle/capture identities, selected-main observation
+digest and CI binding digest. Registry-specific verification flags,
+historical provider verification flags and all admission/deployment flags
+remain false. It is not yet retained in the anchored collector snapshot
+or consumed by the canonical admission gate. Full protected enrollment/
+policy acceptance, trusted clock/owner audit, independently durable
+review-policy retention and forward-range binding/component evidence
+must be integrated and tested before enabling that alternative.
+Eleven tests use actual temporary Git/Core and retained capture with
+synthetic provider, verifier, policy reference and clock. No new routes,
+credentials, workflow bytes, policy grants or production state.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
