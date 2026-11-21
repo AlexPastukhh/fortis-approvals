@@ -122,3 +122,17 @@ Impact validator. No Registry build target/image is yet defined; its
 future independent runtime and catalog enrollment require a separate
 review, and these classification entries are not a blanket future
 Registry source exemption. No live API, database, grants or deploy.
+
+
+### Policy-bound source snapshot compatibility
+
+The collector's schemaVersion 2 wrapper adds the exact immutable
+registryPolicy reference and registryReview candidate to the original
+selected-main result. Preview verifies wrapper/source identities,
+selected-main observation digest, policy reference digest and all false
+review flags. It still returns BLOCKED_EVIDENCE_GAP, now including
+PROTECTED_REGISTRY_REVIEW_POLICY_ACCEPTANCE; it never claims actual
+policy acceptance or successful intake. Full paired retention and
+forward-range consistency are checked in the owner-composed collector,
+not by trusting a caller-supplied DTO. SchemaVersion 1 remains supported
+as a legacy blocked source candidate.

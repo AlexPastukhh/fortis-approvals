@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 from ....core import Conflict, Denied, Stale, canonical, loads_strict
 from .review_capture import _hash, _hex, _need, _private, _uuid
@@ -44,9 +45,11 @@ def genesis(instance_id):
 
 
 def _source(snapshot, request):
-    _need(type(snapshot) is dict and set(snapshot)==
-          {'schemaVersion','issuer','repository','evidenceId','result'}
-          and type(snapshot['schemaVersion']) is int and snapshot['schemaVersion']==1
+    bound='policyReferenceDigest' in request
+    fields={'schemaVersion','issuer','repository','evidenceId','result'}
+    if bound: fields|={'registryPolicy','registryReview'}
+    _need(type(snapshot) is dict and set(snapshot)==fields
+          and type(snapshot['schemaVersion']) is int and snapshot['schemaVersion']==(2 if bound else 1)
           and snapshot['issuer']==ISSUER and snapshot['repository']==REPOSITORY
           and snapshot['evidenceId']==request['evidenceId'],'P5_SNAPSHOT_SOURCE_INVALID')
     result=snapshot['result']
@@ -68,6 +71,39 @@ def _source(snapshot, request):
           and review['mergeObservation']['selectedMainSha']==request['selectedMainSha']
           and review['mergeObservation']['pullRequest']['mergeSha']==request['selectedMainSha'],
           'P5_SNAPSHOT_SOURCE_INVALID')
+    if bound:
+        from .registry_review_policy import policy_reference, _binding, _epoch
+        pin=request['policyReferenceDigest']
+        ref=policy_reference(lambda:snapshot['registryPolicy'],pin)
+        rr=snapshot['registryReview']
+        flags={'registryReviewPolicyVerified','registryReviewCutoffVerified',
+               'historicalPolicyVerified','historicalMergeCutoffVerified',
+               'evidenceVerified','admissionAllowed','deploymentAllowed'}
+        _need(type(rr) is dict and set(rr)=={'result','observation','observationDigest',*flags}
+              and rr['result']=='REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE'
+              and all(rr[k] is False for k in flags),'P5_SNAPSHOT_POLICY_INVALID')
+        r=rr['observation']
+        _need(type(r) is dict and set(r)=={
+            'repository','policyBinding','selectedMainSha','ownerRequestId',
+            'ownerRequestFingerprint','captureEventDigest','bundleDigest','captureCheckpoint',
+            'capturedAt','ownerDecisionAt','ownerExecutionAt','mergedAt',
+            'selectedMainObservationDigest','ciBindingDigest'}
+            and _hash(r)==rr['observationDigest']
+            and r['repository']==REPOSITORY and r['policyBinding']==_binding(ref,pin)
+            and r['selectedMainSha']==request['selectedMainSha']
+            and r['ownerRequestId']==decision['requestId']
+            and r['ownerRequestFingerprint']==decision['requestFingerprint']
+            and r['captureEventDigest']==decision['captureEventDigest']
+            and r['bundleDigest']==decision['bundleDigest']
+            and r['captureCheckpoint']==review['checkpoint']
+            and r['ownerDecisionAt']==decision['ownerDecisionAt']
+            and r['ownerExecutionAt']==decision['ownerExecutionAt']
+            and r['mergedAt']==review['mergeObservation']['pullRequest']['mergedAt']
+            and r['selectedMainObservationDigest']==result['observationDigest']
+            and r['ciBindingDigest']==review['retainedCiBindingSha256']
+            and ref['effectiveAt']<=_epoch(r['capturedAt'])<r['ownerDecisionAt']<=r['ownerExecutionAt']<_epoch(r['mergedAt'])
+            and _epoch(r['mergedAt'])-r['ownerDecisionAt']<=ref['maxReviewToMergeSeconds'],
+            'P5_SNAPSHOT_POLICY_BINDING_MISMATCH')
 
 
 class CollectorSnapshotStore:
@@ -167,7 +203,9 @@ class CollectorSnapshotStore:
             r,eid,raw_request,fp,raw,sd,prev,event=row
             try:
                 req=loads_strict(raw_request);snapshot=loads_strict(raw)
-                _need(type(req) is dict and set(req)=={'evidenceId','ownerRequestId','selectedMainSha','expectedRevision'}
+                fields={'evidenceId','ownerRequestId','selectedMainSha','expectedRevision'}
+                _need(type(req) is dict and set(req) in (fields,fields|{'policyReferenceDigest'})
+                      and ('policyReferenceDigest' not in req or _hex(req['policyReferenceDigest'],64))
                       and type(req['expectedRevision']) is int and req['expectedRevision']==rev-1
                       and _uuid(eid) and req['evidenceId']==eid and _uuid(req['ownerRequestId'])
                       and _hex(req['selectedMainSha'],40)
@@ -186,7 +224,7 @@ class CollectorSnapshotStore:
     def _receipt(self,row,*,anchored):
         rev,eid,req,fp,raw,sd,prev,event=row
         request=loads_strict(req)
-        return {'result':'ANCHORED_CANDIDATE_EVIDENCE_RETAINED' if anchored else 'LOCAL_EVIDENCE_PENDING_ANCHOR',
+        receipt={'result':'ANCHORED_CANDIDATE_EVIDENCE_RETAINED' if anchored else 'LOCAL_EVIDENCE_PENDING_ANCHOR',
                 'evidenceClass':'SOURCE_CANDIDATE_ONLY','repository':REPOSITORY,
                 'evidenceId':eid,'evidenceDigest':sd,'requestDigest':fp,
                 'ownerRequestId':request['ownerRequestId'],'selectedMainSha':request['selectedMainSha'],
@@ -194,8 +232,14 @@ class CollectorSnapshotStore:
                 'checkpoint':{**genesis(self.instance_id),'revision':rev,'eventDigest':event},
                 'evidenceVerified':False,'admissionAllowed':False,'deploymentAllowed':False}
 
+        if 'policyReferenceDigest' in request:
+            receipt['policyReferenceDigest']=request['policyReferenceDigest']
+            receipt['registryReviewDigest']=loads_strict(raw)['registryReview']['observationDigest']
+        return receipt
+
     def retain(self,*,evidence_id,expected_revision,owner_request_id,selected_main_sha,
-               adapter,store,core,checkpoint_reader,owner,validator):
+               adapter,store,core,checkpoint_reader,owner,validator,
+               policy_reader=None,expected_policy_digest=None,clock=time.time):
         """One internal capture request; replay never recollects a merged PR.
 
         expected_revision is the append CAS, bound to evidence ID in the
@@ -207,6 +251,10 @@ class CollectorSnapshotStore:
               'P5_SNAPSHOT_REQUEST_INVALID')
         request={'evidenceId':evidence_id,'ownerRequestId':owner_request_id,
                  'selectedMainSha':selected_main_sha,'expectedRevision':expected_revision}
+        bound=policy_reader is not None or expected_policy_digest is not None
+        if bound:
+            _need(callable(policy_reader) and _hex(expected_policy_digest,64),'P5_SNAPSHOT_POLICY_REQUEST_INVALID')
+            request['policyReferenceDigest']=expected_policy_digest
         fp=_hash(request)
         anchor=self._anchor()
         with self._db() as db:
@@ -224,11 +272,22 @@ class CollectorSnapshotStore:
             if actual['revision']!=expected_revision:raise Stale('P5_SNAPSHOT_REVISION_STALE')
         # No transaction held across provider/Git reads. Recheck both CAS and
         # independent witness before writing the exact observed source bytes.
-        result=observe_selected_main(adapter=adapter,store=store,core=core,
-                    checkpoint_reader=checkpoint_reader,owner=owner,owner_request_id=owner_request_id,
-                    validator=validator,expected_merge_sha=selected_main_sha,selected_main_sha=selected_main_sha)
-        snapshot={'schemaVersion':1,'issuer':ISSUER,'repository':REPOSITORY,
-                  'evidenceId':evidence_id,'result':result}
+        common=dict(adapter=adapter,store=store,core=core,checkpoint_reader=checkpoint_reader,
+                    owner=owner,owner_request_id=owner_request_id,validator=validator,
+                    selected_main_sha=selected_main_sha)
+        if bound:
+            from .registry_review_policy import policy_reference, _observe_registry_review_pair
+            ref=policy_reference(policy_reader,expected_policy_digest)
+            result,review=_observe_registry_review_pair(**common,policy_reader=policy_reader,
+                         expected_policy_digest=expected_policy_digest,clock=clock)
+            snapshot={'schemaVersion':2,'issuer':ISSUER,'repository':REPOSITORY,
+                      'evidenceId':evidence_id,'result':result,'registryPolicy':ref,'registryReview':review}
+            if policy_reference(policy_reader,expected_policy_digest)!=ref:
+                raise Stale('P5_SNAPSHOT_POLICY_CHANGED')
+        else:
+            result=observe_selected_main(**common,expected_merge_sha=selected_main_sha)
+            snapshot={'schemaVersion':1,'issuer':ISSUER,'repository':REPOSITORY,
+                      'evidenceId':evidence_id,'result':result}
         _source(snapshot,request)
         raw=canonical(snapshot);size=len(raw.encode('utf-8'))
         _need(size<=MAX_SNAPSHOT,'P5_SNAPSHOT_STORAGE_LIMIT')
@@ -237,6 +296,8 @@ class CollectorSnapshotStore:
         row=(rev,evidence_id,canonical(request),fp,raw,sd,anchor['eventDigest'],event)
         with self._db() as db:
             rows,fresh=self._checked(db)
+            if bound and policy_reference(policy_reader,expected_policy_digest)!=ref:
+                raise Stale('P5_SNAPSHOT_POLICY_CHANGED')
             _need(fresh==anchor and self._anchor()==anchor,'P5_SNAPSHOT_ANCHOR_CHANGED')
             _need(len(rows)<MAX_ROWS and sum(len(r[4].encode('utf-8')) for r in rows)+size<=MAX_BYTES,
                   'P5_SNAPSHOT_STORAGE_LIMIT')
