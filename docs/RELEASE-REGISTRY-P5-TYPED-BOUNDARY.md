@@ -136,3 +136,61 @@ policy acceptance or successful intake. Full paired retention and
 forward-range consistency are checked in the owner-composed collector,
 not by trusting a caller-supplied DTO. SchemaVersion 1 remains supported
 as a legacy blocked source candidate.
+
+### Initial Registry transaction mechanics (source only)
+
+The Registry-owned `state_journal.py::RegistryStateJournal` implements
+the initial-range SQLite transaction from PR #200. This is the owning
+state schema v1, not the earlier Container fixture journal or another
+collector journal. **No admission or live dispatch is enabled.**
+Only the initial nonempty merge range can be recorded; subsequent
+suffixes and supersession require a further reviewed schema extension.
+
+The host composes an explicit private database path, immutable enrolled
+scope (repository, enrollment ID, baseline SHA and digest, catalog,
+binding and policy digests), independent anchor reader, and a plan
+reader by evidence ID. A distinct combined-plan wrapper has exactly
+schemaVersion=1, issuer, repository, evidenceId and plan; its digest
+binds all bytes. This is an internal candidate protocol, NOT the
+existing per-merge collector snapshot, not an installed plan receipt
+provider, and not authenticated transport. The proposed planner
+identity is a host parameter, not a credential or public actor selector.
+
+Explicit initialization requires an externally supplied genesis checkpoint
+binding instance and scope; no existing DB is replaced or missing DB
+automatically created. The private 0700 directory, 0600 regular single-link
+files/sidecars, WAL, FULL synchronous, foreign keys, bounded busy timeout
+and exact schema are checked. BEGIN IMMEDIATE serializes operation, original
+fingerprint, retained candidate plan, original receipt and candidate records.
+The event digest binds instance, scope, revision, operation fingerprint,
+evidence digest and previous digest. Every read recomputes the retained
+plan/receipt/event bindings and exact record projection. The candidate
+cursor is derived from the immutable receipt, not a mutable main pointer.
+Only deployment candidates create candidate records; a nonempty
+no-deployment candidate retains its audit with zero records.
+An empty range cannot advance this cursor.
+
+Exact operation replay returns the original receipt only when an
+independent matching head is observed; a changed fingerprint conflicts.
+CAS mismatch, competing commits, scope mismatch, incomplete candidate
+or unsupported suffix block. Locally committed data without a matching
+anchor returns UNKNOWN_OUTCOME; candidate cursor reads are blocked.
+An original-operation read can expose only the exact pending checkpoint
+identities, not a committed receipt. Anchor/readback failure after commit
+or an ambiguous local COMMIT is UNKNOWN_OUTCOME with the operation ID;
+resolve that same operation, never blindly reapply. The state journal
+has **no anchor writer**. The test witness is synthetic; an actual
+protected monotonic external anchor, exact CAS advancement, recovery
+authority and backup/restore still require implementation and owner
+acceptance. A rolled-back witness is not proof of a new transaction.
+There is no live queue, authoritative absence assertion, artifact build,
+release operation, route or permission change. All candidate verification
+and admission flags remain false.
+
+Mandatory source tests cover original replay, pending read blocking,
+scope/actor/identity checks, invalid actual state, no-deployment audit,
+missing DB, tampering, atomic rollback, commit/readback ambiguity and
+competing writers. The admission-plan fixture also exercises the real
+composed source candidate through this SQLite transaction with a
+synthetic independent witness. The existing typed dispatch remains
+WRITE-disabled and disconnected from the state journal.

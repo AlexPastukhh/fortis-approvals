@@ -27,16 +27,23 @@ class RegistryReviewPolicyTests(unittest.TestCase):
     def prepare(self,*,bound=True,revision2=True):
         captured=self.fixture.capture() if revision2 else self.fixture.store.capture_bundle(
             self.fixture.adapter,**self.fixture.kw)
+        # Keep the entire synthetic Core request lifecycle on the same
+        # capture-relative clock; slow fixture preparation cannot make
+        # owner approval precede its PENDING audit event.
+        self.captured=p._epoch(captured['capturedAt'])
+        self.approved=int(self.captured)+2
         def make(**kwargs):
             return p.RegistryPolicyReviewAdapter(policy_reader=self.reader,
                 expected_policy_digest=self.pin,**kwargs)
-        if bound:
-            with patch.object(fixture.fixture,'ReviewAttestationAdapter',side_effect=make):
+        core_factory=fixture.fixture.Core
+        def core_at_capture(*args,**kwargs):
+            return core_factory(*args,**kwargs,clock=lambda:int(self.captured)+1)
+        with patch.object(fixture.fixture,'Core',side_effect=core_at_capture):
+            if bound:
+                with patch.object(fixture.fixture,'ReviewAttestationAdapter',side_effect=make):
+                    row=self.fixture.prepare(captured)
+            else:
                 row=self.fixture.prepare(captured)
-        else:
-            row=self.fixture.prepare(captured)
-        self.captured=p._epoch(captured['capturedAt'])
-        self.approved=int(self.captured)+2
         self.fixture.core.clock=lambda:self.approved
         return row
 
