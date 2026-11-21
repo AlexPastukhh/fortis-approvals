@@ -195,6 +195,21 @@ source merge сам по себе не выдаёт grants и не активи�
 не попадает в Repo actor. Политика `ASK` не заменяет semantic
 revalidation перед будущим полностью автоматическим publisher.
 
+**Следующий source-кандидат — постоянная политика владельца:**
+редактор V2 после отдельного согласованного перехода authority может
+разрешить `DENY / ASK / ALLOW` для трёх методов управляемых меток,
+но **не изменяет** установленный ASK автоматически. `ALLOW` — постоянное
+решение владельца для уже допущенного Repo actor, подтверждаемое WebAuthn
+при изменении правила, а не доказательство согласования каждой заявки.
+При выполнении остаются обязательными registered task PR, точные SHA/body/
+labels preconditions, семантические ограничения и readback; профиль
+`release-label-publisher-v1` сохраняет независимый ASK. Переход требует
+явного owner-reviewed `ownerPolicyAuthorityUpgrade: OWNER_LABELS_V1`
+и специального upgrade только над V2 без событий изменений; см.
+[раздел редактора V2](../OWNER-POLICY-EDITOR-V2.md).
+Принятый UC-GW-011 и текущий Primary остаются ASK, пока не выполнен
+полный owner release и live acceptance, включая обновление текста UC.
+
 **Trusted publisher (отдельная активация):**
 [проект P3](../RELEASE-LABEL-PUBLISHER-P3-REVIEW.md) фиксирует
 principal/trigger/scope;

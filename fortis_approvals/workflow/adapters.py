@@ -589,11 +589,20 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
             core = self.observation_core
             require(core is not None, 'GITHUB_RELEASE_APPROVED_CORE_REQUIRED')
             row = core._read(request['requestId'])
-            require(row['state'] == 'DISPATCHED' and row['decision'] == 'approve' and
-                    type(row['owner']) is str and bool(row['owner']) and
+            # Owner policy ALLOW for the ordinary Repo actor is different
+            # from publisher ASK: it needs a durable owner-managed rule, not
+            # a fabricated per-request owner signature. Publisher remains ASK.
+            policy=core._policy(row['actor'],request)
+            actor_allow=(row['actor']==self.actor and policy=='ALLOW' and
+                         row['decision'] is None and
+                         getattr(getattr(core,'authority',None),'choices',None) is not None and
+                         'ALLOW' in core.authority.admitted((row['actor'],request['service'],
+                            request['operation']))[1])
+            owner_ask=(row['decision']=='approve' and type(row['owner']) is str and
+                       bool(row['owner']) and policy=='ASK')
+            require(row['state'] == 'DISPATCHED' and (actor_allow or owner_ask) and
                     int(core.clock()) < row['expiresAt'] and
                     row['policyVersion'] == core.policy_version and core.auth.active(row['actor']) and
-                    core._policy(row['actor'], request) == 'ASK' and
                     canonical(row['request']) == canonical(request) and
                     canonical(row['preview']) == canonical(approved_preview) == canonical(snapshot),
                     'GITHUB_RELEASE_APPROVED_CONTEXT_CHANGED')

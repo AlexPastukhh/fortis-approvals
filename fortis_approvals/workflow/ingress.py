@@ -155,11 +155,15 @@ class NativeIngress:
                     for op in DEPLOYMENT_READ_OPERATIONS))
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
-                allowGitHub=['push_commits']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
+                allowGitHub=['push_commits']+[
+                    op for op in ('create_release_label','add_pr_release_labels','remove_pr_release_label')
+                    if core._policy(actor,dict(service='github',operation=op,
+                        target=self.github.config.repository))=='ALLOW']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
                     (['publish_visual_review'] if visual_policy=='ALLOW' else [])+
                     (['append_visual_revision'] if revision_policy=='ALLOW' else []),
-                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file',
-                     'create_release_label','add_pr_release_labels','remove_pr_release_label']+
+                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file']+
+                    [op for op in ('create_release_label','add_pr_release_labels','remove_pr_release_label')
+                     if core._policy(actor,dict(service='github',operation=op,target=self.github.config.repository))=='ASK']+
                     (['publish_visual_review'] if visual_policy=='ASK' else [])+
                     (['append_visual_revision'] if revision_policy=='ASK' else []),
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
@@ -173,8 +177,12 @@ class NativeIngress:
                     'operations':sorted(op for _,op in DEPLOYMENT_READ_OPERATIONS)
                         if cd_enabled else [],
                     'writeEnabled':False,'installedStateProof':False},
-                githubReleaseLabelWrites={'policy':'ASK','commands':[
-                    'create_release_label','add_pr_release_labels','remove_pr_release_label'],
+                githubReleaseLabelWrites={'policy':('MIXED' if len({core._policy(actor,dict(
+                    service='github',operation=op,target=self.github.config.repository))
+                    for op in ('create_release_label','add_pr_release_labels','remove_pr_release_label')})>1
+                    else core._policy(actor,dict(service='github',operation='add_pr_release_labels',
+                        target=self.github.config.repository))),
+                    'commands':['create_release_label','add_pr_release_labels','remove_pr_release_label'],
                     'scope':'registered-open-same-repo-task-PR-only',
                     'unknownEffect':'STOP','automaticPublisher':'NOT_ACTIVE'},
                 githubIssueMaxPageSize=30,

@@ -108,3 +108,38 @@ image smoke builds the native GitHub/Workspace/Sonar V2 composition. Browser
 tests cover provider grouping, choices and two-step confirmation. Real virtual
 FIDO2 tests run in Source CI. Still require exact merged CI, Windows checked
 image release and owner-only live acceptance; no current production change.
+
+## Owner-managed release-label ALLOW — separate source candidate
+
+A new, **not installed** review flag `ownerPolicyAuthorityUpgrade:
+"OWNER_LABELS_V1"` is valid only alongside `ownerPolicyEditor:"UNIFIED_V2"`.
+It expands the source admission for the existing Repo actor's three typed
+release-label writes from DENY/ASK to DENY/ASK/ALLOW. The currently running
+owner policy is unchanged until another owner-approved checked image release
+and a separate WebAuthn policy change. This is not a default permission,
+nor a publisher credential or privilege for new actors/targets.
+
+The V2 authority digest already binds its admitted value set. The candidate
+explicitly verifies the *previous exact* digest and permits a one-time
+transactional authority upgrade only while V2 revision is zero and its rule
+and event tables are empty. Existing V1 DENY audit history is retained.
+Any prior V2 edit, changed project/actor/provider scope, unrecognized digest
+or rollback of a once-upgraded database fails closed. The release controller
+must preserve the state and separately admit the reviewed upgrade before
+production deployment. Do not manually edit policy SQLite tables.
+
+Persistent ALLOW changes only the owner-approval requirement for the ordinary
+typed Repo actor, after an explicit strong WebAuthn policy edit. The existing
+pre-dispatch Core CAS/receipt checks, registered task PR restrictions, managed
+label namespace, exact head/base/body/complete-label digests, publisher CI
+admission when applicable and pre-effect GitHub revalidation remain active.
+An independent readback is still required; UNKNOWN is never retried blindly.
+The dedicated `release-label-publisher-v1` actor retains its distinct ASK
+owner authorization and cannot borrow the ordinary actor's policy.
+
+The user-level distinction is: **WebAuthn authorizes an ongoing policy
+change; ASK authorizes one machine request**. Neither creates a new provider
+scope. Other native controls, Sonar writes, PowerShell, signed Mirror, callable
+policies and synchronous READ-ASK remain separately gated. Do not advertise
+unconditional DENY/ASK/ALLOW for those until their inner enforcement contracts
+and tests explicitly support it.

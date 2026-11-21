@@ -164,7 +164,8 @@ class UnifiedPolicyCore(IncidentCore):
         self._constructing = False
         self._composing = False
 
-    def install_policy_authority(self, choices, *, scope_binding=None):
+    def install_policy_authority(self, choices, *, scope_binding=None,
+                                 reviewed_upgrade_from=None):
         if self.authority is not None:
             raise Denied("OWNER_POLICY_ALREADY_INSTALLED")
         authority = PolicyAdmission(self,choices,scope_binding=scope_binding)
@@ -187,6 +188,29 @@ class UnifiedPolicyCore(IncidentCore):
             if not names & _V2:
                 db.execute("INSERT INTO owner_local_policy_v2_meta VALUES(1,0,?,?)",
                            (authority.sha,legacy_hash or "NONE"))
+            elif reviewed_upgrade_from is not None:
+                # Only owner-reviewed release configuration can cross the old
+                # choice-set digest. Never migrate prior V2 edits or audit rows.
+                previous = PolicyAdmission(self,reviewed_upgrade_from,
+                                           scope_binding=scope_binding)
+                meta = db.execute("SELECT * FROM owner_local_policy_v2_meta").fetchall()
+                if (len(meta)!=1 or meta[0]["id"]!=1):
+                    raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+                if meta[0]["authority"]==authority.sha:
+                    # Restart after a successfully committed upgrade is normal.
+                    self._snapshot(db, authority=authority)
+                    self.authority=authority
+                    return
+                if (meta[0]["revision"]!=0
+                    or meta[0]["authority"]!=previous.sha
+                    or meta[0]["legacy_digest"]!=(legacy_hash or "NONE")
+                    or db.execute("SELECT 1 FROM owner_local_policy_v2_events LIMIT 1").fetchone()
+                    or db.execute("SELECT 1 FROM owner_local_policy_v2_rules LIMIT 1").fetchone()):
+                    raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+                db.execute("UPDATE owner_local_policy_v2_meta SET authority=? WHERE id=1 AND revision=0 AND authority=?",
+                           (authority.sha,previous.sha))
+                if db.execute("SELECT changes()").fetchone()[0]!=1:
+                    raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_RACED")
             self._snapshot(db, authority=authority)
         self.authority = authority
 

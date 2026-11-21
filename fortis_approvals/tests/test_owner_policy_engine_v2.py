@@ -205,6 +205,53 @@ class UnifiedPolicyTests(unittest.TestCase):
         with self.assertRaises(Denied):
             self.make_core()
 
+    def test_reviewed_authority_upgrade_from_exact_old_digest_only(self):
+        # V2 authority changes must not silently reinterpret prior grants.
+        old={PARENT:{"DENY","ASK"},FREE:{"DENY","ALLOW"}}
+        self.core=UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs())
+        self.core.install_policy_authority(old,scope_binding={"origin":"reviewed"})
+        with self.core._db() as db:
+            before=db.execute("SELECT authority FROM owner_local_policy_v2_meta").fetchone()[0]
+        target={PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ALLOW"}}
+        plain=UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs())
+        with self.assertRaises(Denied):
+            plain.install_policy_authority(target,scope_binding={"origin":"reviewed"})
+        with plain._db() as db:
+            self.assertEqual(db.execute("SELECT authority FROM owner_local_policy_v2_meta").fetchone()[0],before)
+        plain.install_policy_authority(target,scope_binding={"origin":"reviewed"},reviewed_upgrade_from=old)
+        with plain._db() as db:
+            after=db.execute("SELECT authority FROM owner_local_policy_v2_meta").fetchone()[0]
+        self.assertNotEqual(before,after)
+        restarted=UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs())
+        restarted.install_policy_authority(target,scope_binding={"origin":"reviewed"},reviewed_upgrade_from=old)
+        with restarted._db() as db:
+            self.assertEqual(db.execute("SELECT authority FROM owner_local_policy_v2_meta").fetchone()[0],after)
+        self.assertEqual(restarted._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),"ASK")
+        downgrade=UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs())
+        with self.assertRaises(Denied):
+            downgrade.install_policy_authority(old,scope_binding={"origin":"reviewed"})
+        with self.assertRaises(Denied):
+            UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs()).install_policy_authority(
+                target,scope_binding={"origin":"drifted"},reviewed_upgrade_from=old)
+
+    def test_reviewed_upgrade_denied_after_any_v2_policy_event(self):
+        old={PARENT:{"DENY","ASK"},FREE:{"DENY","ALLOW"}}
+        core=UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs())
+        core.install_policy_authority(old)
+        editor=OwnerPolicyEditor(core,self.owner,source_digest=SOURCE,
+                                 credential_generation=lambda:CREDS)
+        candidate=dict(actor=ACTOR,provider='synthetic',operation='set_ask',
+            scope='exact',target='record',expectedPolicy='ASK',desiredPolicy='DENY',
+            expectedRevision=0,expectedPolicyVersion=core.policy_version,
+            reasonCode='OWNER_POLICY_CHANGE')
+        b=editor.begin(self.owner._session,self.owner._csrf,candidate)
+        editor.finish(self.owner._session,self.owner._csrf,b['ceremonyId'],
+                      {'syntheticTestOnlyUv':True},b['change'])
+        with self.assertRaises(Denied):
+            UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs()).install_policy_authority(
+                {PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ALLOW"}},
+                reviewed_upgrade_from=old)
+
     def test_release_receipt_v2_and_tamper(self):
         import sqlite3
         from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
