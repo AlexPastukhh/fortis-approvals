@@ -116,14 +116,16 @@ def _derive(lineage, mapping, catalog, batch):
                 for t in sorted(requirements)]}
 
 
-def observe_initial_plan(*,adapter,journal,validator,baseline_reader,expected_baseline_digest,
-                         selected_main_sha,evidence_ids,policy_reader,expected_policy_digest,binding_reader):
-    """Compose only the initial complete range; no arbitrary caller plan DTO."""
+def _observe_range_plan(*,adapter,journal,validator,baseline_reader,expected_baseline_digest,
+                        selected_main_sha,evidence_ids,policy_reader,expected_policy_digest,
+                        binding_reader,cursor_reader=None):
+    """Compose exact initial or suffix range, never a caller-supplied plan DTO."""
     mapping,lineage,catalog,baseline=_observe_component_pair(
         adapter=adapter,journal=journal,validator=validator,baseline_reader=baseline_reader,
         expected_baseline_digest=expected_baseline_digest,selected_main_sha=selected_main_sha,
         evidence_ids=evidence_ids,policy_reader=policy_reader,
-        expected_policy_digest=expected_policy_digest,binding_reader=binding_reader)
+        expected_policy_digest=expected_policy_digest,binding_reader=binding_reader,
+        cursor_reader=cursor_reader)
     o=mapping['observation'];lo=lineage['observation']
     _need(o['lineageDigest']==_hash(lo)==lineage['observationDigest']
           and o['catalogProjectionSha256']==_hash(catalog)
@@ -135,6 +137,11 @@ def observe_initial_plan(*,adapter,journal,validator,baseline_reader,expected_ba
         or _hash(_mapping(binding_reader,baseline))!=o['bindingDigest']
         or _hash(policy_reference(policy_reader,expected_policy_digest))!=expected_policy_digest):
         raise Stale('P5_PLAN_REFERENCE_CHANGED')
+    if cursor_reader is not None:
+        from .forward_lineage import _registry_cursor
+        final_cursor=_registry_cursor(cursor_reader,baseline,expected_baseline_digest,expected_policy_digest)
+        _need(final_cursor['checkpoint']==lo['registryCursorCheckpoint']
+              and final_cursor['candidateCursor']==lo['startCursorSha'],'P5_PLAN_CURSOR_CHANGED')
     branch=adapter._project_branch(adapter._api('GET',adapter._path('fortis-approvals','branches/main')))
     if branch['name']!='main' or branch['sha']!=selected_main_sha:
         raise Stale('P5_PLAN_MAIN_CHANGED')
@@ -145,9 +152,32 @@ def observe_initial_plan(*,adapter,journal,validator,baseline_reader,expected_ba
                  'collectorCheckpoint':lo['collectorCheckpoint'],'lineageDigest':lineage['observationDigest'],
                  'componentObservationDigest':mapping['observationDigest'],
                  **derived}
-    return {'result':'INITIAL_RANGE_PLAN_CANDIDATE','observation':observation,
+    if cursor_reader is not None:
+        observation.update(startCursorSha=lo['startCursorSha'],
+                           registryCursorCheckpoint=lo['registryCursorCheckpoint'])
+        # Never reinterpret the whole baseline range as a new suffix.
+        _need(lo['startCursorSha']!=lo['selectedMainSha'] and
+              len(lo['merges'])>0,'P5_PLAN_EMPTY_SUFFIX')
+    return {'result':'SUFFIX_RANGE_PLAN_CANDIDATE' if cursor_reader is not None else
+            'INITIAL_RANGE_PLAN_CANDIDATE','observation':observation,
             'observationDigest':_hash(observation),'evidenceVerified':False,
             'admissionAllowed':False,'deploymentAllowed':False,
             'missingProofs':['PROTECTED_ENROLLMENT_AND_RESOURCE_ATTESTATION',
                              'AUTHENTICATED_COLLECTOR_AND_TRUSTED_CLOCK',
                              'PROTECTED_REGISTRY_STATE_AND_RECOVERY']}
+
+
+def observe_initial_plan(**kwargs):
+    """Backward-compatible initial range: do not accept a cursor override."""
+    _need('cursor_reader' not in kwargs,'P5_PLAN_CURSOR_NOT_ALLOWED_FOR_INITIAL')
+    return _observe_range_plan(**kwargs)
+
+
+def observe_suffix_plan(*,cursor_reader,**kwargs):
+    """Plan only merges after the state journal's witnessed cursor.
+
+    This never advances that cursor or grants admission. It cannot be
+    written by the initial-only state journal schema.
+    """
+    _need(callable(cursor_reader),'P5_PLAN_CURSOR_READER_REQUIRED')
+    return _observe_range_plan(cursor_reader=cursor_reader,**kwargs)

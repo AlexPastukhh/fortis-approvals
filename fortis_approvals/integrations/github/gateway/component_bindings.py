@@ -151,7 +151,8 @@ def _resolved(ref,catalog):
 
 def _observe_component_pair(*,adapter,journal,validator,baseline_reader,
                                expected_baseline_digest,selected_main_sha,evidence_ids,
-                               policy_reader,expected_policy_digest,binding_reader):
+                               policy_reader,expected_policy_digest,binding_reader,
+                               cursor_reader=None):
     """Compose full pinned catalog mapping with strict policy-bound lineage."""
     _need(callable(policy_reader) and _hex(expected_policy_digest,64),
           'P5_COMPONENT_POLICY_REQUIRED')
@@ -164,12 +165,13 @@ def _observe_component_pair(*,adapter,journal,validator,baseline_reader,
     lineage=observe_forward_lineage(adapter=adapter,journal=journal,validator=validator,
         baseline_reader=baseline_reader,expected_baseline_digest=expected_baseline_digest,
         selected_main_sha=selected_main_sha,evidence_ids=evidence_ids,policy_reader=policy_reader,
-        expected_policy_digest=expected_policy_digest)
+        expected_policy_digest=expected_policy_digest,cursor_reader=cursor_reader)
     o=lineage['observation']
     _need(o['baselineDigest']==expected_baseline_digest and o['selectedMainSha']==selected_main_sha
           and o['catalogSha256']==baseline['catalogSha256']
           and o['policyReferenceDigest']==expected_policy_digest
-          and (o['merges'][-1]['treeSha'] if o['merges'] else o['baselineTreeSha'])==tree,
+          and (o['merges'][-1]['treeSha'] if o['merges'] else
+               o.get('startCursorTreeSha',o['baselineTreeSha']))==tree,
           'P5_COMPONENT_LINEAGE_MISMATCH')
     if (_mapping(binding_reader,baseline)!=ref or _baseline(baseline_reader,expected_baseline_digest)!=baseline
         or policy_reference(policy_reader,expected_policy_digest)!=ref_policy
