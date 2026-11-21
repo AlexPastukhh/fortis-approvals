@@ -135,9 +135,12 @@ class ReviewCaptureStore:
                       hashlib.sha256(value['body'].encode('utf-8')).hexdigest() ==
                       value['request']['bodySha256'], 'P5_CAPTURE_INTEGRITY_INVALID')
                 request = value['request']
-                if request.get('captureKind') == 'body-path-ci-catalog-v1':
+                if request.get('captureKind') in ('body-path-ci-catalog-v1','body-path-ci-catalog-v2'):
                     bundle = value['bundle']
-                    _need(value['bundleDigest'] == _hash(bundle) and
+                    v2 = request['captureKind'] == 'body-path-ci-catalog-v2'
+                    _need(bundle['schemaVersion'] == (2 if v2 else 1) and
+                          ('ciPolicyBinding' in bundle['pathCi']) == v2 and
+                          value['bundleDigest'] == _hash(bundle) and
                           value['baseSha'] == request['baseSha'] and
                           bundle['pathCi']['pr']['headSha'] == request['headSha'] and
                           bundle['pathCi']['pr']['baseSha'] == request['baseSha'] and
@@ -146,6 +149,18 @@ class ReviewCaptureStore:
                           bundle['pathCi']['repository'] == request['repository'] and
                           bundle['catalog']['headSha'] == request['headSha'],
                           'P5_CAPTURE_INTEGRITY_INVALID')
+                    if v2:
+                        binding = bundle['pathCi']['ciPolicyBinding']
+                        _need(binding['policySha256'] == _hash(binding['policy']) and
+                              binding['rulesSha256'] == bundle['pathCi']['currentRules']['rulesSha256'] and
+                              binding['repository'] == request['repository'] and
+                              binding['number'] == request['number'] and
+                              binding['headSha'] == request['headSha'] and
+                              binding['baseSha'] == request['baseSha'] and
+                              binding['candidateChecksMatched'] is True and
+                              binding['historicalPolicyVerified'] is False and
+                              binding['requiredPolicySatisfied'] is False,
+                              'P5_CAPTURE_INTEGRITY_INVALID')
                 else:
                     _need('captureKind' not in request and 'bundle' not in value and
                           'bundleDigest' not in value, 'P5_CAPTURE_INTEGRITY_INVALID')
@@ -212,16 +227,17 @@ class ReviewCaptureStore:
                              expected_body_sha256=expected_body_sha256, expected_base_sha=None)
 
     def capture_bundle(self, adapter, *, operation_id, expected_revision, number,
-                       expected_head_sha, expected_base_sha, expected_body_sha256):
+                       expected_head_sha, expected_base_sha, expected_body_sha256, policy_bound=False):
         """Retain body, pinned catalog, path/CI observations in one append."""
         _need(_hex(expected_base_sha, 40) and expected_base_sha != expected_head_sha,
               'P5_CAPTURE_REQUEST_INVALID')
         return self._capture(adapter, operation_id=operation_id, expected_revision=expected_revision,
                              number=number, expected_head_sha=expected_head_sha,
-                             expected_body_sha256=expected_body_sha256, expected_base_sha=expected_base_sha)
+                             expected_body_sha256=expected_body_sha256, expected_base_sha=expected_base_sha,
+                             policy_bound=policy_bound)
 
     def _capture(self, adapter, *, operation_id, expected_revision, number,
-                 expected_head_sha, expected_body_sha256, expected_base_sha):
+                 expected_head_sha, expected_body_sha256, expected_base_sha, policy_bound=False):
         _need(_uuid(operation_id) and type(expected_revision) is int and
               0 <= expected_revision <= MAX_ROWS and type(number) is int and
               0 < number <= 1_000_000 and _hex(expected_head_sha, 40) and
@@ -231,7 +247,8 @@ class ReviewCaptureStore:
                    'number': number, 'headSha': expected_head_sha,
                    'bodySha256': expected_body_sha256, 'expectedRevision': expected_revision}
         if expected_base_sha is not None:
-            request.update(captureKind='body-path-ci-catalog-v1', baseSha=expected_base_sha)
+            request.update(captureKind='body-path-ci-catalog-v2' if policy_bound else 'body-path-ci-catalog-v1',
+                           baseSha=expected_base_sha)
         fingerprint = _hash(request)
 
         def replay_or_preflight(db):
@@ -269,7 +286,8 @@ class ReviewCaptureStore:
             from .premerge_bundle import collect_bundle
             bundle = collect_bundle(adapter, number=number, head=expected_head_sha,
                                     base=expected_base_sha, body=first['body'],
-                                    body_sha=expected_body_sha256, branch=first['headBranch'])
+                                    body_sha=expected_body_sha256, branch=first['headBranch'],
+                                    policy_bound=policy_bound)
         if read() != first:
             raise Stale('P5_CAPTURE_OBSERVATION_CHANGED')
         payload = {'request': request, 'body': first['body'],

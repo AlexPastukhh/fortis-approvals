@@ -86,7 +86,8 @@ class ReviewAttestationAdapter:
             from .premerge_bundle import collect_bundle
             fresh = collect_bundle(self.provider, number=params['number'], head=params['headSha'],
                                    base=material['baseSha'], body=material['body'],
-                                   body_sha=params['bodySha256'], branch=material['headBranch'])
+                                   body_sha=params['bodySha256'], branch=material['headBranch'],
+                                   policy_bound=material['bundle']['schemaVersion']==2)
             if fresh != material['bundle']:
                 raise Stale('P5_REVIEW_BUNDLE_CHANGED')
         else:
