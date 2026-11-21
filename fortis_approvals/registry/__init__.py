@@ -1,1 +1,1 @@
-"""Source-only Registry contract; no process, HTTP routes, grants or database."""
+"""Source-only Registry contracts and local transaction mechanics; no live service or grants."""

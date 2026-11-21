@@ -125,3 +125,31 @@ class AdmissionPlanTests(unittest.TestCase):
         r=p._derive(lineage,mapping,catalog,batch)
         self.assertEqual(r['rangeClassification'],'EMPTY_RANGE')
         self.assertEqual(r['mergeAudit'],[])
+
+    def test_initial_plan_registry_transaction_contract(self):
+        from fortis_approvals.registry import state_journal as s
+        from fortis_approvals.workflow.common import secure_dir
+        import uuid
+        self.setup_plan()
+        self.enterContext(patch.object(s,'REPOSITORY',p.REPOSITORY))
+        plan=self.observe()
+        o=plan['observation']
+        scope={k:o[k] for k in s.SCOPE_FIELDS}
+        instance=str(uuid.uuid4());op=str(uuid.uuid4());eid=str(uuid.uuid4())
+        evidence={'schemaVersion':1,'issuer':s.COLLECTOR,'repository':s.REPOSITORY,
+                  'evidenceId':eid,'plan':plan}
+        anchor=s.genesis(instance,scope)
+        path=secure_dir(self.fixture.root/'registry-candidate')/'registry.sqlite'
+        def read(ident):
+            self.assertEqual(ident,eid)
+            return copy.deepcopy(evidence)
+        store=s.RegistryStateJournal.initialize(path,instance_id=instance,scope=scope,
+                        anchor_reader=lambda:copy.deepcopy(anchor),plan_reader=read)
+        pending=store.append_initial(actor=s.PLANNER,operation_id=op,evidence_id=eid,
+                       evidence_digest=s._hash(evidence),expected_revision=0)
+        self.assertEqual(pending['result'],'UNKNOWN_OUTCOME')
+        anchor=pending['pendingCheckpoint']
+        r=store.operation(actor=s.PLANNER,operation_id=op)
+        self.assertEqual(r['receipt']['recordIds'],[x['recordId'] for x in o['recordCandidates']])
+        self.assertEqual(store.checkpoint()['candidateCursor'],o['selectedMainSha'])
+        self.assertFalse(r['receipt']['admissionAllowed'])
