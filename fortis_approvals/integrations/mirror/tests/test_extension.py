@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from fortis_approvals.core import Denied
 from fortis_approvals.integrations.mirror.extension import (
-    PROVIDER, read_repository, validate_result)
+    PROVIDER, MAX_WORKTREES, read_repository, validate_result)
 
 
 def sample():
@@ -86,6 +86,43 @@ class MirrorReadProviderTests(unittest.TestCase):
         self.assertEqual(70,len(result['repository']['docker']['worktrees']))
         validate_result(result)
 
+    def test_live_capacity_and_exact_boundary(self):
+        for count in (128,130,MAX_WORKTREES):
+            with self.subTest(count=count):
+                data=sample()
+                primary=data['repository']['docker']['primary']
+                data['repository']['docker']['worktrees']=[copy.deepcopy(primary)]+[
+                    dict(primary,kind='worktree',task='task-%03d'%i,
+                         branch='task/branch-%03d'%i) for i in range(count-1)]
+                result=read_repository(Fake(data))
+                self.assertEqual(len(result['repository']['docker']['worktrees']),count-1)
+                self.assertEqual(result['repository']['docker']['worktrees'][-1]['task'],
+                                 'task-%03d'%(count-2))
+                validate_result(result)
+
+    def test_capacity_and_byte_limits_are_independent(self):
+        data=sample()
+        primary=data['repository']['docker']['primary']
+        data['repository']['docker']['worktrees']=[copy.deepcopy(primary)]+[
+            dict(primary,kind='worktree',task='task-%03d'%i,
+                 branch='task/branch-%03d'%i) for i in range(MAX_WORKTREES)]
+        with self.assertRaisesRegex(Denied,'MIRROR_UPSTREAM_INVALID'):
+            read_repository(Fake(data))
+        data['repository']['docker']['worktrees'].pop()
+        for i,row in enumerate(data['repository']['docker']['worktrees'][1:]):
+            row['task']='t'*110+str(i)
+            row['branch']='task/'+'b'*145+str(i)
+        # bounded() maps its own size Denied through ValueError to the
+        # existing public JSON-invalid code. Preserve that contract.
+        with self.assertRaisesRegex(Denied,'INTEGRATION_JSON_INVALID'):
+            read_repository(Fake(data))
+        result=read_repository(Fake(sample()))
+        valid_row={'task':'task-one','branch':'task/one','head':'a'*40,
+                   'clean':True,'targetEligible':True}
+        result['repository']['docker']['worktrees']=[valid_row]*(MAX_WORKTREES+1)
+        with self.assertRaisesRegex(Denied,'MIRROR_RESULT_INVALID'):
+            validate_result(result)
+
     def test_reject_missing_duplicate_or_forged_primary_row(self):
         for mode in ('absent','duplicate','different-head','different-repo',
                      'wrong-kind','not-object'):
@@ -144,7 +181,7 @@ class MirrorReadProviderTests(unittest.TestCase):
         data=sample()
         data['repository']['docker']['worktrees']=[
             {'repoId':'fortis-approvals','kind':'worktree'}
-            for _ in range(129)]
+            for _ in range(MAX_WORKTREES+1)]
         with self.assertRaises(Denied):read_repository(Fake(data))
 
     def test_result_rejects_extra_fields_and_fake_github(self):

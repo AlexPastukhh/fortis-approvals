@@ -16,7 +16,9 @@ SHA = re.compile(r'[0-9a-f]{40}\Z')
 BRANCH = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_./-]{0,159}\Z')
 UTC = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00\Z')
 ERROR = re.compile(r'[A-Z][A-Z0-9_]{0,99}\Z')
-MAX_WORKTREES = 128
+# v1 includes exactly one primary in the upstream inventory. The count
+# ceiling is independent of the 256 KiB wire and 64 KiB projection bounds.
+MAX_WORKTREES = 256
 
 
 def _head(value):

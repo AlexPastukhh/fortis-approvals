@@ -319,6 +319,92 @@ class OptInR7BuilderTests(unittest.TestCase):
         with self.assertRaises(Denied):
             build(labels=True)
 
+    def test_reviewed_mirror_capacity_upgrade_replays_uv_and_executes_large_read(self):
+        import os
+        import sqlite3
+        from copy import deepcopy
+        from dataclasses import replace
+        from fortis_approvals.extensions.owner_policy_r7_v2 import (
+            R7UnifiedPolicySourceOptIn, reviewed_mirror_v1_previous_scope,
+            _MIRROR_V1_CAPACITY_SOURCE_BEFORE, _MIRROR_V1_CAPACITY_SOURCE_AFTER)
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.model import discover
+        from fortis_approvals.extensions.vault import CredentialVault
+        from fortis_approvals.integrations.mirror.tls import MirrorPinnedAPI
+        from fortis_approvals.integrations.mirror.tests.test_extension import sample
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        state=self.root/'mirror-upgrade';state.mkdir(mode=0o700)
+        vault_root=self.root/'vault';vault_root.mkdir(mode=0o700)
+        vault=CredentialVault(vault_root,uid=os.geteuid(),gid=os.getegid())
+        vault.provision('mirror-link','OFFLINE_MIRROR_TEST_ONLY_NOT_REAL_SECRET')
+        new=discover(('mirror',))[0]
+        self.assertEqual(new.source_digest,_MIRROR_V1_CAPACITY_SOURCE_AFTER)
+        old=replace(new,source_digest=_MIRROR_V1_CAPACITY_SOURCE_BEFORE)
+        def build(provider,*,all_methods=False,targets=('fortis-approvals',)):
+            config=ExtensionConfig({'schemaVersion':1,'providers':{'mirror':{
+                'credentials':{'link':'mirror-link'},'operations':{'get_repository':{
+                    'policy':'ALLOW','targets':list(targets)}}}}})
+            with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',
+                       return_value=self.owner):
+                return build_r7_unified_candidate(**dict(self.kwargs,state=state,
+                    extensions=config,extension_providers=(provider,),credential_vault=vault,
+                    unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(
+                        SOURCE,lambda:CREDS,allow_label_policy_upgrade=not all_methods,
+                        allow_all_method_policy_upgrade=all_methods)))
+        core,owner,portal,_=build(old)
+        def change(core,portal,before,after):
+            candidate=dict(actor=ACTOR,provider='mirror',operation='get_repository',
+                scope='exact',target='fortis-approvals',expectedPolicy=before,
+                desiredPolicy=after,expectedRevision=int(core.policy_version.rsplit(':',1)[1]),
+                expectedPolicyVersion=core.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+            b=portal.editor.begin(owner._session,owner._csrf,candidate)
+            portal.editor.finish(owner._session,owner._csrf,b['ceremonyId'],
+                {'syntheticTestOnlyUv':True},b['change'])
+        change(core,portal,'ALLOW','DENY')
+        change(core,portal,'DENY','ALLOW')
+        with sqlite3.connect(core.path) as db:
+            original=db.execute('SELECT * FROM owner_local_policy_v2_events ORDER BY revision').fetchall()
+            prior=db.execute('SELECT authority FROM owner_local_policy_v2_meta').fetchone()[0]
+        for provider,all_methods,targets in (
+            (new,False,('fortis-approvals',)),
+            (replace(new,source_digest='f'*64),True,('fortis-approvals',)),
+            (new,True,('fortis-approvals','other-repo'))):
+            with self.subTest(source=provider.source_digest,targets=targets),self.assertRaises(Denied):
+                build(provider,all_methods=all_methods,targets=targets)
+        with sqlite3.connect(core.path) as db:
+            self.assertEqual(db.execute('SELECT authority FROM owner_local_policy_v2_meta').fetchone()[0],prior)
+        upgraded,_,portal,_=build(new,all_methods=True)
+        rt=portal._extension_runtime
+        self.assertEqual(upgraded.authority.choices[(ACTOR,'mirror','get_repository','fortis-approvals')],
+                         {'DENY','ASK','ALLOW'})
+        self.assertEqual(reviewed_mirror_v1_previous_scope(upgraded.authority.scope_binding,
+                         all_methods=True),core.authority.scope_binding)
+        data=sample()
+        primary=data['repository']['docker']['primary']
+        data['repository']['docker']['worktrees']=[deepcopy(primary)]+[
+            dict(primary,kind='worktree',task='task-%03d'%i,branch='task/branch-%03d'%i)
+            for i in range(129)]
+        payload=dict(requestId=str(uuid.uuid4()),service='mirror',operation='get_repository',
+                     target='fortis-approvals',params={},reason='Offline fixture release READ')
+        with patch.object(MirrorPinnedAPI,'call',return_value=data) as provider_call:
+            row=rt.call(GRANT,payload)
+            self.assertEqual(row['state'],'EXECUTED')
+            result=rt.result(GRANT,row['requestId'])['data']
+            self.assertEqual(len(result['repository']['docker']['worktrees']),129)
+            self.assertEqual(provider_call.call_count,1)
+        with sqlite3.connect(upgraded.path) as db:
+            self.assertEqual(db.execute('SELECT * FROM owner_local_policy_v2_events ORDER BY revision').fetchall(),original)
+            self.assertEqual(_local_policy_receipt(db)['revision'],2)
+            self.assertEqual(db.execute('SELECT old_authority,new_authority FROM owner_local_policy_v2_authority_epochs').fetchall(),
+                             [(prior,upgraded.authority.sha)])
+        restarted,_,portal,_=build(new,all_methods=True)
+        change(restarted,portal,'ALLOW','ASK')
+        with sqlite3.connect(restarted.path) as db:
+            self.assertEqual(_local_policy_receipt(db)['revision'],3)
+            db.execute("UPDATE owner_local_policy_v2_authority_epochs SET old_authority=?",('0'*64,))
+        with self.assertRaises(Denied):
+            build(new,all_methods=True)
+
     def test_unified_r7_composition_enforces_real_broker_and_extension(self):
         from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
         from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
