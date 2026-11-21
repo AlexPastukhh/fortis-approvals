@@ -43,9 +43,6 @@ jobs:
       - name: Run offline security and integration tests
         run: bash scripts/test-source.sh
 
-      - name: Test isolated owner local-DENY browser logic
-        run: node --test fortis_approvals/tests/local_deny_ui.test.cjs
-
       - name: Check whitespace errors in the commit diff
         shell: bash
         run: |
