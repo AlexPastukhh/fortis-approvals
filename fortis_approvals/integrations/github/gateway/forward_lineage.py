@@ -45,8 +45,12 @@ def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
     independent checkpoint; this does not confer protected admission.
     """
     from ....registry.state_journal import RegistryStateJournal
-    _need(getattr(reader,'__self__',None).__class__ is RegistryStateJournal
-          and getattr(reader,'__func__',None) is RegistryStateJournal.checkpoint,
+    from ....registry.state_journal_v2 import RegistryStateJournalV2
+    owner=getattr(reader,'__self__',None)
+    _need((type(owner) is RegistryStateJournal and
+           getattr(reader,'__func__',None) is RegistryStateJournal.checkpoint) or
+          (type(owner) is RegistryStateJournalV2 and
+           getattr(reader,'__func__',None) is RegistryStateJournalV2.checkpoint),
           'P5_FORWARD_CURSOR_READER_REQUIRED')
     scope={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
            'baselineSha':baseline['baselineSha'],'baselineDigest':baseline_digest,

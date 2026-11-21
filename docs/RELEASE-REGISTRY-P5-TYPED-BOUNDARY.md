@@ -194,3 +194,86 @@ competing writers. The admission-plan fixture also exercises the real
 composed source candidate through this SQLite transaction with a
 synthetic independent witness. The existing typed dispatch remains
 WRITE-disabled and disconnected from the state journal.
+
+
+### Explicit Registry schema v2 candidate for suffixes and supersession
+
+`registry/state_journal_v2.py::RegistryStateJournalV2` is a separate,
+explicitly initialized Registry-owned SQLite **schema version 2**.
+It does not migrate or reopen a schema-v1 database, and the existing
+schema-v1 class and original receipts are not rewritten. This is an
+offline-only candidate that must be reviewed **before** a real enrollment
+chooses its production schema. Any existing v1 installation would need
+a separately approved, verified migration/backup/restore procedure.
+The genesis hash is domain-separated (`registry-state-v2`) from v1.
+The external checkpoint wire shape remains version 1 for the current
+bounded source observer; this is not a claim that a live external anchor
+already exists.
+
+The journal has a single owner-provisioned private database with
+operations, immutable record payloads, and separate supersessions
+edges. Every initial or suffix operation uses the host-selected
+planner identity, operation UUID, retained plan evidence UUID/digest
+and expected revision. The caller supplies **no** cursor SHA, desired
+records, component list, supersession selection, or stored actual value.
+All plan bytes come from the separate host-composed evidence reader,
+are strictly compared to the immutable enrollment/policy/catalog
+scope and revalidated under the original envelope. First append must
+be `INITIAL_RANGE_PLAN_CANDIDATE` from baseline; later append must
+be `SUFFIX_RANGE_PLAN_CANDIDATE` whose startCursorSha equals the
+previous immutable candidate cursor and whose
+registryCursorCheckpoint equals the entire previous local checkpoint.
+No empty range, duplicate merge, owner request, PR number or evidence
+ID is accepted across operations. The collector's own checkpoint
+must advance on the same collector instance. Any catalog/policy
+transition remains unsupported.
+
+Each candidate record is identified by the planner's original
+subject SHA256 and version SHA256. Repeated subject IDs receive new
+immutable version records; the journal stores a separate
+`fromRecordId → toRecordId` edge only when the same subject has a
+previous version. Former record rows and original receipt bytes are
+never edited. A no-deployment suffix may advance the candidate cursor
+with a retained nonempty merge audit but creates no record or
+supersession. A later deployment of that subject supersedes its last
+stored version, not a fabricated no-deployment record. The graph is
+validated by replay of every original operation and all stored record/
+edge rows on read; tampering or missing rows fails closed. Old receipts
+remain retrievable by their exact operation ID after subsequent
+operations.
+
+Transaction revision, event hash chain, full original request/evidence,
+immutable receipt, record payloads and supersession edges commit
+atomically under one bounded BEGIN IMMEDIATE CAS transaction. The
+source schema has a conservative 64-operation, 512-record and
+16 MB bound, with exact schema check, WAL/FULL, private file checks,
+and full independent checkpoint re-read. Pending local commits return
+`UNKNOWN_OUTCOME` with original checkpoint identities and do not
+permit another append or a candidate cursor read; recovery compares
+the same original operation without resubmitting changed evidence.
+An ambiguous SQLite commit also returns `UNKNOWN_OUTCOME`.
+The journal does not implement or write the separate owner-protected
+checkpoint: tests inject a synthetic in-memory witness. Backup/restore,
+independent anchor CAS, full migration policy and live owner ceremony
+are still required.
+
+The existing `observe_suffix_plan` accepts only the exact bound
+checkpoint method of the schema-v1 **or schema-v2** journal. A caller
+closure remains forbidden. It rechecks state scope and checkpoint
+before returning its candidate; it cannot advance the cursor. These
+records are never represented as installed state:
+`actual=null`, `PLANNED_UNVERIFIED`, `evidenceVerified=false`,
+`admissionAllowed=false`, `deploymentAllowed=false`. No typed
+live ingress, public reader, service principal or deployment action
+is added. First-range schema v1 remains an isolated compatibility
+source path, not an silently upgraded production database.
+
+Offline source tests include three-version supersession chain,
+no-deployment suffix followed by deployment, new subject without
+supersession, duplicate/replayed evidence, different collector
+instance/revision, exact witness rollback and pending recovery,
+corrupted local links/records, competing writers, failed transaction
+rollback, and rejection of schema v1 without migration. Integration
+also feeds a real Core/Git first plan and a second real Git merge
+with *synthetic* second owner/collector evidence into the v2 journal.
+No two live owner-approved merges or protected anchor is claimed.

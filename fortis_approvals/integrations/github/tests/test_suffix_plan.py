@@ -181,3 +181,47 @@ class SuffixPlanTests(unittest.TestCase):
         self.assertNotIn('supersedesRecordId',result['observation']['recordCandidates'][0])
         with self.assertRaisesRegex(Denied,'P5_PLAN_CURSOR_NOT_ALLOWED_FOR_INITIAL'):
             planner.observe_initial_plan(**(self.args()|{'cursor_reader':self.state.checkpoint}))
+
+    def test_original_source_plan_then_suffix_to_v2_state(self):
+        from fortis_approvals.registry import state_journal_v2 as v2
+        self.setup_suffix()
+        scope=copy.deepcopy(self.state.scope)
+        self.enterContext(patch.object(v2,'REPOSITORY',state.REPOSITORY))
+        self.state_id=str(uuid.uuid4())
+        self.state_anchor=v2.genesis_v2(self.state_id,scope)
+        self.active_plan=copy.deepcopy(self.plan_snapshot)
+        def source(ident):
+            self.assertEqual(ident,self.active_plan['evidenceId'])
+            return copy.deepcopy(self.active_plan)
+        path=secure_dir(self.fixture.root/'registry-v2')/'state.sqlite'
+        self.state=v2.RegistryStateJournalV2.initialize(
+            path,instance_id=self.state_id,scope=scope,
+            anchor_reader=lambda:copy.deepcopy(self.state_anchor),plan_reader=source)
+        original_op=str(uuid.uuid4())
+        initial=self.state.append_range(actor=state.PLANNER,operation_id=original_op,
+                  evidence_id=self.active_plan['evidenceId'],
+                  evidence_digest=state._hash(self.active_plan),expected_revision=0)
+        self.assertEqual(initial['result'],'UNKNOWN_OUTCOME')
+        self.state_anchor=copy.deepcopy(initial['pendingCheckpoint'])
+        first=self.state.operation(actor=state.PLANNER,operation_id=original_op)['receipt']
+        self.assertEqual(self.state.checkpoint()['candidateCursor'],self.fixture.selected)
+        merge,eid,suffix,batch=self.second()
+        planned=self.query(merge,eid,batch=batch)
+        self.assertEqual(planned['result'],'SUFFIX_RANGE_PLAN_CANDIDATE')
+        self.active_plan={'schemaVersion':1,'issuer':state.COLLECTOR,'repository':state.REPOSITORY,
+                          'evidenceId':str(uuid.uuid4()),'plan':planned}
+        op=str(uuid.uuid4())
+        pending=self.state.append_range(actor=state.PLANNER,operation_id=op,
+                  evidence_id=self.active_plan['evidenceId'],
+                  evidence_digest=state._hash(self.active_plan),expected_revision=1)
+        self.assertEqual(pending['result'],'UNKNOWN_OUTCOME')
+        with self.assertRaisesRegex(Denied,'REGISTRY_STATE_ANCHOR_MISMATCH'):
+            self.state.checkpoint()
+        self.state_anchor=copy.deepcopy(pending['pendingCheckpoint'])
+        latter=self.state.operation(actor=state.PLANNER,operation_id=op)['receipt']
+        self.assertEqual(latter['startCursorSha'],self.fixture.selected)
+        self.assertEqual(latter['candidateCursor'],merge)
+        self.assertEqual(latter['supersessions'],[
+            {'fromRecordId':first['recordIds'][0],'toRecordId':latter['recordIds'][0]}])
+        self.assertEqual(self.state.checkpoint()['candidateCursor'],merge)
+        self.assertFalse(latter['admissionAllowed'])

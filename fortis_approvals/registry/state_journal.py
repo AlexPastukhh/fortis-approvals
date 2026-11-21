@@ -96,8 +96,12 @@ def _request(actor,operation_id,evidence_id,evidence_digest,expected_revision):
             'expectedRevision':expected_revision}
 
 
-def _plan(evidence,request,scope):
-    """Structural invariant checks, not a substitute for trusted collector."""
+def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None):
+    """Structural invariant checks, not a substitute for trusted collector.
+
+    Explicit suffix parameters are derived from Registry's previous local
+    operation and checkpoint, NEVER from caller-selected candidate fields.
+    """
     try:
         _need(type(evidence) is dict and set(evidence)=={'schemaVersion','issuer','repository','evidenceId','plan'}
               and type(evidence['schemaVersion']) is int and evidence['schemaVersion']==1
@@ -107,16 +111,23 @@ def _plan(evidence,request,scope):
         plan=evidence['plan'];o=plan['observation']
         _need(set(plan)=={'result','observation','observationDigest','evidenceVerified',
                           'admissionAllowed','deploymentAllowed','missingProofs'}
-              and plan['result']=='INITIAL_RANGE_PLAN_CANDIDATE'
+              and plan['result']==('SUFFIX_RANGE_PLAN_CANDIDATE' if start_sha is not None else
+                                    'INITIAL_RANGE_PLAN_CANDIDATE')
               and all(plan[k] is False for k in ('evidenceVerified','admissionAllowed','deploymentAllowed'))
               and plan['missingProofs']==['PROTECTED_ENROLLMENT_AND_RESOURCE_ATTESTATION',
                   'AUTHENTICATED_COLLECTOR_AND_TRUSTED_CLOCK','PROTECTED_REGISTRY_STATE_AND_RECOVERY']
               and _hash(o)==plan['observationDigest'] and all(o[k]==scope[k] for k in SCOPE_FIELDS),
               'REGISTRY_STATE_PLAN_INVALID')
-        _need(set(o)==SCOPE_FIELDS|{'selectedMainSha','collectorCheckpoint','lineageDigest',
+        expected_fields=SCOPE_FIELDS|{'selectedMainSha','collectorCheckpoint','lineageDigest',
               'componentObservationDigest','rangeClassification','mergeAudit','recordCandidates',
               'sourceDependencyRequirements'}
+        if start_sha is not None:expected_fields|={'startCursorSha','registryCursorCheckpoint'}
+        _need(set(o)==expected_fields
               and _hex(o['selectedMainSha'],40)
+              and (start_sha is None or (
+                  _hex(start_sha,40) and o['startCursorSha']==start_sha
+                  and o['registryCursorCheckpoint']==previous_checkpoint))
+
               and all(_hex(o[k],64) for k in ('lineageDigest','componentObservationDigest')),
               'REGISTRY_STATE_PLAN_INVALID')
         cp=o['collectorCheckpoint']
@@ -128,7 +139,8 @@ def _plan(evidence,request,scope):
         _need(type(audit) is list and 0<len(audit)<=64 and type(rows) is list and len(rows)<=200
               and o['rangeClassification']==('DEPLOYMENT_CANDIDATE' if rows else 'NO_DEPLOYMENT_CANDIDATE'),
               'REGISTRY_STATE_EMPTY_OR_INVALID_RANGE')
-        cursor=scope['baselineSha'];seen={cursor};eids=set();numbers=set();owners=set();rev=0
+        cursor=start_sha if start_sha is not None else scope['baselineSha']
+        seen={cursor};eids=set();numbers=set();owners=set();rev=0
         for m in audit:
             p=m['collectorCheckpoint']
             _need(set(m)=={'mergeSha','baseSha','headSha','number','treeSha','evidenceId','evidenceDigest',
