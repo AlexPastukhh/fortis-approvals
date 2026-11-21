@@ -57,7 +57,13 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
         self.assertIn("USER 10001:10001", src)
         self.assertIn('CMD ["python","-m","fortis_approvals.r7_unified_server"]', src)
 
+    def test_exact_copy_candidate_imports_owner_local_deny_without_legacy_gateway(self):
+        self._exact_copy_candidate(smoke=False)
+
     def test_exact_copy_candidate_imports_sonar_and_disabled_github(self):
+        self._exact_copy_candidate(smoke=True)
+
+    def _exact_copy_candidate(self, *, smoke):
         lines = [line.strip() for line in DOCKERFILE.read_text().splitlines()
                  if line.strip() and not line.lstrip().startswith("#")]
         copies = [shlex.split(line)[1:] for line in lines if line.startswith("COPY ")]
@@ -109,15 +115,24 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                 "import GitHubAdapter; "
                 "from fortis_approvals.integrations.github.gateway.transport "
                 "import GitHubHTTPTransport; "
+                "from fortis_approvals.extensions.owner_policy_local_bundle_phase6c3 "
+                "import OwnerLocalDenyInventoryPortal; "
+                "assert OwnerLocalDenyInventoryPortal; "
                 "print('MODULARIZED_GATEWAY_IMPORTS_PASS'); "
-                + "exec(" + repr((ROOT / "fortis_approvals/deploy/image_offline_smoke.py").read_text()) + ")"
             )
+            if smoke:
+                code += "exec(" + repr((ROOT / "fortis_approvals/deploy/image_offline_smoke.py").read_text()) + ")"
+            else:
+                # No source checkout or legacy gateway module available.
+                code += "import importlib.util; assert importlib.util.find_spec('fortis_approvals.gateway') is None"
             completed = subprocess.run(
                 [sys.executable, "-I", "-B", "-c", code],
                 cwd=tmp, capture_output=True, text=True, timeout=20, check=False)
             self.assertEqual(completed.returncode, 0,
                              completed.stdout + "\n" + completed.stderr)
             self.assertIn("MODULARIZED_GATEWAY_IMPORTS_PASS", completed.stdout)
+            if smoke:
+                self.assertIn("IMAGE_OWNER_LOCAL_DENY_OPT_IN_PASS", completed.stdout)
 
     def test_review_compose_uses_dedicated_state_and_alternate_origins(self):
         deploy = ROOT / "fortis_approvals/deploy"

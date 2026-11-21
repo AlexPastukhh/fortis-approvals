@@ -2,9 +2,14 @@
 
 No listener, deployment, worker launcher, migration or external attestation.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from ..core import Denied
-from ..gateway import ClientGateway
+
+if TYPE_CHECKING:
+    from ..gateway import ClientGateway
 from .model import bounded
 from ..owner_auth import OwnerWebAuthn
 from .owner_inventory import owner_policy_inventory
@@ -130,6 +135,9 @@ def bind_source_only_local_policy_bundle(*,core,owner_auth,client_host,
         core._local_revision(db)
     apply=OwnerLocalDenyApply(core,owner_auth,source_digest=source_digest,
                              credential_generation_digest=credential_generation_digest)
+    # Legacy ClientGateway belongs only to this isolated source test bundle.
+    # The production R7 image uses RepoIngress and does not package it.
+    from ..gateway import ClientGateway
     client=ClientGateway(core,host=client_host)
     portal=OwnerLocalDenyInventoryPortal(core,owner_auth,local_deny_apply=apply)
     bundle=SourceOnlyLocalPolicyBundle(core,client,portal,apply)
