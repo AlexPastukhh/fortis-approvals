@@ -16,6 +16,7 @@ from .review_capture import _hash, _hex, _need, _uuid
 from .selected_main_binding import _commit
 
 MAX_MERGES=64
+CURSOR_FIELDS={'checkpoint','candidateCursor','evidenceVerified','admissionAllowed'}
 BASELINE_FIELDS={'schemaVersion','enrollmentId','repository','baselineSha',
                  'catalogSha256','acceptanceReceiptDigest','bindingDigest'}
 
@@ -37,9 +38,44 @@ def _baseline(reader, pin):
         raise Denied('P5_BASELINE_REFERENCE_INVALID') from None
 
 
+def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
+    """Read the registry-owned candidate cursor, not an arbitrary SHA.
+
+    The existing journal verifies its own original operation chain and
+    independent checkpoint; this does not confer protected admission.
+    """
+    from ....registry.state_journal import RegistryStateJournal
+    _need(getattr(reader,'__self__',None).__class__ is RegistryStateJournal
+          and getattr(reader,'__func__',None) is RegistryStateJournal.checkpoint,
+          'P5_FORWARD_CURSOR_READER_REQUIRED')
+    scope={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
+           'baselineSha':baseline['baselineSha'],'baselineDigest':baseline_digest,
+           'catalogSha256':baseline['catalogSha256'],'bindingDigest':baseline['bindingDigest'],
+           'policyReferenceDigest':policy_digest}
+    _need(reader.__self__.scope==scope,'P5_FORWARD_CURSOR_SCOPE_MISMATCH')
+    try:
+        ref=reader()
+        _need(type(ref) is dict and set(ref)==CURSOR_FIELDS
+              and ref['evidenceVerified'] is False and ref['admissionAllowed'] is False
+              and _hex(ref['candidateCursor'],40),'P5_FORWARD_CURSOR_INVALID')
+        cp=ref['checkpoint']
+        _need(type(cp) is dict
+              and set(cp)=={'schemaVersion','instanceId','scopeDigest','revision','eventDigest'}
+              and type(cp['schemaVersion']) is int and cp['schemaVersion']==1
+              and _uuid(cp['instanceId']) and cp['scopeDigest']==_hash(scope)
+              and type(cp['revision']) is int and 1<=cp['revision']<=2**63-1
+              and _hex(cp['eventDigest'],64),'P5_FORWARD_CURSOR_INVALID')
+        return loads_strict(canonical(ref))
+    except Denied:
+        raise
+    except Exception:
+        raise Denied('P5_FORWARD_CURSOR_UNAVAILABLE') from None
+
+
 def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
                             expected_baseline_digest, selected_main_sha, evidence_ids,
-                            policy_reader=None, expected_policy_digest=None):
+                            policy_reader=None, expected_policy_digest=None,
+                            cursor_reader=None):
     """Check every first-parent node from a pinned enrollment source to main.
 
     Earlier tip captures must already exist in the anchored journal. The
@@ -59,6 +95,13 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
         _need(all(policy_ref[k]==baseline[k] for k in
                   ('repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
               'P5_FORWARD_POLICY_BASELINE_MISMATCH')
+    if cursor_reader is not None:
+        _need(bound and callable(cursor_reader),'P5_FORWARD_CURSOR_POLICY_REQUIRED')
+        cursor_ref=_registry_cursor(cursor_reader,baseline,expected_baseline_digest,expected_policy_digest)
+        start_sha=cursor_ref['candidateCursor']
+    else:
+        cursor_ref=None
+        start_sha=baseline['baselineSha']
     repo=adapter._repo(PILOT_REPOSITORY)
     _need(adapter.owner+'/'+repo==REPOSITORY,'P5_FORWARD_SCOPE_DENIED')
 
@@ -103,12 +146,13 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
               and decision['requestId'] not in owners,'P5_FORWARD_DUPLICATE_ATTRIBUTION')
         by_merge[merge]=(o,receipt);numbers.add(o['number']);owners.add(decision['requestId'])
 
-    origin=baseline['baselineSha'];cursor=selected_main_sha
+    origin=start_sha;cursor=selected_main_sha
     newest=[];seen=set()
     with tempfile.TemporaryDirectory(dir=validator.state,prefix='p5-forward-') as folder:
         git=Git(Path(folder)/'git')
-        base_object=_commit(git,validator.source,origin)
-        raw=git.run(['--no-replace-objects','cat-file','blob',origin+':release/targets.yaml'],
+        base_object=_commit(git,validator.source,baseline['baselineSha'])
+        start_object=base_object if origin==baseline['baselineSha'] else _commit(git,validator.source,origin)
+        raw=git.run(['--no-replace-objects','cat-file','blob',baseline['baselineSha']+':release/targets.yaml'],
                     cwd=validator.source)[1]
         _need(0<len(raw)<=120_000 and hashlib.sha256(raw).hexdigest()==baseline['catalogSha256'],
               'P5_BASELINE_CATALOG_MISMATCH')
@@ -155,14 +199,20 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
         raise Stale('P5_FORWARD_CHECKPOINT_CHANGED')
     if bound and policy_reference(policy_reader,expected_policy_digest)!=policy_ref:
         raise Stale('P5_FORWARD_POLICY_CHANGED')
+    if cursor_ref is not None and _registry_cursor(cursor_reader,baseline,
+            expected_baseline_digest,expected_policy_digest)!=cursor_ref:
+        raise Stale('P5_FORWARD_CURSOR_CHANGED')
     check_main()
     observation={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
-                 'baselineSha':origin,'baselineDigest':expected_baseline_digest,
+                 'baselineSha':baseline['baselineSha'],'baselineDigest':expected_baseline_digest,
                  'baselineTreeSha':base_object['treeSha'],'selectedMainSha':selected_main_sha,
                  'catalogSha256':baseline['catalogSha256'],'collectorCheckpoint':checkpoint,
                  'merges':list(reversed(newest))}
     if bound:
         observation['policyReferenceDigest']=expected_policy_digest
+    if cursor_ref is not None:
+        observation.update(startCursorSha=start_sha,startCursorTreeSha=start_object['treeSha'],
+                           registryCursorCheckpoint=cursor_ref['checkpoint'])
     return {'result':'FORWARD_SOURCE_COVERAGE_MATCH_CANDIDATE',
             'observation':observation,'observationDigest':_hash(observation),
             'baselineAcceptanceVerified':False,'sourceCoverageVerified':False,

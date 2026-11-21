@@ -948,6 +948,56 @@ dependencies, missing evidence, checkpoint drift and synthetic negative
 projection/no-deployment protocol cases. Source fixtures do not prove
 admission or a real deployment.
 
+## Suffix planning from Registry cursor (source candidate only)
+
+After the first anchored candidate transaction, the Registry-owned
+`RegistryStateJournal.checkpoint` may supply a host-composed
+`cursor_reader` to `gateway/admission_plan.py::observe_suffix_plan`.
+The reader must be the actual journal's bound method, not an arbitrary
+closure or request-supplied cursor/complete flag. The journal verifies
+its original operation/evidence chain, locally persisted cursor and
+independent checkpoint before returning a candidate cursor. The source
+verifier also checks the exact immutable repository/enrollment/baseline/
+catalog/binding/policy scope digest, positive Registry revision,
+false authority flags and source cursor SHA. The selected current main
+is independently re-read, as for initial planning. This does not assert
+that the external anchor is actually protected in production.
+
+The suffix walk checks every first-parent merge between the Registry
+candidate cursor and the selected main, without re-reading or including
+earlier PRs. Each new merge needs its own independently witnessed
+policy-bound collector receipt, raw Git commit/head/tree match and
+unchanged pinned catalog. Missing first-parent nodes, unreviewed
+commits, duplicate or unused evidence, unknown dependencies and
+provider/main/checkpoint drift block. The source-pinned component map,
+original impact actions, local dependency graph and catalog validator
+are reused; only new suffix actions and evidence IDs are aggregated.
+Record ID keeps the full *new* selected SHA and catalog, so the new
+candidate has a distinct identity. The result
+`SUFFIX_RANGE_PLAN_CANDIDATE` also binds startCursorSha and the exact
+Registry cursor checkpoint. A final journal checkpoint reread blocks
+changes after lineage composition. Empty suffix is not re-enqueued.
+
+No arbitrary start SHA, cursor reset, retrospective backfill or automatic
+policy/catalog transition is permitted. The original immutable
+enrollment baseline is unchanged. The initial plan API rejects a cursor
+argument; the new suffix API requires one. The original Registry
+SQLite schema intentionally still supports only the first candidate
+transaction: **a suffix plan cannot yet be appended**. Nothing
+advances the state journal, supersedes prior records, marks actual
+installed, or returns admitted data. Supersession will require
+separately verified continuity, immutable old/current records,
+Registry CAS/anchor integration and owner acceptance. Existing
+evidenceVerified, admissionAllowed and deploymentAllowed remain false.
+
+Seven source tests include a real first fixture Core/Git/collector
+and matching Registry initial transaction, then a real second Git
+merge with a *synthetic* second policy-bound retained receipt. This
+exercises the suffix protocol, no duplicate earlier actions, stable
+new record identities, missing middle merge and cross-enrollment
+cursor rejection, and cursor checkpoint drift. It is not proof of two
+live owner-reviewed merges or a production protected anchor.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
