@@ -29,7 +29,8 @@ class ExtensionConfig:
               ('ownerPolicyEditor' not in value or value['ownerPolicyEditor'] == 'UNIFIED_V2') and
               ('ownerPolicyAuthorityUpgrade' not in value or
                (value.get('ownerPolicyEditor') == 'UNIFIED_V2' and
-                value['ownerPolicyAuthorityUpgrade'] == 'OWNER_LABELS_V1')),
+                value['ownerPolicyAuthorityUpgrade'] in ('OWNER_LABELS_V1',
+                                                           'OWNER_ALL_METHODS_V1'))),
               'INTEGRATION_CONFIG_INVALID')
         providers = value['providers']
         check(type(providers) is dict and 0 <= len(providers) <= 50, 'INTEGRATION_CONFIG_INVALID')
@@ -182,6 +183,16 @@ class ExtensionAdapter:
     def operation(self, request):
         check(request['service'] == self.provider.name, 'INTEGRATION_SERVICE_DENIED')
         return self.runtime.operations[(self.provider.name, request['operation'])]
+
+    def inner_policy(self, actor, request):
+        # Signed provider writes keep their separate owner proof; an owner
+        # ALLOW for the outer method never supplies signing authorization.
+        key=(actor,request.get('service'),request.get('operation'),
+             request.get('target'))
+        if key not in self.runtime.rules:
+            return 'DENY'
+        op=self.operation(request)
+        return 'ASK' if op.signing_credential else 'ALLOW'
 
     def prepare(self, request):
         # Core is immutable under the pinned persistence-source gate. The

@@ -125,8 +125,18 @@ class RepoSonarToolsTransportTests(unittest.TestCase):
             self.invoke(opener)
 
     def test_read_rejects_http_202(self):
-        with self.assertRaisesRegex(Denied, "FORTIS_HTTP_UNEXPECTED_STATUS"):
+        with self.assertRaisesRegex(Denied, "FORTIS_READ_RESPONSE_INVALID"):
             self.invoke(_Opener(b"{}", status=202))
+
+    def test_read_ask_returns_exact_pending_request_for_owner(self):
+        def pending(request):
+            request_id = json.loads(request.data)['requestId']
+            return json.dumps(dict(requestId=request_id,
+                service='sonarcloud',operation='get_quality_gate',
+                state='PENDING')).encode()
+        result=self.invoke(_Opener(pending,status=202))
+        self.assertEqual(result['state'],'PENDING')
+        self.assertEqual(result['service'],'sonarcloud')
 
     def test_http_error_body_and_headers_are_not_exposed(self):
         grant_value = self.grant.read_text().strip()

@@ -142,6 +142,73 @@ class OptInR7BuilderTests(unittest.TestCase):
             operation='add_pr_release_labels',target='offline_repo')),'ALLOW')
         with self.assertRaises(Denied):build(False)
 
+    def test_all_method_authority_upgrade_preserves_history_and_can_edit_pr(self):
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.extensions.owner_policy_editor_v2 import OwnerPolicyEditor
+        from fortis_approvals.integrations.github.pilot import GitHubPilotConfig
+        from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        import sqlite3
+        state=self.root/'all-method-policy'
+        state.mkdir(mode=0o700)
+        github=GitHubPilotConfig('OfflineOwner','offline_repo',
+            file_pr_branch='fortis-e2e/'+str(uuid.uuid4())+'-approve',
+            ci_reads=True,native_worktree=True,required_workflows=(1,),
+            dynamic_repositories=True)
+        transport=GitHubHTTPTransport('OFFLINE_TEST_TOKEN_NOT_REAL_00001')
+        def build(labels=False,all_methods=False):
+            with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',
+                       return_value=self.owner):
+                return build_r7_unified_candidate(**dict(self.kwargs,state=state,
+                    owner_origin='http://localhost:19203',
+                    ingress_host='host.docker.internal:19204',
+                    github_pilot=github,github_transport=transport,
+                    unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(
+                        SOURCE,lambda:CREDS,
+                        allow_label_policy_upgrade=labels,
+                        allow_all_method_policy_upgrade=all_methods)))
+        current,*_=build(labels=True)
+        def change(core,op,old,new):
+            editor=OwnerPolicyEditor(core,self.owner,source_digest=SOURCE,
+                                     credential_generation=lambda:CREDS)
+            candidate=dict(actor=ACTOR,provider='github',operation=op,
+                scope='actor',target=None,expectedPolicy=old,
+                desiredPolicy=new,
+                expectedRevision=int(core.policy_version.rsplit(':',1)[1]),
+                expectedPolicyVersion=core.policy_version,
+                reasonCode='OWNER_POLICY_CHANGE')
+            begin=editor.begin(self.owner._session,self.owner._csrf,candidate)
+            editor.finish(self.owner._session,self.owner._csrf,begin['ceremonyId'],
+                          {'syntheticTestOnlyUv':True},begin['change'])
+        change(current,'add_pr_release_labels','ASK','ALLOW')
+        change(current,'add_pr_release_labels','ALLOW','ASK')
+        with sqlite3.connect(current.path) as db:
+            original=db.execute('SELECT * FROM owner_local_policy_v2_events ORDER BY revision').fetchall()
+            assert len(original)==2
+        with self.assertRaises(Denied):
+            build()
+        widened,*_=build(all_methods=True)
+        for provider,op in (('github','update_pull_request'),
+                            ('github','merge_pull_request'),
+                            ('sonarcloud','accept_issue'),
+                            ('sonarcloud','get_quality_gate')):
+            key=(ACTOR,provider,op)
+            with self.subTest(key=key):
+                self.assertEqual(widened.authority.choices[key],
+                                 {'DENY','ASK','ALLOW'})
+        change(widened,'update_pull_request','ASK','ALLOW')
+        self.assertEqual(widened._policy(ACTOR,dict(service='github',
+            operation='update_pull_request',target='offline_repo')),'ALLOW')
+        with sqlite3.connect(widened.path) as db:
+            self.assertEqual(_local_policy_receipt(db)['revision'],3)
+            self.assertEqual(db.execute('SELECT * FROM owner_local_policy_v2_events '
+                         'ORDER BY revision LIMIT 2').fetchall(),original)
+        restarted,*_=build(all_methods=True)
+        self.assertEqual(restarted._policy(ACTOR,dict(service='github',
+            operation='update_pull_request',target='offline_repo')),'ALLOW')
+        with self.assertRaises(Denied):
+            build(labels=True)
+
     def test_unified_r7_composition_enforces_real_broker_and_extension(self):
         from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
         from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore

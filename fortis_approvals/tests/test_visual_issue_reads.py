@@ -58,7 +58,7 @@ class Tests(unittest.TestCase):
                                    receipt_store=Path(temp.name)/'receipts.sqlite')
         adapter=self.adapter
         class Gateway:
-            def post(self,path,body):
+            def post(self,path,body,*,accept_202=False):
                 assert path=='/v1/reads'
                 data=adapter.read(body)
                 return dict(requestId=body['requestId'],service='github',operation=body['operation'],data=data)
@@ -152,7 +152,9 @@ class Tests(unittest.TestCase):
             self.assertEqual(policy('merge_pull_request','visual-workspace'),'ASK')
             for operation in ('list_issues','get_issue','list_issue_comments'):
                 self.assertIn(('github',operation),broker.actor_read_operations['agent'])
-            native=NativeIngress(SimpleNamespace(broker=SimpleNamespace(core=core)),
+            native=NativeIngress(SimpleNamespace(broker=SimpleNamespace(
+                                     core=core,actor_operations=broker.actor_operations,
+                                     actor_read_operations=broker.actor_read_operations)),
                                  github=configured['adapter'],workspace=None,store=None,actor='agent')
             caps=native._dispatch('/v1/workspace/capabilities',{},'secret','agent')
             self.assertEqual(caps['visualReview']['publishPolicy'],'ALLOW')

@@ -23,6 +23,14 @@ class NativeGitHubAdapter(AnalysisGitHubAdapter):
         'PR_CREATE_POST_STARTED','PR_CREATE_POST_ACKNOWLEDGED'
     })
 
+    def inner_policy(self,actor,request):
+        # Dedicated release publisher retains its separate per-write ASK
+        # proof even when the Owner grants outer method ALLOW.
+        from ..integrations.github.publisher_profile import ACTOR as PUBLISHER_ACTOR
+        if actor==PUBLISHER_ACTOR:
+            return self.publisher.policy(actor,request)
+        return 'ALLOW'
+
     def pr_create_checkpoint(self, request_id, checkpoint):
         """Mandatory Core journal for native PR-create around the effect edge.
 

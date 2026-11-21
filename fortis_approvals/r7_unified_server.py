@@ -97,7 +97,8 @@ def _owner_release_unified_policy(extensions, release_nonce, credential_generati
         raise RuntimeError('R7_UNIFIED_POLICY_REVIEWED_RELEASE_REQUIRED')
     from .extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
     return R7UnifiedPolicySourceOptIn(_installed_policy_source_digest(),credential_generation,
-        allow_label_policy_upgrade=extensions.value.get('ownerPolicyAuthorityUpgrade')=='OWNER_LABELS_V1')
+        allow_label_policy_upgrade=extensions.value.get('ownerPolicyAuthorityUpgrade')=='OWNER_LABELS_V1',
+        allow_all_method_policy_upgrade=extensions.value.get('ownerPolicyAuthorityUpgrade')=='OWNER_ALL_METHODS_V1')
 
 
 def _runtime_policy_generation(*, owner, runtime, grant, sonar_token,

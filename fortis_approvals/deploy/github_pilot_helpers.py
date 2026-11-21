@@ -93,6 +93,10 @@ _POLICY_V2_TABLES = {
     'owner_local_policy_v2_events': ('revision','request_id','at','owner','change'),
 }
 
+_POLICY_V2_EPOCH_TABLE = 'owner_local_policy_v2_authority_epochs'
+_POLICY_V2_EPOCH_COLUMNS = ('id','through_revision','old_authority',
+                            'new_authority','old_choices')
+
 
 def _policy_json(value):
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
@@ -145,7 +149,9 @@ def _local_policy_receipt(db):
     if not names:
         return None
     v1, v2 = set(_LOCAL_POLICY_TABLES), set(_POLICY_V2_TABLES)
-    require(names in (v1,v2,v1|v2), 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+    require(names in (v1,v2,v1|v2,v2|{_POLICY_V2_EPOCH_TABLE},
+                       v1|v2|{_POLICY_V2_EPOCH_TABLE}),
+            'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
     legacy = _legacy_local_policy_receipt(db) if v1 <= names else None
     if not v2 <= names:
         return legacy
@@ -159,6 +165,29 @@ def _local_policy_receipt(db):
             meta[0][3]==(legacy['sha256'] if legacy else 'NONE'),
             'PILOT_LOCAL_POLICY_V2_BINDING_INVALID')
     revision,authority = meta[0][1:3]
+    epochs=[]
+    if _POLICY_V2_EPOCH_TABLE in names:
+        require(tuple(row[1] for row in db.execute(
+                'PRAGMA table_info('+_POLICY_V2_EPOCH_TABLE+')')) ==
+                _POLICY_V2_EPOCH_COLUMNS, 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+        epochs=db.execute('SELECT * FROM '+_POLICY_V2_EPOCH_TABLE+
+                          ' ORDER BY id').fetchall()
+    old_end=-1
+    next_auth=None
+    for idx,(id,through,prior,current,choices) in enumerate(epochs,1):
+        require(id==idx and type(through) is int and old_end<=through<=revision
+                and all(type(x) is str and re.fullmatch(r'[0-9a-f]{64}',x)
+                        for x in (prior,current))
+                and (next_auth is None or prior==next_auth),
+                'PILOT_LOCAL_POLICY_V2_EPOCH_INVALID')
+        try: parsed=json.loads(choices)
+        except (ValueError,TypeError): parsed=None
+        require(type(parsed) is list and bool(parsed) and choices==_policy_json(parsed),
+                'PILOT_LOCAL_POLICY_V2_EPOCH_INVALID')
+        old_end=through
+        next_auth=current
+    require(next_auth is None or next_auth==authority,
+            'PILOT_LOCAL_POLICY_V2_EPOCH_INVALID')
     rules = db.execute('SELECT * FROM owner_local_policy_v2_rules ORDER BY coordinate').fetchall()
     events = db.execute('SELECT * FROM owner_local_policy_v2_events ORDER BY revision').fetchall()
     require(len(events)==revision,'PILOT_LOCAL_POLICY_V2_AUDIT_MISMATCH')
@@ -193,7 +222,9 @@ def _local_policy_receipt(db):
                    and type(at) is int and at>=0 and type(owner) is str and bool(owner)
                    and change['purpose']=='OWNER_UNIFIED_POLICY_APPLY_V2'
                    and change['requestId']==ident and type(change['expectedRevision']) is int
-                   and change['expectedRevision']==index-1 and change['authorityDigest']==authority
+                   and change['expectedRevision']==index-1 and change['authorityDigest']==next(
+                       (era[2] for era in epochs if index<=era[1]),
+                       authority)
                    and type(change['expectedPolicyVersion']) is str
                    and change['expectedPolicyVersion'].endswith('|owner-policy-v2:'+str(index-1))
                    and all(type(change[k]) is str and re.fullmatch(r'[a-f0-9]{64}',change[k])
@@ -212,7 +243,8 @@ def _local_policy_receipt(db):
     require(actual==replay,'PILOT_LOCAL_POLICY_V2_AUDIT_MISMATCH')
     # Full live authority/first-event old policy replay is checked by the
     # installed R7 Core. This independent receipt binds all SQL rows.
-    sha=hashlib.sha256(_policy_json([legacy,meta,rules,events]).encode()).hexdigest()
+    sha=hashlib.sha256(_policy_json(
+        [legacy,meta,rules,events]+([epochs] if epochs else [])).encode()).hexdigest()
     return {'revision':revision,'sha256':sha,'schemaVersion':2,'legacy':legacy}
 
 
@@ -364,6 +396,35 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         local_policy = _local_policy_receipt(a)
         if local_policy is not None:
             summary['localPolicy'] = local_policy
+        # One-use ASK receipt consumption is security state, never ambient
+        # UNCERTAIN growth. Its digest is bound to the full source snapshot
+        # and must be byte-identical when the protected state is cloned.
+        spent_names={x[0] for x in a.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='owner_read_approval_spent'")}
+        if spent_names:
+            require(spent_names == {'owner_read_approval_spent'} and
+                    tuple(x[1] for x in a.execute(
+                    'PRAGMA table_info(owner_read_approval_spent)')) ==
+                    ('request_id','actor','used_at'),
+                    'PILOT_READ_APPROVAL_SCHEMA_INVALID')
+            spent=list(a.execute('SELECT request_id,actor,used_at '
+                                  'FROM owner_read_approval_spent ORDER BY request_id'))
+            require(len(spent)<=100000 and all(
+                    type(ident) is str and type(actor) is str and actor and
+                    type(at) is int and at>0 and
+                    str(uuid.UUID(ident))==ident
+                    for ident,actor,at in spent),
+                    'PILOT_READ_APPROVAL_RECEIPT_INVALID')
+            for ident,actor,at in spent:
+                request=a.execute('SELECT payload,actor,state FROM requests WHERE id=?',
+                                  (ident,)).fetchone()
+                require(request is not None and request[1]==actor and
+                        request[2]=='EXECUTED' and
+                        json.loads(request[0]).get('service')=='read-authorization',
+                        'PILOT_READ_APPROVAL_ORPHAN_RECEIPT')
+            summary['readApprovalSpendReceipt']={
+                'count':len(spent),
+                'sha256':hashlib.sha256(_policy_json(spent).encode()).hexdigest()}
         if native:
             db = connections['native-git/workflow.sqlite']
             tables = {r[0] for r in db.execute(
@@ -548,8 +609,16 @@ def _core_growth_witness(volume):
         names={x[0] for x in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         local_policy = _local_policy_receipt(db)
-        extra = (names & (set(_LOCAL_POLICY_TABLES)|set(_POLICY_V2_TABLES))
+        extra = (names & (set(_LOCAL_POLICY_TABLES)|set(_POLICY_V2_TABLES)|
+                            {_POLICY_V2_EPOCH_TABLE})
                  if local_policy is not None else set())
+        # The guarded V3 native READ-ASK receipt adds one strictly
+        # bounded, append-only spent-ID table to Core state.
+        if 'owner_read_approval_spent' in names:
+            require(tuple(x[1] for x in db.execute(
+                'PRAGMA table_info(owner_read_approval_spent)')) ==
+                ('request_id','actor','used_at'),'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+            extra.add('owner_read_approval_spent')
         require(names==set(expected)|extra,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
         for table,names in expected.items():
             current=tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')'))

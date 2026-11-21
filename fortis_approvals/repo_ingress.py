@@ -242,7 +242,7 @@ class RepoIngress:
                     if len(raw) > self.max_read_response_bytes:
                         return self._reply(start,413,
                                            {'error':'REPO_READ_RESPONSE_TOO_LARGE'})
-                    return self._reply(start,200,out)
+                    return self._reply(start,202 if out.get('state')=='PENDING' else 200,out)
                 # Only known GitHub ACTION schemas receive this additive
                 # attempt-level marker. Unknown operations and READ sent on
                 # WRITE routes retain their established rejection behavior.

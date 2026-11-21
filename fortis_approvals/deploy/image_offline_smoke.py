@@ -184,6 +184,35 @@ def smoke_owner_policy_v2():
         with core._db() as db:
             assert core._snapshot(db)[0]==0
     print('IMAGE_OWNER_POLICY_V2_OPT_IN_PASS')
+    # A second isolated, never-activated candidate proves that the all-methods
+    # switch is actually installed in the built image, without touching a
+    # production owner store, credential, listener or external service.
+    all_config=ExtensionConfig({'schemaVersion':1,'providers':{},
+        'ownerPolicyEditor':'UNIFIED_V2',
+        'ownerPolicyAuthorityUpgrade':'OWNER_ALL_METHODS_V1'})
+    all_selector=_owner_release_unified_policy(all_config,str(uuid.uuid4()),
+                                               lambda:'b'*64)
+    with tempfile.TemporaryDirectory(prefix='fortis-image-all-methods-') as tmp:
+        state=Path(tmp)/'private';state.mkdir(mode=0o700)
+        other_remote=FakeSonar()
+        c,o,p,i=build_r7_unified_candidate(
+            state=state,owner_origin='http://localhost:19203',
+            ingress_host='host.docker.internal:19204',ingress_grant=grant,
+            sonar_transport=other_remote,organizations=('offline_org',),
+            project_keys=('offline_project',),extensions=all_config,
+            github_pilot=pilot,github_transport=github,
+            unified_policy_source_opt_in=all_selector)
+        for method in ('update_pull_request','merge_pull_request'):
+            assert c.authority.choices[(ACTOR,'github',method)] == {
+                'DENY','ASK','ALLOW'}
+        assert c.authority.choices[(ACTOR,'sonarcloud','get_quality_gate')] == {
+            'DENY','ASK','ALLOW'}
+        assert c.authority.choices[(ACTOR,'sonarcloud','accept_issue')] == {
+            'DENY','ASK','ALLOW'}
+        assert getattr(i.base.broker,'read_approval',None) is not None
+        assert ('read-authorization','approve') in p.strong_operations
+        assert not other_remote.calls
+    print('IMAGE_OWNER_ALL_METHODS_POLICY_V3_OPT_IN_PASS')
 
 
 if __name__ == '__main__':

@@ -207,6 +207,42 @@ class UncertainGrowthWitnessTests(unittest.TestCase):
         self.assertEqual(copied,grown['receipt'])
         self.assertEqual((self.target/'private'/'approvals.sqlite').read_bytes(),self.core.read_bytes())
 
+    def test_one_use_read_approval_receipt_is_preserved_on_cloned_state(self):
+        read_id='11111111-1111-4111-8111-111111111111'
+        payload={'requestId':read_id,'service':'read-authorization',
+                 'operation':'approve','target':'offline_project',
+                 'params':{'actor':ACTOR,'query':{'requestId':read_id,
+                         'service':'sonarcloud','operation':'get_quality_gate',
+                         'target':'offline_project','params':{},'reason':'offline'}},
+                 'expectedVersion':0,'reason':'offline'}
+        with sqlite3.connect(self.core) as db:
+            db.execute("""CREATE TABLE owner_read_approval_spent(
+                request_id TEXT PRIMARY KEY,actor TEXT NOT NULL,
+                used_at INTEGER NOT NULL)""")
+            db.execute("""INSERT INTO requests
+                (id,fingerprint,actor,payload,snapshot,state,policy_version,
+                 created_at,expires_at,decision,owner,result,failure)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (read_id,'1'*64,ACTOR,json.dumps(payload),
+                 '{}','EXECUTED','offline',43,3600,
+                 'approve','offline-owner','{}',None))
+            db.execute("INSERT INTO events(request_id,at,state,detail) VALUES(?,?,?,?)",
+                       (read_id,44,'EXECUTED','{}'))
+            db.execute("INSERT INTO owner_read_approval_spent VALUES(?,?,?)",
+                       (read_id,ACTOR,45))
+        before=self.snapshot()
+        saved=before['receipt']['summary']['readApprovalSpendReceipt']
+        self.assertEqual(saved['count'],1)
+        self.append_uncertain()
+        grown=self.review(before)
+        self.assertEqual(grown['receipt']['summary']['readApprovalSpendReceipt'],saved)
+        copied=H.clone_state(self.source,self.target,uid=os.geteuid(),gid=os.getegid(),
+            github=True,native=True,preserve_uncertain_ids=grown['uncertainIds'],
+            preserve_claimed_ids=[IDENT],require_exact_approved=True)
+        self.assertEqual(copied,grown['receipt'])
+        self.assertEqual((self.target/'private'/'approvals.sqlite').read_bytes(),
+                         self.core.read_bytes())
+
     def test_changed_local_policy_is_not_uncertain_growth(self):
         from fortis_approvals.extensions.owner_policy_local_core_phase6c import LocalDenyCore
         from fortis_approvals.core import Authenticator

@@ -143,3 +143,57 @@ scope. Other native controls, Sonar writes, PowerShell, signed Mirror, callable
 policies and synchronous READ-ASK remain separately gated. Do not advertise
 unconditional DENY/ASK/ALLOW for those until their inner enforcement contracts
 and tests explicitly support it.
+
+
+## Subsequent owner-all-methods authority V3 (source-only candidate)
+
+This section describes a **separate** reviewed release opt-in,
+`"ownerPolicyAuthorityUpgrade": "OWNER_ALL_METHODS_V1"`, only with
+`"ownerPolicyEditor": "UNIFIED_V2"`. It does not alter the installed Gateway
+or automatically grant any method. The previous label-only opt-in remains
+accepted for its original authority digest and migration lineage.
+
+For **all already registered, actor-granted Core methods** (including
+synchronous native GitHub/Sonar READ and provider action, Sonar WRITE,
+PowerShell, trusted extensions and signed Mirror operations), the Owner Portal
+accepts the three **outer** policy settings `DENY / ASK / ALLOW`. The option
+list is derived from trusted registration, existing actor grants and scoped
+provider operations, **not a ceiling keyed to operation name**. Owner edits
+require the existing fresh UV-required WebAuthn ceremony, exact revision,
+credential, and source-generation binding. Unknown methods, unregistered
+actors/targets and absent provider credentials receive no new grant.
+
+At execution, independent checks still apply. The effective policy is the
+most restrictive of owner outer policy, a trusted conditional callback,
+and trusted adapter **inner** policy: `DENY > ASK > ALLOW`.
+Windows PowerShell V1 remains ASK for independent executor command proof;
+signed extension writes and the separate release-label publisher actor
+continue to require their independent ASK. The UI must distinguish outer
+policy from effective policy at a *specific target*. ALLOW never means
+unrestricted shell, provider credential, URL, repo, or raw HTTP access.
+
+Native synchronous READ ASK uses a one-use Core owner request:
+the first typed GET creates a durable PENDING request with **no provider read**;
+after owner WebAuthn approval the client may send the exact same UUID and
+parameters **once**, consuming an append-only protected receipt *before*
+contacting the provider. A different UUID, actor, target or params cannot reuse
+that consent. The provider's result is not automatically retried after a
+lost response. Existing unrestricted read clients still return normal
+`data`; a pending consent is explicitly returned as `state: PENDING`.
+
+New candidate authority is not silently installed on prior V2 state:
+the owner-reviewed release names its exact previous authority digest;
+the Core verifies every persisted historic event and writes a transactionally
+bound monotone authority epoch. Past UV events, V1 local DENY history,
+rule projection and revision remain byte-for-byte unchanged. Any unknown
+epoch chain, missing grant, altered scope, digest mismatch or active
+PENDING/APPROVED/DISPATCHED Core request **stops migration**.
+Unresolved UNCERTAIN effects retain their normal protected preservation
+requirements. Rollback to an old image against newly migrated state fails
+closed. No operator should edit SQLite tables to force compatibility.
+
+The operator source/CI checks and real image smoke are not proof of production
+activation; each first owner-controlled V3 release needs protected Check,
+full-state clone/readback, Apply, Owner Portal acceptance, Backup and Promote.
+After release the owner may separately choose a new policy. The source
+candidate must not be advertised as deployed until this is completed.

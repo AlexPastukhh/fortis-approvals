@@ -25,6 +25,7 @@ buildUnits:
       - fortis_approvals/incidents.py
       - fortis_approvals/repo_action_contract.py
       - fortis_approvals/repo_ingress.py
+      - fortis_approvals/read_approval.py
       - fortis_approvals/r5_read_candidate.py
       - fortis_approvals/r5_read_server.py
       - fortis_approvals/r7_unified_candidate.py

@@ -16,12 +16,14 @@ class R7UnifiedPolicySourceOptIn:
     source_digest: str
     credential_generation: object
     allow_label_policy_upgrade: bool = False
+    allow_all_method_policy_upgrade: bool = False
 
     def __post_init__(self):
         if (type(self.source_digest) is not str or
                 not re.fullmatch(r"[a-f0-9]{64}",self.source_digest) or
                 not callable(self.credential_generation) or
-                type(self.allow_label_policy_upgrade) is not bool):
+                type(self.allow_label_policy_upgrade) is not bool or
+                type(self.allow_all_method_policy_upgrade) is not bool):
             raise Denied("R7_UNIFIED_POLICY_IDENTITY_REQUIRED")
 
 
@@ -36,7 +38,8 @@ _GITHUB_ASK_ONLY = frozenset(("mark_pr_ready","merge_pull_request","update_pull_
 
 
 def derive_admission(core, broker, *, native, extension_runtime,
-                     allow_label_policy_upgrade=False):
+                     allow_label_policy_upgrade=False,
+                     allow_all_method_policy_upgrade=False):
     """Only installed, actor-granted, literal policy rows may become editable.
 
     READ-ASK needs a new deferred result protocol, not a misleading selector.
@@ -48,8 +51,12 @@ def derive_admission(core, broker, *, native, extension_runtime,
     from ..workflow.common import WORKSPACE_OPS
     from ..integrations.github.analysis_contract import ACTIONS as CI_ACTIONS
     from ..integrations.github.publisher_profile import ACTOR as PUBLISHER_ACTOR
-    if type(allow_label_policy_upgrade) is not bool:
+    if (type(allow_label_policy_upgrade) is not bool or
+            type(allow_all_method_policy_upgrade) is not bool):
         raise Denied("R7_UNIFIED_POLICY_UPGRADE_FLAG_INVALID")
+    if allow_all_method_policy_upgrade:
+        return _derive_registered_method_admission(core,broker,native=native,
+                                                    extension_runtime=extension_runtime)
     rt = extension_runtime
     choices = {}
     for key, baseline in core.policies.items():
@@ -101,6 +108,56 @@ def derive_admission(core, broker, *, native, extension_runtime,
                 permitted = {"DENY","ASK"}
         if permitted is not None and baseline in permitted:
             choices[key] = frozenset(permitted)
+    return choices
+
+
+def _derive_registered_method_admission(core,broker,*,native,extension_runtime):
+    """Outer owner policy: choice is NOT keyed to the method's name.
+
+    Actor grants, exact configured extension target, installed handler and
+    provider readiness are mandatory. The inner executor and provider still
+    validate every request independently, including conditional callbacks.
+    A missing actor grant is NEVER created by making an existing rule editable.
+    """
+    from ..workflow.common import WORKSPACE_OPS
+    rt = extension_runtime
+    choices = {}
+    for key, baseline in core.policies.items():
+        if (type(key) is not tuple or len(key) not in (3,4)
+                or not all(type(x) is str for x in key)
+                or not core.auth.active(key[0]) or key[1] not in core.adapters
+                or not (baseline in POLICIES if type(baseline) is str
+                        else callable(baseline))):
+            continue
+        actor, service, operation = key[:3]
+        pair=(service,operation)
+        enrolled=False
+        if rt is not None and service in rt.credentials:
+            if len(key)!=4 or key not in rt.rules or rt.rules[key]!=baseline:
+                continue
+            op=rt.operations.get(pair)
+            aliases=rt.credentials[service]
+            enrolled=(op is not None and op.ready and
+                      all(not role or role in aliases
+                          for role in (op.credential,op.signing_credential)))
+        elif (pair in broker.actor_read_operations.get(actor,())
+                and service in broker.read_adapters):
+            enrolled=True
+        elif pair in broker.actor_operations.get(actor,()):
+            enrolled=True
+        elif (native is not None and actor==native["actor"] and
+                service=="workspace" and native.get("workspace") is not None
+                and operation in WORKSPACE_OPS):
+            # Workspace's native typed ingress is a separate registered path
+            # from the generic RepoIntentBroker action grant.
+            enrolled=True
+        elif (native is not None and actor==native["actor"] and
+                service=="powershell" and len(key)==4
+                and getattr(core.adapters[service],"actor",None)==actor
+                and getattr(core.adapters[service],"target",None)==key[3]):
+            enrolled=True
+        if enrolled:
+            choices[key]=POLICIES
     return choices
 
 
