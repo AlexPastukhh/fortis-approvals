@@ -207,7 +207,7 @@ test('unified editor supports scoped transition, verifies descriptor and never r
  let sentChange=null,failFinish=false,tamper=false,uv=0;
  const row={provider:'github',operation:'create_pull_request',actor:'agent',scope:'actor',
   target:null,currentPolicy:'ASK',editablePolicies:['DENY','ASK','ALLOW'],active:true};
- const context=vm.createContext({$,row,document:{createElement:()=>({})},action:f=>f,
+ const context=vm.createContext({$,row,document:{createElement:()=>({})},displayProviderInventory(){},action:f=>f,
   ceremony:async()=>{uv++;return {test:true};},
   api:async(url,body)=>{
    calls.push({url,body});
@@ -228,6 +228,7 @@ test('unified editor supports scoped transition, verifies descriptor and never r
  const run=x=>vm.runInContext(x,context);
  run("let csrf='owner',tab='providers',providerInventory={policyEditorVersion:2,policyRevision:0,policyVersion:'v|owner-policy-v2:0'},localDenyBusy=false,policyReviewBusy=false; const localDenyCoordinate=/^[A-Za-z0-9_.:-]+$/,localDenyUuid=/^[a-f0-9-]{36}$/;"+code);
  run('unifiedEnabled=true;chooseUnified(row)');
+ assert.match($('policy-editor-limits').textContent,/DENY \/ ALLOW/);
  $('policy-editor-scope').value='exact';$('policy-editor-target').value='repo-1';
  $('policy-editor-value').value='ALLOW';$('policy-editor-value').change();
  tamper=true;await assert.rejects(run('prepareUnified()'));assert.equal(uv,0);
@@ -241,4 +242,71 @@ test('unified editor supports scoped transition, verifies descriptor and never r
  await run('confirmUnified()');assert.equal(calls.filter(c=>c.url.endsWith('/finish')).length,1);
  await run('readbackUnified()');
  assert.match($('policy-editor-result').textContent,/Запись исходного UUID подтверждена/);
+});
+
+
+test('V2 workbench groups rows by provider and selects via radio, not bottom-of-table buttons',()=>{
+ assert.match(html,/id="providers-workbench"/);
+ assert.match(html,/id="providers-list-pane"/);
+ assert.match(html,/id="policy-editor-panel" class="policy-editor" hidden/);
+ assert.match(html,/id="providers-editable-only"/);
+ const begin=full.indexOf('function inventoryPolicyText(row){');
+ const finish=full.indexOf('async function loadProviderInventory(){',begin);
+ assert.ok(begin>=0&&finish>begin);
+ const els=new Map(),selected=[];
+ class Element{
+  constructor(tag){this.tag=tag;this.children=[];this.textContent='';this.className='';
+   this.value='';this.checked=false;this.disabled=false;}
+  append(...items){this.children.push(...items);}
+  replaceChildren(...items){this.children=[...items];}
+ }
+ const $=id=>{
+  if(!els.has(id))els.set(id,new Element(id));
+  return els.get(id);
+ };
+ const rows=[
+  {provider:'github',operation:'create_pull_request',actor:'agent',scope:'actor',
+   currentPolicy:'ASK',editablePolicies:['DENY','ASK','ALLOW'],active:true,
+   configuredPolicy:'ASK'},
+  {provider:'github',operation:'push_commits',actor:'agent',scope:'actor',
+   configuredPolicy:'CONDITIONAL',active:true},
+  {provider:'workspace',operation:'commit',actor:'agent',scope:'actor',
+   currentPolicy:'ALLOW',editablePolicies:['DENY','ASK','ALLOW'],active:true,
+   configuredPolicy:'ALLOW'}
+ ];
+ const context=vm.createContext({$,document:{createElement:tag=>new Element(tag)},
+  providerInventory:{operations:rows,providers:[{provider:'github'},{provider:'workspace'}]},
+  unifiedEnabled:true,unifiedRow:null,
+  canSelectUnified:r=>Array.isArray(r.editablePolicies)&&r.editablePolicies.length>1,
+  chooseUnified:r=>selected.push(r.operation),
+  visibleProviderRows:()=>rows});
+ vm.runInContext(full.slice(begin,finish),context);
+ context.$('providers-select').value='';
+ context.$('providers-filter').value='';
+ context.$('providers-editable-only').checked=false;
+ vm.runInContext('displayProviderInventory()',context);
+ const groups=context.$('providers-results').children;
+ assert.equal(groups.length,2);
+ assert.equal(groups[0].children[0].textContent,'github · 2');
+ const cards=groups[0].children[1].children;
+ assert.equal(cards.length,2);
+ assert.equal(cards[0].children[0].type,'radio');
+ cards[0].children[0].onchange();
+ assert.equal(selected[0],'create_pull_request');
+ assert.equal(cards[1].children[0].disabled,true);
+ assert.match(cards[1].children[1].children[2].textContent,/CONDITIONAL/);
+ context.$('providers-editable-only').checked=true;
+ vm.runInContext('displayProviderInventory()',context);
+ assert.equal(context.$('providers-summary').textContent,'2 из 3 правил · 2 провайдеров · редактор V2');
+ assert.equal(context.$('providers-results').children.length,2);
+});
+test('ASK-only native control explains excluded ALLOW and permanent policy vs per-request approval',()=>{
+ const begin=full.indexOf('function unifiedChoiceExplanation(');
+ const finish=full.indexOf('function canSelectUnified(',begin);
+ const ctx=vm.createContext({});
+ vm.runInContext(full.slice(begin,finish),ctx);
+ const msg=vm.runInContext("unifiedChoiceExplanation({currentPolicy:'ASK',editablePolicies:['DENY','ASK']})",ctx);
+ assert.match(msg,/Постоянный ALLOW не допускается/);
+ assert.match(msg,/согласования владельца/);
+ assert.match(msg,/WebAuthn/);
 });

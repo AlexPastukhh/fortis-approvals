@@ -32,12 +32,20 @@ The global policyVersion revision stales prior pending/approved decisions;
 a DISPATCHED request anywhere blocks the change. UNCERTAIN history is preserved.
 A lost finish response requires exact UUID readback, not auto-retry.
 
-The UI offers provider selection and filtered rule counts. An enabled V2
-inventory and separately verified owner-only capability are both required.
-Server-supplied editablePolicies constrains the selector. Owner chooses method
-or exact target, reviews old/new policy, exceptions, risk and request counts,
-then explicitly invokes WebAuthn. V1 remains compatible and the V2 panel stays
-hidden for current releases.
+The V2 UI uses a two-pane policy workbench: independently scrolling,
+provider-grouped operation choices and a visible editor alongside the selected
+rule. Filtering to editable rows is optional and defaults on; read-only rows,
+conditional policies and unknown effective target values stay inspectable on
+request. The panel explains server-admitted choices (including why an ASK-only
+operation cannot be made ALLOW) and distinguishes permanent owner policy edits
+from per-request machine ASK approval.
+
+An enabled V2 inventory and separately verified owner-only capability are both
+required. Server-supplied editablePolicies constrains the selector. Owner chooses
+method or exact target, reviews old/new policy, exceptions, risk and request
+counts, then explicitly invokes WebAuthn. The UI change does not expand any
+operation's policy admission. V1 remains compatible and the V2 panel stays hidden
+unless a live V2 capability is verified.
 
 ## Real R7 admission and limitations
 

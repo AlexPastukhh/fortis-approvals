@@ -43,3 +43,39 @@
 .policy-editor{border:1px solid #8887;border-radius:8px;margin:16px 0;padding:12px}
 .policy-editor h3{margin-top:0}
 .policy-editor button:disabled{cursor:not-allowed;opacity:.65}
+
+/* Owner V2: independently scrolling operation list beside a sticky policy editor. */
+.policy-glossary{margin:12px 0;border:1px solid #8885;border-radius:8px;padding:10px 14px}
+.policy-glossary summary{cursor:pointer;font-weight:600}
+.policy-glossary p{max-width:85ch}
+.policy-check{display:flex;align-items:center;gap:7px;padding-bottom:9px;cursor:pointer}
+.policy-check input{width:18px;height:18px}
+#providers-workbench.unified-workbench{display:grid;grid-template-columns:minmax(280px,1fr) minmax(380px,1.05fr);gap:16px;align-items:start}
+#providers-list-pane{min-width:0}
+#providers-workbench.unified-workbench #providers-list-pane{border:1px solid #8887;border-radius:8px;padding:12px}
+#providers-workbench.unified-workbench #providers-results{overflow-y:auto;overflow-x:hidden;max-height:min(68vh,700px)}
+#providers-workbench.unified-workbench #policy-editor-panel{margin:0;position:sticky;top:14px;max-height:calc(100vh - 36px);overflow-y:auto;scroll-margin:12px}
+.workbench-title{font-size:1rem;margin:0 0 10px}
+.provider-group{margin:0 0 14px}
+.provider-group h4{font-size:.95rem;margin:0 0 7px;color:CanvasText}
+.provider-rule-list{display:grid;gap:5px}
+.provider-rule{display:flex;gap:10px;align-items:start;padding:10px;border:1px solid #8885;border-radius:7px;cursor:default}
+.provider-rule.can-edit{cursor:pointer}
+.provider-rule.can-edit:hover,.provider-rule.selected,.provider-rule:has(input:checked),.provider-rule:focus-within{border-color:CanvasText;background:color-mix(in srgb,Canvas 91%,CanvasText 9%)}
+.provider-rule.selected{outline:2px solid Highlight;outline-offset:-2px}
+.provider-rule input{flex:0 0 auto;margin:4px 0 0;width:17px;height:17px}
+.provider-rule-info{min-width:0;display:grid;gap:3px;overflow-wrap:anywhere}
+.provider-rule-info strong{font-size:.95rem}
+.provider-rule-info small{font-size:.78rem;opacity:.8}
+.provider-rule-policy{font-size:.85rem}
+.provider-rule-hint{font-size:.78rem}
+.policy-limits{padding:10px;border-left:3px solid #888;background:color-mix(in srgb,Canvas 94%,CanvasText 6%);font-size:.88rem}
+#policy-editor-panel .provider-controls>div{flex:1 1 165px}
+#policy-editor-panel .provider-controls select,#policy-editor-panel .provider-controls input{width:100%;min-width:0}
+@media(max-width:880px){
+ #providers-workbench.unified-workbench{grid-template-columns:1fr}
+ #providers-workbench.unified-workbench #providers-results{max-height:42vh}
+ #providers-workbench.unified-workbench #policy-editor-panel{position:static;max-height:none;overflow:visible}
+}
+
+.policy-check[hidden]{display:none}

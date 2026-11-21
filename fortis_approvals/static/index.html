@@ -16,8 +16,8 @@
 <p class="small">Очередь заявок обновляется каждые 5 секунд, даже когда открыта вкладка PowerShell.</p>
 <div class="layout" id="approval-view"><div id="requests" aria-label="Заявки"></div><article id="detail"><p>Выберите заявку.</p></article></div>
 <section id="providers-view" hidden aria-label="API и политики">
- <h2>API и политики · инвентаризация</h2>
- <p class="small">Инвентаризация — только чтение. Для native-методов версия, тип операции и готовность upstream могут быть неизвестны. Блок локального DENY доступен только в отдельно подключённом режиме владельца.</p>
+ <h2>Доступ к API</h2>
+ <p class="small">Выберите провайдер и операцию. Изменять можно только те правила, для которых сервер явно разрешил переход.</p>
  <div class="provider-controls">
   <div>
    <label for="providers-select">Провайдер</label>
@@ -27,13 +27,23 @@
    <label for="providers-filter">Поиск по методу, actor, target или политике</label>
    <input id="providers-filter" type="search" autocomplete="off">
   </div>
+  <label id="providers-editable-control" class="policy-check" hidden><input id="providers-editable-only" type="checkbox" checked> Только изменяемые</label>
  </div>
- <p class="small">Actor — вызывающий субъект. Target — объект операции. Правило на уровне actor может иметь точечные исключения.</p>
+ <details class="policy-glossary">
+  <summary>Что означают DENY, ASK, ALLOW, CONDITIONAL и UNKNOWN?</summary>
+  <p><strong>DENY</strong> — запрещено. <strong>ASK</strong> — запрос ИИ требует согласования владельца. <strong>ALLOW</strong> — базовое разрешение без отдельного согласования каждого запроса; прочие проверки операции сохраняются.</p>
+  <p><strong>CONDITIONAL</strong> — решение зависит от дополнительных программных условий; это не переключатель ALLOW/ASK/DENY. <strong>UNKNOWN</strong> — итог для конкретного target не вычислен. <strong>UNVERIFIED</strong> — внешняя готовность не доказана инвентаризацией.</p>
+ </details>
  <p id="providers-summary" role="status"></p>
- <div id="providers-results" aria-live="polite"></div>
+ <div id="providers-workbench">
+  <div id="providers-list-pane" aria-label="Операции провайдеров">
+   <h3 class="workbench-title">Операции провайдеров</h3>
+   <div id="providers-results" aria-live="polite"></div>
+  </div>
   <section id="policy-editor-panel" class="policy-editor" hidden aria-label="Изменение политики">
-   <h3>Изменение политики</h3>
-   <p id="policy-editor-selection">Выберите правило.</p>
+   <h3>Правило доступа</h3>
+   <p id="policy-editor-selection">Выберите изменяемую операцию в списке слева.</p>
+   <p id="policy-editor-limits" class="policy-limits">Разрешённые переходы определяет сервер.</p>
    <div class="provider-controls">
     <div><label for="policy-editor-scope">Область</label><select id="policy-editor-scope" disabled>
      <option value="actor">Метод для actor</option><option value="exact">Точный target</option>
@@ -42,11 +52,12 @@
     <div><label for="policy-editor-value">Новая политика</label><select id="policy-editor-value" disabled></select></div>
    </div>
    <p class="small">Только разрешённые сервером переходы. Изменение метода сохраняет отдельные точечные исключения. Любое изменение требует свежего подтверждения владельца.</p>
-   <button id="policy-editor-prepare" type="button" disabled>Проверить последствия</button>
-   <button id="policy-editor-confirm" type="button" disabled>Изменить через WebAuthn</button>
+   <button id="policy-editor-prepare" type="button" disabled>1. Проверить последствия</button>
+   <button id="policy-editor-confirm" type="button" disabled>2. Подтвердить через WebAuthn</button>
    <button id="policy-editor-readback" type="button" disabled>Проверить исходный UUID</button>
    <pre id="policy-editor-result" role="status" aria-live="polite"></pre>
   </section>
+ </div>
   <section aria-label="Предпросмотр настройки политики" id="policy-preview-panel">
    <h3>План изменения правила — без применения</h3>
    <p class="small">Выберите настроенное правило с точными actor и target. Предпросмотр ничего не сохраняет и не даёт разрешения менять политику.</p>
