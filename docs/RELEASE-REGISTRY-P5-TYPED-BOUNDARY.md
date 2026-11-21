@@ -802,3 +802,35 @@ already anchored data, unexpected local state, altered host process,
 wrong owner/Registry path, changed owner/Repo denial observations,
 reader drift and no-write readback. They do not constitute a real
 separate-principal host E2E test.
+
+### Accepted-peer fixed owner checkpoint READ adapter — source-only increment
+
+`registry/owner_peer_boundary.py::read_accepted_checkpoint` is a
+bounded **READ-only source adapter**, not a listener or an active
+service. It accepts an already connected filesystem Unix stream
+socket and reuses `observe_accepted_peer` to validate pinned host
+profile, kernel SO_PEERCRED, exact instance/scope/enrollment, socket
+inode and framing. It requires the exact `OfflineCheckpointCAS`
+instance configured independently of caller data, and rechecks the
+socket/profile/ledger binding after reading the ledger.
+
+Only `checkpoint.get` (registry-reader or owner-operator) and
+`checkpoint.original` (owner-operator only, exact operation UUID)
+can return fixed checkpoint/original-receipt projections. Unknown
+operations, forged actor/UID/path fields and `checkpoint.advance`
+remain **DENY**. It does not bind/listen or send on a socket, create
+host accounts, mount storage, alter the checkpoint, or accept an owner
+decision. The response explicitly keeps `dispatchAllowed=false`,
+`protectedAuthorityVerified=false`, `ownerAcceptanceVerified=false`
+and `admissionAllowed=false`: successful candidate READ does **not**
+mean a protected authority or trusted external monotonic witness.
+
+Focused source tests verify real same-UID kernel denial and bounded
+SQLite readback, missing/original operation, wrong role/ledger/pin,
+changed socket permissions and closed mutation. Positive role tests
+use an explicitly **injected observation seam**; they do not prove
+cross-UID host isolation. No Registry runtime or WebAuthn ceremony
+is activated. The next separate source/host work must establish an
+owner-provisioned listener/process, authenticated owner acceptance,
+independent non-rollback witness and negative multi-principal E2E,
+without exposing `advance` by merely changing a flag.

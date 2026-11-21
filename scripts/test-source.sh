@@ -140,6 +140,7 @@ tests=(
   test_registry_checkpoint_cas.py
   test_registry_recovery_reconcile.py
   test_registry_owner_peer_boundary.py
+  test_registry_owner_read_boundary.py
   test_registry_owner_runtime_isolation.py
   test_registry_owner_storage_denial.py
   test_registry_enrollment_cutover.py
