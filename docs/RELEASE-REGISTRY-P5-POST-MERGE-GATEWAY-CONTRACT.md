@@ -199,6 +199,60 @@ then can all proof classes be linked to canonical Registry admission, which
 remains a separate WRITE contract. Existing component restrictions and
 owner/Gateway release gates remain independent.
 
+## Private pre-merge body observation journal (source-only reference)
+
+`gateway/review_capture.py::ReviewCaptureStore` retains the exact UTF-8
+body of an open non-draft same-repository task PR, scoped to the existing
+`fortis-approvals` pilot. The trusted server composition (not implemented)
+would inject the owner-configured adapter and a private persistent path.
+The method accepts only an operation UUID, expected journal revision, PR
+number, exact head and expected body SHA-256. It reuses
+`_release_impact_pr_evidence` twice through the existing GET transport and
+rejects mismatching body hashes, identities or observed drift. No caller
+body, reviewer label, credential, URL, or claimed approval is accepted.
+
+**Placement proposal, not owner acceptance:** separate dedicated volume
+under the future collector's service UID; private directory mode 0700,
+regular database mode 0600, no shared Repo/AI/publisher access, no symlink or
+hardlink to another data file. No default path or runtime provisioning is
+introduced. Owner must independently approve the volume, UID, filesystem
+trust, at-rest protection, limits, retention and backup lifecycle before
+activation. Raw PR body may contain sensitive text and stays internal;
+external receipts are metadata only. Mode checks do not protect against a
+privileged filesystem actor or an attacker controlling the private directory.
+
+The reference uses explicit exclusive initialization, schema version,
+SQLite FULL durability with rollback journal, bounded 1000-record history
+and transactional CAS under BEGIN IMMEDIATE. Same UUID+fingerprint returns
+the original receipt even when the PR is now closed; differing fingerprint
+conflicts. New UUID with stale revision stops. Multiple observations of
+one PR/head may exist, without rewriting earlier captures. Network I/O
+occurs outside the write transaction; the revision is rechecked before
+append. The operation and observation form one immutable row with a
+SHA-256 event chain. Missing DB is not recreated. Readback checks row
+integrity and the chain; a separately retained exact head checkpoint is
+required for internal raw material retrieval. A test restores a consistent
+SQLite backup to a new inactive file and compares the original checkpoint
+and operation receipt. No production backup, restore, migration, deletion,
+retention job or checkpoint authority is currently implemented.
+
+The receipt is **PRE_MERGE_OBSERVATION_RETAINED** with
+`reviewAttested=false`, `evidenceVerified=false`, `admissionAllowed=false`
+and `deploymentAllowed=false`. Capture time is local time after the reads,
+not the GitHub review or merge timestamp. Two matching reads do not make an
+atomic snapshot or guarantee the body remained unchanged until merge.
+A hash chain cannot independently prevent full-history rewrite or rollback;
+the checkpoint must be protected externally. Tests use a temporary DB and
+fake provider, not live GitHub or a real owner approval.
+
+Remaining: bind exact retained material to a separately authenticated owner
+review decision and protected checkpoint; capture full changed paths, CI
+policy/attempts, catalog, validate Release Impact and dependencies, and bind
+to provider-confirmed merge. Older PRs without trusted retained review
+evidence remain EVIDENCE_INCOMPLETE. The new source neither registers an
+ingress operation nor grants permissions, authenticates a caller, writes
+canonical Registry state or performs a release.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
