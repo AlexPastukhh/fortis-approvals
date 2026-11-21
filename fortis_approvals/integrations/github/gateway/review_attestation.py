@@ -10,6 +10,7 @@ from .post_merge_reader import PILOT_REPOSITORY
 
 SERVICE = 'release-review'
 OPERATION = 'attest_capture'
+BUNDLE_OPERATION = 'attest_bundle'
 ACTOR = 'release-registry-collector-v1'
 _FIELDS = {'captureOperationId', 'captureEventDigest', 'headSha', 'bodySha256',
            'number', 'checkpointDigest'}
@@ -17,14 +18,18 @@ _FIELDS = {'captureOperationId', 'captureEventDigest', 'headSha', 'bodySha256',
 
 def _params(payload):
     params = payload.get('params')
-    _need(payload.get('service') == SERVICE and payload.get('operation') == OPERATION
+    operation = payload.get('operation')
+    fields = _FIELDS | {'bundleDigest'} if operation == BUNDLE_OPERATION else _FIELDS
+    _need(payload.get('service') == SERVICE and operation in (OPERATION, BUNDLE_OPERATION)
           and payload.get('target') == PILOT_REPOSITORY
           and _uuid(payload.get('requestId')) and type(params) is dict
-          and set(params) == _FIELDS and _uuid(params['captureOperationId'])
+          and set(params) == fields and _uuid(params['captureOperationId'])
           and _hex(params['captureEventDigest'], 64) and _hex(params['headSha'], 40)
           and _hex(params['bodySha256'], 64) and _hex(params['checkpointDigest'], 64)
           and type(params['number']) is int and 0 < params['number'] <= 1_000_000
           and type(payload.get('expectedVersion')) is int and payload['expectedVersion'] > 0,
+          'P5_REVIEW_REQUEST_INVALID')
+    _need(operation != BUNDLE_OPERATION or _hex(params['bundleDigest'], 64),
           'P5_REVIEW_REQUEST_INVALID')
     return params
 
@@ -72,12 +77,28 @@ class ReviewAttestationAdapter:
               and current['body'] == material['body']
               and current['bodySha256'] == params['bodySha256'],
               'P5_REVIEW_OPEN_PR_DRIFT')
-        if self.checkpoint_reader() != expected:
+        bundle_review = payload['operation'] == BUNDLE_OPERATION
+        if bundle_review:
+            _need(receipt['result'] == 'PRE_MERGE_BUNDLE_RETAINED' and
+                  receipt.get('bundleDigest') == params['bundleDigest'] and
+                  _hash(material['bundle']) == params['bundleDigest'],
+                  'P5_REVIEW_BUNDLE_MISMATCH')
+            from .premerge_bundle import collect_bundle
+            fresh = collect_bundle(self.provider, number=params['number'], head=params['headSha'],
+                                   base=material['baseSha'], body=material['body'],
+                                   body_sha=params['bodySha256'], branch=material['headBranch'])
+            if fresh != material['bundle']:
+                raise Stale('P5_REVIEW_BUNDLE_CHANGED')
+        else:
+            _need(receipt['result'] == 'PRE_MERGE_OBSERVATION_RETAINED',
+                  'P5_REVIEW_BUNDLE_OPERATION_REQUIRED')
+        if self.checkpoint_reader() != expected or self.store.checkpoint(expected=expected) != expected:
             raise Stale('P5_REVIEW_CHECKPOINT_CHANGED')
         return {'repository': origin, 'params': dict(params), 'checkpoint': expected,
                 'baseSha': material['baseSha'], 'headBranch': material['headBranch'],
                 'capturedAt': receipt['capturedAt'], 'captureRevision': receipt['revision'],
-                'purpose': 'ATTEST_EXACT_RETAINED_PR_BODY_ONLY',
+                'purpose': ('ATTEST_RETAINED_PRE_MERGE_BUNDLE' if bundle_review else
+                            'ATTEST_EXACT_RETAINED_PR_BODY_ONLY'),
                 'admissionAllowed': False, 'deploymentAllowed': False}
 
     def apply(self, payload):
@@ -90,7 +111,8 @@ class ReviewAttestationAdapter:
             return False
         try:
             preview = result['preview']
-            payload = {'requestId': request_id, 'service': SERVICE, 'operation': OPERATION,
+            operation = BUNDLE_OPERATION if preview['purpose'] == 'ATTEST_RETAINED_PRE_MERGE_BUNDLE' else OPERATION
+            payload = {'requestId': request_id, 'service': SERVICE, 'operation': operation,
                        'target': PILOT_REPOSITORY, 'params': preview['params'],
                        'expectedVersion': preview['checkpoint']['revision']}
             return self.prepare(payload) == preview
@@ -118,7 +140,9 @@ def read_bound_owner_decision(core, request_id, *, owner):
     preview = row['preview']
     fingerprint = _hash({'actor': row['actor'], 'request': request,
                          'policyVersion': row['policyVersion'], 'preview': preview})
-    _need(row['requestId'] == request_id == request['requestId']
+    bundle_review = request['operation'] == BUNDLE_OPERATION
+    purpose = 'ATTEST_RETAINED_PRE_MERGE_BUNDLE' if bundle_review else 'ATTEST_EXACT_RETAINED_PR_BODY_ONLY'
+    _need(preview['purpose'] == purpose and row['requestId'] == request_id == request['requestId']
           and row['actor'] == ACTOR and row['fingerprint'] == fingerprint
           and row['state'] == 'EXECUTED' and row['decision'] == 'approve'
           and row['owner'] == owner and row['failure'] is None
@@ -142,10 +166,15 @@ def read_bound_owner_decision(core, request_id, *, owner):
           and set(approved) == {'owner', 'proofSHA256', 'requestSHA256'}
           and approved['owner'] == owner and approved['requestSHA256'] == fingerprint
           and _hex(approved['proofSHA256'], 64), 'P5_REVIEW_AUDIT_BINDING_INVALID')
-    return {'result': 'OWNER_CAPTURE_DECISION_BOUND', 'requestId': request_id,
+    result = {'result': 'OWNER_CAPTURE_DECISION_BOUND', 'requestId': request_id,
             'requestFingerprint': fingerprint, 'captureOperationId': params['captureOperationId'],
             'captureEventDigest': params['captureEventDigest'], 'repository': preview['repository'],
             'number': params['number'], 'headSha': params['headSha'],
             'bodySha256': params['bodySha256'], 'ownerDecisionAt': events[1]['at'],
             'ownerDecisionBound': True, 'historicalMergeCutoffVerified': False,
             'evidenceVerified': False, 'admissionAllowed': False, 'deploymentAllowed': False}
+    if bundle_review:
+        result.update(result='OWNER_BUNDLE_DECISION_BOUND', bundleDigest=params['bundleDigest'],
+                      ownerExecutionAt=events[-1]['at'],
+                      historicalPolicyVerified=False, requiredPolicySatisfied=False)
+    return result

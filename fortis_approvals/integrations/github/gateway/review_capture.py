@@ -19,6 +19,7 @@ from ....core import Conflict, Denied, Stale, canonical
 from .post_merge_reader import PILOT_REPOSITORY
 
 MAX_ROWS = 1000
+MAX_JOURNAL_PAYLOAD_BYTES = 32_000_000
 GENESIS = '0' * 64
 _SCHEMA = """
 CREATE TABLE captures (
@@ -118,6 +119,8 @@ class ReviewCaptureStore:
     def _checked(db):
         _need(db.execute('PRAGMA quick_check').fetchone() == ('ok',),
               'P5_CAPTURE_INTEGRITY_INVALID')
+        _need(db.execute('SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM captures').fetchone()[0]
+              <= MAX_JOURNAL_PAYLOAD_BYTES, 'P5_CAPTURE_LIMIT')
         rows = db.execute(
             'SELECT revision,operation_id,fingerprint,payload,previous_digest,event_digest '
             'FROM captures ORDER BY revision LIMIT ?', (MAX_ROWS + 1,)).fetchall()
@@ -131,6 +134,21 @@ class ReviewCaptureStore:
                       value['request']['operationId'] == op and
                       hashlib.sha256(value['body'].encode('utf-8')).hexdigest() ==
                       value['request']['bodySha256'], 'P5_CAPTURE_INTEGRITY_INVALID')
+                request = value['request']
+                if request.get('captureKind') == 'body-path-ci-catalog-v1':
+                    bundle = value['bundle']
+                    _need(value['bundleDigest'] == _hash(bundle) and
+                          value['baseSha'] == request['baseSha'] and
+                          bundle['pathCi']['pr']['headSha'] == request['headSha'] and
+                          bundle['pathCi']['pr']['baseSha'] == request['baseSha'] and
+                          bundle['pathCi']['pr']['bodySha256'] == request['bodySha256'] and
+                          bundle['pathCi']['number'] == request['number'] and
+                          bundle['pathCi']['repository'] == request['repository'] and
+                          bundle['catalog']['headSha'] == request['headSha'],
+                          'P5_CAPTURE_INTEGRITY_INVALID')
+                else:
+                    _need('captureKind' not in request and 'bundle' not in value and
+                          'bundleDigest' not in value, 'P5_CAPTURE_INTEGRITY_INVALID')
                 digest = _hash([revision, op, fingerprint, value, prev])
             except (KeyError, TypeError, ValueError, UnicodeError, AttributeError):
                 raise Denied('P5_CAPTURE_INTEGRITY_INVALID') from None
@@ -143,7 +161,7 @@ class ReviewCaptureStore:
     def _receipt(row):
         revision, op, fingerprint, payload, prev, event = row
         value = json.loads(payload)
-        return {'result': 'PRE_MERGE_OBSERVATION_RETAINED',
+        receipt = {'result': 'PRE_MERGE_OBSERVATION_RETAINED',
                 'operationId': op, 'revision': revision, 'eventDigest': event,
                 'requestDigest': fingerprint, 'repository': value['request']['repository'],
                 'number': value['request']['number'], 'headSha': value['request']['headSha'],
@@ -151,6 +169,11 @@ class ReviewCaptureStore:
                 'capturedAt': value['capturedAt'],
                 'reviewAttested': False, 'evidenceVerified': False,
                 'admissionAllowed': False, 'deploymentAllowed': False}
+
+        if 'bundleDigest' in value:
+            receipt.update(result='PRE_MERGE_BUNDLE_RETAINED', bundleDigest=value['bundleDigest'],
+                           historicalPolicyVerified=False, requiredPolicySatisfied=False)
+        return receipt
 
     def checkpoint(self, *, expected=None):
         """Compare with a separately retained checkpoint, not an authenticity proof."""
@@ -184,6 +207,21 @@ class ReviewCaptureStore:
     def capture(self, adapter, *, operation_id, expected_revision, number,
                 expected_head_sha, expected_body_sha256):
         """Retain the observed open PR body. No caller-supplied body or review flag."""
+        return self._capture(adapter, operation_id=operation_id, expected_revision=expected_revision,
+                             number=number, expected_head_sha=expected_head_sha,
+                             expected_body_sha256=expected_body_sha256, expected_base_sha=None)
+
+    def capture_bundle(self, adapter, *, operation_id, expected_revision, number,
+                       expected_head_sha, expected_base_sha, expected_body_sha256):
+        """Retain body, pinned catalog, path/CI observations in one append."""
+        _need(_hex(expected_base_sha, 40) and expected_base_sha != expected_head_sha,
+              'P5_CAPTURE_REQUEST_INVALID')
+        return self._capture(adapter, operation_id=operation_id, expected_revision=expected_revision,
+                             number=number, expected_head_sha=expected_head_sha,
+                             expected_body_sha256=expected_body_sha256, expected_base_sha=expected_base_sha)
+
+    def _capture(self, adapter, *, operation_id, expected_revision, number,
+                 expected_head_sha, expected_body_sha256, expected_base_sha):
         _need(_uuid(operation_id) and type(expected_revision) is int and
               0 <= expected_revision <= MAX_ROWS and type(number) is int and
               0 < number <= 1_000_000 and _hex(expected_head_sha, 40) and
@@ -192,6 +230,8 @@ class ReviewCaptureStore:
         request = {'operationId': operation_id, 'repository': adapter.owner + '/' + repo,
                    'number': number, 'headSha': expected_head_sha,
                    'bodySha256': expected_body_sha256, 'expectedRevision': expected_revision}
+        if expected_base_sha is not None:
+            request.update(captureKind='body-path-ci-catalog-v1', baseSha=expected_base_sha)
         fingerprint = _hash(request)
 
         def replay_or_preflight(db):
@@ -223,18 +263,31 @@ class ReviewCaptureStore:
             return value
 
         first = read()
+        bundle = None
+        if expected_base_sha is not None:
+            _need(first['baseSha'] == expected_base_sha, 'P5_CAPTURE_BASE_CHANGED')
+            from .premerge_bundle import collect_bundle
+            bundle = collect_bundle(adapter, number=number, head=expected_head_sha,
+                                    base=expected_base_sha, body=first['body'],
+                                    body_sha=expected_body_sha256, branch=first['headBranch'])
         if read() != first:
             raise Stale('P5_CAPTURE_OBSERVATION_CHANGED')
         payload = {'request': request, 'body': first['body'],
                    'baseSha': first['baseSha'], 'headBranch': first['headBranch'],
                    'capturedAt': datetime.now(timezone.utc).isoformat()}
+        if bundle is not None:
+            payload.update(bundle=bundle, bundleDigest=_hash(bundle))
+        serialized = canonical(payload)
         with self._db() as db:
             prior, checkpoint = replay_or_preflight(db)
             if prior is not None:
                 return prior
+            total = db.execute('SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM captures').fetchone()[0]
+            _need(total + len(serialized.encode('utf-8')) <= MAX_JOURNAL_PAYLOAD_BYTES,
+                  'P5_CAPTURE_LIMIT')
             revision = expected_revision + 1
             prev = checkpoint['eventDigest']
             event = _hash([revision, operation_id, fingerprint, payload, prev])
-            row = (revision, operation_id, fingerprint, canonical(payload), prev, event)
+            row = (revision, operation_id, fingerprint, serialized, prev, event)
             db.execute('INSERT INTO captures VALUES(?,?,?,?,?,?)', row)
             return self._receipt(row)

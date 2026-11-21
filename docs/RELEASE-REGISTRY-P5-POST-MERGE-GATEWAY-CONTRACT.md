@@ -351,6 +351,62 @@ effective CI policy and exact required-check/attempt binding; validate
 catalog, impact and dependencies. No live storage or provider call was made
 by the source tests. No change in deployed permissions or authority.
 
+## Integrated review bundle and merge observation (source only)
+
+The new internal `gateway/premerge_bundle.py` joins the previously separate
+source components. `ReviewCaptureStore.capture_bundle` requires exact
+operation ID, expected revision, open PR number, HEAD, current base and
+body digest. It retains exact body bytes, the path/CI observation (including
+rename paths, pinned workflow attempts/jobs, observed rule context/App
+IDs and rule digest), and the exact UTF-8 catalog at PR HEAD, with
+verified provider blob ID and SHA-256. The impact annotation is extracted
+with the existing strict delimiter parser and hashed. This does **not**
+parse or validate its YAML semantics. The catalog is read twice; the
+existing bounded path/CI reader and outer body reads must agree.
+The journal atomically appends that material and its bundle digest using
+the existing revision CAS and event hash chain. A 240,000-byte material
+bound and 32,000,000-byte total serialized journal payload bound limit
+storage. No production DB is created. Existing body-only rows remain
+readable and retain their original receipt shape and fingerprint; the
+new kind and base are included in the new request fingerprint. A body-only
+operation ID cannot be reused as a bundle operation.
+
+An additional unregistered `release-review.attest_bundle` candidate uses
+the same Core ASK mechanism. It requires the exact bundle digest in the
+immutable preview and re-observes the bundle before accepting a match.
+A body-only capture cannot satisfy the bundle operation, and an integrated
+capture cannot silently take the old body-only path. Owner decision readback
+binds the original capture event and bundle digest to the Core fingerprint,
+and records the original execution time. No raw body or catalog is exposed
+in the receipt. As before, a future protected owner-only UI must actually
+show the retained material, enforce the approved proof mode, and rely on
+an independently protected checkpoint and audit.
+
+`observe_reviewed_merge` composes trusted-server reads of the original
+EXECUTED ASK record, an anchored capture, and the existing exact merged PR
+reader. This conservative pilot requires the merge first parent to be the
+reviewed base, the exact reviewed HEAD/branch, the selected main catalog
+to have the same blob ID and SHA-256 as the retained PR HEAD catalog, and
+Core execution strictly before the observed merge timestamp. If the base
+or catalog changed, no continuity is claimed. It rechecks the checkpoint
+and decision after collection; it does not retrieve a mutable post-merge
+body as review evidence. The result is REVIEWED_BUNDLE_MERGE_OBSERVED,
+not a canonical evidence envelope. Cross-system time ordering is an
+observation under trusted clock assumptions, not an independent cutoff proof.
+
+Historical policy, required-policy satisfaction, historical merge cutoff,
+evidence verification, Registry admission and deployment are all false.
+In particular the observed branch rules are not complete historical effective
+protection, exact required check-to-App binding is missing, the reviewed
+PR diff does not independently attest the actual merge tree diff, catalog
+and impact semantics/component/dependency closure still require validation,
+and historical body continuity at merge time is not established.
+Protected composition/owner review UI, checkpoint/backup retention, final
+Registry API and live E2E remain separate. Source tests use isolated private
+SQLite files, synthetic provider observations and a test-only Core verifier.
+No new provider transport route, ingress, grant, owner proof mode, live
+policy, persistent production path, or deployment is activated.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
