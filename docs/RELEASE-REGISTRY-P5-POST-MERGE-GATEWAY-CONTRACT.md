@@ -416,8 +416,12 @@ Git object repository, trusted validator Git object repository, explicit
 validator revision and private temporary state root. These are not machine
 request fields. For this pilot the shared implementation is
 `fortis-container/tools/release/validate.py` with its two v1 schemas;
-the tested source reference for optional real integration is container
-commit `f763ea53169c2151df4a3212524221404b9aa990`. The deployment owner must
+the normative comparison reference is container commit
+`f763ea53169c2151df4a3212524221404b9aa990`. The executable validator is
+the separately reviewed public `fortis-release-impact-action` at
+`8c9abefdfbe4699aae97b9363a2a66c596680e62` (the existing Release Impact
+CI action pin). Raw Git bytes of validate.py, requirements.txt and both
+v1 schemas match the container reference exactly. The deployment owner must
 separately accept the actual code/dependency pin and protected object stores.
 
 The adapter checks exact base and HEAD commits, the unique Git merge base
@@ -449,16 +453,35 @@ tree and historical CI/owner-cutoff proofs still need integration.
 
 Tests use real temporary Git objects, private journal, fake provider and a
 pinned protocol validator double; negative tests cover wrong paths/catalog,
-checkpoint and pin and opaque subprocess failure. Optional real shared
-validator positive and false-no-deployment tests require
-`FORTIS_TEST_RELEASE_VALIDATOR_ROOT` pointing to the trusted container
-Git repository with the reviewed commit and installed pinned
-`tools/release/requirements.txt` dependencies (PyYAML/jsonschema).
-The default Approvals CI installs owner-runtime dependencies only.
-A skipped real integration is not semantic acceptance; enabling the
-collector requires the real cross-repository suite and trusted
-composition/dependency review. No new active route, fetch, grant, package
-installation, policy or Registry write is introduced by this source.
+checkpoint and pin and opaque subprocess failure. The real shared validator tests require
+`FORTIS_TEST_RELEASE_VALIDATOR_ROOT` pointing to a trusted checkout of the
+exact public action pin and its installed pinned requirements
+(PyYAML 6.0.2, jsonschema 4.23.0). The existing offline security suite
+can still skip these cross-repo tests when that fixture is not supplied;
+a skipped real integration is not semantic acceptance.
+
+### Required P5 semantic acceptance gate (source CI only)
+
+`.github/workflows/p5-retained-impact.yml` adds a separate source CI job
+`p5-retained-impact`. It checks out exact PR HEAD (or push/dispatch SHA)
+and the fixed public action revision into separate sibling directories,
+with read-only contents permission and no persisted checkout
+credentials or extra secrets. It checks both revisions and requirements
+hash before installing the existing pinned validator requirements in CI.
+The script `scripts/test-p5-retained-impact.py` checks the public revision
+and installed dependency versions, then executes four named real-validator
+cases: valid exact-source Impact, false no-deployment, unknown local
+dependency, and duplicate YAML mapping key. Any missing dependency,
+mismatched pin, error, skipped case or incomplete run exits nonzero.
+The gate is an explicit owner merge/activation acceptance requirement,
+not a claim that GitHub branch protection has already been changed.
+It is deliberately separate from the existing Source CI and Release
+Impact workflows whose bytes/IDs are pinned by the publisher; those
+pins, publisher policy and current required checks are unchanged.
+The new workflow/job identity still needs owner-reviewed inclusion in
+any future trusted historical P5 CI policy. Source CI does not authorize
+a live release. No active route, Gateway fetch, grant, runtime package
+installation, policy or Registry write is introduced.
 
 ## Proposed future typed operation (NOT implemented)
 
