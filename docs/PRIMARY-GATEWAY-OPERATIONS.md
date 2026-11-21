@@ -542,6 +542,28 @@ UUID string is required. The public config and probes are recovered only
 from the protected **current** Complete release record. Missing or invalid
 prior values are `STOP`, never replaced with a guessed template.
 
+**Large retained state receipts:** a Gateway with 569 native Git bundle
+artifacts totaling approximately 1.8 GiB, plus large SQLite databases,
+can exceed the historical 120-second Docker child timeout during
+`SOURCE_STATE_PREFLIGHT_READ_ONLY`. In the reviewed controller source,
+the protected state `inspect` and uncertain-growth receipt helpers have
+a finite 900,000 ms process-exit bound; the byte-preserving `clone`
+helper has a finite 1,800,000 ms bound because it verifies, copies/fsyncs
+and hashes retained artifacts. Other native process invocations retain
+the 120,000 ms bound; stdin/output pipe timeouts and kill-on-timeout
+still apply. **This changes waiting, not admission:** all SQLite integrity
+checks, file/digest checks, exact preserved-ID comparisons, immutable
+Check binding, pre-/post-stop source guards and Return-Source still run.
+An expired helper is a release STOP, never a reason to skip a receipt.
+The larger clone bound may extend the period with the old Gateway stopped:
+the owner must separately assess the maintenance window and verified
+worker quiescence before Apply. No local modification of the installed
+controller, protected records or retained artifacts is permitted.
+Only accepted merged source installed on Windows, PowerShell SelfTest
+(with `FORTIS_RELEASE_STATE_HELPER_WAIT_SELFTEST_PASS`),
+a fresh protected Check and separate owner-reviewed Apply establish the
+new waiting behavior. Source-only CI does not prove production runtime.
+
 **Before STOP_SOURCE:** verify that mandatory external upstreams for
 staged release probes are available in the intended network/identity scope.
 The owner-local [Mirror Gateway READ HTTPS listener](https://github.com/AlexPastukhh/docke-windows-mirror/blob/main/docs/GATEWAY-READ-ONLY.md)

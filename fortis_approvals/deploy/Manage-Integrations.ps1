@@ -868,7 +868,17 @@ function State-Helper {
     if($Root){$Arguments+=@('--cap-add','CHOWN','--cap-add','DAC_OVERRIDE')}
     $Code="import runpy;runpy.run_path('/opt/fortis/operator/state_helpers.py',run_name='__main__')"
     $Encoded=Code64 $Code;$Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<state-helper>','exec'))"
-    $Native=@{};if($Payload.action -ceq 'clone'){$Native['DiagnosticDockerClone']=$true}
+    $Native=@{}
+    if($Payload.action -ceq 'clone'){
+        $Native['DiagnosticDockerClone']=$true
+        # inspect + byte-preserved copy/fsync + before/after hash over native
+        # artifacts (1.8 GiB observed). Finite 30m only for protected clone.
+        $Native['WaitTimeoutMs']=1800000
+    } elseif($Payload.action -cin @('inspect','uncertain_growth_snapshot','uncertain_growth_review')){
+        # SQLite integrity_check plus SHA256 of every retained artifact. The
+        # general Docker/PowerShell helper limit remains 120s elsewhere.
+        $Native['WaitTimeoutMs']=900000
+    }
     (Private-Process ($Arguments+$Mounts+@('--entrypoint','python',$script:Image,'-I','-B','-c',$Wrapper)) (ConvertTo-Json -InputObject $Payload -Depth 25 -Compress) @Native) | ConvertFrom-Json
 }
 function Ensure-Vault {
@@ -1893,6 +1903,12 @@ if($Action -eq 'SelfTest'){
     # CI and owner SelfTest must exercise the same strict variable semantics.
     # This is a fixture-only path; no Docker/Primary release is attempted.
     Set-StrictMode -Version Latest
+    # Exercise the same named bounded-wait argument that the heavy Docker
+    # receipt and clone helpers use, without accessing Docker or Core state.
+    $WaitFixture='fortis-bounded-wait-selftest'
+    $WaitEcho=Private-Process @('-NoProfile','-Command','[Console]::Write([Console]::In.ReadToEnd())') $WaitFixture (Join-Path $PSHOME 'powershell.exe') -WaitTimeoutMs 900000
+    if($WaitEcho -cne $WaitFixture){throw 'RELEASE_STATE_HELPER_WAIT_SELFTEST_FAILED'}
+    Write-Host 'FORTIS_RELEASE_STATE_HELPER_WAIT_SELFTEST_PASS'
     Assert-BoundedReleaseJsonSelfTest
     Assert-OptionalActionCoreSelfTest
     Assert-Emergency-Promote-BindingSelfTest
