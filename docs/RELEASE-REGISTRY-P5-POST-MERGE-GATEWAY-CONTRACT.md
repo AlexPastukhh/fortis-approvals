@@ -672,6 +672,52 @@ policy/cutoff, baseline/lineage and component/environment bindings,
 complete dependency provenance and production durability/backup remain
 gates. The journal is not the future canonical Registry database.
 
+## Forward-only lineage from the enrollment source (source candidate)
+
+The owner-accepted [forward-only baseline decision in container PR #42](https://github.com/AlexPastukhh/fortis-container/blob/d870a8ba0d22c348813cf74bc719385f2e1f08a9/docs/RELEASE-REGISTRY-P5-DESIGN.md#forward-only-enrollment-baseline-owner-decision-2026-11-21)
+requires no reconstruction of pre-enrollment PR history.
+`gateway/forward_lineage.py::observe_forward_lineage` is an internal,
+source-only coverage verifier. Host composition pins a baseline digest
+independently of an immutable baseline-reference reader. The reference
+has exact schemaVersion 1, enrollmentId, canonical repository,
+baselineSha, catalogSha256, acceptanceReceiptDigest and bindingDigest.
+These last two digests are references, NOT verified acceptance or
+component provenance. No baseline SHA is selected/provisioned by code.
+Production bootstrap and external anchor remain separate gates.
+
+The verifier re-reads the exact scoped provider main before/after,
+checks raw SHA-1 baseline commit and catalog bytes, then walks at most
+64 first-parent merges back to baseline, without traversing its parents.
+It reads the original candidate snapshots/receipts by ID through a
+new bounded atomic `CollectorSnapshotStore.anchored_batch` read under
+one matching independent checkpoint. Require an exact one-to-one set
+of retained merge/PR/owner identities with no duplicate or unused
+evidence, verify raw commit objects, exact parent/base and head/tree
+projections, original commit-binding and snapshot digests and ordered
+collector revisions. No recollection of a historical mutable PR body.
+Missing prior tip capture, direct/squash/rebase commit, wrong first
+parent, incomplete/extra evidence, drift or unresolved dependency stops.
+This conservative slice also blocks any catalog byte change pending
+component/catalog continuity proof. Zero new merges at the exact
+baseline yields a zero-row *coverage observation*, not an empty
+authoritative release queue or admitted no-deployment operation.
+
+The observation binds the baseline digest/tree, selected main, catalog,
+collector checkpoint and exact oldest-first merge/receipt sequence.
+The batch, baseline and main are re-read before returning. The result
+FORWARD_SOURCE_COVERAGE_MATCH_CANDIDATE is not a protected cursor or
+canonical envelope. All acceptance, coverage, policy/cutoff, dependency,
+component, evidence, admission and deployment verification flags remain
+false. No cursor advancement, initial desired record, actual-state
+assertion, historical backfill, grant or live ingress.
+
+Eleven source tests cover actual temporary Git commits and the existing
+Core/retained collector/SQLite fixture, with synthetic provider/validator
+and independent witness. The two-merge case uses real Git objects and a
+synthetic second retained receipt to exercise exact range matching and
+missing-middle rejection, not two live captures. Real protected baseline
+acceptance and full multi-PR semantic attribution remain prerequisites.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
