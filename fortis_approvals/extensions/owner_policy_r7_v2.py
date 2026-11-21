@@ -191,3 +191,24 @@ def trusted_scope_binding(*,organizations,region,project_keys,github_pilot,
             "machineShell":machine,"extensions":extensions,
             "readGrants":{a:sorted(ops) for a,ops in broker.actor_read_operations.items()},
             "writeGrants":{a:sorted(ops) for a,ops in broker.actor_operations.items()}}
+
+
+# Reviewed one-release compatibility pair for the Mirror v1 inventory ceiling.
+# The exact provider source digest changes, but operations, routes, grants,
+# credentials and every other scope field must remain identical.
+_MIRROR_V1_CAPACITY_SOURCE_BEFORE = "9671fbcb7c457dfa0be94339a5ecf61fba12ea95e8acabb4e48046eb20356bb0"
+_MIRROR_V1_CAPACITY_SOURCE_AFTER = "cee77ef6c7913f25f4d74114e8c741a64f43ea1ae2b821ca1f31f734d734c239"
+
+
+def reviewed_mirror_v1_previous_scope(scope, *, all_methods):
+    """Reconstruct only the exact reviewed predecessor, never ambient drift."""
+    if not all_methods or scope.get("extensions") is None:
+        return None
+    mirror = scope["extensions"]["definitions"].get("mirror")
+    if mirror is None or mirror["source"] != _MIRROR_V1_CAPACITY_SOURCE_AFTER:
+        return None
+    from copy import deepcopy
+    previous = deepcopy(scope)
+    previous["extensions"]["definitions"]["mirror"]["source"] = (
+        _MIRROR_V1_CAPACITY_SOURCE_BEFORE)
+    return previous

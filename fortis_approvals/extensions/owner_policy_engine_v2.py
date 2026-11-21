@@ -173,10 +173,16 @@ class UnifiedPolicyCore(IncidentCore):
         self._composing = False
 
     def install_policy_authority(self, choices, *, scope_binding=None,
-                                 reviewed_upgrade_from=None):
+                                 reviewed_upgrade_from=None,
+                                 reviewed_previous_scope=None):
         if self.authority is not None:
             raise Denied("OWNER_POLICY_ALREADY_INSTALLED")
         authority = PolicyAdmission(self,choices,scope_binding=scope_binding)
+        # Only the trusted release builder may supply an independently
+        # reviewed historical scope. No database or public request chooses it.
+        if reviewed_previous_scope is not None and reviewed_upgrade_from is None:
+            raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+        self._reviewed_previous_scope = reviewed_previous_scope
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             names = _names(db)
@@ -200,12 +206,12 @@ class UnifiedPolicyCore(IncidentCore):
                 # The protected owner release explicitly names the exact
                 # PREVIOUS admission. Never infer or overwrite historical UV
                 # decisions. Validate its entire event projection first.
-                previous = PolicyAdmission(self,reviewed_upgrade_from,
-                                           scope_binding=scope_binding)
                 meta = db.execute("SELECT * FROM owner_local_policy_v2_meta").fetchall()
                 if len(meta)!=1 or meta[0]["id"]!=1:
                     raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
                 if meta[0]["authority"] != authority.sha:
+                    previous = self._historical_admission(
+                        reviewed_upgrade_from, authority, meta[0]["authority"])
                     # Only an actual owner-reviewed change may add the epoch
                     # schema. Restarts with the same authority are read-only.
                     db.execute("""CREATE TABLE IF NOT EXISTS owner_local_policy_v2_authority_epochs(
@@ -258,6 +264,19 @@ class UnifiedPolicyCore(IncidentCore):
             raise Denied("OWNER_POLICY_AUTHORITY_NOT_INSTALLED")
         return self._baseline_policy_version + "|owner-policy-v2:" + str(revision)
 
+    def _historical_admission(self, choices, authority, expected):
+        # Reconstruct the exact old digest using a source-owned finite set of
+        # scopes. Historical event rows cannot inject a scope or widen grants.
+        scopes = [authority.scope_binding]
+        previous_scope = getattr(self, '_reviewed_previous_scope', None)
+        if previous_scope is not None and previous_scope != authority.scope_binding:
+            scopes.append(previous_scope)
+        for scope in scopes:
+            candidate = PolicyAdmission(self,choices,scope_binding=scope)
+            if candidate.sha == expected:
+                return candidate
+        raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+
     def _snapshot(self, db, *, authority=None):
         authority = authority or self.authority
         if authority is None:
@@ -301,8 +320,8 @@ class UnifiedPolicyCore(IncidentCore):
                 if coord in prior_choices or not item[1]:
                     raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
                 prior_choices[coord] = tuple(item[1])
-            prior = PolicyAdmission(self,prior_choices,
-                                    scope_binding=authority.scope_binding)
+            prior = self._historical_admission(
+                prior_choices, authority, row["old_authority"])
             if (prior.sha != row["old_authority"] or
                     not all(k in authority.choices and
                         set(v)<=set(authority.choices[k])

@@ -45,6 +45,32 @@ docke-windows-mirror/docs/API-FIRST.md and UC-MIR-005.
 
 The Windows Mirror raw `docker.worktrees` is the complete registered Git worktree inventory and includes its `docker.primary` exactly once. The Gateway READ projection checks that the primary entry matches the separate raw primary object and omits only that verified entry from the projected ordinary worktrees; missing, mismatched or duplicate primaries fail closed. This does not authorize Mirror or Gateway WRITE, change TLS/credentials, or deploy a runtime.
 
+### v1 inventory capacity and reviewed authority compatibility
+
+The 2026-11-21 release attempt returned safely before activation: a live
+Mirror response contained 130 inventory entries (including its primary),
+while both the retained and staged Gateway rejected over 128.
+The staged authority migration itself preserved revision 2 and recorded
+the authority epoch. The failed read was UNCERTAIN on the retained staged
+copy, not on the active source volume.
+
+The source fix raises the finite v1 inventory ceiling to 256. Exactly one
+verified primary is still required; every ordinary worktree is projected.
+The existing 256 KiB HTTPS response and 64 KiB projected result limits
+remain independent. Oversize/invalid results fail closed, never truncate.
+READ v2 pagination remains the long-term separately reviewed path.
+No increase authorizes writes, new credentials or worktree cleanup.
+
+Because provider source identity participates in the owner authority digest,
+the trusted R7 builder recognizes only the exact old/new Mirror source
+digest pair for the owner-reviewed OWNER_ALL_METHODS_V1 upgrade from
+OWNER_LABELS_V1. It reconstructs the previous scope by substituting only
+the old source digest; all other grants, baseline, configuration and scope
+must reproduce the stored authority digest. Historical UV events and epoch
+records are not rewritten. Other source/scope changes still require
+separate reviewed migration; no generic database-supplied override.
+Source tests do not establish production installation.
+
 
 ## P3 bounded READ v2 source
 
