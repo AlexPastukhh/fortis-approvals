@@ -140,6 +140,65 @@ Git commit objects for merged PR #174 and #175 produced a two-node
 first-parent match (2026-11-20); local object presence is **not** a remote
 GitHub identity or permission attestation.
 
+## Provider-backed partial observation (source-only pilot)
+
+`fortis_approvals/integrations/github/gateway/post_merge_reader.py` adds an
+internal `observe_post_merge()` function, **not registered in machine ingress**.
+It accepts a Gateway-owner-composed adapter and exact PR number, head SHA,
+merge SHA and selected main SHA. The pilot has a fixed repository
+`fortis-approvals`, additionally checked against the adapter allowlist. The
+caller cannot choose an upstream host, path, ref name, token or actor. The
+function uses only the existing pinned GitHub GET transport routes:
+
+- `branches/main` at beginning and end; mismatch is stale.
+- `pulls/N` at beginning and end: closed, merged, non-draft, same-repo
+  task branch into main, exact head and merge SHA, provider merge timestamp.
+  The mutable current body is neither retained nor treated as historical
+  reviewed bytes. The reported base SHA is observation metadata, not proof
+  of the first parent at merge time.
+- `git/commits/SHA`: bounded (64 nodes) first-parent walk to the exact
+  ordinary two-parent merge, exact second parent and independently read
+  head metadata. Missing/mismatched nodes, duplicate/self-parent, unsupported
+  merge method and limit exhaustion fail closed. These are provider JSON
+  projections, not raw hash-recomputed commit objects.
+- `contents/release/targets.yaml?ref=SELECTED_MAIN_SHA`: fixed file,
+  bounded UTF-8 base64, exact size, recomputed Git SHA-1 blob ID and raw
+  SHA-256. The provider's pinned contents projection is not an independent
+  tree-path proof, parsed catalog or component binding. No raw catalog or
+  body is echoed. No alternate URL or route is introduced.
+
+Re-reading PR and main detects observed drift, not an atomic snapshot or
+all possible races. Upstream failures (including 403) propagate, never
+converted into an empty successful batch. The result is always
+`PARTIAL_PROVIDER_OBSERVATION` with all authority flags false; it does **not**
+produce the complete trusted envelope. No live provider call was made by
+this source test suite. The internal reader has no externally callable
+operation, authentication composition or persistence. Only an approved
+future server composition may call it with the actual pinned transport.
+
+### Proposed owner-controlled collector scope and capture protocol
+
+Propose a dedicated `release-registry-collector-v1` principal, separate
+from Repo AI and the label publisher. Initial exact repository scope is
+`fortis-approvals` only. Future machine operation, if separately accepted,
+is `github.get_post_merge_registry_evidence` READ with exact PR/HEAD/merge/
+main parameters; all other operations and repositories remain DENY. No
+credential generation, policy map, route, grant, or activation is added now.
+The collector must not borrow the publisher's open-PR-only grant.
+
+A complete collector must have two distinct stages: (1) pre-merge retained
+reviewed body/impact, exact head, paths, catalog and CI rule/attempt evidence
+in a protected owner-controlled append-only capture; (2) post-merge readback
+bound to the same immutable capture and exact merged outcome. A review-cutoff
+record must be bound to an explicit trusted review attestation, not merely a
+snapshot time, current PR body or caller label. If capture is unavailable for
+an older PR, report `EVIDENCE_INCOMPLETE`; do not reconstruct the cutoff.
+Choose a protected durable location, access rules, retention and independent
+checkpoint/restore acceptance before implementation of that capture. Only
+then can all proof classes be linked to canonical Registry admission, which
+remains a separate WRITE contract. Existing component restrictions and
+owner/Gateway release gates remain independent.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
