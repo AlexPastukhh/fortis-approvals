@@ -193,3 +193,84 @@ class RetainedImpactTests(unittest.TestCase):
         self.capture()
         with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
             self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN)
+
+
+    def dependency_catalog(self, *, external=False, cycle=False, missing=False):
+        # A fresh fixture repo: no catalog modification in the reviewed diff.
+        catalog=json.loads(json.dumps(CATALOG))
+        root=catalog['targets'][0]
+        root['dependsOn']=[{'repository':'fortis-approvals','target':'intermediate'}]
+        for name in ('intermediate','leaf','unreachable'):
+            target=json.loads(json.dumps(root));target['id']=name
+            target['inputs']=['procedure.md'];target.pop('dependsOn',None)
+            catalog['targets'].append(target)
+        catalog['targets'][1]['dependsOn']=[{'repository':'fortis-approvals',
+                                              'target':'missing' if missing else 'leaf'}]
+        if cycle:
+            catalog['targets'][2]['dependsOn']=[{'repository':'fortis-approvals','target':'app'}]
+        if external:
+            catalog['targets'][2]['dependsOn']=[{'repository':'other-repo','target':'external'}]
+        catalog['targets'][3]['dependsOn']=[{'repository':'unused-repo','target':'unused'}]
+        self.source=self.init_repo('source-graph')
+        self.write(self.source,'src/old.py','VALUE = 1\n')
+        self.write(self.source,'release/targets.yaml',json.dumps(catalog))
+        self.write(self.source,'procedure.md','Review procedure\n')
+        self.write(self.source,'validate.py','raise RuntimeError("PR CODE EXECUTED")')
+        self.base=self.commit(self.source)
+        (self.source/'src/old.py').rename(self.source/'src/new.py')
+        self.head=self.commit(self.source)
+        self.api.head=self.head;self.api.base=self.base;self.api.ci_head=self.head
+        self.api.sources['release/targets.yaml']=json.dumps(catalog).encode()
+
+    def assert_graph(self,result,*,external=False):
+        obs=result['observation']['dependencyObservation'];graph=obs['graph']
+        self.assertEqual(graph['localTargets'],['app','intermediate','leaf'])
+        self.assertEqual(graph['localDependencyTargets'],['intermediate','leaf'])
+        self.assertEqual(obs['localDependencyEdges'],[
+            {'repository':fixture.OWNER+'/'+fixture.REPO,'target':t,'sourceSha':self.head}
+            for t in ('intermediate','leaf')])
+        self.assertEqual(graph['unresolvedExternalTargets'],
+                         [{'repository':'other-repo','target':'external'}] if external else [])
+        self.assertEqual(obs['unresolvedRequirements'],external)
+        self.assertFalse(result['dependencyClosureVerified'])
+        self.assertFalse(result['admissionAllowed'])
+
+    def test_transitive_graph_protocol(self):
+        self.dependency_catalog(external=True)
+        self.capture()
+        self.assert_graph(self.validate(),external=True)
+
+    def test_graph_cycle_stops_even_with_protocol_double(self):
+        self.dependency_catalog(cycle=True)
+        self.capture()
+        with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
+            self.validate()
+
+    def test_graph_missing_transitive_target_stops(self):
+        self.dependency_catalog(missing=True)
+        self.capture()
+        with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
+            self.validate()
+
+    def test_pr_dependency_not_claimed_resolved(self):
+        impact=json.loads(json.dumps(IMPACT))
+        impact['releaseImpact']['dependencies']['pullRequests']=[{'repository':'fortis-approvals','number':6}]
+        self.api.body=self.api.body.replace(json.dumps(IMPACT),json.dumps(impact))
+        self.capture();r=self.validate();obs=r['observation']['dependencyObservation']
+        self.assertEqual(obs['graph']['unresolvedPullRequests'],[{'repository':'fortis-approvals','number':6}])
+        self.assertTrue(obs['unresolvedRequirements'])
+        self.assertFalse(r['dependencyClosureVerified'])
+
+    @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
+                         'Requires explicitly supplied shared validator repository and its pinned dependencies')
+    def test_real_transitive_dependency_graph(self):
+        self.dependency_catalog()
+        self.capture()
+        self.assert_graph(self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN))
+
+    @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
+                         'Requires explicitly supplied shared validator repository and its pinned dependencies')
+    def test_real_external_dependency_is_unresolved(self):
+        self.dependency_catalog(external=True)
+        self.capture()
+        self.assert_graph(self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN),external=True)
