@@ -625,6 +625,53 @@ a seventh mandatory real-validator case for this composition (six
 existing retained Impact cases plus this case), with no skips allowed.
 Workflow bytes and the existing publisher/P5 workflow pins are unchanged.
 
+## Collector snapshot and independently witnessed candidate receipt
+
+`gateway/collector_snapshot.py` retains the real internal
+`observe_selected_main` output, not an externally supplied evidence DTO.
+The host-composed dependencies remain the actual Core, review capture
+store, provider, validator, checkpoint reader and configured owner.
+The separate source-only journal requires explicit exclusive creation in
+a private 0700 directory with 0600 DB and sidecars, an independently
+provisioned instance UUID and exact genesis checkpoint. It does not
+auto-create a missing database, choose a production path or provision an
+anchor. Its bounded SQLite journal (128 entries, 32 MB aggregate snapshot
+bytes, 2 MB per snapshot) has schema version, immutable evidence IDs and
+request fingerprints including expected revision, original Core request ID
+and exact selected-main SHA. It checks canonical source bytes, selected
+source and owner/capture/bundle binding, digest, ordered event chain and
+independent checkpoint on each read. The candidate receipt includes
+the exact evidence digest and preceding/resulting instance checkpoint.
+No credential, arbitrary source location, owner assertion, positive
+authority flags or raw mutable PR text is accepted from a request.
+
+Retaining a new evidence ID requires the current external checkpoint
+to equal the local head; collect outside the write transaction, recheck
+both checkpoints and CAS, append atomically. The returned local result
+is `LOCAL_EVIDENCE_PENDING_ANCHOR`, not an authoritative receipt.
+The store does not advance the external anchor. A future independent
+owner-controlled CAS must advance exactly that checkpoint. Until the
+independent reader returns the matching head, snapshot and receipt reads
+and new appends stop, including reads of old rows. Exact retain replay
+recovers the local pending receipt after lost ACK/restart without
+recollecting the PR; changed fingerprint/revision conflicts. A matching
+external checkpoint permits anchored historical receipt/readback; replay
+then returns `ANCHORED_CANDIDATE_EVIDENCE_RETAINED` with the same original
+identity/digests. An unmatched checkpoint is not silently repaired or
+initialized from the DB. Source tests use an independent synthetic witness,
+not installed durable anchor authority or authenticated transport.
+
+The existing Registry boundary can receive the journal's read method as
+a trusted composition dependency. This still returns only
+BLOCKED_EVIDENCE_GAP even for an anchored snapshot. The new receipt is a
+**collector candidate evidence receipt**, not a Registry ingestion
+operation receipt, verified evidence or admission. No Registry state,
+external anchor writer, protected runtime, transport, credentials or
+permission changes. Independent live capture/anchor authority, historical
+policy/cutoff, baseline/lineage and component/environment bindings,
+complete dependency provenance and production durability/backup remain
+gates. The journal is not the future canonical Registry database.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
