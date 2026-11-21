@@ -828,6 +828,69 @@ policy fingerprint, baseline/enrollment mismatch, false authority flags,
 tampering and fail-closed drift. The paired range and blocked preview use
 the same original anchored candidate snapshot. No live evidence collected.
 
+## Component/environment binding candidate
+
+`gateway/component_bindings.py` composes the policy-bound forward range
+with a host-pinned mapping reference independently read against the
+baseline's bindingDigest. Schema version 1 has exact repository,
+enrollmentId, baselineSha, catalogSha256, bindings and components fields.
+The mapping is not inferred from PR text, target names, request parameters
+or the current filesystem. It has one selected catalog environment and
+one distinct deployment component per catalog target in this pilot.
+Bindings are sorted by targetId and each contains targetId, environment,
+componentId. Components are sorted by id, with a nonempty sorted unique
+resources set and sorted unique requires component IDs, compatible with
+the existing restriction evaluator's component graph vocabulary. Shared
+resource IDs deliberately may appear on multiple components. Unknown or
+unused components, cycles, missing catalog target/dependency bindings,
+duplicate identities and external catalog dependencies stop. All targets
+are covered, not only the current affected subset. Extra owner-declared
+component dependencies must still resolve and be acyclic. No implicit
+selection of all catalog environments or construction of physical IDs
+from target names.
+
+The selected-main raw catalog and exact pinned shared validator source
+are materialized from Git as private data views using the existing
+bounded blob reader; the source checkout and PR code are not executed.
+An isolated subprocess invokes the shared schema/semantic validator,
+not a new YAML parser. The raw catalog hash must match the baseline, and
+the validated deployment procedure, environment, build unit and
+verification requirements are preserved in the mapping projection. The
+policy-bound forward observer must match repository, baseline/policy
+digest, exact selected tree and catalog; the binding, baseline, policy,
+journal checkpoint and main are rechecked before return. Catalog
+remapping, policy transitions and missing source coverage still block.
+
+The current source catalog has exactly the following deployment targets
+and declared environments (not a live resource inventory):
+
+| Target | Catalog environment | Deployment kind |
+| --- | --- | --- |
+| fortis-gateway | production | owner-controlled |
+| gateway-owner-controller | windows-owner | windows-source |
+| release-label-publisher | production | owner-controlled |
+
+Actual resource IDs, shared-state identity, dependency topology and
+selected environment are owner-reviewed enrollment material; no concrete
+live component map or enrollment SHA is provisioned by this code.
+The result COMPONENT_ENVIRONMENT_MATCH_CANDIDATE includes the complete
+mapping, raw catalog digest, parsed catalog projection digest, validator
+revision, policy/lineage/baseline/binding digest and collector checkpoint.
+componentBindingsVerified, resourceTopologyVerified,
+baselineAcceptanceVerified, evidenceVerified, admissionAllowed and
+deploymentAllowed remain false. No active restriction, permission,
+actual state, canonical desired record or cursor update is inferred.
+This is not yet a combined authoritative admission envelope or a
+persisted canonical plan. The protected enrollment and resource
+attestation are still necessary before a mapping may create records.
+
+Eight offline tests exercise actual Git/Core/collector fixture and
+synthetic policy/anchor/validator, including dependency/resource graph,
+mapping drift, and exact raw catalog semantics at the protocol boundary.
+A ninth real shared-validator test is mandatory in the existing
+p5-retained-impact semantic gate (now eight real cases in total), without
+changing any workflow byte pin. No deployment or route is implemented.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
