@@ -108,12 +108,15 @@ class BoundaryTests(base_tests.ExtensionTests):
         from fortis_approvals.workflow.ingress import NativeIngress
         from fortis_approvals.extensions.ingress import ExtensionIngress
         base=self.ingress.base
+        # The legacy wrapper has no broker grant list. Do not infer
+        # registered GitHub methods from packaged source alone.
         native=NativeIngress(base,github=SimpleNamespace(config=SimpleNamespace(owner='OfflineOwner',repository='sandbox')),
                              workspace=None,store=None,actor='actor')
         self.ingress=ExtensionIngress(base,self.runtime,delegate=native)
         status,result=self.post('/v1/workspace/capabilities',{})
         self.assertEqual((status,result['repository']),(200,'sandbox'))
         self.assertIs(result['dynamicRepositories'],False)  # Legacy native config has no new field.
+        self.assertEqual(result['githubMethodPolicies'],{})
         self.assertEqual(self.post('/v1/integrations/catalog',{})[0],200)
 
 

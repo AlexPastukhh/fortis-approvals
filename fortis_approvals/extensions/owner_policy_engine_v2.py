@@ -19,6 +19,8 @@ _V1 = frozenset(("owner_local_policy_meta", "owner_local_denials",
                  "owner_local_policy_events"))
 _V2 = frozenset(("owner_local_policy_v2_meta", "owner_local_policy_v2_rules",
                  "owner_local_policy_v2_events"))
+_EPOCHS = "owner_local_policy_v2_authority_epochs"
+_ALLOWED_TABLES = _V1 | _V2 | {_EPOCHS}
 _FIELDS = frozenset(("actor", "provider", "operation", "scope", "target",
                      "expectedPolicy", "desiredPolicy", "expectedRevision",
                      "expectedPolicyVersion", "reasonCode"))
@@ -103,15 +105,17 @@ class PolicyAdmission:
         for key, permitted in choices.items():
             coord = _coordinate(key)
             baseline = core.policies.get(coord)
-            if (type(baseline) is not str or baseline not in POLICIES or
-                    type(permitted) not in (set, frozenset, tuple) or
-                    not set(permitted) <= POLICIES or not {"DENY",baseline} <= set(permitted)
-                    or coord[1] not in core.adapters or not core.auth.active(coord[0])
-                    or len(coord)==3 and baseline=="DENY" and set(permitted)!={"DENY"}):
+            if (not (type(baseline) is str and baseline in POLICIES or callable(baseline))
+                    or type(permitted) not in (set, frozenset, tuple)
+                    or not set(permitted) <= POLICIES
+                    or not {"DENY"} <= set(permitted)
+                    or type(baseline) is str and baseline not in permitted
+                    or coord[1] not in core.adapters or not core.auth.active(coord[0])):
                 raise Denied("OWNER_POLICY_ADMISSION_INVALID")
             accepted[coord] = frozenset(permitted)
         self.core = core
         self.choices = MappingProxyType(accepted)
+        self.scope_binding = scope_binding
         # Bind ALL literal/conditional coordinates, including exceptions,
         # rather than just editable rows. Authority drift stops startup.
         self.baseline = MappingProxyType(dict(core.policies))
@@ -146,7 +150,11 @@ class PolicyAdmission:
         if len(coord)==4 and coord not in self.baseline and coord[:3] in overlay:
             self.admitted(coord)
             return overlay[coord[:3]]
-        return self.admitted(coord)[0]
+        baseline = self.admitted(coord)[0]
+        # A conditional handler is independent runtime enforcement. The
+        # owner's default outer setting is ALLOW, which does not override
+        # a callback's target/params-specific DENY or ASK result.
+        return "ALLOW" if callable(baseline) else baseline
 
 
 class UnifiedPolicyCore(IncidentCore):
@@ -172,7 +180,7 @@ class UnifiedPolicyCore(IncidentCore):
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             names = _names(db)
-            if names - (_V1 | _V2) or names & _V2 and not _V2 <= names:
+            if names - _ALLOWED_TABLES or names & _V2 and not _V2 <= names:
                 raise Denied("OWNER_POLICY_SCHEMA_INCOMPLETE")
             legacy_hash, legacy = _legacy(db)
             for statement in (
@@ -189,28 +197,46 @@ class UnifiedPolicyCore(IncidentCore):
                 db.execute("INSERT INTO owner_local_policy_v2_meta VALUES(1,0,?,?)",
                            (authority.sha,legacy_hash or "NONE"))
             elif reviewed_upgrade_from is not None:
-                # Only owner-reviewed release configuration can cross the old
-                # choice-set digest. Never migrate prior V2 edits or audit rows.
+                # The protected owner release explicitly names the exact
+                # PREVIOUS admission. Never infer or overwrite historical UV
+                # decisions. Validate its entire event projection first.
                 previous = PolicyAdmission(self,reviewed_upgrade_from,
                                            scope_binding=scope_binding)
                 meta = db.execute("SELECT * FROM owner_local_policy_v2_meta").fetchall()
-                if (len(meta)!=1 or meta[0]["id"]!=1):
+                if len(meta)!=1 or meta[0]["id"]!=1:
                     raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
-                if meta[0]["authority"]==authority.sha:
-                    # Restart after a successfully committed upgrade is normal.
-                    self._snapshot(db, authority=authority)
-                    self.authority=authority
-                    return
-                if (meta[0]["revision"]!=0
-                    or meta[0]["authority"]!=previous.sha
-                    or meta[0]["legacy_digest"]!=(legacy_hash or "NONE")
-                    or db.execute("SELECT 1 FROM owner_local_policy_v2_events LIMIT 1").fetchone()
-                    or db.execute("SELECT 1 FROM owner_local_policy_v2_rules LIMIT 1").fetchone()):
-                    raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
-                db.execute("UPDATE owner_local_policy_v2_meta SET authority=? WHERE id=1 AND revision=0 AND authority=?",
-                           (authority.sha,previous.sha))
-                if db.execute("SELECT changes()").fetchone()[0]!=1:
-                    raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_RACED")
+                if meta[0]["authority"] != authority.sha:
+                    # Only an actual owner-reviewed change may add the epoch
+                    # schema. Restarts with the same authority are read-only.
+                    db.execute("""CREATE TABLE IF NOT EXISTS owner_local_policy_v2_authority_epochs(
+                        id INTEGER PRIMARY KEY CHECK(id>=1),
+                        through_revision INTEGER NOT NULL CHECK(through_revision>=0),
+                        old_authority TEXT NOT NULL, new_authority TEXT NOT NULL,
+                        old_choices TEXT NOT NULL)""")
+                    if (meta[0]["authority"]!=previous.sha
+                            or meta[0]["legacy_digest"]!=(legacy_hash or "NONE")
+                            or not all(coord in authority.choices and
+                                set(permitted) <= set(authority.choices[coord])
+                                for coord,permitted in previous.choices.items())):
+                        raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+                    # In particular, policy event and projection tampering
+                    # cannot be disguised by a requested authority upgrade.
+                    revision,_,_ = self._snapshot(db,authority=previous)
+                    if db.execute("""SELECT 1 FROM requests
+                        WHERE state IN ('PENDING','APPROVED','DISPATCHED')
+                        LIMIT 1""").fetchone():
+                        raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_IN_FLIGHT")
+                    old_choices = canonical([[list(coord),sorted(permitted)]
+                        for coord,permitted in sorted(previous.choices.items())])
+                    db.execute("""INSERT INTO owner_local_policy_v2_authority_epochs
+                        (through_revision,old_authority,new_authority,old_choices)
+                        VALUES(?,?,?,?)""",
+                        (revision,previous.sha,authority.sha,old_choices))
+                    db.execute("""UPDATE owner_local_policy_v2_meta SET authority=?
+                        WHERE id=1 AND authority=? AND revision=?""",
+                        (authority.sha,previous.sha,revision))
+                    if db.execute("SELECT changes()").fetchone()[0]!=1:
+                        raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_RACED")
             self._snapshot(db, authority=authority)
         self.authority = authority
 
@@ -239,7 +265,7 @@ class UnifiedPolicyCore(IncidentCore):
         if self.policies != authority.baseline:
             raise Denied("OWNER_POLICY_AUTHORITY_DRIFT")
         names = _names(db)
-        if not _V2 <= names or names - (_V1 | _V2):
+        if not _V2 <= names or names - _ALLOWED_TABLES:
             raise Denied("OWNER_POLICY_SCHEMA_INCOMPLETE")
         legacy_hash, legacy = _legacy(db)
         meta = db.execute("SELECT * FROM owner_local_policy_v2_meta").fetchall()
@@ -248,6 +274,45 @@ class UnifiedPolicyCore(IncidentCore):
                 or type(meta[0]["revision"]) is not int or meta[0]["revision"]<0):
             raise Denied("OWNER_POLICY_STATE_BINDING_CHANGED")
         rev = meta[0]["revision"]
+        # An epoch records the EXACT admission that signed earlier owner UV
+        # changes. No event is rewritten when authority is widened.
+        history = []
+        current_end = -1
+        next_sha = None
+        epoch_rows=(db.execute(
+                "SELECT * FROM owner_local_policy_v2_authority_epochs ORDER BY id")
+                if _EPOCHS in names else ())
+        for index, row in enumerate(epoch_rows,1):
+            if (row["id"] != index or type(row["through_revision"]) is not int
+                    or row["through_revision"] < current_end
+                    or row["through_revision"] > rev or
+                    (next_sha is not None and next_sha != row["old_authority"])):
+                raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
+            entries = loads_strict(row["old_choices"])
+            if type(entries) is not list or not entries or len(entries)>1000:
+                raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
+            prior_choices = {}
+            for item in entries:
+                if (type(item) is not list or len(item)!=2
+                        or type(item[0]) is not list
+                        or type(item[1]) is not list):
+                    raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
+                coord = _coordinate(tuple(item[0]))
+                if coord in prior_choices or not item[1]:
+                    raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
+                prior_choices[coord] = tuple(item[1])
+            prior = PolicyAdmission(self,prior_choices,
+                                    scope_binding=authority.scope_binding)
+            if (prior.sha != row["old_authority"] or
+                    not all(k in authority.choices and
+                        set(v)<=set(authority.choices[k])
+                        for k,v in prior.choices.items())):
+                raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
+            history.append((row["through_revision"],prior))
+            current_end = row["through_revision"]
+            next_sha = row["new_authority"]
+        if next_sha is not None and next_sha!=authority.sha:
+            raise Denied("OWNER_POLICY_AUTHORITY_EPOCH_INVALID")
         overlay = {}
         for row in db.execute("SELECT * FROM owner_local_policy_v2_rules"):
             coord = _coordinate(tuple(loads_strict(row["coordinate"])))
@@ -262,14 +327,16 @@ class UnifiedPolicyCore(IncidentCore):
         for row in db.execute("SELECT * FROM owner_local_policy_v2_events ORDER BY revision"):
             change = loads_strict(row["change"])
             coord = self.coordinate(change)
-            _, allowed = authority.admitted(coord)
             count += 1
+            original = next((prior for through,prior in history
+                             if count<=through),authority)
+            _, allowed = original.admitted(coord)
             if (row["revision"] != count or change.get("purpose") != _PURPOSE
                     or change.get("requestId") != row["request_id"]
                     or change.get("expectedRevision") != count-1
-                    or change.get("authorityDigest") != authority.sha
+                    or change.get("authorityDigest") != original.sha
                     or change.get("desiredPolicy") not in allowed
-                    or change.get("expectedPolicy") != authority.decision(coord,replay,legacy)
+                    or change.get("expectedPolicy") != original.decision(coord,replay,legacy)
                     or change["expectedPolicy"] == change["desiredPolicy"]
                     or type(row["owner"]) is not str or not row["owner"]
                     or str(uuid.UUID(row["request_id"])) != row["request_id"]):
@@ -290,9 +357,31 @@ class UnifiedPolicyCore(IncidentCore):
             return _coordinate((*coord,candidate.get("target")))
         raise Denied("OWNER_POLICY_SCOPE_INVALID")
 
+    def _inner_guard(self,actor,payload,outer):
+        # The owner controls the OUTER autonomy level. Trusted provider
+        # adapters independently enforce their own required approval and
+        # scope. Never turn an inner ASK/DENY into automatic execution.
+        adapter=self.adapters.get(payload['service'])
+        predicate=getattr(adapter,'inner_policy',None)
+        if not callable(predicate):
+            return outer
+        inner=predicate(actor,payload)
+        if inner not in POLICIES:
+            raise Denied('OWNER_POLICY_INNER_INVALID')
+        return min((outer,inner),
+                   key={'DENY':0,'ASK':1,'ALLOW':2}.__getitem__)
+
     def _policy(self, actor, payload):
         if self._constructing or self._composing:
             return super()._policy(actor,payload)
+        # A private Core ASK adapter represents one synchronous READ
+        # authorization. It has no machine-write policy coordinate or
+        # externally addressable direct Core route.
+        read_approval=getattr(self,'_owner_read_approval',None)
+        if (read_approval is not None and
+                (payload.get('service'),payload.get('operation')) ==
+                ('read-authorization','approve')):
+            return read_approval.policy(actor,payload)
         coord = (actor,payload["service"],payload["operation"],payload["target"])
         with self._db() as db:
             db.execute("BEGIN")
@@ -301,8 +390,17 @@ class UnifiedPolicyCore(IncidentCore):
                 return "DENY"
             if (coord in overlay or
                     coord not in self.authority.baseline and coord[:3] in overlay):
-                return self.authority.decision(coord,overlay,legacy)
-        return super()._policy(actor,payload)
+                outer = self.authority.decision(coord,overlay,legacy)
+                baseline = self.authority.baseline.get(coord,
+                    self.authority.baseline.get(coord[:3]))
+                if callable(baseline):
+                    inner=super()._policy(actor,payload)
+                    # Independent dynamic safety veto always wins.
+                    if inner not in POLICIES:
+                        raise Denied("OWNER_POLICY_CONDITIONAL_INVALID")
+                    outer=min((outer,inner),key={"DENY":0,"ASK":1,"ALLOW":2}.__getitem__)
+                return self._inner_guard(actor,payload,outer)
+        return self._inner_guard(actor,payload,super()._policy(actor,payload))
 
     def _check_change(self, db, candidate):
         if type(candidate) is not dict or set(candidate)!=_FIELDS:

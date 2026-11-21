@@ -37,6 +37,8 @@ tests=(
   test_owner_policy_recovery_evidence_phase6b4.py
   test_owner_policy_local_core_phase6c.py
   test_owner_policy_engine_v2.py
+  test_owner_read_ask_v3.py
+  test_owner_all_method_sonar_v3.py
   test_owner_label_allow_guard.py
   test_owner_policy_local_deny_apply_phase6c1.py
   test_owner_policy_local_deny_apply_crypto.py
@@ -134,6 +136,7 @@ tests=(
   test_workspace_intents.py
   test_intent_native_integration.py
   test_release_storage_source.py
+  test_release_uncertain_growth.py
   test_registry_boundary.py
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
@@ -154,5 +157,5 @@ done
 
 # Keep the pinned Source CI workflow byte-identical; this existing entrypoint
 # also runs the mandatory isolated browser-logic tests. Missing Node fails CI.
-echo '=== local_deny_ui.test.cjs ==='
-node --test fortis_approvals/tests/local_deny_ui.test.cjs
+echo '=== local_deny_ui.test.cjs + ui.test.cjs ==='
+node --test fortis_approvals/tests/local_deny_ui.test.cjs fortis_approvals/tests/ui.test.cjs

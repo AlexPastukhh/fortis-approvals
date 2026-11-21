@@ -43,16 +43,26 @@ class GitHubClient:
             raise Denied("GITHUB_REQUEST_ID_INVALID")
         return ident
 
-    def read(self, operation, target, params=None):
+    def read(self, operation, target, params=None, *, request_id=None):
+        # For ASK reads, reuse the exact request_id returned by the first
+        # PENDING call after the owner has approved it. Never generate a new
+        # request identity when consuming an existing one-use approval.
         body = {
-            "requestId": self._request_id(), "service": "github",
+            "requestId": self._request_id(request_id), "service": "github",
             "operation": operation, "target": target,
             "params": {} if params is None else params,
             "reason": "Read GitHub repository or CI metadata",
         }
         validate_github_read(operation, target, body["params"])
         validate_read_query(body)
-        result = self.gateway.post("/v1/reads", body)
+        result = self.gateway.post("/v1/reads", body, accept_202=True)
+        if (type(result) is dict and
+                set(result)=={"requestId","service","operation","state"} and
+                result["requestId"]==body["requestId"] and
+                result["service"]=="github" and
+                result["operation"]==operation and
+                result["state"] in ("PENDING","REJECTED","EXPIRED","STALE")):
+            return result
         if (type(result) is not dict or
                 set(result) != {"requestId", "service", "operation", "data"} or
                 result["requestId"] != body["requestId"] or

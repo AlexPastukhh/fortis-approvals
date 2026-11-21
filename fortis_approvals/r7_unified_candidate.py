@@ -269,12 +269,15 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             analysis_review=analysis_review,profile=profile,machine_shell=machine_shell,
             runtime=runtime,broker=broker)
         upgrade=unified_policy_source_opt_in.allow_label_policy_upgrade
+        all_methods=unified_policy_source_opt_in.allow_all_method_policy_upgrade
         core.install_policy_authority(
             derive_admission(core,broker,native=native,extension_runtime=runtime,
-                             allow_label_policy_upgrade=upgrade),
+                             allow_label_policy_upgrade=upgrade,
+                             allow_all_method_policy_upgrade=all_methods),
             scope_binding=scope_binding,
             reviewed_upgrade_from=(derive_admission(core,broker,native=native,
-                 extension_runtime=runtime) if upgrade else None))
+                 extension_runtime=runtime,allow_label_policy_upgrade=all_methods)
+                 if upgrade or all_methods else None))
         # New ASK transitions must use strong owner proof even where the
         # baseline was ALLOW. Keep existing stronger independent checks.
         portal.strong_operations |= frozenset((key[1],key[2]) for key,values
@@ -282,4 +285,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         portal.bind_editor(OwnerPolicyEditor(core,owner,
             source_digest=unified_policy_source_opt_in.source_digest,
             credential_generation=unified_policy_source_opt_in.credential_generation))
+        if all_methods:
+            from .read_approval import install_owner_read_approval
+            install_owner_read_approval(core,broker,portal)
     return core,owner,portal,ingress

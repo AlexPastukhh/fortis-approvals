@@ -234,7 +234,7 @@ class UnifiedPolicyTests(unittest.TestCase):
             UnifiedPolicyCore(self.root/"upgrade.sqlite",**self.kwargs()).install_policy_authority(
                 target,scope_binding={"origin":"drifted"},reviewed_upgrade_from=old)
 
-    def test_reviewed_upgrade_denied_after_any_v2_policy_event(self):
+    def test_reviewed_upgrade_preserves_previous_v2_policy_events(self):
         old={PARENT:{"DENY","ASK"},FREE:{"DENY","ALLOW"}}
         core=UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs())
         core.install_policy_authority(old)
@@ -247,10 +247,157 @@ class UnifiedPolicyTests(unittest.TestCase):
         b=editor.begin(self.owner._session,self.owner._csrf,candidate)
         editor.finish(self.owner._session,self.owner._csrf,b['ceremonyId'],
                       {'syntheticTestOnlyUv':True},b['change'])
+        upgraded_choices={PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ALLOW"}}
+        migrated=UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs())
         with self.assertRaises(Denied):
-            UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs()).install_policy_authority(
-                {PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ALLOW"}},
-                reviewed_upgrade_from=old)
+            migrated.install_policy_authority(upgraded_choices)
+        migrated.install_policy_authority(upgraded_choices,reviewed_upgrade_from=old)
+        with migrated._db() as db:
+            self.assertEqual(db.execute("SELECT revision FROM owner_local_policy_v2_meta").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM owner_local_policy_v2_events").fetchone()[0],1)
+        self.assertEqual(migrated._policy(ACTOR,dict(service='synthetic',operation='set_ask',
+                                target='record')),'DENY')
+        reopened=UnifiedPolicyCore(self.root/"edited.sqlite",**self.kwargs())
+        reopened.install_policy_authority(upgraded_choices,reviewed_upgrade_from=old)
+        self.assertEqual(reopened._policy(ACTOR,dict(service='synthetic',operation='set_ask',
+                                target='record')),'DENY')
+        with reopened._db() as db:
+            # Tampered epoch boundaries or old digest cannot be accepted.
+            db.execute("UPDATE owner_local_policy_v2_authority_epochs SET old_authority=?",
+                       ('0'*64,))
+        with self.assertRaises(Denied):
+            reopened.policy_version
+
+    def test_two_reviewed_migrations_preserve_all_uv_events_and_receipts(self):
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        import sqlite3
+        start={PARENT:{"DENY","ASK"},FREE:{"DENY","ALLOW"}}
+        widened={PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ALLOW"}}
+        full={PARENT:{"DENY","ASK","ALLOW"},FREE:{"DENY","ASK","ALLOW"}}
+        path=self.root/"twice.sqlite"
+        core=UnifiedPolicyCore(path,**self.kwargs())
+        core.install_policy_authority(start)
+        editor=OwnerPolicyEditor(core,self.owner,source_digest=SOURCE,
+                                 credential_generation=lambda:CREDS)
+        def apply_to(instance,which,old,new):
+            ed=OwnerPolicyEditor(instance,self.owner,source_digest=SOURCE,
+                                  credential_generation=lambda:CREDS)
+            candidate=dict(actor=which[0],provider=which[1],
+                operation=which[2],scope='actor' if len(which)==3 else 'exact',
+                target=which[3] if len(which)==4 else None,
+                expectedPolicy=old,desiredPolicy=new,
+                expectedRevision=int(instance.policy_version.rsplit(':',1)[1]),
+                expectedPolicyVersion=instance.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+            begin=ed.begin(self.owner._session,self.owner._csrf,candidate)
+            ed.finish(self.owner._session,self.owner._csrf,begin['ceremonyId'],
+                      {'syntheticTestOnlyUv':True},begin['change'])
+        apply_to(core,PARENT,'ASK','DENY')
+        with sqlite3.connect(path) as db:
+            initial_event=db.execute("SELECT * FROM owner_local_policy_v2_events").fetchall()
+        next_core=UnifiedPolicyCore(path,**self.kwargs())
+        next_core.install_policy_authority(widened,reviewed_upgrade_from=start)
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute("SELECT * FROM owner_local_policy_v2_events").fetchall(),initial_event)
+            self.assertEqual(_local_policy_receipt(db)["revision"],1)
+        apply_to(next_core,PARENT,'DENY','ASK')
+        last=UnifiedPolicyCore(path,**self.kwargs())
+        last.install_policy_authority(full,reviewed_upgrade_from=widened)
+        self.assertEqual(last._policy(ACTOR,dict(service='synthetic',
+                          operation='set_ask',target='record')),'ASK')
+        with sqlite3.connect(path) as db:
+            rows=db.execute("SELECT * FROM owner_local_policy_v2_events ORDER BY revision").fetchall()
+            self.assertEqual(rows[0],initial_event[0])
+            self.assertEqual(len(rows),2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs").fetchone()[0],2)
+            self.assertEqual(_local_policy_receipt(db)["revision"],2)
+        restarted=UnifiedPolicyCore(path,**self.kwargs())
+        restarted.install_policy_authority(full,reviewed_upgrade_from=widened)
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE owner_local_policy_v2_authority_epochs SET through_revision=0 WHERE id=2")
+        with self.assertRaises(Denied):
+            restarted.policy_version
+
+    def test_outer_allow_does_not_bypass_signed_executor_or_publisher_ask(self):
+        from fortis_approvals.powershell_machine import MachinePowerShellAdapter
+        from fortis_approvals.workflow.adapters import NativeGitHubAdapter
+        from fortis_approvals.integrations.github.publisher_profile import (
+            PublisherProfile,ACTOR as PUBLISHER)
+        from fortis_approvals.extensions.runtime import ExtensionAdapter
+        from types import SimpleNamespace
+        machine=object.__new__(MachinePowerShellAdapter)
+        machine.actor=ACTOR
+        machine.target='windows-owner'
+        self.assertEqual(machine.inner_policy(ACTOR,dict(service='powershell',
+            operation='execute',target='windows-owner')),'ASK')
+        self.assertEqual(machine.inner_policy('other-actor',dict(
+            service='powershell',operation='execute',
+            target='windows-owner')),'DENY')
+        github=object.__new__(NativeGitHubAdapter)
+        github.publisher=PublisherProfile(enabled=True,revision='a'*64,
+            validator_revision='b'*40,registry_delegation=True)
+        payload=dict(service='github',operation='add_pr_release_labels',
+                     target='fortis-approvals')
+        self.assertEqual(github.inner_policy(PUBLISHER,payload),'ASK')
+        self.assertEqual(github.inner_policy(ACTOR,payload),'ALLOW')
+        self.assertEqual(github.inner_policy(PUBLISHER,{**payload,
+            'target':'not-fortis-approvals'}),'DENY')
+        signed=object.__new__(ExtensionAdapter)
+        signed.provider=SimpleNamespace(name='mirror')
+        operation=SimpleNamespace(signing_credential='signing-key')
+        signed.runtime=SimpleNamespace(
+            rules={(ACTOR,'mirror','publish','host'): 'ASK'},
+            operations={('mirror','publish'):operation})
+        self.assertEqual(signed.inner_policy(ACTOR,dict(service='mirror',
+            operation='publish',target='host')),'ASK')
+        self.assertEqual(signed.inner_policy(ACTOR,dict(service='mirror',
+            operation='publish',target='another-host')),'DENY')
+
+    def test_conditional_inner_veto_is_not_bypassed_by_owner_allow(self):
+        coord=(ACTOR,'synthetic','set_ask')
+        def conditional(_actor,payload):
+            return 'DENY' if payload['target']=='blocked' else 'ASK'
+        policy={coord:conditional}
+        full={coord:{'DENY','ASK','ALLOW'}}
+        path=self.root/'conditional.sqlite'
+        core=UnifiedPolicyCore(path,adapters={'synthetic':self.adapter},
+             policies=policy,authenticator=self.auth,owner_verifier=self.owner,
+             policy_version='inner-test')
+        core.install_policy_authority(full)
+        self.assertEqual(core._policy(ACTOR,dict(service='synthetic',
+            operation='set_ask',target='allowed')),'ASK')
+        self.assertEqual(core._policy(ACTOR,dict(service='synthetic',
+            operation='set_ask',target='blocked')),'DENY')
+        editor=OwnerPolicyEditor(core,self.owner,source_digest=SOURCE,
+                                 credential_generation=lambda:CREDS)
+        candidate=dict(actor=ACTOR,provider='synthetic',operation='set_ask',
+                       scope='actor',target=None,expectedPolicy='ALLOW',
+                       desiredPolicy='DENY',expectedRevision=0,
+                       expectedPolicyVersion=core.policy_version,
+                       reasonCode='OWNER_POLICY_CHANGE')
+        begin=editor.begin(self.owner._session,self.owner._csrf,candidate)
+        editor.finish(self.owner._session,self.owner._csrf,begin['ceremonyId'],
+                      {'syntheticTestOnlyUv':True},begin['change'])
+        for target in ('allowed','blocked'):
+            self.assertEqual(core._policy(ACTOR,dict(service='synthetic',
+                operation='set_ask',target=target)),'DENY')
+
+    def test_authority_upgrade_rejects_pending_approved_or_dispatched_work(self):
+        old={PARENT:{'DENY','ASK'}}
+        new={PARENT:{'DENY','ASK','ALLOW'}}
+        for state in ('PENDING','APPROVED','DISPATCHED'):
+            path=self.root/(state+'.sqlite')
+            core=UnifiedPolicyCore(path,**self.kwargs())
+            core.install_policy_authority(old)
+            with core._db() as db:
+                db.execute("""INSERT INTO requests
+                    (id,fingerprint,actor,payload,snapshot,state,policy_version,
+                     created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()),'0'*64,ACTOR,'{}','{}',state,'test',1,99999))
+            with self.subTest(state=state),self.assertRaisesRegex(
+                    Denied,'UPGRADE_IN_FLIGHT'):
+                UnifiedPolicyCore(path,**self.kwargs()).install_policy_authority(
+                    new,reviewed_upgrade_from=old)
 
     def test_release_receipt_v2_and_tamper(self):
         import sqlite3

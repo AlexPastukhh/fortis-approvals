@@ -79,7 +79,8 @@ def call(tool, *, target=None, project_key=None, page=1, page_size=20,
         allow_test_endpoint=ALLOW_TEST_ENDPOINTS,
     )
     result = (gateway.get_status(request_id) if body is None else
-              gateway.post(path, body, accept_202=body["operation"] == "accept_issue"))
+              gateway.post(path, body, accept_202=(body["operation"] == "accept_issue" or
+                                                  path == "/v1/reads")))
     if body is None or body["operation"] == "accept_issue":
         expected_id = request_id if body is None else body["requestId"]
         if (set(result) != {"requestId", "state"} or
@@ -87,7 +88,14 @@ def call(tool, *, target=None, project_key=None, page=1, page_size=20,
                 type(result["state"]) is not str or result["state"] not in _STATES):
             raise Denied("FORTIS_STATUS_RESPONSE_INVALID")
     else:
-        if (set(result) != {"requestId", "service", "operation", "data"} or
+        pending=(type(result) is dict and
+                 set(result)=={"requestId","service","operation","state"} and
+                 result["requestId"]==body["requestId"] and
+                 result["operation"]==body["operation"] and
+                 result["service"]=="sonarcloud" and
+                 result["state"] in ("PENDING","REJECTED","EXPIRED","STALE"))
+        if not pending and (type(result) is not dict or
+                set(result) != {"requestId", "service", "operation", "data"} or
                 result["requestId"] != body["requestId"] or
                 result["operation"] != body["operation"] or
                 result["service"] != "sonarcloud" or type(result["data"]) is not dict):

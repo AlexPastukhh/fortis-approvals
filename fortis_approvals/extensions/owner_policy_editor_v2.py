@@ -118,7 +118,19 @@ class OwnerPolicyEditor:
                     continue
                 row["currentPolicy"]=current
                 row["editablePolicies"]=sorted(permitted)
-                row["effectivePolicy"]=(current if len(coord)==4 else "UNKNOWN")
+                # The owner changes the OUTER method policy. A trusted
+                # provider or Windows guard can still require ASK or DENY,
+                # even with outer ALLOW. The actor-wide target-free overview
+                # cannot claim a single effective policy for every target.
+                effective="UNKNOWN"
+                if len(coord)==4:
+                    baseline=core.authority.baseline.get(
+                        coord,core.authority.baseline.get(coord[:3]))
+                    if not callable(baseline):
+                        effective=core._inner_guard(row["actor"],dict(
+                            service=row["provider"],operation=row["operation"],
+                            target=row["target"],params={}),current)
+                row["effectivePolicy"]=effective
                 row["localPolicyApplied"]=coord in overlay or coord in legacy
             for coord in sorted((set(overlay)|set(legacy))-existing):
                 parent=next((row for row in rows if row["scope"]=="actor" and
@@ -132,9 +144,14 @@ class OwnerPolicyEditor:
                     if coord not in legacy:
                         raise
                     original=parent["configuredPolicy"]; permitted=(); current="DENY"
+                underlying=core.authority.baseline.get(coord,
+                               core.authority.baseline.get(coord[:3]))
+                effective=("UNKNOWN" if callable(underlying) else
+                    core._inner_guard(coord[0],dict(service=coord[1],
+                        operation=coord[2],target=coord[3],params={}),current))
                 rows.append(dict(parent,scope="exact",target=coord[3],
                                  configuredPolicy=original,currentPolicy=current,
-                                 effectivePolicy=current,editablePolicies=sorted(permitted),
+                                 effectivePolicy=effective,editablePolicies=sorted(permitted),
                                  localPolicyApplied=True))
             result.update(policyEditorVersion=2,policyRevision=revision,
                           externalRollbackProof=False,localDenyOnly=False)

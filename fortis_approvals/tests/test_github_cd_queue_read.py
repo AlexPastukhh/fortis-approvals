@@ -112,7 +112,7 @@ class DeploymentReadTests(unittest.TestCase):
     def client(self):
         adapter=self.adapter
         class Broker:
-            def post(self, path, request):
+            def post(self, path, request, *, accept_202=False):
                 if path != "/v1/reads":
                     raise AssertionError("Client must use typed READ route")
                 data=adapter.read(request)

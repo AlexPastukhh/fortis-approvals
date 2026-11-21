@@ -183,6 +183,14 @@ class MachinePowerShellAdapter:
         # Exact trusted actor+target; unknown target, other actor => DENY.
         core.policies[(self.actor, "powershell", "execute", self.target)] = "ASK"
 
+    def inner_policy(self, actor, payload):
+        # Windows PowerShell executor V1 still requires an independent
+        # owner-signed command proof. Outer ALLOW cannot manufacture it.
+        return ('ASK' if actor==self.actor and
+                payload.get('service')=='powershell' and
+                payload.get('operation')=='execute' and
+                payload.get('target')==self.target else 'DENY')
+
     def prepare(self, payload):
         if (type(payload) is not dict or
                 payload.get("service") != "powershell" or

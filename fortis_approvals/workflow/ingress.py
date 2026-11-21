@@ -145,6 +145,23 @@ class NativeIngress:
             revision_policy=core._policy(actor,dict(service='github',operation='append_visual_revision',target='visual-workspace'))
             dynamic=getattr(self.github.config,'dynamic_repositories',False)
             require(type(dynamic) is bool,'WORKFLOW_DYNAMIC_FLAG_INVALID')
+            # The registered actor's effective policy is authoritative. Do
+            # not keep ASK-only method-name ceilings in machine capabilities.
+            # A target-specific visual operation uses its existing exact
+            # registered policy coordinate.
+            # Some legacy integrations expose a read-only wrapper without
+            # a broker operation inventory. Missing grants advertise no
+            # methods; never infer access from packaged method names.
+            registered_ops=sorted(op for service,op in
+                getattr(self.broker,'actor_operations',{}).get(actor,())
+                if service=='github' and op!='push_commits')
+            method_policies={}
+            for op in registered_ops:
+                target=('visual-workspace' if (actor,'github',op,
+                    'visual-workspace') in core.policies else
+                    self.github.config.repository)
+                method_policies[op]=core._policy(actor,dict(
+                    service='github',operation=op,target=target))
             # Report only operations actually available under BOTH broker grant
             # and Core exact actor/target ALLOW. Source presence is not access.
             candidate_repos=getattr(self.github.config,'cd_read_repositories',())
@@ -155,17 +172,10 @@ class NativeIngress:
                     for op in DEPLOYMENT_READ_OPERATIONS))
             return dict(owner=self.github.config.owner,repository=self.github.config.repository,
                 dynamicRepositories=dynamic,branchPrefix='task/',workspaceOperations=sorted(WORKSPACE_OPS),
-                allowGitHub=['push_commits']+[
-                    op for op in ('create_release_label','add_pr_release_labels','remove_pr_release_label')
-                    if core._policy(actor,dict(service='github',operation=op,
-                        target=self.github.config.repository))=='ALLOW']+(['create_pull_request'] if pr_policy=='ALLOW' else [])+
-                    (['publish_visual_review'] if visual_policy=='ALLOW' else [])+
-                    (['append_visual_revision'] if revision_policy=='ALLOW' else []),
-                askGitHub=(['create_pull_request'] if pr_policy=='ASK' else [])+['mark_pr_ready','merge_pull_request','update_pull_request','update_workflow_file']+
-                    [op for op in ('create_release_label','add_pr_release_labels','remove_pr_release_label')
-                     if core._policy(actor,dict(service='github',operation=op,target=self.github.config.repository))=='ASK']+
-                    (['publish_visual_review'] if visual_policy=='ASK' else [])+
-                    (['append_visual_revision'] if revision_policy=='ASK' else []),
+                allowGitHub=['push_commits']+
+                    sorted(op for op,policy in method_policies.items() if policy=='ALLOW'),
+                askGitHub=sorted(op for op,policy in method_policies.items() if policy=='ASK'),
+                githubMethodPolicies=method_policies,
                 githubIssueReads=['list_issues','get_issue','list_issue_comments'],
                 githubTargetReads={'version':1,'branch':'repository-access-checked-v1',
                     'pullRequests':'same-repository-head-base-v1'},

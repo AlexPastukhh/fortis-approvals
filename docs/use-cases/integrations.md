@@ -306,3 +306,18 @@ UC-GW-003 с pagination, item-idempotency/receipt и live readback.
 GitHub Project — только проекция планирования; Deployment evidence
 всегда отдельно. Состояние этой следующей задачи — в
 [едином Gateway backlog](../BACKLOG-IMPROVEMENTS.md).
+
+
+### Owner-selectable outer policy (future reviewed release, source candidate)
+
+The installed P3 publisher approval and the current policy map above stay
+as-is until an explicit owner release. The next V3 owner-policy candidate
+offers `DENY/ASK/ALLOW` for **each existing actor-granted method**, including
+the ordinary Repo `update_pull_request`, without operation-name ASK_ONLY
+ceilings. Owner consent to change that persistent policy uses fresh WebAuthn;
+consent to an individual `ASK` action is a separate Core request.
+Provider preflight, receipt, immutable PR/commit/labels and independent
+executor/publisher proof stay in force. For signed/publisher methods an outer
+ALLOW can still have an effective inner ASK. See
+[Owner policy editor V2, subsequent all-methods section](../OWNER-POLICY-EDITOR-V2.md).
+No other actor scope or provider credentials are activated by this source.
