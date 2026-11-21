@@ -441,8 +441,9 @@ or protection against a compromised trusted local object store/interpreter.
 The fixed shim invokes the existing YAML parser, catalog schema and
 filesystem semantics, Impact marker parser, schema and changed-path
 classification. It rejects unknown actions, missing local target refs
-and direct self PR dependency, and returns declared/affected targets and
-dependency requirements, not proof of closure. It binds the result to
+and direct self PR dependency, and returns declared/affected targets,
+direct dependency requirements and the reachable same-catalog dependency
+graph, not proof of complete release closure. It binds the result to
 the validator revision, capture event, bundle, exact base/HEAD, catalog,
 changed records and impact hashes; checkpoint drift stops. No raw body or
 catalog is returned. `RETAINED_IMPACT_VALIDATED` is a partial validation
@@ -469,9 +470,10 @@ with read-only contents permission and no persisted checkout
 credentials or extra secrets. It checks both revisions and requirements
 hash before installing the existing pinned validator requirements in CI.
 The script `scripts/test-p5-retained-impact.py` checks the public revision
-and installed dependency versions, then executes four named real-validator
+and installed dependency versions, then executes six named real-validator
 cases: valid exact-source Impact, false no-deployment, unknown local
-dependency, and duplicate YAML mapping key. Any missing dependency,
+dependency, duplicate YAML mapping key, reachable transitive local
+dependency graph, and unresolved external requirement. Any missing dependency,
 mismatched pin, error, skipped case or incomplete run exits nonzero.
 The gate is an explicit owner merge/activation acceptance requirement,
 not a claim that GitHub branch protection has already been changed.
@@ -538,6 +540,45 @@ the existing internal provider reader, and eventual separate owner-
 composed collector scope requires its own acceptance. Source tests use
 a synthetic provider and actual temporary journal/Core; no live capture,
 production storage, branch-protection change or deployment occurred.
+
+## Reachable dependency graph from retained catalog (source-only)
+
+The existing isolated RetainedImpactValidator shim now traverses
+validated `dependsOn` edges starting from every declared deployment
+target and every explicit local Impact target dependency. Explicit
+Impact target requirements remain separate roots, not invented per-target
+edges. The existing direct targetDependencies and pullRequestDependencies
+outputs remain available. The graph includes declared roots, explicit
+targets, reached local target IDs, local dependency IDs, catalog edges,
+unresolved external targets and unresolved PR requirements. It stops on
+unknown local target, cycle, or a 256-edge / 200-local-node bound; unrelated
+catalog nodes are not traversed for this release. The shared validator
+still checks structural/catalog semantics first.
+
+The observation binds the graph and deterministic local dependency
+edges to the exact retained catalog HEAD, SHA-256 and outer capture
+event/bundle digest, never inventing a selected-main or other-repository
+source version. Local edge records have canonical repository, target
+and exact PR HEAD sourceSha, and are explicitly provisional: selected
+main/tree/component binding and multi-PR attribution remain separate
+requirements. The dependency observation has its own SHA-256 under the
+outer observation digest. External repository names and PR numbers
+are unresolved requirements until authenticated enrolled source
+selection, reviewed merge evidence, catalog continuity and recursive
+cross-repository closure are established. Missing cross-repository
+proof must not be interpreted as empty dependencies.
+
+Even when there are no unresolved external/PR requirements,
+dependencyClosureVerified, evidenceVerified, historicalPolicyVerified,
+admissionAllowed and deploymentAllowed stay false. This is not a
+complete evidence envelope or queue write. No new route, token grant,
+fetch, mutable checkout trust or runtime change is introduced.
+
+Protocol tests cover transitive reachability, an unreachable catalog
+branch, cycle, missing transitive local target and unresolved PR ref.
+The separate real-validator CI runner also executes positive transitive
+and external-requirement cases without skips; workflow bytes and the
+publisher/P5 CI source pins are unchanged.
 
 ## Proposed future typed operation (NOT implemented)
 

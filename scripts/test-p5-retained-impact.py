@@ -14,6 +14,8 @@ TESTS = (
     'test_real_validator_rejects_false_no_deployment',
     'test_real_validator_rejects_missing_local_dependency',
     'test_real_validator_rejects_duplicate_yaml_key',
+    'test_real_transitive_dependency_graph',
+    'test_real_external_dependency_is_unresolved',
 )
 
 
