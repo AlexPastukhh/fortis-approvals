@@ -21,14 +21,16 @@ class LocalDenyCore(IncidentCore):
         self._local_policy_initialized = False
         super().__init__(*args, **kwargs)
         with self._db() as db:
+            # SQLite serializes schema initialization across live processes.
             existing = {row['name'] for row in db.execute(
                 """SELECT name FROM sqlite_master WHERE type='table'
-                   AND name LIKE 'owner_local_%'""")}
+                   AND name GLOB 'owner_local_*'""")}
             required = {'owner_local_policy_meta', 'owner_local_denials',
                         'owner_local_policy_events'}
             if existing and existing != required:
                 raise Denied('OWNER_LOCAL_POLICY_SCHEMA_INCOMPLETE')
             db.executescript('''
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS owner_local_policy_meta(
                     id INTEGER PRIMARY KEY CHECK(id=1),
                     schema_version INTEGER NOT NULL CHECK(schema_version=1),
@@ -88,6 +90,7 @@ class LocalDenyCore(IncidentCore):
         # The store only imposes an exact DENY; it cannot create rights and
         # cannot promote an existing ASK to unattended ALLOW.
         with self._db() as db:
+            db.execute('BEGIN')
             self._local_revision(db)
             denied = db.execute('''SELECT 1 FROM owner_local_denials
                     WHERE actor=? AND service=? AND operation=? AND target=?''',

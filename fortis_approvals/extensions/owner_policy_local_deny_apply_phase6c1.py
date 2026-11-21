@@ -43,7 +43,7 @@ class OwnerLocalDenyApply:
     """
 
     def __init__(self, core, owner_auth, *, source_digest,
-                 credential_generation_digest):
+                 credential_generation_digest, runtime_sonar_only=False):
         if (type(core) is not LocalDenyCore or
                 not isinstance(owner_auth, OwnerWebAuthn) or
                 core.owner_verifier is not owner_auth):
@@ -51,7 +51,27 @@ class OwnerLocalDenyApply:
         self.core = core
         self.auth = owner_auth
         self.source_digest = _digest(source_digest)
-        self.credential_generation_digest = _digest(credential_generation_digest)
+        if type(runtime_sonar_only) is not bool:
+            raise Denied('OWNER_LOCAL_APPLY_SCOPE_INVALID')
+        self.runtime_sonar_only = runtime_sonar_only
+        self._credential_seed = _digest(credential_generation_digest)
+
+    @property
+    def credential_generation_digest(self):
+        if not self.runtime_sonar_only:
+            return self._credential_seed
+        # Credential counters change on every assertion; the registered
+        # public key and active bit are the generation, not those counters.
+        with self.auth._db() as db:
+            keys = [[row['id'], bytes(row['data']).hex(), row['active']]
+                    for row in db.execute('SELECT id,data,active FROM credentials ORDER BY id')]
+        if not any(row[2] == 1 for row in keys):
+            raise Denied('OWNER_LOCAL_APPLY_OWNER_CREDENTIAL_REQUIRED')
+        return hashlib.sha256(canonical({
+            'runtime':self._credential_seed,'ownerKeys':keys}).encode()).hexdigest()
+
+    def editable_coordinate(self, coord):
+        return not self.runtime_sonar_only or coord[1:3] == ('sonarcloud','accept_issue')
 
     @staticmethod
     def _candidate(candidate):
@@ -75,6 +95,8 @@ class OwnerLocalDenyApply:
 
     def _check(self, db, candidate):
         coord = self._candidate(candidate)
+        if not self.editable_coordinate(coord):
+            raise Denied('OWNER_LOCAL_APPLY_RUNTIME_SCOPE_DENIED')
         revision = self.core._local_revision(db)
         if revision != candidate['expectedRevision']:
             raise Stale('OWNER_LOCAL_APPLY_STALE_REVISION')
@@ -168,6 +190,9 @@ class OwnerLocalDenyApply:
                 raise Denied('OWNER_LOCAL_APPLY_VERIFICATION_FAILED')
             with self.core._db() as db:
                 db.execute('BEGIN IMMEDIATE')
+                if (int(owner.clock()) >= change['expiresAt'] or
+                        change['credentialGenerationDigest'] != self.credential_generation_digest):
+                    raise Denied('OWNER_LOCAL_APPLY_PROOF_EXPIRED_OR_GENERATION_CHANGED')
                 previous = self._check(db, core_fields)
                 coord = tuple(change[k] for k in ('actor','provider','operation','target'))
                 db.execute('''INSERT INTO owner_local_denials

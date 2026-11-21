@@ -154,6 +154,24 @@ class BrowserDenyVirtualFIDO2(unittest.TestCase):
         self.assertEqual('ASK',self.core.policies[COORD[:3]])
         self.assertEqual(403,self.finish(started,self.key.assert_(started))[0])
 
+    def test_runtime_sonar_only_real_uv_binds_credential_generation(self):
+        self.core.adapters['sonarcloud']=self.adapter
+        self.core.policies[('agent-1','sonarcloud','accept_issue')]='ASK'
+        bound=OwnerLocalDenyApply(self.core,self.owner,source_digest=SOURCE,
+            credential_generation_digest=CREDS,runtime_sonar_only=True)
+        self.portal=OwnerLocalDenyPortal(self.core,self.owner,local_deny_apply=bound)
+        candidate={**self.candidate,'provider':'sonarcloud','operation':'accept_issue',
+                   'expectedConfiguredScope':'actor'}
+        self.assertEqual(403,self.begin()[0])
+        code,started=self.call(_PREFIX+'/begin',{'candidate':candidate})
+        self.assertEqual(200,code,started)
+        code,result=self.finish(started,self.key.assert_(started))
+        self.assertEqual(200,code,result)
+        self.assertEqual('DENY',self.core._policy('agent-1',
+            dict(service='sonarcloud',operation='accept_issue',target='R3')))
+        self.assertEqual('ASK',self.core._policy('agent-1',
+            dict(service='sonarcloud',operation='accept_issue',target='R4')))
+
     def test_stale_revision_returns_409_even_with_real_valid_fido2(self):
         code,started=self.begin()
         self.assertEqual(200,code)

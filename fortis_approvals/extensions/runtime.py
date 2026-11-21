@@ -20,8 +20,10 @@ def validate_with(callback, value, *, limit=65536):
 
 class ExtensionConfig:
     def __init__(self, value):
-        check(type(value) is dict and set(value) == {'schemaVersion', 'providers'} and
-              type(value['schemaVersion']) is int and value['schemaVersion'] == 1,
+        check(type(value) is dict and set(value) in (
+            {'schemaVersion', 'providers'}, {'schemaVersion', 'providers', 'ownerLocalDeny'}) and
+              type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and
+              ('ownerLocalDeny' not in value or value['ownerLocalDeny'] == 'SONAR_ACCEPT_ISSUE_V1'),
               'INTEGRATION_CONFIG_INVALID')
         providers = value['providers']
         check(type(providers) is dict and 0 <= len(providers) <= 50, 'INTEGRATION_CONFIG_INVALID')
@@ -328,7 +330,12 @@ class ExtensionRuntime:
         for service in self.credentials: core.adapters[service] = ExtensionAdapter(self, self.providers[service])
         for key, policy in self.rules.items(): core.policies[key] = policy
         portal.strong_operations |= frozenset((s, o) for (a, s, o, t), p in self.rules.items() if p == 'ASK')
-        core.policy_version += ':extensions-' + self.digest
+        # Extend the baseline, not the live revision-bearing version.
+        from .owner_policy_local_core_phase6c import LocalDenyCore
+        if type(core) is LocalDenyCore:
+            core._baseline_policy_version += ':extensions-' + self.digest
+        else:
+            core.policy_version += ':extensions-' + self.digest
         return self
 
     def _access(self, credential, service, operation, target):

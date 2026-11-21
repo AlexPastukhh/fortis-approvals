@@ -69,7 +69,101 @@ class OptInR7BuilderTests(unittest.TestCase):
     def candidate(self):
         return R7LocalDenySourceOptIn(SOURCE,CREDS)
 
-    def test_current_server_never_passes_source_selector(self):
+    def test_server_selector_is_explicit_owner_config_only(self):
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from unittest.mock import patch
+        config=ExtensionConfig({'schemaVersion':1,'providers':{}})
+        self.assertIsNone(r7_unified_server._owner_release_local_deny(config,None,GRANT,'sonar-fixture'))
+        config=ExtensionConfig({'schemaVersion':1,'providers':{},
+                                'ownerLocalDeny':'SONAR_ACCEPT_ISSUE_V1'})
+        with self.assertRaises(RuntimeError):
+            r7_unified_server._owner_release_local_deny(config,None,GRANT,'sonar-fixture')
+        selected=r7_unified_server._owner_release_local_deny(
+            config,str(uuid.uuid4()),GRANT,'sonar-fixture')
+        self.assertTrue(selected.runtime_sonar_only)
+        self.assertFalse(selected.runtime_verified)
+        self.assertNotEqual(selected.credential_generation_digest,
+            r7_unified_server._owner_release_local_deny(config,str(uuid.uuid4()),GRANT,'rotated').credential_generation_digest)
+        with self.assertRaises(Denied):
+            ExtensionConfig({'schemaVersion':1,'providers':{},'ownerLocalDeny':True})
+
+    def test_runtime_scope_denies_non_sonar_mutations_and_keeps_configured_version(self):
+        core,owner,portal,ingress=self.build(R7LocalDenySourceOptIn(SOURCE,CREDS,True))
+        with core._db() as db:
+            candidate=dict(actor=ACTOR,provider='sonarcloud',operation='get_issue',
+                 target='ISSUE-1',expectedConfiguredPolicy='ALLOW',
+                 expectedPolicyVersion=core.policy_version,expectedRevision=0,reasonCode='OWNER_DENY_EXACT')
+            with self.assertRaisesRegex(Denied,'RUNTIME_SCOPE_DENIED'):
+                portal._local_deny_apply._check(db,candidate)
+        from fortis_approvals.extensions.runtime import ExtensionConfig,ExtensionRuntime
+        runtime=ExtensionRuntime(ExtensionConfig({'schemaVersion':1,'providers':{}}),
+                 providers=(),actors=(ACTOR,),default_actor=ACTOR)
+        runtime.install(core,portal)
+        self.assertEqual(core.policy_version.count('|owner-local-deny:'),1)
+        self.assertTrue(core.policy_version.endswith('|owner-local-deny:0'))
+
+    def test_real_server_composes_staged_owner_and_guarded_machine(self):
+        from types import SimpleNamespace
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.staging import StagedOwner, StagedMachine, ReleaseGate
+        import sqlite3
+        self.owner.path=self.root/'fixture-owner.sqlite'
+        with sqlite3.connect(self.owner.path) as db:
+            db.execute('CREATE TABLE credentials(id TEXT PRIMARY KEY,data BLOB,active INTEGER,counter INTEGER)')
+            db.execute("INSERT INTO credentials VALUES('fixture-key',x'1234',1,0)")
+        state=self.root/'server-state';state.mkdir(mode=0o700)
+        paths={}
+        for name,content in [('grant',GRANT),('sonar','synthetic-sonar-credential'),
+                             ('cert','synthetic-cert'),('key','synthetic-key')]:
+            p=self.root/name;p.write_text(content);p.chmod(0o600);paths[name]=p
+        config=ExtensionConfig({'schemaVersion':1,'providers':{},
+                                'ownerLocalDeny':'SONAR_ACCEPT_ISSUE_V1'})
+        def fake_server(host,port,app,**kwargs):
+            return SimpleNamespace(app=app)
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner), patch.object(r7_unified_server,'SonarHTTPTransport',return_value=self.sonar), patch.object(r7_unified_server,'make_server',side_effect=fake_server), patch.object(r7_unified_server.ssl,'SSLContext'):
+            owner_server,machine_server=r7_unified_server.create_servers(
+                state=state,grant_path=paths['grant'],sonar_token_path=paths['sonar'],
+                cert_path=paths['cert'],key_path=paths['key'],region='eu',
+                organizations=('acme',),project_key='acme',extensions=config,
+                release_nonce=str(uuid.uuid4()))
+        owner_app,machine_app=owner_server.app,machine_server.app
+        self.assertIsInstance(owner_app,StagedOwner)
+        self.assertIsInstance(machine_app,StagedMachine)
+        core=owner_app.delegate.core
+        self.assertIs(core,machine_app.broker.core)
+        self.assertIs(type(core),LocalDenyCore)
+        candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',
+            target=ISSUE,expectedConfiguredScope='actor',expectedConfiguredPolicy='ASK',
+            expectedPolicyVersion=core.policy_version,expectedRevision=0,
+            reasonCode='OWNER_DENY_EXACT')
+        def post(path,body):
+            raw=json.dumps(body).encode();response=[]
+            env={'REQUEST_METHOD':'POST','PATH_INFO':'/v1/owner/policy/local-deny/'+path,
+                'HTTP_HOST':'localhost:19103','HTTP_ORIGIN':'http://localhost:19103',
+                'HTTP_COOKIE':'fortis_owner='+self.owner._session,
+                'HTTP_X_FORTIS_CSRF':self.owner._csrf,'QUERY_STRING':'',
+                'CONTENT_TYPE':'application/json','CONTENT_LENGTH':str(len(raw)),
+                'wsgi.input':BytesIO(raw)}
+            result=b''.join(owner_app(env,lambda status,headers:response.append(status)))
+            return int(response[0][:3]),json.loads(result)
+        with patch.object(ReleaseGate,'ready',return_value=False):
+            self.assertEqual(403,post('begin',{'candidate':candidate})[0])
+        with patch.object(ReleaseGate,'ready',return_value=True):
+            status,started=post('begin',{'candidate':candidate})
+            self.assertEqual(200,status,started)
+            with self.owner._db() as db:
+                db.execute('UPDATE credentials SET counter=1')
+            status,result=post('finish',{'ceremonyId':started['ceremonyId'],
+                'change':started['change'],'response':{'syntheticTestOnlyUv':True}})
+            self.assertEqual(200,status,result)
+            self.assertEqual(1,result['appliedRevision'])
+        self.assertEqual('DENY',core._policy(ACTOR,dict(
+            service='sonarcloud',operation='accept_issue',target=ISSUE)))
+        self.assertEqual('ASK',core._policy(ACTOR,dict(
+            service='sonarcloud',operation='accept_issue',target='OTHER')))
+        self.assertEqual(0,self.sonar.calls)
+
+    def test_selector_is_not_external_attestation(self):
         self.assertNotIn('local_deny_source_opt_in',
                          inspect.signature(r7_unified_server.create_servers).parameters)
         self.assertNotIn('local_deny_source_opt_in',

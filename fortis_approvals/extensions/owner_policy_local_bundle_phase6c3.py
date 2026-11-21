@@ -19,7 +19,10 @@ def owner_local_deny_inventory(core, extension_runtime=None):
         raise Denied('OWNER_LOCAL_INVENTORY_GUARDED_CORE_REQUIRED')
     result=owner_policy_inventory(core,extension_runtime)
     with core._db() as db:
+        db.execute('BEGIN')
         revision=core._local_revision(db)
+        if result['policyVersion'] != core._baseline_policy_version+'|owner-local-deny:'+str(revision):
+            raise Denied('OWNER_LOCAL_INVENTORY_REVISION_CHANGED')
         local=db.execute('''SELECT actor,service,operation,target,decision
             FROM owner_local_denials ORDER BY actor,service,operation,target''').fetchall()
     denied=set()
@@ -79,8 +82,13 @@ class OwnerLocalDenyInventoryPortal(OwnerLocalDenyPortal):
                                              'HTTP_PROXY_AUTHORIZATION','HTTP_AUTHORIZATION'))):
                 raise Denied('HOST_DENIED')
             self.auth.session(self._cookie(env))
-            return self._reply(start,200,owner_local_deny_inventory(
-                self.core,getattr(self,'_extension_runtime',None)))
+            inventory=owner_local_deny_inventory(
+                self.core,getattr(self,'_extension_runtime',None))
+            if self._local_deny_apply is not None:
+                for row in inventory['operations']:
+                    coord=(row['actor'],row['provider'],row['operation'],row['target'])
+                    row['localDenyEditable']=self._local_deny_apply.editable_coordinate(coord)
+            return self._reply(start,200,bounded(inventory,262144))
         except Denied as exc:
             return self._reply(start,403,{'error':str(exc)})
 

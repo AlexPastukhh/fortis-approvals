@@ -80,6 +80,59 @@ def validate_uncertain_ids(value):
     return frozenset(value)
 
 
+_LOCAL_POLICY_TABLES = {
+    'owner_local_policy_meta': ('id','schema_version','revision','gate'),
+    'owner_local_denials': ('actor','service','operation','target','decision'),
+    'owner_local_policy_events': ('request_id','at','owner','change','expected_revision','applied_revision'),
+}
+
+
+def _local_policy_receipt(db):
+    # Optional only for pre-activation legacy state. Partial/unknown tables,
+    # invalid events or policy loss are not treated as ordinary Core growth.
+    names = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE name GLOB 'owner_local_*'")}
+    if not names:
+        return None
+    require(names == set(_LOCAL_POLICY_TABLES), 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+    for table, columns in _LOCAL_POLICY_TABLES.items():
+        require(tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')')) == columns,
+                'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+    meta = db.execute('SELECT * FROM owner_local_policy_meta').fetchall()
+    require(len(meta)==1 and meta[0][:2]==(1,1) and
+            type(meta[0][2]) is int and meta[0][2]>=0 and meta[0][3]=='READY',
+            'PILOT_LOCAL_POLICY_NOT_READY')
+    revision = meta[0][2]
+    denials = db.execute('SELECT * FROM owner_local_denials ORDER BY actor,service,operation,target').fetchall()
+    events = db.execute('SELECT * FROM owner_local_policy_events ORDER BY applied_revision').fetchall()
+    require(len(denials)==len(events)==revision, 'PILOT_LOCAL_POLICY_AUDIT_MISMATCH')
+    actual = set()
+    for actor,service,operation,target,decision in denials:
+        require(all(type(x) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',x)
+                    for x in (actor,service,operation,target)) and decision=='DENY'
+                and (service,operation)==('sonarcloud','accept_issue'),
+                'PILOT_LOCAL_POLICY_SCOPE_INVALID')
+        actual.add((actor,service,operation,target))
+    recorded = set()
+    for index,(ident,at,owner,raw,prior,applied) in enumerate(events):
+        try:
+            change=json.loads(raw)
+            coord=tuple(change[k] for k in ('actor','provider','operation','target'))
+            valid=(str(uuid.UUID(ident))==ident and type(at) is int and at>=0 and
+                   type(owner) is str and bool(owner) and prior==index and applied==index+1 and
+                   change['requestId']==ident and change['expectedRevision']==prior and
+                   change['newPolicy']=='DENY' and change['purpose']=='OWNER_LOCAL_EXACT_DENY_APPLY_V1' and
+                   coord in actual and coord not in recorded)
+        except (ValueError,TypeError,KeyError,AttributeError):
+            valid=False
+        require(valid,'PILOT_LOCAL_POLICY_AUDIT_MISMATCH')
+        recorded.add(coord)
+    require(actual==recorded,'PILOT_LOCAL_POLICY_AUDIT_MISMATCH')
+    digest=hashlib.sha256(json.dumps([meta,denials,events],
+        ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+    return {'revision':revision,'sha256':digest}
+
+
 def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                   preserve_uncertain_ids=None, require_exact_uncertain=False,
                   preserve_claimed_ids=None, require_exact_claimed=False,
@@ -225,6 +278,9 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
+        local_policy = _local_policy_receipt(a)
+        if local_policy is not None:
+            summary['localPolicy'] = local_policy
         if native:
             db = connections['native-git/workflow.sqlite']
             tables = {r[0] for r in db.execute(
@@ -408,7 +464,9 @@ def _core_growth_witness(volume):
         # Other Core tables/schema changes cannot be normalized as growth.
         names={x[0] for x in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-        require(names==set(expected),'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+        local_policy = _local_policy_receipt(db)
+        extra = set(_LOCAL_POLICY_TABLES) if local_policy is not None else set()
+        require(names==set(expected)|extra,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
         for table,names in expected.items():
             current=tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')'))
             require(current==names,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
