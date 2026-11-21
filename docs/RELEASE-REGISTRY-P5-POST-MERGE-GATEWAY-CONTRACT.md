@@ -483,6 +483,62 @@ any future trusted historical P5 CI policy. Source CI does not authorize
 a live release. No active route, Gateway fetch, grant, runtime package
 installation, policy or Registry write is introduced.
 
+## P5 policy-bound pre-merge bundle v2 (source-only)
+
+The accepted PR #189 has four successful exact-HEAD CI checks, including
+the real public validator semantic gate. An authorized point read of its
+P5 workflow run 44862545365 / attempt 1 and check 136718935198 established
+workflow ID 425664934 and GitHub Actions App ID 15368. That run returned
+an empty PR association array after merge; no historical PR association
+is reconstructed from job URLs or from the merge itself.
+
+The internal `gateway/p5_ci_binding.py` adds a fixed candidate P5 policy
+covering all three immutable workflow source hashes/IDs and their four
+jobs (including `p5-retained-impact`), with the reviewed Actions App ID
+and slug. Server-selected policy-bound capture uses the shared attempt
+reader with the additional exact PR base SHA binding and refuses an
+empty/mismatching PR association. The publisher still calls its original
+two-workflow wrapper with its original bounds and behavior; P5 has a
+separate 32-GET/30-second budget inside the bounded path/CI reader.
+No caller-supplied policy, workflow list, repository or App ID is accepted
+through a route. There is no new externally callable operation or grant.
+
+The P5 branch-rule observation must contain only supported required
+contexts and either the pinned App or an unbound App requirement; the
+P5 candidate independently requires the pinned App for all four jobs.
+Two bounded latest check-run and combined commit-status observations
+must agree. Each required check must have the same job ID as the exact
+selected attempt, HEAD, name, successful conclusion, pinned App and
+exact provider job URL; duplicate/missing/mismatched checks and same-name
+legacy commit statuses stop. Completion times are retained and selection
+is rechecked. At the merge observation, completion must precede the
+original Core execution and not postdate capture. These are cross-system
+observations, not a proof of synchronized clocks or merge-time protections.
+
+`capture_bundle(..., policy_bound=True)` is an internal source mode,
+appending the distinct body-path-ci-catalog-v2 fingerprint and schema
+version 2 with the policy digest, rules digest and exact check witnesses
+inside the retained bundle. The same Core ASK decision binds the bundle
+digest, and prepare re-observes the stored mode; check drift stops.
+Body-only and schema-v1 captures remain readable with their old identity,
+and cannot reuse an operation ID as a v2 capture. Merge observation
+includes the retained policy/binding digests for v2. Neither mode is
+an admission-ready evidence envelope; a future collector must require
+v2 or a separately accepted successor, never silently fall back to v1.
+
+The candidate policy is source-reviewed only, NOT asserted as owner-
+accepted historical effective branch protection. Classic protection,
+bypass, policy lifecycle, independent protected checkpoint/audit, and
+body/CI continuity at the precise merge cutoff remain unresolved.
+`candidateChecksMatched` means only this fixed candidate matched the
+observed jobs/checks. historicalPolicyVerified, requiredPolicySatisfied,
+evidenceVerified, admissionAllowed and deploymentAllowed remain false.
+Do not widen the Repo actor's `list_head_workflow_runs` grant: P5 uses
+the existing internal provider reader, and eventual separate owner-
+composed collector scope requires its own acceptance. Source tests use
+a synthetic provider and actual temporary journal/Core; no live capture,
+production storage, branch-protection change or deployment occurred.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).

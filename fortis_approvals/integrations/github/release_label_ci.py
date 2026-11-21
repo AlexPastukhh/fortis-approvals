@@ -72,6 +72,9 @@ class ServerCIReader:
     The transport's reviewed timeout still bounds an already in-flight GET.
     A budget failure never starts another request or authorizes a WRITE.
     """
+    max_reads = MAX_READS
+    read_seconds = READ_SECONDS
+
     def __init__(self, adapter, *, clock=time.monotonic):
         self.adapter = adapter
         self.clock = clock
@@ -79,11 +82,11 @@ class ServerCIReader:
         self.reads = 0
 
     def get(self, suffix, params=None):
-        require(self.reads < MAX_READS and self.clock()-self.started < READ_SECONDS,
+        require(self.reads < self.max_reads and self.clock()-self.started < self.read_seconds,
                 'GITHUB_RELEASE_CI_READ_BUDGET')
         self.reads += 1
         result = self.adapter._api('GET', self.adapter._path(REPOSITORY, suffix), params=params)
-        require(self.clock()-self.started < READ_SECONDS, 'GITHUB_RELEASE_CI_READ_BUDGET')
+        require(self.clock()-self.started < self.read_seconds, 'GITHUB_RELEASE_CI_READ_BUDGET')
         return result
 
     def head_page(self, head, page):
@@ -171,11 +174,16 @@ def _latest(rows, workflow):
 
 
 def collect_workflow_evidence(reader, *, owner, head, number, branch):
+    return _collect_workflow_evidence(reader, owner=owner, head=head, number=number,
+                                      branch=branch, workflows=WORKFLOWS)
+
+
+def _collect_workflow_evidence(reader, *, owner, head, number, branch, workflows, base=None):
     """Shared source observation; no publisher grant or merge authority."""
     rows = _inventory(reader, head)
     full = owner+'/'+REPOSITORY
     evidence = []
-    for workflow in WORKFLOWS:
+    for workflow in workflows:
         selected = _latest(rows, workflow)
         require(reader.workflow_hash(workflow, head) == workflow.sha256,
                 'GITHUB_RELEASE_CI_WORKFLOW_CHANGED')
@@ -188,7 +196,8 @@ def collect_workflow_evidence(reader, *, owner, head, number, branch):
                 run.get('status') == 'completed' and run.get('conclusion') == 'success' and
                 type(run.get('pullRequests')) is list and
                 all(type(p) is dict for p in run['pullRequests']) and any(
-                    p.get('number') == number and p.get('headSha') == head for p in run['pullRequests']),
+                    p.get('number') == number and p.get('headSha') == head and
+                    (base is None or p.get('baseSha') == base) for p in run['pullRequests']),
                 'GITHUB_RELEASE_CI_RUN_BINDING_INVALID')
         page = reader.jobs(run)
         require(type(page) is dict and page.get('run') == run and page.get('complete') is True
@@ -213,7 +222,7 @@ def collect_workflow_evidence(reader, *, owner, head, number, branch):
                          for j in jobs], key=lambda j:j['name'])))
     # An attempt/run can change while metadata and jobs are being read.
     again = _inventory(reader, head)
-    for workflow, entry in zip(WORKFLOWS, evidence):
+    for workflow, entry in zip(workflows, evidence):
         latest = _latest(again, workflow)
         require((latest['id'], latest['runAttempt'], latest['runNumber']) ==
                 (entry['runId'], entry['attempt'], entry['runNumber']),

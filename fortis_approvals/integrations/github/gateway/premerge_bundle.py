@@ -15,7 +15,7 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode('utf-8')).hexdigest()
 
 
-def collect_bundle(adapter, *, number, head, base, body, body_sha, branch):
+def collect_bundle(adapter, *, number, head, base, body, body_sha, branch, policy_bound=False):
     """No caller-selected catalog URL/ref or unverified CI material."""
     if hashlib.sha256(body.encode('utf-8')).hexdigest() != body_sha:
         raise Denied('P5_BUNDLE_BODY_MISMATCH')
@@ -48,7 +48,8 @@ def collect_bundle(adapter, *, number, head, base, body, body_sha, branch):
 
     first = catalog()
     observed = observe_path_ci(adapter, number=number, expected_head_sha=head,
-                               expected_base_sha=base, expected_body_sha256=body_sha)
+                               expected_base_sha=base, expected_body_sha256=body_sha,
+                               policy_bound=policy_bound)
     value = observed['observation']
     if (value['repository'] != origin or value['number'] != number or
             value['pr']['headSha'] != head or value['pr']['baseSha'] != base or
@@ -57,7 +58,7 @@ def collect_bundle(adapter, *, number, head, base, body, body_sha, branch):
         raise Denied('P5_BUNDLE_OBSERVATION_MISMATCH')
     if catalog() != first:
         raise Stale('P5_BUNDLE_CATALOG_CHANGED')
-    material = {'schemaVersion': 1, 'catalog': first, 'pathCi': value,
+    material = {'schemaVersion': 2 if policy_bound else 1, 'catalog': first, 'pathCi': value,
                 'impactSha256': hashlib.sha256(impact.encode('utf-8')).hexdigest()}
     if len(canonical(material).encode('utf-8')) > MAX_BUNDLE_BYTES:
         raise Denied('P5_BUNDLE_SIZE_LIMIT')
@@ -111,6 +112,15 @@ def observe_reviewed_merge(*, adapter, store, core, checkpoint_reader, owner,
         raise Stale('P5_MERGE_OWNER_DECISION_CHANGED')
     material = {'ownerDecision': decision, 'bundleDigest': decision['bundleDigest'],
                 'checkpoint': checkpoint, 'mergeObservation': value}
+    if pre['schemaVersion'] == 2:
+        binding = pre['pathCi']['ciPolicyBinding']
+        captured_at = datetime.fromisoformat(retained['capturedAt'])
+        if any(datetime.fromisoformat(check['completedAt']) > captured_at or
+               datetime.fromisoformat(check['completedAt']) >= executed_at
+               for check in binding['checks']):
+            raise Denied('P5_MERGE_CI_REVIEW_ORDER_UNPROVEN')
+        material['retainedCiPolicySha256'] = binding['policySha256']
+        material['retainedCiBindingSha256'] = digest(binding)
     return {'result': 'REVIEWED_BUNDLE_MERGE_OBSERVED',
             'observation': material, 'observationDigest': digest(material),
             'historicalMergeCutoffVerified': False, 'historicalPolicyVerified': False,
