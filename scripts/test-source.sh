@@ -136,6 +136,7 @@ tests=(
   test_registry_boundary.py
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
+  test_registry_recovery_snapshot.py
 )
 for test in "${tests[@]}"; do
   echo "=== $test ==="

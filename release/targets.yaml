@@ -124,6 +124,7 @@ noDeploymentPaths:
   - fortis_approvals/registry/boundary.py
   - fortis_approvals/registry/state_journal.py
   - fortis_approvals/registry/state_journal_v2.py
+  - fortis_approvals/registry/recovery_snapshot.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md

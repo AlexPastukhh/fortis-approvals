@@ -277,3 +277,68 @@ rollback, and rejection of schema v1 without migration. Integration
 also feeds a real Core/Git first plan and a second real Git merge
 with *synthetic* second owner/collector evidence into the v2 journal.
 No two live owner-approved merges or protected anchor is claimed.
+
+
+### Inactive SQLite backup and recovery readback (source candidate)
+
+`registry/recovery_snapshot.py` offers two host-composed offline
+functions for **Registry schema v2 only**:
+`create_verified_backup(store, directory, backup_id)` and
+`verify_inactive_backup(directory, backup_id, instance_id, scope,
+anchor_reader, plan_reader)`. They do not run in an active service,
+write to the external integrity anchor, rotate backups, or replace an
+active database. The host chooses a preexisting separate absolute
+0700 directory, and an owner-provided independent checkpoint reader
+and original evidence reader. Backup ID is a UUID. No caller can
+choose SQL, a source SQLite filename, a different enrollment or a
+new cursor. The source store must be exactly
+`RegistryStateJournalV2`; no schema v1 migration or auto-create
+of the source is performed.
+
+A backup starts only when the source candidate cursor read agrees
+with the independently read anchor. The SQLite online backup API
+copies a consistent database snapshot into a new 0600 file with
+exclusive create, **not** a raw copy of a WAL DB file. The copy is
+opened as a separate inactive v2 instance and its full original
+operation chain, immutable receipts, records and supersession edges
+are checked against the same independently supplied checkpoint.
+The source, copied state and witness are compared again before a
+durable manifest is created. The manifest is a canonical JSON file
+containing exact schema/instance/scope digest, backup UUID, checkpoint,
+candidate cursor, SQLite byte length/SHA-256 and operation/record/
+supersession row counts. The destination file and manifest are fsynced;
+an additional verification reads and hashes the copied bytes, checks
+all canonical manifest fields, replays the independent journal
+integrity verification and performs another witness readback.
+No successful receipt is emitted before this. The backup verification
+result deliberately states `INACTIVE_BACKUP_MATCH_CANDIDATE`,
+`restoreAllowed=false` and `admissionAllowed=false`.
+
+Any missing/corrupted manifest, wrong SQL schema, private-path
+permission/symlink failure, rollback of the witness, changing source
+checkpoint during backup, or inconsistent table/event/supersession
+state blocks. A failure may leave an incomplete private destination:
+never interpret a backup file without a verified manifest as a usable
+restore point; no cleanup or reuse of the original backup UUID is
+automatic. The snapshot is not an authenticated or encrypted remote
+backup, and a shared UID/disk cannot prove an independent protection
+boundary. The supplied witness may be an in-memory test fake;
+the real owner-protected external monotonic checkpoint and the
+backup host, encryption, retention and recovery operator are
+still unverified. SHA-256 alone is not backup authority.
+
+Only **readback of an inactive backup** is implemented. There is no
+restore command, active-DB swap, last-known-good fallback, rebuild
+from GitHub, acceptance of a stale checkpoint, or auto-migration.
+An actual restore must be separately owner-reviewed, independently
+verified against a protected checkpoint in an inactive new instance,
+and must not reset a newer operation chain. Candidate retention
+policy is daily consistent snapshots (30 daily copies) and
+pre-change snapshots with owner-approved retirement; scheduling,
+cleanup, separate encrypted backup placement and retention evidence
+remain future runtime work. Source tests exercise empty and
+two-transaction backup, unchanged original source, same original
+receipts, failed pending state, changed copy/digest/manifest,
+permission/symlink and scope/instance mismatch, witness rollback
+and concurrent source advancement. They do not simulate a live
+owner-protected checkpoint service or actual production recovery.
