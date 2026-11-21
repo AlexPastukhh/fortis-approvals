@@ -264,12 +264,17 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         from .extensions.owner_policy_r7_v2 import derive_admission, trusted_scope_binding
         from .extensions.owner_policy_editor_v2 import OwnerPolicyEditor
         core._composing = False
-        core.install_policy_authority(derive_admission(core,broker,native=native,
-                                                       extension_runtime=runtime),
-            scope_binding=trusted_scope_binding(organizations=organizations,
-                region=region,project_keys=project_keys,github_pilot=github_pilot,
-                analysis_review=analysis_review,profile=profile,machine_shell=machine_shell,
-                runtime=runtime,broker=broker))
+        scope_binding=trusted_scope_binding(organizations=organizations,
+            region=region,project_keys=project_keys,github_pilot=github_pilot,
+            analysis_review=analysis_review,profile=profile,machine_shell=machine_shell,
+            runtime=runtime,broker=broker)
+        upgrade=unified_policy_source_opt_in.allow_label_policy_upgrade
+        core.install_policy_authority(
+            derive_admission(core,broker,native=native,extension_runtime=runtime,
+                             allow_label_policy_upgrade=upgrade),
+            scope_binding=scope_binding,
+            reviewed_upgrade_from=(derive_admission(core,broker,native=native,
+                 extension_runtime=runtime) if upgrade else None))
         # New ASK transitions must use strong owner proof even where the
         # baseline was ALLOW. Keep existing stronger independent checks.
         portal.strong_operations |= frozenset((key[1],key[2]) for key,values

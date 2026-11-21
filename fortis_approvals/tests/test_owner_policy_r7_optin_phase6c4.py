@@ -69,6 +69,79 @@ class OptInR7BuilderTests(unittest.TestCase):
     def candidate(self):
         return R7LocalDenySourceOptIn(SOURCE,CREDS)
 
+    def test_upgrade_flag_requires_exact_owner_v2_configuration(self):
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.r7_unified_server import _owner_release_unified_policy
+        from fortis_approvals.core import Denied
+        for raw in (
+            {'schemaVersion':1,'providers':{},'ownerPolicyAuthorityUpgrade':'OWNER_LABELS_V1'},
+            {'schemaVersion':1,'providers':{},'ownerPolicyEditor':'UNIFIED_V2',
+             'ownerPolicyAuthorityUpgrade':'INVALID'},
+            {'schemaVersion':1,'providers':{},'ownerPolicyEditor':'UNIFIED_V2',
+             'ownerPolicyAuthorityUpgrade':'OWNER_LABELS_V1','ownerLocalDeny':'SONAR_ACCEPT_ISSUE_V1'},
+        ):
+            with self.subTest(raw=raw),self.assertRaises(Denied):
+                ExtensionConfig(raw)
+        cfg=ExtensionConfig({'schemaVersion':1,'providers':{},
+            'ownerPolicyEditor':'UNIFIED_V2','ownerPolicyAuthorityUpgrade':'OWNER_LABELS_V1'})
+        with self.assertRaises(RuntimeError):
+            _owner_release_unified_policy(cfg,None,lambda:CREDS)
+        opt=_owner_release_unified_policy(cfg,str(uuid.uuid4()),lambda:CREDS)
+        self.assertTrue(opt.allow_label_policy_upgrade)
+        self.assertIs(type(opt),R7UnifiedPolicySourceOptIn)
+
+    def test_owner_label_allow_admission_and_persistence_opt_in(self):
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        from fortis_approvals.workflow.common import WORKSPACE_OPS
+        from fortis_approvals.integrations.github.pilot import GitHubPilotConfig
+        from fortis_approvals.integrations.github.gateway.transport import GitHubHTTPTransport
+        state=self.root/'label-policy';state.mkdir(mode=0o700)
+        config=GitHubPilotConfig('OfflineOwner','offline_repo',
+            file_pr_branch='fortis-e2e/'+str(uuid.uuid4())+'-approve',
+            ci_reads=True,native_worktree=True,required_workflows=(1,),dynamic_repositories=True)
+        transport=GitHubHTTPTransport('OFFLINE_TEST_TOKEN_NOT_REAL_00001')
+        def build(upgrade):
+            with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner):
+                return build_r7_unified_candidate(**dict(self.kwargs,state=state,
+                    owner_origin='http://localhost:19203',ingress_host='host.docker.internal:19204',
+                    github_pilot=config,github_transport=transport,
+                    unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(
+                        SOURCE,lambda:CREDS,allow_label_policy_upgrade=upgrade)))
+        original,*_=build(False)
+        key=(ACTOR,'github','add_pr_release_labels')
+        self.assertEqual(original.authority.choices[key],{'DENY','ASK'})
+        from fortis_approvals.extensions.owner_policy_editor_v2 import OwnerPolicyEditor
+        from fortis_approvals.extensions.owner_policy_r7_v2 import derive_admission
+        with self.assertRaises(Denied):
+            # Without reviewed release upgrade the stored digest is immutable.
+            from fortis_approvals.extensions.owner_policy_engine_v2 import PolicyAdmission
+            unexpected=UnifiedPolicyCore(state/'approvals.sqlite',adapters=original.adapters,
+                policies=original.policies,authenticator=original.auth,
+                owner_verifier=self.owner,policy_version='r7-p1-sonar-accept-issue-write-v1')
+            unexpected.install_policy_authority(
+                {**dict(original.authority.choices),
+                 key:frozenset({'DENY','ASK','ALLOW'})},
+                scope_binding={'unreviewed':'scope drift'})
+        updated,*_=build(True)
+        self.assertEqual(updated.authority.choices[key],{'DENY','ASK','ALLOW'})
+        editor=OwnerPolicyEditor(updated,self.owner,source_digest=SOURCE,
+                                 credential_generation=lambda:CREDS)
+        candidate=dict(actor=ACTOR,provider='github',operation='add_pr_release_labels',
+            scope='actor',target=None,expectedPolicy='ASK',desiredPolicy='ALLOW',
+            expectedRevision=0,expectedPolicyVersion=updated.policy_version,
+            reasonCode='OWNER_POLICY_CHANGE')
+        b=editor.begin(self.owner._session,self.owner._csrf,candidate)
+        editor.finish(self.owner._session,self.owner._csrf,b['ceremonyId'],
+                      {'syntheticTestOnlyUv':True},b['change'])
+        self.assertEqual(updated._policy(ACTOR,dict(service='github',
+            operation='add_pr_release_labels',target='offline_repo')),'ALLOW')
+        restarted,*_=build(True)
+        self.assertEqual(restarted._policy(ACTOR,dict(service='github',
+            operation='add_pr_release_labels',target='offline_repo')),'ALLOW')
+        with self.assertRaises(Denied):build(False)
+
     def test_unified_r7_composition_enforces_real_broker_and_extension(self):
         from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
         from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore

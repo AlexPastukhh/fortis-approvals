@@ -22,10 +22,14 @@ class ExtensionConfig:
     def __init__(self, value):
         check(type(value) is dict and set(value) in (
             {'schemaVersion', 'providers'}, {'schemaVersion', 'providers', 'ownerLocalDeny'},
-            {'schemaVersion', 'providers', 'ownerPolicyEditor'}) and
+            {'schemaVersion', 'providers', 'ownerPolicyEditor'},
+            {'schemaVersion', 'providers', 'ownerPolicyEditor', 'ownerPolicyAuthorityUpgrade'}) and
               type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and
               ('ownerLocalDeny' not in value or value['ownerLocalDeny'] == 'SONAR_ACCEPT_ISSUE_V1') and
-              ('ownerPolicyEditor' not in value or value['ownerPolicyEditor'] == 'UNIFIED_V2'),
+              ('ownerPolicyEditor' not in value or value['ownerPolicyEditor'] == 'UNIFIED_V2') and
+              ('ownerPolicyAuthorityUpgrade' not in value or
+               (value.get('ownerPolicyEditor') == 'UNIFIED_V2' and
+                value['ownerPolicyAuthorityUpgrade'] == 'OWNER_LABELS_V1')),
               'INTEGRATION_CONFIG_INVALID')
         providers = value['providers']
         check(type(providers) is dict and 0 <= len(providers) <= 50, 'INTEGRATION_CONFIG_INVALID')

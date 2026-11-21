@@ -15,11 +15,13 @@ from .owner_policy_engine_v2 import POLICIES, UnifiedPolicyCore
 class R7UnifiedPolicySourceOptIn:
     source_digest: str
     credential_generation: object
+    allow_label_policy_upgrade: bool = False
 
     def __post_init__(self):
         if (type(self.source_digest) is not str or
                 not re.fullmatch(r"[a-f0-9]{64}",self.source_digest) or
-                not callable(self.credential_generation)):
+                not callable(self.credential_generation) or
+                type(self.allow_label_policy_upgrade) is not bool):
             raise Denied("R7_UNIFIED_POLICY_IDENTITY_REQUIRED")
 
 
@@ -33,7 +35,8 @@ _GITHUB_ASK_ONLY = frozenset(("mark_pr_ready","merge_pull_request","update_pull_
     "remove_pr_release_label"))
 
 
-def derive_admission(core, broker, *, native, extension_runtime):
+def derive_admission(core, broker, *, native, extension_runtime,
+                     allow_label_policy_upgrade=False):
     """Only installed, actor-granted, literal policy rows may become editable.
 
     READ-ASK needs a new deferred result protocol, not a misleading selector.
@@ -45,6 +48,8 @@ def derive_admission(core, broker, *, native, extension_runtime):
     from ..workflow.common import WORKSPACE_OPS
     from ..integrations.github.analysis_contract import ACTIONS as CI_ACTIONS
     from ..integrations.github.publisher_profile import ACTOR as PUBLISHER_ACTOR
+    if type(allow_label_policy_upgrade) is not bool:
+        raise Denied("R7_UNIFIED_POLICY_UPGRADE_FLAG_INVALID")
     rt = extension_runtime
     choices = {}
     for key, baseline in core.policies.items():
@@ -83,7 +88,10 @@ def derive_admission(core, broker, *, native, extension_runtime):
                 if operation in _GITHUB_FLEXIBLE:
                     permitted = POLICIES
                 elif operation in _GITHUB_ASK_ONLY or pair in CI_ACTIONS:
-                    permitted = {"DENY","ASK"}
+                    permitted = (POLICIES if allow_label_policy_upgrade and
+                        operation in ("create_release_label","add_pr_release_labels",
+                                      "remove_pr_release_label") and
+                        actor == native["actor"] else {"DENY","ASK"})
         elif native is not None and actor==native["actor"]:
             if service=="workspace" and operation in WORKSPACE_OPS:
                 # All literal operations use Core's DISPATCHED worker contract.

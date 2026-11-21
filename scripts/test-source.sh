@@ -37,6 +37,7 @@ tests=(
   test_owner_policy_recovery_evidence_phase6b4.py
   test_owner_policy_local_core_phase6c.py
   test_owner_policy_engine_v2.py
+  test_owner_label_allow_guard.py
   test_owner_policy_local_deny_apply_phase6c1.py
   test_owner_policy_local_deny_apply_crypto.py
   test_owner_policy_local_deny_http_phase6c2.py

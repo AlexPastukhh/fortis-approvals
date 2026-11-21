@@ -96,7 +96,8 @@ def _owner_release_unified_policy(extensions, release_nonce, credential_generati
             type(release_nonce) is not str or str(uuid.UUID(release_nonce)) != release_nonce):
         raise RuntimeError('R7_UNIFIED_POLICY_REVIEWED_RELEASE_REQUIRED')
     from .extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
-    return R7UnifiedPolicySourceOptIn(_installed_policy_source_digest(),credential_generation)
+    return R7UnifiedPolicySourceOptIn(_installed_policy_source_digest(),credential_generation,
+        allow_label_policy_upgrade=extensions.value.get('ownerPolicyAuthorityUpgrade')=='OWNER_LABELS_V1')
 
 
 def _runtime_policy_generation(*, owner, runtime, grant, sonar_token,
