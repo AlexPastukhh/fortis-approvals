@@ -150,7 +150,7 @@ def _post_consistency(adapter, o, material):
     inventory();check_pr()
 
 
-def observe_registry_review(*, adapter, store, core, checkpoint_reader, owner,
+def _observe_registry_review_pair(*, adapter, store, core, checkpoint_reader, owner,
                             owner_request_id, validator, selected_main_sha,
                             policy_reader, expected_policy_digest, clock=time.time):
     """Exact current-tip composition; no admission or protected policy lifecycle."""
@@ -202,8 +202,12 @@ def observe_registry_review(*, adapter, store, core, checkpoint_reader, owner,
                  'mergedAt':o['reviewedMerge']['mergeObservation']['pullRequest']['mergedAt'],
                  'selectedMainObservationDigest':selected['observationDigest'],
                  'ciBindingDigest':o['reviewedMerge']['retainedCiBindingSha256']}
-    return {'result':'REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE',
+    return selected, {'result':'REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE',
             'observation':observation,'observationDigest':_hash(observation),
             'registryReviewPolicyVerified':False,'registryReviewCutoffVerified':False,
             'historicalPolicyVerified':False,'historicalMergeCutoffVerified':False,
             'evidenceVerified':False,'admissionAllowed':False,'deploymentAllowed':False}
+
+def observe_registry_review(**kwargs):
+    """Preserve the standalone candidate projection; collect the pair once."""
+    return _observe_registry_review_pair(**kwargs)[1]

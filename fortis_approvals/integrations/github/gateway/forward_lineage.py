@@ -38,7 +38,8 @@ def _baseline(reader, pin):
 
 
 def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
-                            expected_baseline_digest, selected_main_sha, evidence_ids):
+                            expected_baseline_digest, selected_main_sha, evidence_ids,
+                            policy_reader=None, expected_policy_digest=None):
     """Check every first-parent node from a pinned enrollment source to main.
 
     Earlier tip captures must already exist in the anchored journal. The
@@ -50,6 +51,14 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
           and len(evidence_ids)<=MAX_MERGES and all(_uuid(e) for e in evidence_ids)
           and len(set(evidence_ids))==len(evidence_ids),'P5_FORWARD_REQUEST_INVALID')
     baseline=_baseline(baseline_reader,expected_baseline_digest)
+    bound=policy_reader is not None or expected_policy_digest is not None
+    if bound:
+        from .registry_review_policy import policy_reference
+        _need(callable(policy_reader) and _hex(expected_policy_digest,64),'P5_FORWARD_POLICY_REQUEST_INVALID')
+        policy_ref=policy_reference(policy_reader,expected_policy_digest)
+        _need(all(policy_ref[k]==baseline[k] for k in
+                  ('repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
+              'P5_FORWARD_POLICY_BASELINE_MISMATCH')
     repo=adapter._repo(PILOT_REPOSITORY)
     _need(adapter.owner+'/'+repo==REPOSITORY,'P5_FORWARD_SCOPE_DENIED')
 
@@ -68,7 +77,19 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
         snapshot,receipt=entry['snapshot'],entry['receipt']
         o=snapshot['result']['observation'];merge=o['selectedMainSha']
         decision=o['reviewedMerge']['ownerDecision']
-        _source(snapshot,{'evidenceId':eid,'selectedMainSha':merge,'ownerRequestId':decision['requestId']})
+        req={'evidenceId':eid,'selectedMainSha':merge,'ownerRequestId':decision['requestId']}
+        if bound:
+            _need(snapshot.get('schemaVersion')==2
+                  and snapshot.get('registryPolicy')==policy_ref
+                  and receipt.get('policyReferenceDigest')==expected_policy_digest
+                  and receipt.get('registryReviewDigest')==snapshot.get('registryReview',{}).get('observationDigest'),
+                  'P5_FORWARD_POLICY_EVIDENCE_REQUIRED')
+            req['policyReferenceDigest']=expected_policy_digest
+        else:
+            # Explicit mode separation: no silent downgrade of v2 evidence.
+            _need(snapshot.get('schemaVersion')==1 and 'policyReferenceDigest' not in receipt,
+                  'P5_FORWARD_POLICY_MODE_REQUIRED')
+        _source(snapshot,req)
         _need(receipt['result']=='ANCHORED_CANDIDATE_EVIDENCE_RETAINED'
               and receipt['repository']==REPOSITORY and receipt['evidenceId']==eid
               and receipt['evidenceDigest']==_hash(snapshot)
@@ -122,6 +143,9 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
                            'evidenceId':receipt['evidenceId'],'evidenceDigest':receipt['evidenceDigest'],
                            'ownerRequestId':receipt['ownerRequestId'],
                            'collectorCheckpoint':receipt['checkpoint']})
+            if bound:
+                newest[-1].update(registryReviewDigest=receipt['registryReviewDigest'],
+                                  policyReferenceDigest=expected_policy_digest)
             cursor=parent
     _need(seen==set(by_merge),'P5_FORWARD_UNUSED_EVIDENCE')
     _need(all(a['collectorCheckpoint']['revision']>b['collectorCheckpoint']['revision']
@@ -129,12 +153,16 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
     if journal.anchored_batch(evidence_ids)!=batch or _baseline(
             baseline_reader,expected_baseline_digest)!=baseline:
         raise Stale('P5_FORWARD_CHECKPOINT_CHANGED')
+    if bound and policy_reference(policy_reader,expected_policy_digest)!=policy_ref:
+        raise Stale('P5_FORWARD_POLICY_CHANGED')
     check_main()
     observation={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
                  'baselineSha':origin,'baselineDigest':expected_baseline_digest,
                  'baselineTreeSha':base_object['treeSha'],'selectedMainSha':selected_main_sha,
                  'catalogSha256':baseline['catalogSha256'],'collectorCheckpoint':checkpoint,
                  'merges':list(reversed(newest))}
+    if bound:
+        observation['policyReferenceDigest']=expected_policy_digest
     return {'result':'FORWARD_SOURCE_COVERAGE_MATCH_CANDIDATE',
             'observation':observation,'observationDigest':_hash(observation),
             'baselineAcceptanceVerified':False,'sourceCoverageVerified':False,

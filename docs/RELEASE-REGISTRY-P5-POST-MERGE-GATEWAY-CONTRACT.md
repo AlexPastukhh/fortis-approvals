@@ -771,14 +771,62 @@ Result REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE binds the original
 policy/cutoff, owner/bundle/capture identities, selected-main observation
 digest and CI binding digest. Registry-specific verification flags,
 historical provider verification flags and all admission/deployment flags
-remain false. It is not yet retained in the anchored collector snapshot
-or consumed by the canonical admission gate. Full protected enrollment/
+remain false. Its retention in the candidate journal is described below; it is not
+consumed by a canonical admission gate. Full protected enrollment/
 policy acceptance, trusted clock/owner audit, independently durable
 review-policy retention and forward-range binding/component evidence
 must be integrated and tested before enabling that alternative.
 Eleven tests use actual temporary Git/Core and retained capture with
 synthetic provider, verifier, policy reference and clock. No new routes,
 credentials, workflow bytes, policy grants or production state.
+
+## Retained Registry review policy and forward source pairing
+
+The policy-bound collector mode composes the selected-main observation
+and Registry-specific review-policy candidate **once**, from the same
+original Core/capture/merge identities. The journal stores both in one
+immutable schemaVersion 2 snapshot, with the complete exact policy
+reference and canonical snapshot digest. The request fingerprint additionally
+binds policyReferenceDigest, so a legacy schema 1 operation cannot be replayed
+as a policy-bound operation, or vice versa. Existing schema 1 rows/receipts
+remain readable unchanged. This is a versioned payload extension in the
+same private collector database, not a migration to a second journal.
+The policy reader and pin are host composition inputs, not public request
+parameters. A fresh append requires the independently read pinned policy;
+the initial observation and policy are rechecked before commit. Original
+operation replay does not recollect mutable PR/CI evidence or rewrite bytes.
+
+The journal revalidates the complete policy reference, exact review
+projection schema, false verification flags, review digest, original
+owner request/fingerprint, bundle/capture/checkpoint, timestamps, selected
+main digest and retained CI binding on every read of the paired snapshot.
+Its receipt adds policyReferenceDigest and registryReviewDigest. The
+existing append CAS, immutable identity, independent-head readback and
+pending-anchor failure rules are unchanged. No paired snapshot, batch
+or original receipt is readable before its matching independent checkpoint.
+A locally matching journal does not prove that the witness is protected.
+
+Forward lineage has an explicit policy-bound source mode. It independently
+pins policy, checks repository/enrollment/baseline/acceptance reference
+against the baseline, and requires every retained snapshot in the range
+to have the same exact policy and paired receipt digests. The range
+projection binds these review digests to each original merge; no mixing
+of legacy rows or downgrade of policy-bound rows in legacy mode. Legacy
+mode remains a source compatibility check only. No new verified flags,
+policy transitions, baseline advancement or canonical admission. The
+offline Registry boundary accepts a paired snapshot only as a blocked
+candidate; it checks the outer identities/digests and adds an explicit
+protected review-policy acceptance gap. No new READ/WRITE grants,
+storage provisioning, protected authority, route or effective policy
+change is implied. All historical and Registry verification flags remain
+false. Component/environment binding, trusted clock/enrollment/witness
+acceptance, authoritative storage and recovery still need integration.
+
+Eight tests exercise actual fixture Git/Core, retained v2 capture, SQLite
+and synthetic independent witness, replay after restart, selection pairing,
+policy fingerprint, baseline/enrollment mismatch, false authority flags,
+tampering and fail-closed drift. The paired range and blocked preview use
+the same original anchored candidate snapshot. No live evidence collected.
 
 ## Registry preview/receipt boundary (separate source module)
 

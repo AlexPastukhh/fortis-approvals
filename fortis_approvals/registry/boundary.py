@@ -101,9 +101,12 @@ def parse_request(raw):
 
 def _preview(snapshot, params):
     """Inspect only the exact current source observation, never admit it."""
-    _need(type(snapshot) is dict and set(snapshot)=={
-        'schemaVersion','issuer','repository','evidenceId','result'}
-        and type(snapshot['schemaVersion']) is int and snapshot['schemaVersion']==1
+    fields={'schemaVersion','issuer','repository','evidenceId','result'}
+    _need(type(snapshot) is dict and type(snapshot.get('schemaVersion')) is int
+          and snapshot['schemaVersion'] in (1,2),'REGISTRY_EVIDENCE_IDENTITY_MISMATCH')
+    bound=snapshot['schemaVersion']==2
+    if bound: fields|={'registryPolicy','registryReview'}
+    _need(set(snapshot)==fields
         and snapshot['issuer']==COLLECTOR and snapshot['repository']==REPOSITORY
         and snapshot['evidenceId']==params['evidenceId'],
         'REGISTRY_EVIDENCE_IDENTITY_MISMATCH')
@@ -129,6 +132,25 @@ def _preview(snapshot, params):
           and impact['validatedImpact'].get('classification') in ('deployment','no-deployment'),
           'REGISTRY_EVIDENCE_INVALID')
     gaps=list(MISSING)
+    if bound:
+        # Only a candidate consistency projection. The owning collector
+        # validates the full retained policy/reference under its checkpoint.
+        ref=snapshot['registryPolicy'];rr=snapshot['registryReview']
+        flags={'registryReviewPolicyVerified','registryReviewCutoffVerified',
+               'historicalPolicyVerified','historicalMergeCutoffVerified',
+               'evidenceVerified','admissionAllowed','deploymentAllowed'}
+        _need(type(ref) is dict and ref.get('repository')==REPOSITORY
+              and type(rr) is dict and set(rr)=={'result','observation','observationDigest',*flags}
+              and rr['result']=='REGISTRY_REVIEW_POLICY_MATCH_CANDIDATE'
+              and all(rr[k] is False for k in flags),'REGISTRY_REVIEW_POLICY_UNSUPPORTED')
+        r=rr['observation']
+        _need(type(r) is dict and _digest(r)==rr['observationDigest']
+              and r.get('repository')==REPOSITORY and r.get('selectedMainSha')==o['selectedMainSha']
+              and r.get('selectedMainObservationDigest')==result['observationDigest']
+              and type(r.get('policyBinding')) is dict
+              and r['policyBinding'].get('policyReferenceDigest')==_digest(ref),
+              'REGISTRY_REVIEW_POLICY_MISMATCH')
+        gaps.append('PROTECTED_REGISTRY_REVIEW_POLICY_ACCEPTANCE')
     if o['unresolvedExternalTargets']:
         gaps.append('EXTERNAL_TARGET_DEPENDENCY_UNRESOLVED')
     if o['unresolvedPullRequests']:
