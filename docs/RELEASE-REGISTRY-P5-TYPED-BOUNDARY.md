@@ -493,3 +493,74 @@ backup readback, old backup rejection, pending and rolled-back
 witness ambiguity, larger gaps, wrong source binding, storage
 tampering, race detection and no-write replay. No deployment or
 service route is added.
+
+
+### Owner checkpoint Unix peer boundary — source-only preflight
+
+`registry/owner_peer_boundary.py::observe_accepted_peer` adds an
+**offline-only Linux AF_UNIX/SOCK_STREAM peer-envelope candidate**.
+It creates NO listening socket, process, container, route, credential,
+privilege grant or Registry WRITE binding. A future owner-run local
+service would need to provision a filesystem socket at a separately
+accepted absolute path, verify actual protected hosting and connect
+a closed transport dispatch only after owner acceptance. This code
+intentionally never calls `OfflineCheckpointCAS`, never returns the
+protected checkpoint and always reports `dispatchAllowed=false`,
+`protectedAuthorityVerified=false`,
+`ownerAcceptanceVerified=false` and `admissionAllowed=false`.
+
+The exact immutable owner profile is required through a host-supplied
+reader plus an expected SHA-256 of canonical JSON. It fixes Linux
+AF_UNIX/SOCK_STREAM with kernel SO_PEERCRED, one instance UUID,
+scope digest, enrollment receipt digest, socket path and separately
+specified non-root authority, registry and owner-operator UID/GID
+identities. All three UIDs must differ. The source guard validates
+the *current process* UID/GID as the owner-service identity, the
+exact server-side accepted socket path, its existing non-symlink
+socket type/UID/GID/0660 permissions and its existing parent
+directory type/UID/GID/0710 permissions. The socket path and profile
+are rechecked after request framing; a replacement inode/profile
+invalidates the read. SO_PEERCRED is read directly from the accepted
+kernel Unix socket, not from a `uid`, `role` or `actor` field in
+the message. The requested exact operation and scope are validated
+under a bounded single canonical UTF-8 JSON-line frame. Unknown,
+noncanonical, duplicate-key, oversized, trailing and pipelined frames
+are denied. No TCP listener, abstract Unix socket, free-form SQL,
+path selector or arbitrary caller profile is supported.
+
+The only recognised envelope operations in this **source guard**
+are `checkpoint.get` (registry-reader or owner-operator UID/GID)
+and `checkpoint.original` (owner-operator UID/GID only).
+`checkpoint.advance` is closed **even to the owner-operator peer**:
+OS UID/GID is a transport authentication signal, not a WebAuthn owner
+decision or a protected acceptance receipt. The previously implemented
+offline `OfflineCheckpointCAS.advance` is not exposed through this
+transport candidate; no bridge is enabled. A future implementation
+must obtain a separately attributable owner WebAuthn ceremony,
+authenticate the actual peer and source Registry process under
+independently verified UID/user-namespace/mount topology, and verify
+the original pending Registry operation before permitting any CAS.
+No caller assertion, claimed profile digest or local matching ledger
+promotes `protectedAnchorVerified` or admission.
+
+The source profile assumes a host-provisioned writable Unix socket
+group and real cross-UID processes, but it does NOT provision the
+group memberships, runtime namespaces or secure host directories.
+The currently shared source-development UID and Docker test topology
+cannot demonstrate isolation from Repo/AI or from the Gateway.
+The tests assert Linux actual SO_PEERCRED denies a same-UID peer;
+positive role cases are explicitly **synthetic credentials** at the
+pure classifier test seam, not a cross-UID live service test.
+The future owner's live negative test must show that the Registry
+process cannot modify the external owner DB/anchor, that the
+owner-specific operator is separately authenticated/approved, that
+Repo/Gateway/publisher identities cannot perform checkpoint CAS,
+and that the protected witness cannot be rewound with the local DB.
+Fail closed when these protections cannot be demonstrated.
+
+The new module is explicitly added to the pilot release catalog
+`noDeploymentPaths`: source review does not alter active image inputs
+or provision an owner checkpoint container. Eleven offline tests
+cover role spoofing, denied owner CAS, malformed frames, scope/profile
+pinning, Unix-vs-TCP rejection, invalid socket permissions, real
+same-UID peer denial and source-only false authority flags.

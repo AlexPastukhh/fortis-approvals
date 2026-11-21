@@ -139,6 +139,7 @@ tests=(
   test_registry_recovery_snapshot.py
   test_registry_checkpoint_cas.py
   test_registry_recovery_reconcile.py
+  test_registry_owner_peer_boundary.py
 )
 for test in "${tests[@]}"; do
   echo "=== $test ==="
