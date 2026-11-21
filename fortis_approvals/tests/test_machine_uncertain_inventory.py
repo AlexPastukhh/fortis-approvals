@@ -290,7 +290,8 @@ class InventoryTests(unittest.TestCase):
             owner='example',repository='sandbox',dynamic_repositories=False,
             ci_control_repositories=()))
         native=NativeIngress(
-            SimpleNamespace(broker=SimpleNamespace(core=self.core)),
+            SimpleNamespace(broker=SimpleNamespace(core=self.core,
+                actor_operations={},actor_read_operations={})),
             github=gh,workspace=None,store=None,actor='agent-a')
         capabilities=native._dispatch('/v1/workspace/capabilities',{},
                                       'secret-a','agent-a')
