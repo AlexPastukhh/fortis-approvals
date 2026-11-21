@@ -47,6 +47,7 @@ function signedOut(message){
  shellConfigured=false;$('powershell-execute').disabled=true;
  if($('policy-review-button'))clearPolicyReview('Сессия владельца завершена.');
  policyPreviewRow=null;providerInventory=null;policyReviewCapabilities=null;
+ resetLocalDenyPanel();
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
@@ -361,6 +362,7 @@ $('enroll').onsubmit=action(async()=>{const begin=await api('/v1/enroll/begin',{
  const response=await ceremony(begin,true);await api('/v1/enroll/finish',{ceremonyId:begin.ceremonyId,response});
  $('invitation').value='';$('registration').hidden=true;status('Ключ зарегистрирован. Теперь войдите.');});
 function switchWorkspaceTab(which){
+ if(which!=='providers')resetLocalDenyPanel();
  tab=which;
  $('approval-view').hidden=which==='powershell'||which==='providers';
  $('powershell-view').hidden=which!=='powershell';
@@ -416,6 +418,186 @@ function clearPolicyReview(message='Для подтверждения снача
  $('policy-review-output').textContent=message;
 }
 
+// Separate, opt-in local restriction UI. Server WebAuthn/CAS is the authority.
+const localDenyPrefix='/v1/owner/policy/local-deny';
+const localDenyCoordinate=/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\s\S])/;
+const localDenyUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+let localDenyEnabled=false,localDenyRow=null,localDenyPrepared=null;
+let localDenyBusy=false,localDenyEpoch=0,localDenyUnknown=null;
+
+function updateLocalDenyControls(){
+ const available=!!csrf&&tab==='providers'&&localDenyEnabled;
+ const editable=available&&!localDenyBusy&&!localDenyUnknown&&!!localDenyRow;
+ $('local-deny-target').disabled=!editable||localDenyRow.scope!=='actor';
+ $('local-deny-prepare').disabled=!editable||!localDenyCoordinate.test($('local-deny-target').value);
+ $('local-deny-confirm').disabled=!editable||!localDenyPrepared;
+ $('local-deny-readback').disabled=!available||localDenyBusy||!localDenyUnknown;
+}
+function resetLocalDenyPanel(){
+ localDenyEpoch++;localDenyEnabled=false;localDenyRow=null;localDenyPrepared=null;
+ $('local-deny-panel').hidden=true;
+ $('local-deny-selection').textContent='Выберите доступное правило.';
+ $('local-deny-target').value='';
+ $('local-deny-result').textContent='';
+ updateLocalDenyControls();
+}
+function localDenySnapshotValid(){
+ return !!providerInventory&&providerInventory.localDenyOnly===true&&
+  Number.isSafeInteger(providerInventory.localPolicyRevision)&&providerInventory.localPolicyRevision>=0&&
+  typeof providerInventory.policyVersion==='string'&&
+  providerInventory.policyVersion.endsWith('|owner-local-deny:'+providerInventory.localPolicyRevision);
+}
+async function loadLocalDenyCapabilities(session,epoch){
+ try{
+  const caps=await api(localDenyPrefix+'/capabilities');
+  if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
+  localDenyEnabled=localDenySnapshotValid()&&caps.configured===true&&
+   caps.kind==='OWNER_LOCAL_EXACT_DENY_ONLY'&&caps.ownerOnly===true&&
+   caps.requiresFreshStrongWebAuthn===true&&caps.canGrantAllow===false&&caps.canRemoveDenial===false;
+ }catch(error){
+  if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
+  localDenyEnabled=false;
+ }
+ $('local-deny-panel').hidden=!localDenyEnabled;
+ if(localDenyEnabled&&localDenyUnknown){
+  $('local-deny-result').textContent='Исход предыдущего применения не подтверждён. UUID: '+localDenyUnknown.requestId+
+   '. Проверьте исходный UUID; не повторяйте применение.';
+ }
+ updateLocalDenyControls();
+}
+function canSelectLocalDeny(row){
+ return localDenyEnabled&&localDenySnapshotValid()&&row.providerType==='native'&&
+  row.active===true&&row.configured===true&&row.localDenialApplied===false&&
+  ['ASK','ALLOW'].includes(row.configuredPolicy)&&
+  [row.actor,row.provider,row.operation].every(x=>typeof x==='string'&&localDenyCoordinate.test(x))&&
+  (row.scope==='actor'||(row.scope==='exact'&&typeof row.target==='string'&&
+   localDenyCoordinate.test(row.target)&&row.effectivePolicy===row.configuredPolicy));
+}
+function selectLocalDeny(row){
+ if(localDenyBusy||localDenyUnknown||!canSelectLocalDeny(row))return;
+ localDenyEpoch++;localDenyPrepared=null;localDenyRow=row;
+ $('local-deny-selection').textContent=[row.actor,row.provider,row.operation,
+  'Настроено: '+row.configuredPolicy,'Источник: '+row.scope].join(' · ');
+ $('local-deny-target').value=row.scope==='exact'?row.target:'';
+ $('local-deny-result').textContent='Будет ограничен только указанный target. Подготовка ничего не сохраняет.';
+ updateLocalDenyControls();
+}
+function sameLocalDenySession(epoch,session){
+ return !!session&&csrf===session&&tab==='providers'&&localDenyEnabled&&epoch===localDenyEpoch;
+}
+function verifiedLocalDenyBegin(begin,candidate){
+ const c=begin?.change;
+ return begin?.kind==='OWNER_LOCAL_DENY_APPLY_CEREMONY'&&begin.newPolicy==='DENY'&&
+  begin.runtimeIntegrated===false&&typeof begin.ceremonyId==='string'&&!!begin.ceremonyId&&
+  typeof begin.changeDigest==='string'&&/^[0-9a-f]{64}$/.test(begin.changeDigest)&&
+  begin.options?.publicKey?.userVerification==='required'&&c&&
+  c.purpose==='OWNER_LOCAL_EXACT_DENY_APPLY_V1'&&c.newPolicy==='DENY'&&
+  typeof c.requestId==='string'&&localDenyUuid.test(c.requestId)&&
+  Number.isSafeInteger(c.expiresAt)&&
+  Object.keys(candidate).every(k=>c[k]===candidate[k])&&
+  c.expectedConfiguredScope===candidate.expectedConfiguredScope&&
+  Object.keys(c).length===Object.keys(candidate).length+6&&
+  typeof c.sourceDigest==='string'&&/^[0-9a-f]{64}$/.test(c.sourceDigest)&&
+  typeof c.credentialGenerationDigest==='string'&&/^[0-9a-f]{64}$/.test(c.credentialGenerationDigest);
+}
+async function prepareLocalDeny(){
+ if(localDenyBusy||policyReviewBusy||localDenyUnknown||!localDenyRow||
+    !canSelectLocalDeny(localDenyRow)||!csrf||tab!=='providers')return;
+ const row=localDenyRow,target=$('local-deny-target').value;
+ if(!localDenyCoordinate.test(target)||(row.scope==='exact'&&target!==row.target))return;
+ const epoch=++localDenyEpoch,session=csrf;
+ const candidate={actor:row.actor,provider:row.provider,operation:row.operation,target,
+  expectedConfiguredPolicy:row.configuredPolicy,expectedPolicyVersion:providerInventory.policyVersion,
+  expectedRevision:providerInventory.localPolicyRevision,reasonCode:'OWNER_DENY_EXACT'};
+ if(row.scope==='actor')candidate.expectedConfiguredScope='actor';
+ localDenyPrepared=null;localDenyBusy=true;updateLocalDenyControls();
+ try{
+  const begin=await api(localDenyPrefix+'/begin',{candidate},true);
+  if(!sameLocalDenySession(epoch,session))return;
+  if(!verifiedLocalDenyBegin(begin,candidate))throw Error('Неожиданное описание WebAuthn. Операция остановлена.');
+  localDenyPrepared={begin,epoch,session};
+  $('local-deny-result').textContent=[
+   'Actor: '+candidate.actor,'Провайдер: '+candidate.provider,'Метод: '+candidate.operation,
+   'Точный target: '+candidate.target,'Изменение: '+candidate.expectedConfiguredPolicy+' → DENY',
+   'Источник: '+row.scope+'; другие target не изменяются.',
+   'Ревизия: '+candidate.expectedRevision+'; UUID: '+begin.change.requestId,
+   'Изменение ещё не применено. Подтвердите только этот локальный запрет.'
+  ].join('\n');
+ }catch(error){
+  if(sameLocalDenySession(epoch,session))$('local-deny-result').textContent='Подготовка отклонена: '+error.message;
+  throw error;
+ }finally{localDenyBusy=false;updateLocalDenyControls();}
+}
+async function confirmLocalDeny(){
+ const prepared=localDenyPrepared;
+ if(!prepared||localDenyBusy||policyReviewBusy||localDenyUnknown||
+    !sameLocalDenySession(prepared.epoch,prepared.session))return;
+ localDenyPrepared=null;localDenyBusy=true;updateLocalDenyControls();
+ const {begin,epoch,session}=prepared;
+ let sent=false;
+ try{
+  const response=await ceremony(begin);
+  if(!sameLocalDenySession(epoch,session))return;
+  // Set the uncertainty marker BEFORE sending finish. Never retry finish.
+  localDenyUnknown={requestId:begin.change.requestId,expectedRevision:begin.change.expectedRevision};
+  sent=true;
+  const result=await api(localDenyPrefix+'/finish',{ceremonyId:begin.ceremonyId,
+   change:begin.change,response},true);
+  if(result.kind!=='OWNER_LOCAL_DENY_ONLY_COMMIT'||result.requestId!==begin.change.requestId||
+     result.localDenyCommitted!==true||result.runtimeIntegrated!==false||
+     result.canGrantAllow!==false||result.newPolicy!=='DENY'||
+     result.oldPolicy!==begin.change.expectedConfiguredPolicy||
+     result.appliedRevision!==begin.change.expectedRevision+1||
+     !Number.isSafeInteger(result.currentRevision)||result.currentRevision<result.appliedRevision){
+   throw Error('Ответ не подтверждает запись.');
+  }
+  localDenyUnknown=null;
+  if(sameLocalDenySession(epoch,session)){
+   localDenyRow=null;localDenyEnabled=false;
+   displayProviderInventory();
+   $('local-deny-result').textContent='Локальная запись DENY подтверждена. UUID: '+result.requestId+
+     '. Ревизия: '+result.appliedRevision+'. Обновите инвентаризацию; защита всех процессов не подтверждена.';
+  }
+ }catch(error){
+  if(sameLocalDenySession(epoch,session))$('local-deny-result').textContent=sent?
+   'Исход неизвестен. UUID: '+begin.change.requestId+'. Используйте проверку UUID, не повторяйте применение.':
+   'WebAuthn не завершён; запрос finish не отправлен. Подготовьте новый запрос.';
+  throw error;
+ }finally{localDenyBusy=false;updateLocalDenyControls();}
+}
+async function readbackLocalDeny(){
+ if(!localDenyUnknown||localDenyBusy||!localDenyEnabled||!csrf||tab!=='providers')return;
+ const unknown=localDenyUnknown,epoch=localDenyEpoch,session=csrf;
+ localDenyBusy=true;updateLocalDenyControls();
+ try{
+  const result=await api(localDenyPrefix+'/readback',{requestId:unknown.requestId},true);
+  if(!sameLocalDenySession(epoch,session))return;
+  if(result.requestId!==unknown.requestId||result.runtimeIntegrated!==false||
+     result.found!==true||result.appliedRevision!==unknown.expectedRevision+1||
+     !Number.isSafeInteger(result.currentRevision)||result.currentRevision<result.appliedRevision){
+   $('local-deny-result').textContent='Исход не подтверждён. UUID: '+unknown.requestId+
+    '. Отсутствие записи не доказывает отсутствие эффекта. Не повторяйте; требуется проверка владельцем.';
+   return;
+  }
+  localDenyUnknown=null;localDenyRow=null;localDenyEnabled=false;
+  displayProviderInventory();
+  $('local-deny-result').textContent='Найдена локальная запись исходного UUID: '+unknown.requestId+
+   '. Обновите инвентаризацию. Это не доказательство защиты всех процессов.';
+ }catch(error){
+  if(sameLocalDenySession(epoch,session))$('local-deny-result').textContent='Проверка не завершена. UUID: '+unknown.requestId+
+   '. Не повторяйте применение.';
+  throw error;
+ }finally{localDenyBusy=false;updateLocalDenyControls();}
+}
+$('local-deny-target').addEventListener('input',()=>{
+ localDenyEpoch++;localDenyPrepared=null;
+ if(!localDenyUnknown)$('local-deny-result').textContent='Target изменён. Подготовьте новый запрос.';
+ updateLocalDenyControls();
+});
+$('local-deny-prepare').onclick=action(prepareLocalDeny);
+$('local-deny-confirm').onclick=action(confirmLocalDeny);
+$('local-deny-readback').onclick=action(readbackLocalDeny);
+
 function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
  if(!providerInventory)return;
@@ -455,13 +637,23 @@ function displayProviderInventory(){
    };
    cell.append(button);
   }
+  if(canSelectLocalDeny(row)){
+   const button=document.createElement('button');button.type='button';
+   button.textContent='Точечный DENY';button.disabled=localDenyBusy||!!localDenyUnknown;
+   button.onclick=()=>selectLocalDeny(row);cell.append(button);
+  }
   tr.append(cell);
   body.append(tr);
  }
  table.append(body);target.append(table);
 }
 async function loadProviderInventory(){
- providerInventory=await api('/v1/owner/provider-inventory');
+ if(localDenyBusy||policyReviewBusy)return;
+ resetLocalDenyPanel();
+ const session=csrf,epoch=localDenyEpoch;
+ const inventory=await api('/v1/owner/provider-inventory');
+ if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
+ providerInventory=inventory;
  policyReviewCapabilities=null;
  try{
   policyReviewCapabilities=await api('/v1/owner/policy/review/capabilities');
@@ -477,7 +669,9 @@ async function loadProviderInventory(){
  $('policy-preview-value').disabled=true;
  $('policy-preview-button').disabled=true;
  $('policy-preview-output').textContent='Изменения политик не разрешены этим интерфейсом.';
- displayProviderInventory();
+ if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
+ await loadLocalDenyCapabilities(session,epoch);
+ if(csrf===session&&tab==='providers'&&epoch===localDenyEpoch)displayProviderInventory();
 }
 $('policy-preview-button').onclick=action(async()=>{
  if(!policyPreviewRow||!providerInventory)return;
@@ -515,7 +709,7 @@ $('policy-preview-button').onclick=action(async()=>{
 });
 $('policy-preview-value').addEventListener('change',()=>clearPolicyReview());
 $('policy-review-button').onclick=action(async()=>{
- if(!policyPreviewCandidate||policyReviewCapabilities?.configured!==true||policyReviewBusy)return;
+ if(!policyPreviewCandidate||policyReviewCapabilities?.configured!==true||policyReviewBusy||localDenyBusy)return;
  const candidate={...policyPreviewCandidate};
  clearPolicyReview('Проверяю точное правило и готовлю одноразовый вызов WebAuthn…');
  policyReviewBusy=true;

@@ -138,3 +138,8 @@ for test in "${tests[@]}"; do
   "$PYTHON" -B -m unittest discover \
     -s fortis_approvals/tests -p "$test" -v
 done
+
+# Keep the pinned Source CI workflow byte-identical; this existing entrypoint
+# also runs the mandatory isolated browser-logic tests. Missing Node fails CI.
+echo '=== local_deny_ui.test.cjs ==='
+node --test fortis_approvals/tests/local_deny_ui.test.cjs
