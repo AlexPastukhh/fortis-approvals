@@ -32,7 +32,8 @@ function Container {
 }
 function Private-Process {
     param([string[]]$Arguments, [string]$InputText, [string]$Executable = '',
-          [switch]$DiagnosticDockerClone)
+          [switch]$DiagnosticDockerClone,
+          [ValidateRange(120000,1800000)][int]$WaitTimeoutMs = 120000)
     foreach ($Argument in $Arguments) {
         if ($Argument.Contains('"') -or $Argument.EndsWith('\')) { throw 'PILOT_NATIVE_ARGUMENT_DENIED' }
     }
@@ -67,7 +68,9 @@ function Private-Process {
         catch {
             if (-not $Process.HasExited) { throw 'PILOT_PRIVATE_STDIN_CLOSE_FAILED' }
         }
-        if (-not $Process.WaitForExit(120000)) { $Process.Kill(); throw 'PILOT_PRIVATE_PROCESS_TIMEOUT' }
+        # Default remains 120s. Only the trusted owner release controller
+        # supplies a longer finite bound for large state receipt/clone helpers.
+        if (-not $Process.WaitForExit($WaitTimeoutMs)) { $Process.Kill(); throw 'PILOT_PRIVATE_PROCESS_TIMEOUT' }
         if (-not $OutputTask.Wait(15000) -or -not $ErrorTask.Wait(15000)) {
             throw 'PILOT_PRIVATE_OUTPUT_PIPE_TIMEOUT'
         }
@@ -534,6 +537,8 @@ if ($Mode -ceq 'SelfTest') {
     $Fixture='synthetic private stdin {"value":"safe"}'
     $Result=Private-Process @('-NoProfile','-Command','[Console]::Write([Console]::In.ReadToEnd())') $Fixture (Join-Path $PSHOME 'powershell.exe')
     if ($Result -cne $Fixture) { throw 'PILOT_PRIVATE_PIPE_SELFTEST_FAILED' }
+    $BoundedResult=Private-Process @('-NoProfile','-Command','[Console]::Write([Console]::In.ReadToEnd())') $Fixture (Join-Path $PSHOME 'powershell.exe') -WaitTimeoutMs 900000
+    if ($BoundedResult -cne $Fixture) { throw 'PILOT_PRIVATE_BOUNDED_WAIT_SELFTEST_FAILED' }
     $Denied=$false
     try { $null=Private-Process @('forbidden"argument') '' 'must-not-start' }
     catch { if ($_.Exception.Message -ceq 'PILOT_NATIVE_ARGUMENT_DENIED') { $Denied=$true } else { throw } }
