@@ -43,7 +43,7 @@ def validate_impact(data,catalog,paths):
     return dict(classification='deployment',affectedTargets=['app'],changedFiles=len(paths))
 """
 REAL_ROOT = os.environ.get('FORTIS_TEST_RELEASE_VALIDATOR_ROOT')
-REAL_PIN = 'f763ea53169c2151df4a3212524221404b9aa990'
+REAL_PIN = '8c9abefdfbe4699aae97b9363a2a66c596680e62'
 
 
 class RetainedImpactTests(unittest.TestCase):
@@ -169,6 +169,27 @@ class RetainedImpactTests(unittest.TestCase):
     def test_real_validator_rejects_false_no_deployment(self):
         false=json.loads(json.dumps(IMPACT));false['releaseImpact'].update(classification='no-deployment',targets=[])
         self.api.body=self.api.body.replace(json.dumps(IMPACT),json.dumps(false))
+        self.capture()
+        with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
+            self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN)
+
+
+    @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
+                         'Requires explicitly supplied shared validator repository and its pinned dependencies')
+    def test_real_validator_rejects_missing_local_dependency(self):
+        impact=json.loads(json.dumps(IMPACT))
+        impact['releaseImpact']['dependencies']['targets']=[{'repository':'fortis-approvals','target':'missing'}]
+        self.api.body=self.api.body.replace(json.dumps(IMPACT),json.dumps(impact))
+        self.capture()
+        with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
+            self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN)
+
+    @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
+                         'Requires explicitly supplied shared validator repository and its pinned dependencies')
+    def test_real_validator_rejects_duplicate_yaml_key(self):
+        # Duplicate classification cannot be silently interpreted as last-wins.
+        self.api.body=self.api.body.replace('"classification": "deployment"',
+            '"classification": "no-deployment", "classification": "deployment"')
         self.capture()
         with self.assertRaisesRegex(Denied,'P5_IMPACT_VALIDATION_FAILED'):
             self.validate(validator_repository=Path(REAL_ROOT),validator_revision=REAL_PIN)
