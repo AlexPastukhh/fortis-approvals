@@ -38,8 +38,10 @@ def main():
     if REAL_PIN != PIN:
         raise SystemExit('P5_REAL_VALIDATOR_TEST_PIN_CHANGED')
     suite = unittest.TestSuite(RetainedImpactTests(name) for name in TESTS)
+    from fortis_approvals.integrations.github.tests.test_selected_main_binding import SelectedMainTests
+    suite.addTest(SelectedMainTests('test_real_selected_main_composition'))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
-    if not result.wasSuccessful() or result.testsRun != len(TESTS) or result.skipped:
+    if not result.wasSuccessful() or result.testsRun != len(TESTS)+1 or result.skipped:
         raise SystemExit('P5_REAL_VALIDATOR_GATE_FAILED')
     print('P5_REAL_VALIDATOR_GATE_PASS',PIN,'cases='+str(result.testsRun))
 
