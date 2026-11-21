@@ -891,6 +891,63 @@ A ninth real shared-validator test is mandatory in the existing
 p5-retained-impact semantic gate (now eight real cases in total), without
 changing any workflow byte pin. No deployment or route is implemented.
 
+## Combined initial-range plan candidate (source only)
+
+`gateway/admission_plan.py::observe_initial_plan` composes the existing
+policy-bound lineage and component mapping from one observation. It
+reads the same anchored batch again and binds every original evidence
+digest, receipt, selected merge, policy/review digest and collector
+checkpoint. It does not accept an arbitrary candidate plan or caller
+completeness flags, environments, sources or actions. The previous
+component observer's public source projection is unchanged. Catalog
+bytes are still validated by the pinned shared validator. The mapping,
+lineage, catalog projection, baseline/policy references, journal batch
+and selected main are bound/rechecked before returning.
+
+For each covered merge, take the retained validator's declared actions
+and affected-target consistency, rejecting unknown actions. Recompute the
+reachable catalog dependency graph with explicit target requirements;
+compare exact retained root, edge and local source bindings, reject
+external/PR dependencies, unknown targets, cycles or incomplete graph.
+Requirements bind the selected full tree's SHA and mapped environment;
+they are **source requirements**, not verified installed versions,
+execution ordering or implicit additional deployment actions. Preserve
+per-merge attribution in mergeAudit. Aggregate declared actions by
+target across the complete initial range, with original contributing
+evidence IDs, not an inference from the last PR alone.
+
+The internal candidate plan separates stable subject SHA256 of
+canonical repository/targetId/environment from immutable record SHA256
+of canonical identity adding desiredSourceSha, catalogCommitSha and
+catalogSha256. The first catalog pin is the enrolled baseline commit
+with exactly unchanged raw catalog bytes throughout the range; it is
+not a claim to have located the last catalog-edit commit. Each candidate
+preserves component/resources, direct component dependencies,
+deployment procedure, build unit, verification and required actions.
+Artifact starts NOT_BUILT with null digest; actual=null,
+planningState=PLANNED_UNVERIFIED, evidenceVerified=false.
+Candidates are not canonical stored records, an admitted queue or a
+public read response. The internal range classifications EMPTY_RANGE,
+NO_DEPLOYMENT_CANDIDATE and DEPLOYMENT_CANDIDATE distinguish zero new
+merges from a complete source candidate with no actions. Even the
+no-deployment candidate cannot be admitted based on this observation.
+
+Result INITIAL_RANGE_PLAN_CANDIDATE binds baseline/binding/policy,
+selected main, catalog, lineage, component observation and exact
+collector checkpoint and plan digest. Admission, deployment and
+evidence flags remain false. The protected enrollment/resource
+attestation, authenticated collector/trusted clock and protected
+canonical state/recovery remain mandatory. This increment supports
+only the complete first range after baseline; subsequent ingestion
+must obtain an independently witnessed Registry cursor and plan only
+the new suffix, not re-enqueue an action from every previous merge.
+No cursor parameter, advance, supersession, writer, new routes or
+production effects are implemented here. Six tests cover real fixture
+Git/Core/collector/mapping composition, deterministic IDs and
+dependencies, missing evidence, checkpoint drift and synthetic negative
+projection/no-deployment protocol cases. Source fixtures do not prove
+admission or a real deployment.
+
 ## Registry preview/receipt boundary (separate source module)
 
 The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
