@@ -149,7 +149,7 @@ def _resolved(ref,catalog):
     return result
 
 
-def observe_component_bindings(*,adapter,journal,validator,baseline_reader,
+def _observe_component_pair(*,adapter,journal,validator,baseline_reader,
                                expected_baseline_digest,selected_main_sha,evidence_ids,
                                policy_reader,expected_policy_digest,binding_reader):
     """Compose full pinned catalog mapping with strict policy-bound lineage."""
@@ -186,8 +186,12 @@ def observe_component_bindings(*,adapter,journal,validator,baseline_reader,
                  'lineageDigest':lineage['observationDigest'],
                  'collectorCheckpoint':o['collectorCheckpoint'],'bindings':bindings,
                  'components':ref['components']}
-    return {'result':'COMPONENT_ENVIRONMENT_MATCH_CANDIDATE',
+    return ({'result':'COMPONENT_ENVIRONMENT_MATCH_CANDIDATE',
             'observation':observation,'observationDigest':_hash(observation),
             'componentBindingsVerified':False,'resourceTopologyVerified':False,
             'baselineAcceptanceVerified':False,'evidenceVerified':False,
-            'admissionAllowed':False,'deploymentAllowed':False}
+            'admissionAllowed':False,'deploymentAllowed':False},lineage,catalog,baseline)
+
+
+def observe_component_bindings(**kwargs):
+    return _observe_component_pair(**kwargs)[0]
