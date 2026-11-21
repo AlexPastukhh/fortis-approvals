@@ -205,6 +205,20 @@ class UnifiedPolicyTests(unittest.TestCase):
         with self.assertRaises(Denied):
             self.make_core()
 
+    def test_release_receipt_v2_and_tamper(self):
+        import sqlite3
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        self.change(EXACT,"ASK","DENY")
+        self.change(EXACT,"DENY","ALLOW")
+        with sqlite3.connect(self.core.path) as db:
+            receipt=_local_policy_receipt(db)
+            self.assertEqual(receipt["schemaVersion"],2)
+            self.assertEqual(receipt["revision"],2)
+            self.assertIsNone(receipt["legacy"])
+            db.execute("UPDATE owner_local_policy_v2_rules SET policy='ASK'")
+            with self.assertRaisesRegex(RuntimeError,"AUDIT_MISMATCH"):
+                _local_policy_receipt(db)
+
     def test_legacy_history_preserved_and_old_core_fenced(self):
         path=self.root/"legacy.sqlite"
         old=LocalDenyCore(path,**self.kwargs())

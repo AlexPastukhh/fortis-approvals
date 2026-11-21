@@ -75,7 +75,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               project_keys=None, github_pilot=None,
                               github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None,
                               publisher_profile=None, publisher_grant=None,
-                              machine_shell=None, local_deny_source_opt_in=None):
+                              machine_shell=None, local_deny_source_opt_in=None,
+                              unified_policy_source_opt_in=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -83,6 +84,11 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     """
     # Explicit trusted composition selector. The normal server only creates
     # the restricted variant for the reviewed owner release config.
+    if unified_policy_source_opt_in is not None:
+        from .extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        if (type(unified_policy_source_opt_in) is not R7UnifiedPolicySourceOptIn or
+                local_deny_source_opt_in is not None):
+            raise Denied('R7_UNIFIED_POLICY_SOURCE_OPT_IN_REJECTED')
     if local_deny_source_opt_in is not None:
         from .extensions.owner_policy_r7_optin_phase6c4 import R7LocalDenySourceOptIn
         if type(local_deny_source_opt_in) is not R7LocalDenySourceOptIn:
@@ -159,7 +165,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               organization_keys=organizations, region=region,
                               allowed_project_keys=project_keys)
     root = _fresh_r7_state(state)
-    if local_deny_source_opt_in is None:
+    if local_deny_source_opt_in is None and unified_policy_source_opt_in is None:
         # A new plain R7 worker must not silently ignore an opt-in local
         # DENY database left by an earlier guarded worker. Fail closed before
         # constructing receipts, owner credentials or broker/ingress.
@@ -179,7 +185,10 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     policies.update({(actor, *G4_OPERATION): 'ASK' for actor in actors})
     if enabled:
         policies.update(profile.owner_policy_map())
-    if local_deny_source_opt_in is not None:
+    if unified_policy_source_opt_in is not None:
+        from .extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        core_type = UnifiedPolicyCore
+    elif local_deny_source_opt_in is not None:
         from .extensions.owner_policy_local_core_phase6c import LocalDenyCore
         core_type = LocalDenyCore
     else:
@@ -192,7 +201,13 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             if db.execute("SELECT 1 FROM owner_local_denials WHERE service!='sonarcloud' OR operation!='accept_issue'").fetchone():
                 raise Denied('R7_LOCAL_DENY_RUNTIME_SCOPE_INVALID')
     from .owner_shell import OwnerShellClient
-    if local_deny_source_opt_in is None:
+    if unified_policy_source_opt_in is not None:
+        from .extensions.owner_policy_editor_v2 import UnifiedPolicyPortal
+        # Trusted composition only. No listeners or ingress calls yet.
+        core._composing = True
+        portal = UnifiedPolicyPortal(core,owner,strong_operations={G4_OPERATION},
+            read_only_banner=False,owner_shell=OwnerShellClient.from_environment())
+    elif local_deny_source_opt_in is None:
         portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
                                  read_only_banner=False,
                                  owner_shell=OwnerShellClient.from_environment())
@@ -236,6 +251,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     if native is not None:
         from .workflow.runtime import wrap
         ingress = wrap(ingress,native)
+    runtime = None
     if extensions is not None:
         from .extensions.runtime import ExtensionRuntime
         from .extensions.model import discover
@@ -244,4 +260,21 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             actors=actors, default_actor=grants[ingress_grant], vault=credential_vault).install(core, portal)
         ingress = ExtensionIngress(machine_base, runtime, delegate=ingress)
         portal._extension_runtime = runtime
+    if unified_policy_source_opt_in is not None:
+        from .extensions.owner_policy_r7_v2 import derive_admission, trusted_scope_binding
+        from .extensions.owner_policy_editor_v2 import OwnerPolicyEditor
+        core._composing = False
+        core.install_policy_authority(derive_admission(core,broker,native=native,
+                                                       extension_runtime=runtime),
+            scope_binding=trusted_scope_binding(organizations=organizations,
+                region=region,project_keys=project_keys,github_pilot=github_pilot,
+                analysis_review=analysis_review,profile=profile,machine_shell=machine_shell,
+                runtime=runtime,broker=broker))
+        # New ASK transitions must use strong owner proof even where the
+        # baseline was ALLOW. Keep existing stronger independent checks.
+        portal.strong_operations |= frozenset((key[1],key[2]) for key,values
+            in core.authority.choices.items() if 'ASK' in values)
+        portal.bind_editor(OwnerPolicyEditor(core,owner,
+            source_digest=unified_policy_source_opt_in.source_digest,
+            credential_generation=unified_policy_source_opt_in.credential_generation))
     return core,owner,portal,ingress

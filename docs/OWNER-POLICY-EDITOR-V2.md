@@ -1,7 +1,10 @@
 # Owner policy editor V2 — source candidate
 
-Status: **not selected by the R7 runtime, not a released editor**. The existing
-explicit SONAR_ACCEPT_ISSUE_V1 release is unchanged. No live grant, provider
+Status: **explicit R7 source opt-in implemented; not deployed or live accepted**.
+The existing SONAR_ACCEPT_ISSUE_V1 release is unchanged. V2 is selected only by
+the owner-reviewed full release config with `"ownerPolicyEditor":"UNIFIED_V2"`
+instead of the V1 key. The modes are mutually exclusive, and a valid release
+nonce and existing activation gate are required. No live grant, provider
 credential, Windows executor or production database is changed by this source.
 
 ## Common authority and UI
@@ -36,34 +39,64 @@ or exact target, reviews old/new policy, exceptions, risk and request counts,
 then explicitly invokes WebAuthn. V1 remains compatible and the V2 panel stays
 hidden for current releases.
 
-## Runtime integration admission still required
+## Real R7 admission and limitations
 
-Do not simply change the research configuration or copy the engine into a
-running container. Current RepoIngress native READ requires ALLOW and has a
-synchronous response contract; ASK needs a separate reviewed request flow.
-The native Sonar write broker currently requires ASK; publisher role,
-release-label operations, Mirror signed dispatch and the Windows machine
-PowerShell executor have additional independent authorization requirements.
-Callable Git push and cleanup policies preserve domain-specific guarantees.
-A real R7 integration must derive choices from registered ready handlers,
-actual broker/actor/target scopes and explicit provider ceilings, and test each
-admitted transition at the real ingress and dispatch boundary. Do not convert
-an unsupported transition into a misleading editable option or bypass an
-executor's mandatory owner proof.
+The R7 factory derives one admission map after all trusted adapters and grants
+are installed. All edits use the same Core, HTTP portal and SQLite transaction
+domain. Unregistered/disabled rows, callable policies, publisher-only guards
+and unreviewed configured DENY grants are not turned into editable grants.
 
-Before production opt-in, adapt and verify the protected controller's state
-receipt/clone/backup/growth validation for the V2 schema and preserve V1 evidence.
-Bind the actual installed source, all admitted credential generations and owner
-key generation; verify single active writer, release gate and exact packaged
-image smoke, not only source imports. No deployment is permitted by this
-source candidate; do not use it as a live authorization or rollback guarantee.
+| Registered operation | Permitted values |
+| --- | --- |
+| Native synchronous READ | DENY / ALLOW |
+| Sonar mutation, PowerShell execute, mandatory ASK GitHub controls | DENY / ASK |
+| Ordinary native PR creation, scoped visual publication/revision, literal Workspace operations | DENY / ASK / ALLOW |
+| Configured extension READ or existing ALLOW write without signing | DENY / ASK / ALLOW |
+| Signed Mirror WRITE or other existing ASK extension WRITE | DENY / ASK |
+| Conditional push/cleanup, publisher profile, unadmitted scope | Fixed existing contract |
 
-## Evidence
+Native READ-ASK needs a separate deferred result protocol. PowerShell ALLOW
+requires Windows Executor authorization changes; do not bypass that proof.
+Technical Git transfer/status paths are separate from editable Core methods.
+A method-level actor rule is a default; exact exceptions remain in force.
+No new credential, provider scope, project/repository, actor or target grant
+is created. Provider-specific independent guards continue to apply.
+An already admitted synchronous READ may finish; a policy change cannot undo
+an already dispatched or unknown effect. A global DISPATCHED row blocks edits.
 
-Offline synthetic adapter tests cover all six transitions, actor and exact
-scope precedence, actual Core admission/dispatch, restart, V1 audit preservation,
-authority drift, stale revision, tampered descriptor, owner HTTP/CSRF/Origin
-boundary and lost-response readback. Browser tests cover provider grouping,
-server-approved choices, two-step confirmation and no finish replay.
-Real virtual FIDO2 test is included in the existing cryptographic Source CI
-lane. Installed-package imports are included in the exact Dockerfile COPY test.
+The authority digest includes trusted project/repository/actor/provider and
+executor scope as well as the literal rows and ceilings. Scope drift fails
+closed at restart and requires a separately reviewed migration.
+Runtime ceremonies bind the loaded grant/Sonar/GitHub identity, mounted
+machine-shell identity, extension vault generations and active owner keys.
+Owner counters are not treated as key-generation changes.
+
+## Release validation
+
+The state helper understands V1, V2 and preserved V1+V2 tables; validates
+schema, legacy digest, sequence, event descriptors and current projection;
+returns a bound V2 receipt. Full first-event authority replay is enforced by
+the live Core. Clone and backup preserve exact bytes; append-only UNCERTAIN
+growth cannot legitimize policy changes. A new V2 startup initializes its
+tables only on the cloned candidate; the retained source is untouched.
+Do not restore an old binary or pre-policy snapshot after a confirmed change:
+independent external rollback prevention remains out of scope.
+
+First opt-in uses UC-GW-005 owner-controlled Check/Apply, Backup and Promote,
+not inherited Auto. Preserve current full config and approved preservation
+scopes; replace only the explicit editor mode. Validate the exact installed
+image with IMAGE_OWNER_POLICY_V2_OPT_IN_PASS and staged owner write refusal.
+Review probes when a policy change blocks an existing READ probe. Never
+silently loosen the policy just to get a release through.
+
+## Evidence and remaining live acceptance
+
+Offline tests exercise all six transitions, actor/target precedence,
+Core dispatch, real R7/RepoIntentBroker READ and Sonar mutation denial,
+ExtensionRuntime ASK/ALLOW, configuration opt-in, gate, credential rotation,
+restart, V1 preservation, V2 receipt/growth clone, stale revision, tampered
+descriptor, owner HTTP/CSRF/Origin and lost-response readback. The mandatory
+image smoke builds the native GitHub/Workspace/Sonar V2 composition. Browser
+tests cover provider grouping, choices and two-step confirmation. Real virtual
+FIDO2 tests run in Source CI. Still require exact merged CI, Windows checked
+image release and owner-only live acceptance; no current production change.

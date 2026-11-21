@@ -87,14 +87,19 @@ _LOCAL_POLICY_TABLES = {
 }
 
 
-def _local_policy_receipt(db):
-    # Optional only for pre-activation legacy state. Partial/unknown tables,
-    # invalid events or policy loss are not treated as ordinary Core growth.
-    names = {row[0] for row in db.execute(
-        "SELECT name FROM sqlite_master WHERE name GLOB 'owner_local_*'")}
-    if not names:
-        return None
-    require(names == set(_LOCAL_POLICY_TABLES), 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+_POLICY_V2_TABLES = {
+    'owner_local_policy_v2_meta': ('id','revision','authority','legacy_digest'),
+    'owner_local_policy_v2_rules': ('coordinate','policy'),
+    'owner_local_policy_v2_events': ('revision','request_id','at','owner','change'),
+}
+
+
+def _policy_json(value):
+    return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+
+
+def _legacy_local_policy_receipt(db):
+    # V1 receipt shape and digest remain exactly backward compatible.
     for table, columns in _LOCAL_POLICY_TABLES.items():
         require(tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')')) == columns,
                 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
@@ -131,6 +136,84 @@ def _local_policy_receipt(db):
     digest=hashlib.sha256(json.dumps([meta,denials,events],
         ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
     return {'revision':revision,'sha256':digest}
+
+
+def _local_policy_receipt(db):
+    # Standalone state helper: no provider, runtime or credential imports.
+    names = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE name GLOB 'owner_local_*'")}
+    if not names:
+        return None
+    v1, v2 = set(_LOCAL_POLICY_TABLES), set(_POLICY_V2_TABLES)
+    require(names in (v1,v2,v1|v2), 'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+    legacy = _legacy_local_policy_receipt(db) if v1 <= names else None
+    if not v2 <= names:
+        return legacy
+    for table,columns in _POLICY_V2_TABLES.items():
+        require(tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')'))==columns,
+                'PILOT_LOCAL_POLICY_SCHEMA_INVALID')
+    meta = db.execute('SELECT * FROM owner_local_policy_v2_meta').fetchall()
+    require(len(meta)==1 and meta[0][0]==1 and type(meta[0][1]) is int and
+            meta[0][1]>=0 and type(meta[0][2]) is str and
+            re.fullmatch(r'[a-f0-9]{64}',meta[0][2]) is not None and
+            meta[0][3]==(legacy['sha256'] if legacy else 'NONE'),
+            'PILOT_LOCAL_POLICY_V2_BINDING_INVALID')
+    revision,authority = meta[0][1:3]
+    rules = db.execute('SELECT * FROM owner_local_policy_v2_rules ORDER BY coordinate').fetchall()
+    events = db.execute('SELECT * FROM owner_local_policy_v2_events ORDER BY revision').fetchall()
+    require(len(events)==revision,'PILOT_LOCAL_POLICY_V2_AUDIT_MISMATCH')
+    def coordinate(value):
+        require(type(value) is list and len(value) in (3,4) and all(
+            type(x) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',x)
+            for x in value),'PILOT_LOCAL_POLICY_V2_COORDINATE_INVALID')
+        return _policy_json(value)
+    actual = {}
+    for raw,policy in rules:
+        key=coordinate(json.loads(raw))
+        require(raw==key and policy in ('DENY','ASK','ALLOW') and key not in actual,
+                'PILOT_LOCAL_POLICY_V2_RULE_INVALID')
+        actual[key]=policy
+    replay = {}
+    seen_ids = set()
+    fields = {'actor','provider','operation','scope','target','expectedPolicy',
+              'desiredPolicy','expectedRevision','expectedPolicyVersion','reasonCode',
+              'purpose','requestId','authorityDigest','sourceDigest',
+              'credentialGenerationDigest','expiresAt'}
+    for index,(seq,ident,at,owner,raw) in enumerate(events,1):
+        try:
+            change=json.loads(raw)
+            parts=[change[k] for k in ('actor','provider','operation')]
+            if change['scope']=='exact':
+                parts.append(change['target'])
+            elif change['scope']!='actor' or change['target'] is not None:
+                raise ValueError('scope')
+            key=coordinate(parts)
+            valid=(type(change) is dict and set(change)==fields and raw==_policy_json(change)
+                   and seq==index and str(uuid.UUID(ident))==ident and ident not in seen_ids
+                   and type(at) is int and at>=0 and type(owner) is str and bool(owner)
+                   and change['purpose']=='OWNER_UNIFIED_POLICY_APPLY_V2'
+                   and change['requestId']==ident and type(change['expectedRevision']) is int
+                   and change['expectedRevision']==index-1 and change['authorityDigest']==authority
+                   and type(change['expectedPolicyVersion']) is str
+                   and change['expectedPolicyVersion'].endswith('|owner-policy-v2:'+str(index-1))
+                   and all(type(change[k]) is str and re.fullmatch(r'[a-f0-9]{64}',change[k])
+                           for k in ('sourceDigest','credentialGenerationDigest'))
+                   and type(change['reasonCode']) is str and re.fullmatch(r'[A-Z][A-Z0-9_]{1,79}',change['reasonCode'])
+                   and type(change['expiresAt']) is int and at < change['expiresAt']
+                   and change['expectedPolicy'] in ('DENY','ASK','ALLOW')
+                   and change['desiredPolicy'] in ('DENY','ASK','ALLOW')
+                   and change['expectedPolicy']!=change['desiredPolicy']
+                   and (key not in replay or replay[key]==change['expectedPolicy']))
+        except (ValueError,TypeError,KeyError,AttributeError):
+            valid=False
+        require(valid,'PILOT_LOCAL_POLICY_V2_AUDIT_MISMATCH')
+        replay[key]=change['desiredPolicy']
+        seen_ids.add(ident)
+    require(actual==replay,'PILOT_LOCAL_POLICY_V2_AUDIT_MISMATCH')
+    # Full live authority/first-event old policy replay is checked by the
+    # installed R7 Core. This independent receipt binds all SQL rows.
+    sha=hashlib.sha256(_policy_json([legacy,meta,rules,events]).encode()).hexdigest()
+    return {'revision':revision,'sha256':sha,'schemaVersion':2,'legacy':legacy}
 
 
 def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
@@ -465,7 +548,8 @@ def _core_growth_witness(volume):
         names={x[0] for x in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         local_policy = _local_policy_receipt(db)
-        extra = set(_LOCAL_POLICY_TABLES) if local_policy is not None else set()
+        extra = (names & (set(_LOCAL_POLICY_TABLES)|set(_POLICY_V2_TABLES))
+                 if local_policy is not None else set())
         require(names==set(expected)|extra,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
         for table,names in expected.items():
             current=tuple(row[1] for row in db.execute('PRAGMA table_info('+table+')'))

@@ -96,7 +96,7 @@ class PolicyAdmission:
     coordinates, global fallback and callbacks cannot be converted into grants.
     """
 
-    def __init__(self, core, choices):
+    def __init__(self, core, choices, *, scope_binding=None):
         if type(choices) is not dict or not choices:
             raise Denied("OWNER_POLICY_ADMISSION_REQUIRED")
         accepted = {}
@@ -115,10 +115,11 @@ class PolicyAdmission:
         # Bind ALL literal/conditional coordinates, including exceptions,
         # rather than just editable rows. Authority drift stops startup.
         self.baseline = MappingProxyType(dict(core.policies))
-        self.sha = digest([
-            [[*k], v if type(v) is str else "CONDITIONAL"]
-            for k,v in sorted(self.baseline.items(), key=lambda item: repr(item[0]))]
-            + [[list(k), sorted(v)] for k,v in sorted(accepted.items())])
+        self.sha = digest({
+            "baseline":[[[*k],v if type(v) is str else "CONDITIONAL"]
+                         for k,v in sorted(self.baseline.items(),key=lambda item:repr(item[0]))],
+            "choices":[[list(k),sorted(v)] for k,v in sorted(accepted.items())],
+            "scope":scope_binding})
 
     def admitted(self, coord):
         coord = _coordinate(coord)
@@ -161,11 +162,12 @@ class UnifiedPolicyCore(IncidentCore):
         self.authority = None
         super().__init__(*args, **kwargs)
         self._constructing = False
+        self._composing = False
 
-    def install_policy_authority(self, choices):
+    def install_policy_authority(self, choices, *, scope_binding=None):
         if self.authority is not None:
             raise Denied("OWNER_POLICY_ALREADY_INSTALLED")
-        authority = PolicyAdmission(self, choices)
+        authority = PolicyAdmission(self,choices,scope_binding=scope_binding)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             names = _names(db)
@@ -190,7 +192,7 @@ class UnifiedPolicyCore(IncidentCore):
 
     @property
     def policy_version(self):
-        if self._constructing:
+        if self._constructing or self._composing:
             return self._baseline_policy_version
         with self._db() as db:
             db.execute("BEGIN")
@@ -265,13 +267,15 @@ class UnifiedPolicyCore(IncidentCore):
         raise Denied("OWNER_POLICY_SCOPE_INVALID")
 
     def _policy(self, actor, payload):
-        if self._constructing:
+        if self._constructing or self._composing:
             return super()._policy(actor,payload)
         coord = (actor,payload["service"],payload["operation"],payload["target"])
         with self._db() as db:
             db.execute("BEGIN")
             _, overlay, legacy = self._snapshot(db)
-            if (coord in overlay or coord in legacy or
+            if coord in legacy and coord not in overlay:
+                return "DENY"
+            if (coord in overlay or
                     coord not in self.authority.baseline and coord[:3] in overlay):
                 return self.authority.decision(coord,overlay,legacy)
         return super()._policy(actor,payload)
@@ -337,6 +341,13 @@ class UnifiedPolicyCore(IncidentCore):
             if verified() is not True:
                 raise Denied("OWNER_POLICY_PROOF_INVALID")
             preview = self._check_change(db,candidate)
+            # Audit/queue checks may take time: recheck proof and expiry at
+            # the actual mutation boundary under the same SQLite lock.
+            if verified() is not True:
+                raise Denied("OWNER_POLICY_PROOF_INVALID")
+            at = int(now())
+            if at >= change["expiresAt"]:
+                raise Denied("OWNER_POLICY_PROOF_EXPIRED")
             rev = preview["revision"]
             if change["authorityDigest"] != self.authority.sha or change["purpose"]!=_PURPOSE:
                 raise Denied("OWNER_POLICY_BOUNDARY_CHANGED")
@@ -344,7 +355,7 @@ class UnifiedPolicyCore(IncidentCore):
                 ON CONFLICT(coordinate) DO UPDATE SET policy=excluded.policy""",
                 (canonical(list(coord)),candidate["desiredPolicy"]))
             db.execute("INSERT INTO owner_local_policy_v2_events VALUES(?,?,?,?,?)",
-                       (rev+1,change["requestId"],int(now()),owner,canonical(change)))
+                       (rev+1,change["requestId"],at,owner,canonical(change)))
             db.execute("UPDATE owner_local_policy_v2_meta SET revision=revision+1 WHERE id=1 AND revision=?",(rev,))
             if db.execute("SELECT changes()").fetchone()[0]!=1:
                 raise Stale("OWNER_POLICY_COMMIT_RACED")

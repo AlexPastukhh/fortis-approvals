@@ -142,9 +142,15 @@ class OwnerPolicyEditor:
 
 
 class UnifiedPolicyPortal(IncidentOwnerPortal):
-    def __init__(self, core, authenticator, *, editor, **kwargs):
+    def __init__(self, core, authenticator, *, editor=None, **kwargs):
         super().__init__(core,authenticator,**kwargs)
-        if type(editor) is not OwnerPolicyEditor or editor.core is not core or editor.auth is not authenticator:
+        self.editor = None
+        if editor is not None:
+            self.bind_editor(editor)
+
+    def bind_editor(self, editor):
+        if (self.editor is not None or type(editor) is not OwnerPolicyEditor or
+                editor.core is not self.core or editor.auth is not self.auth):
             raise Denied("OWNER_POLICY_PORTAL_BINDING_REQUIRED")
         self.editor = editor
 
@@ -157,6 +163,8 @@ class UnifiedPolicyPortal(IncidentOwnerPortal):
                     any(env.get(x) for x in ("HTTP_X_FORWARDED_HOST","HTTP_FORWARDED",
                                              "HTTP_PROXY_AUTHORIZATION","HTTP_AUTHORIZATION"))):
                 raise Denied("HOST_DENIED")
+            if self.editor is None:
+                raise Denied("OWNER_POLICY_EDITOR_NOT_BOUND")
             session=self._cookie(env)
             if method=="GET":
                 self.auth.session(session)

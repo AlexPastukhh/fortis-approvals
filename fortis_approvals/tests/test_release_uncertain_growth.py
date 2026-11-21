@@ -178,6 +178,35 @@ class UncertainGrowthWitnessTests(unittest.TestCase):
         self.assertEqual(baseline['receipt']['summary']['localPolicy'],
                          result['receipt']['summary']['localPolicy'])
 
+    def test_v2_policy_receipt_is_preserved_byte_for_byte_in_growth_clone(self):
+        from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        from fortis_approvals.extensions.owner_policy_editor_v2 import OwnerPolicyEditor
+        from fortis_approvals.core import Authenticator
+        from fortis_approvals.tests.test_owner_policy_local_deny_http_phase6c2 import HTTPFixtureWebAuthn
+        owner=HTTPFixtureWebAuthn()
+        coord=(ACTOR,'sonarcloud','accept_issue')
+        core=UnifiedPolicyCore(self.core,adapters={'sonarcloud':object()},
+            policies={coord:'ASK'},authenticator=Authenticator({'fixture':ACTOR}),owner_verifier=owner)
+        core.install_policy_authority({coord:{'ASK','DENY'}})
+        editor=OwnerPolicyEditor(core,owner,source_digest='a'*64,credential_generation=lambda:'b'*64)
+        candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',scope='exact',
+            target='ISSUE-1',expectedPolicy='ASK',desiredPolicy='DENY',expectedRevision=0,
+            expectedPolicyVersion=core.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+        b=editor.begin(owner._session,owner._csrf,candidate)
+        editor.finish(owner._session,owner._csrf,b['ceremonyId'],{'syntheticTestOnlyUv':True},b['change'])
+        baseline=self.snapshot()
+        receipt=baseline['receipt']['summary']['localPolicy']
+        self.assertEqual(receipt['revision'],1)
+        self.assertEqual(receipt['schemaVersion'],2)
+        self.append_uncertain()
+        grown=self.review(baseline)
+        self.assertEqual(grown['receipt']['summary']['localPolicy'],receipt)
+        copied=H.clone_state(self.source,self.target,uid=os.geteuid(),gid=os.getegid(),github=True,native=True,
+            preserve_uncertain_ids=grown['uncertainIds'],
+            preserve_claimed_ids=[IDENT],require_exact_approved=True)
+        self.assertEqual(copied,grown['receipt'])
+        self.assertEqual((self.target/'private'/'approvals.sqlite').read_bytes(),self.core.read_bytes())
+
     def test_changed_local_policy_is_not_uncertain_growth(self):
         from fortis_approvals.extensions.owner_policy_local_core_phase6c import LocalDenyCore
         from fortis_approvals.core import Authenticator
