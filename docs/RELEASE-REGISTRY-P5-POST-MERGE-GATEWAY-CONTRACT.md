@@ -302,6 +302,55 @@ CI rule/attempts, catalog/Impact validation and post-merge observations.
 The final trusted capture/merge binding, protected placement, rollout and
 authorized Registry ingestion remain separate owner-reviewed work.
 
+## Bounded pre-merge path and pinned workflow observations (source-only)
+
+`gateway/path_ci_observation.py` adds an internal fixed-pilot reader for
+an open non-draft same-repository PR and exact HEAD, current base and body
+SHA-256. It uses only existing Gateway GET transport routes, no new actor
+grant or externally callable operation. The initial and final main ref and
+PR observations must match. It does not retrieve a merged PR's mutable
+body as historical evidence.
+
+The exact SHA compare endpoint is read twice with page 1 and per_page 1
+(the provider's changed-file list is on the first page). The reader requires
+the provider's base identity, merge-base identity, ahead count, and
+agreement with the PR changed_files counter. It rejects 300 or more
+files because GitHub compare caps the file list there; malformed, unsafe,
+duplicate, overlapping or unsupported path records also stop. The result
+contains deterministic normalized path records and their digest, plus both
+old and new paths for renames. These are bounded provider observations,
+not independent raw Git diff/tree proofs. Count agreement alone does not
+prove a provider inventory is complete or a PR's impact is valid.
+
+The existing release-label CI collection is factored into the shared
+`collect_workflow_evidence` helper (no profile or authority). The publisher
+wrapper retains its original enabled-profile gate and return shape. The
+P5 reader uses an independently composed adapter with the existing
+approved workflow identity bindings, not publisher credentials. The shared
+collector reads complete head-scoped run pages and exact selected attempts,
+pinned workflow source hashes, job identity and status, and rechecks the
+selected attempts. The same Source CI and Release Impact workflow pins
+apply; unknown or changed workflows stop.
+
+Current main branch rules are read and rechecked via the existing pinned
+rules read. The bounded result records required status contexts with their
+integration IDs and a digest of the returned rules. Empty, oversized,
+ambiguous and unsupported required workflow/deployment rules stop. This is
+not full historical effective branch protection (classic protections,
+bypass and other rule classes are not established), nor a proof that a
+workflow job satisfies a required context/App. These two observations must
+not be conflated. No lookup of mutable current rules can reconstruct the
+historical policy at merge time. Read counts and time are bounded; observed
+drift or upstream failure stops. The result deliberately leaves
+historicalPolicyVerified, requiredPolicySatisfied, reviewAttested,
+evidenceVerified, admissionAllowed and deploymentAllowed false.
+
+Remaining: persist the complete material and bind it to the independently
+protected owner review decision and post-merge evidence; prove historical
+effective CI policy and exact required-check/attempt binding; validate
+catalog, impact and dependencies. No live storage or provider call was made
+by the source tests. No change in deployed permissions or authority.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
