@@ -644,3 +644,72 @@ devices, symlink state, real local `/proc` parsing, process/boot
 races and explicit rejection of source-worker self-attestation.
 They do not exercise a provisioned owner runtime. No P5 live GO or
 source-only merge is allowed to imply one.
+
+
+### Owner storage cross-principal denial preflight — P5 source candidate
+
+`registry/owner_storage_denial.py::observe_storage_denial` adds a
+host-invoked, **source-only** negative access test for the independently
+provisioned Registry writer and Repo observer Linux identities. It does
+not launch subprocesses, change UID/GID, provision credentials or create
+a checkpoint service. The caller must run it **in the actual host
+process under that role's effective, real and registered UID/GID**,
+with the pinned Linux PID, boot ID, scope and owner/Registry
+runtime-layout profile from the previous offline modules. The code
+validates its own `/proc/PID` state twice: all four UID/GID values,
+supplementary groups, all five capability sets cleared, seccomp 2,
+NoNewPrivs 1, tracer PID 0, actual process start ticks, namespace
+and cgroup. Any privilege or profile drift is STOP.
+
+It attempts exactly three OS open checks against the pre-registered
+**owner checkpoint** SQLite state path: open the owner state parent
+directory read-only, open the existing SQLite file read-only, and open
+the file `O_RDWR` **without reading or writing any contents**.
+The attempts use `O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK`, never
+`O_CREAT`, `O_TRUNC`, `unlink`, `chmod`, `chown` or SQLite.
+An opened descriptor is immediately closed and the observation fails
+`REGISTRY_DENIAL_STORAGE_ACCESSIBLE`. Only kernel errors
+`EACCES` or `EPERM` count as denial. `ENOENT`,
+`ENOTDIR`, `ELOOP`, `EROFS`, `EISDIR` and any other
+error are **not** proof of an inaccessible but healthy protected
+owner store. A missing DB, symlink, wrong namespace or unprovisioned
+path cannot masquerade as a successful access-control test. The probe
+does not test network/service CAS policy, hard-link alternatives,
+out-of-band host/backup access, elevated host administrators or
+independent owner approval.
+
+A second source-only function,
+`compose_storage_denial_review(registry_observation,repo_observation,
+...)`, requires both distinct-role candidate observations,
+checks their canonical original digests, exact pinned enrollment/
+instance/scope/boot/layout identity, denied operation set, unchanged
+safe-failure flags and separate process PID, mount namespace and
+cgroup. It is only a **structural review package**. Any actor with
+source access can fabricate a matching JSON digest; no signed
+trusted observer, original process attestation, challenge nonce,
+WebAuthn verification or independent monotonic witness is supplied
+by these source functions. The package always retains
+`protectedAnchorVerified=false`, `hostIdentityVerified=false`,
+`ownerAcceptanceVerified=false`, `enrollmentVerified=false`
+and `admissionAllowed=false`. It never promotes the earlier
+`OWNER_RUNTIME_ISOLATION_OBSERVATION_CANDIDATE`.
+
+Before the first protected enrollment, an independently
+authenticated **host owner** must actually run and retain the
+original role-specific probes on the real provisioned UID/GID
+principals, pin their process identity and verify that their
+evidence was not substituted by Repo/AI. The host owner must also
+prove protected owner checkpoint monotonicity, owner-only CAS
+authorization, negative API access for Gateway/Publisher and
+attested encrypted independent backup/restore, then perform a
+separately authorized WebAuthn enrollment ceremony. Matching source
+JSON alone never opens Registry WRITE.
+
+The new module is explicitly excluded from current image inputs by
+`release/targets.yaml::noDeploymentPaths`. The local tests use
+synthetic separate principal observations and real non-mutating OS
+open checks on disposable files; they do NOT claim any live cross-UID
+owner volume has been provisioned. Negative tests cover accessible
+files, missing/symlink paths, permission-vs-other error codes, exact
+read/readwrite attempts, role spoofing, missing or replayed evidence,
+scope and process drift and false admission flags.
