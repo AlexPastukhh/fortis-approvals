@@ -440,9 +440,19 @@ function updateUnifiedControls(){
 function resetUnifiedPolicyPanel(){
  unifiedEpoch++;unifiedEnabled=false;unifiedRow=null;unifiedPrepared=null;
  $('policy-editor-panel').hidden=true;
- $('policy-editor-selection').textContent='Выберите правило.';
+ $('policy-editor-selection').textContent='Выберите изменяемую операцию в списке слева.';
+ $('policy-editor-limits').textContent='Разрешённые переходы определяет сервер.';
  $('policy-editor-result').textContent='';
  updateUnifiedControls();
+}
+function unifiedChoiceExplanation(row){
+ const values=row.editablePolicies, choices=values.filter(policy=>policy!==row.currentPolicy);
+ const transition=choices.length?choices.join(' / '):'нет';
+ if(values.includes('ASK')&&!values.includes('ALLOW'))
+  return 'Возможный переход: '+transition+'. Постоянный ALLOW не допускается текущим контрактом операции: будущие запросы ИИ требуют отдельного согласования владельца. Подтверждение смены правила через WebAuthn не заменяет эти решения.';
+ if(values.includes('ALLOW')&&!values.includes('ASK'))
+  return 'Возможный переход: '+transition+'. Этот синхронный READ не поддерживает очередь ASK.';
+ return 'Возможные переходы: '+transition+'. Точечные исключения и прочие ограничения операции сохраняются.';
 }
 function canSelectUnified(row){
  return unifiedEnabled&&!!row&&row.active===true&&
@@ -465,8 +475,9 @@ function unifiedCandidate(){
 function chooseUnified(row){
  if(unifiedBusy||unifiedUnknown||!canSelectUnified(row))return;
  unifiedEpoch++;unifiedPrepared=null;unifiedRow=row;
- $('policy-editor-selection').textContent=[row.provider,row.operation,row.actor,
+ $('policy-editor-selection').textContent=[row.provider,row.operation,'Actor: '+row.actor,
    row.target??'Все target','Сейчас: '+row.currentPolicy].join(' · ');
+ $('policy-editor-limits').textContent=unifiedChoiceExplanation(row);
  $('policy-editor-scope').value=row.scope;
  $('policy-editor-target').value=row.target??'';
  const select=$('policy-editor-value');select.replaceChildren();
@@ -798,14 +809,77 @@ function resetProviderSelections(){
  updateLocalDenyControls();
  return true;
 }
+function inventoryPolicyText(row){
+ const value=row.currentPolicy&&row.scope==='actor'?row.currentPolicy:row.configuredPolicy;
+ if(value==='CONDITIONAL')return 'CONDITIONAL · дополнительные условия';
+ if(value==='ASK')return 'ASK · согласование владельца';
+ if(value==='DENY')return 'DENY · запрещено';
+ if(value==='ALLOW')return 'ALLOW · базовое разрешение';
+ return String(value??'UNKNOWN');
+}
+function inventoryReadOnlyReason(row){
+ if(row.configuredPolicy==='CONDITIONAL')
+  return 'Условия проверяет код операции. Здесь нельзя превратить их в безусловный ALLOW.';
+ if(!row.active)return 'Провайдер неактивен.';
+ if(row.scope!=='actor'&&row.scope!=='exact')return 'Для этого типа правила нет редактора.';
+ if(!Array.isArray(row.editablePolicies)||!row.editablePolicies.length)
+  return 'Сервер не допускает изменение этого правила.';
+ if(row.editablePolicies.length===1)return 'Других разрешённых значений нет.';
+ return 'Изменение этого правила недоступно.';
+}
+function renderUnifiedProviderCards(target,rows){
+ const groups=new Map();
+ for(const row of rows){
+  if(!groups.has(row.provider))groups.set(row.provider,[]);
+  groups.get(row.provider).push(row);
+ }
+ for(const [provider,items] of groups){
+  const section=document.createElement('section');section.className='provider-group';
+  const heading=document.createElement('h4');heading.textContent=provider+' · '+items.length;
+  section.append(heading);
+  const list=document.createElement('div');list.className='provider-rule-list';
+  for(const row of items){
+   const eligible=canSelectUnified(row),selected=unifiedRow===row;
+   const label=document.createElement('label');
+   label.className='provider-rule'+(eligible?' can-edit':'')+(selected?' selected':'');
+   const input=document.createElement('input');input.type='radio';input.name='selected-policy-operation';
+   input.disabled=!eligible;input.checked=selected;
+   if(eligible)input.onchange=()=>chooseUnified(row);
+   const info=document.createElement('span');info.className='provider-rule-info';
+   const name=document.createElement('strong');name.textContent=row.operation;info.append(name);
+   const scope=document.createElement('small');
+   scope.textContent=(row.actor?'Actor: '+row.actor:'Общее правило')+
+    (row.target?' · Target: '+row.target:' · Все target');
+   info.append(scope);
+   const policy=document.createElement('span');policy.className='provider-rule-policy';
+   policy.textContent=inventoryPolicyText(row);info.append(policy);
+   const hint=document.createElement('small');hint.className='provider-rule-hint';
+   hint.textContent=eligible?'Можно выбрать для изменения':inventoryReadOnlyReason(row);
+   info.append(hint);
+   label.append(input,info);list.append(label);
+  }
+  section.append(list);target.append(section);
+ }
+}
 function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
  if(!providerInventory)return;
  const provider=$('providers-select').value??'';
- const rows=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
+ const matching=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
  const total=providerInventory.operations.filter(row=>!provider||row.provider===provider).length;
- $('providers-summary').textContent=`${rows.length} из ${total} правил · ${provider||providerInventory.providers.length+' провайдеров'} · ${providerInventory.coverage}`;
- if(!rows.length){const empty=document.createElement('p');empty.textContent='Нет правил по выбранному фильтру.';target.append(empty);return;}
+ const rows=unifiedEnabled&&$('providers-editable-only').checked?
+  matching.filter(canSelectUnified):matching;
+ $('providers-summary').textContent=rows.length+' из '+total+' правил · '+
+  (provider||providerInventory.providers.length+' провайдеров')+
+  (unifiedEnabled?' · редактор V2':' · инвентаризация');
+ if(!rows.length){
+  const empty=document.createElement('p');empty.textContent=
+   unifiedEnabled&&$('providers-editable-only').checked?
+   'Нет изменяемых правил. Снимите флажок «Только изменяемые», чтобы увидеть все операции.':
+   'Нет правил по выбранному фильтру.';
+  target.append(empty);return;
+ }
+ if(unifiedEnabled){renderUnifiedProviderCards(target,rows);return;}
  const table=document.createElement('table');
  const head=document.createElement('thead');const tr=document.createElement('tr');
  for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Действующая политика','Готовность','Действия']){
@@ -859,6 +933,8 @@ async function loadProviderInventory(){
  providerInventory=inventory;
  syncProviderFilter();
  $('policy-preview-panel').hidden=false;
+ $('providers-editable-control').hidden=true;
+ $('providers-workbench').classList.toggle('unified-workbench',false);
  if(inventory.policyEditorVersion===2){
   const editorCaps=await api(unifiedPrefix+'/capabilities');
   if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
@@ -867,6 +943,8 @@ async function loadProviderInventory(){
    inventory.policyVersion.endsWith('|owner-policy-v2:'+inventory.policyRevision);
   $('policy-editor-panel').hidden=!unifiedEnabled;
   $('policy-preview-panel').hidden=true;
+  $('providers-editable-control').hidden=!unifiedEnabled;
+  $('providers-workbench').classList.toggle('unified-workbench',unifiedEnabled);
   if(unifiedUnknown)$('policy-editor-result').textContent='Исход неизвестен. UUID: '+unifiedUnknown.requestId;
   updateUnifiedControls();displayProviderInventory();return;
  }
@@ -965,6 +1043,10 @@ $('providers-select').addEventListener('change',()=>{
  selectedProviderFilter=select.value;displayProviderInventory();
 });
 $('providers-filter').addEventListener('input',displayProviderInventory);
+$('providers-editable-only').addEventListener('change',()=>{
+ if(!resetProviderSelections()){$('providers-editable-only').checked=false;return;}
+ displayProviderInventory();
+});
 $('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});
 
 $('powershell-execute').onclick=action(ownerPowerShellExecute);
