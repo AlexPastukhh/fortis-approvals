@@ -342,3 +342,84 @@ receipts, failed pending state, changed copy/digest/manifest,
 permission/symlink and scope/instance mismatch, witness rollback
 and concurrent source advancement. They do not simulate a live
 owner-protected checkpoint service or actual production recovery.
+
+
+### Offline checkpoint CAS candidate — owner-side source protocol
+
+`registry/checkpoint_cas.py::OfflineCheckpointCAS` implements a
+**separately initialized, local owner-side source candidate** for
+checkpoint compare-and-swap. It is *not* a deployed protected anchor.
+The class has no authenticated transport, owner WebAuthn authorization,
+service principal, signed enrollment ceremony or privilege separation;
+its tests run under the same Docker UID. The mere presence of a second
+SQLite database or a digest does not establish an independent trust
+boundary. This module is explicitly excluded from the existing images
+by the exact `noDeploymentPaths` catalog rule. A production owner
+checkpoint must reside under a dedicated identity and storage boundary
+that the Registry writer and Repo AI cannot mutate, with separately
+reviewed peer authentication and policy. Do not install this module as
+an unrestricted service endpoint.
+
+Only an owner-provisioned, preexisting 0700 directory may contain this
+explicitly created 0600 WAL/FULL checkpoint database. Genesis comes
+from the **v2 Registry state genesis**, with an owner-selected instance,
+exact enrollment scope, pinned nonempty original enrollment receipt
+digest and fixed registered Registry-journal path. No missing anchor
+is reconstructed from the Registry database, and no existing anchor
+is overwritten or migrated. Owner enrollment acceptance and the
+real protected source identity/volume remain separate owner gates.
+Current source path pinning models an exact local owner configuration;
+a future separate-service protocol must bind the authenticated peer
+and source instance rather than accept arbitrary remote paths.
+
+The owner-side `advance` call takes only the original operation UUID,
+the exact prior and proposed checkpoints and a host-bound original
+Registry v2 operation reader. It accepts **only**
+`RegistryStateJournalV2.operation` from the configured journal whose
+`anchor_reader` is exactly this checkpoint reader, with the same
+instance, scope and a different directory. The reader MUST show the
+original `UNKNOWN_OUTCOME` with exactly these two checkpoints and the
+same operation ID, or (for idempotent recovery) the original already
+anchored receipt with identical identities. A missing, unregistered,
+forged or altered operation cannot advance the anchor. No plan DTO,
+provider token, arbitrary SQL, caller-chosen source path or caller
+"verified" flag is accepted at this method boundary. This source
+binding is NOT a substitute for live inter-service authentication.
+
+Under SQLite `BEGIN IMMEDIATE`, the owner ledger checks its entire
+immutable checkpoint/operation chain, compares the original current
+checkpoint and appends one exact transition `revision+1`. Its
+stored receipt binds the enrollment receipt digest, original operation
+ID, previous/next checkpoint, pending readback digest and owner-ledger
+event hash. Reuse of the same operation ID with different data
+conflicts. Two concurrent exact requests yield one stored transition
+and the same receipt after original readback. Original receipts remain
+queryable after later transitions; read-only retry handles a race
+between Registry's two anchor reads without replaying CAS. A lost
+acknowledgement is resolved by reading the original owner operation;
+an uncertain commit must **not** be submitted under another ID.
+Every read validates schema, permissions, monotonic revision and
+full persisted chain, but this does not prove tamper resistance
+against the authority's host/UID or an unprotected backup copy.
+
+After CAS, the original Registry operation must read back
+`ANCHORED_CANDIDATE_TRANSACTION` with the same checkpoint pair;
+otherwise the owner-side outcome is **not** announced as confirmed
+by this protocol. The external result is still named
+`CHECKPOINT_CAS_CANDIDATE`, with
+`protectedAnchorVerified=false` and
+`admissionAllowed=false`. The current Registry Writer still only
+stores **candidates** and never exposes installed state. A protected
+monotonic witness, separate credentials/network/storage, owner enrollment
+sign-off, backup/restore and end-to-end failure/restart tests are
+required before live admission. No runtime route, authority grant,
+checkpoint service activation or Production change is in this PR.
+
+Fifteen focused offline tests bind the actual Registry v2
+`UNKNOWN_OUTCOME` to the distinct checkpoint ledger and exercise
+first/suffix CAS, immutable original receipts, concurrent identical
+calls, a late idempotent replay after another revision, restart,
+wrong enrollment/source path, missing or forged pending operation,
+modified ledger, private-path permissions, and a rolled-back witness.
+They use local temporary SQLite databases with a synthetic owner
+boundary — not an actual separate UID or trusted anchor service.
