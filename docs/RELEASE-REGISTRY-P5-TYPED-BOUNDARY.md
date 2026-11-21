@@ -564,3 +564,83 @@ or provision an owner checkpoint container. Eleven offline tests
 cover role spoofing, denied owner CAS, malformed frames, scope/profile
 pinning, Unix-vs-TCP rejection, invalid socket permissions, real
 same-UID peer denial and source-only false authority flags.
+
+
+### Source-only Linux owner/Registry placement observation
+
+`registry/owner_runtime_isolation.py::observe_host_isolation` reads a
+**pinned Linux host layout candidate** and the previous pinned
+`owner_peer_boundary` profile. It is an offline preflight for owner
+review, not a container deployment, accepted enrollment, protected
+checkpoint or live Registry authentication layer. No local process,
+volume, socket or credential is created, changed or restarted.
+This source file is explicitly in the catalog's
+`noDeploymentPaths`; no runtime image adds the module.
+
+The owner-selected layout pins its exact canonical JSON digest,
+Registry instance/scope, matching peer profile digest, Linux boot UUID,
+three distinct current PIDs (owner checkpoint, Registry writer and Repo
+observer), both expected state database absolute paths and the Repo
+UID/GID. It is checked against the separately pinned Unix peer
+profile, including unique non-root authority/Registry/operator UIDs
+and the exact enrollment receipt digest. Profiles are **host
+preconditions**, not user-submitted credentials. A matching hash does
+not prove that a person or trusted owner signed the profile.
+
+The code reads `/proc/PID/stat` (process start ticks, checked twice),
+`/proc/PID/status` (all four real/effective/saved/filesystem UID/GID
+values, supplementary groups, all five capability sets, NoNewPrivs,
+seccomp and TracerPid), `/proc/PID/ns/mnt`, and
+`/proc/PID/cgroup`. The boot UUID is checked before and after the
+observation. It requires separate non-root process credentials, zero
+inheritable/permitted/effective/bounding/ambient capabilities, zero
+tracer PID, `NoNewPrivs=1`, `Seccomp=2`, and different mount
+namespaces and cgroup readings for owner, Registry and Repo. Registry
+and Repo must not join the owner state GID. PID/start-tick and all
+process observations must remain unchanged through the second read;
+any restart/reuse/drift is STOP, never an enrollment fallback.
+
+For the owner and Registry SQLite paths, the observer refuses
+symlinks in every existing ancestor, requires existing private 0700
+directories and 0600 single-link regular files with the expected
+respective UID/GID, and requires their parent/file device IDs to
+agree within each state volume but differ across owner/Registry
+volumes. The existing Unix socket's strict owner/group/type/0710
+parent/0660 socket guard is reused and its inode rechecked. Directory
+or file creation, chmod/chown, backup restoration, encryption setup
+and socket binding are deliberately out of scope. Separate device
+IDs alone do **not** establish encrypted storage, authenticated
+inter-service transport or independence from privileged host actors.
+
+The returned
+`OWNER_RUNTIME_ISOLATION_OBSERVATION_CANDIDATE` binds the pinned
+layout/profile, process start ticks, observed namespace/cgroup and
+filesystem inode/device evidence in a deterministic digest. It always
+returns `protectedAnchorVerified=false`,
+`enrollmentVerified=false`, `hostStorageVerified=false`,
+`ownerAcceptanceVerified=false`,
+`runtimeActivationAllowed=false` and
+`admissionAllowed=false`. A synthetic positive assessment is
+not evidence of real cross-UID containers or a protected checkpoint.
+
+**Before live P5 owner acceptance**, an independent operator must
+first provision and verify the real owner/service/Registry/Repo
+identities and distinct host volumes, separate backup protection and
+encryption, process/image and seccomp policies, service-owned
+authentication, the owner WebAuthn ceremony and a monotonic
+out-of-writer checkpoint that cannot be reset by Repo/Gateway.
+Run actual cross-principal negative tests: Repo, Gateway, Publisher
+and Registry cannot write the owner checkpoint DB; unrelated callers
+cannot read or advance the owner service; only the owner-scoped,
+separately authorized operation can perform CAS after exact original
+pending receipt reconciliation. Verify fail-closed restart, crash,
+backup and restore on a non-active instance. These checks are NOT
+satisfied by the source unit tests or current shared Docker UID.
+
+Sixteen offline tests include synthetic distinct role observations
+(with authority flags still false), exact profile/boot pinning,
+missing/changed process capabilities or namespaces, shared state
+devices, symlink state, real local `/proc` parsing, process/boot
+races and explicit rejection of source-worker self-attestation.
+They do not exercise a provisioned owner runtime. No P5 live GO or
+source-only merge is allowed to imply one.

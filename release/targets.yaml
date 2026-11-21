@@ -128,6 +128,7 @@ noDeploymentPaths:
   - fortis_approvals/registry/checkpoint_cas.py
   - fortis_approvals/registry/recovery_reconcile.py
   - fortis_approvals/registry/owner_peer_boundary.py
+  - fortis_approvals/registry/owner_runtime_isolation.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md
