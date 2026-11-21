@@ -805,7 +805,7 @@ separate-principal host E2E test.
 
 ### Accepted-peer fixed owner checkpoint READ adapter — source-only increment
 
-`registry/owner_read_boundary.py::read_accepted_checkpoint` is a
+`registry/owner_peer_boundary.py::read_accepted_checkpoint` is a
 bounded **READ-only source adapter**, not a listener or an active
 service. It accepts an already connected filesystem Unix stream
 socket and reuses `observe_accepted_peer` to validate pinned host

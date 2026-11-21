@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fortis_approvals.core import Denied, canonical
 from fortis_approvals.registry import owner_peer_boundary as peer
-from fortis_approvals.registry import owner_read_boundary as read
+from fortis_approvals.registry import owner_peer_boundary as read
 from fortis_approvals.tests import test_registry_checkpoint_cas as fixture
 from fortis_approvals.tests import test_registry_owner_peer_boundary as socket_fixture
 from fortis_approvals.tests import test_registry_state_journal_v2 as journal_fixture
