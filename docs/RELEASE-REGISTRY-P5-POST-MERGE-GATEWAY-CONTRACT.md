@@ -253,6 +253,55 @@ evidence remain EVIDENCE_INCOMPLETE. The new source neither registers an
 ingress operation nor grants permissions, authenticates a caller, writes
 canonical Registry state or performs a release.
 
+## Owner-bound review decision (source-only Core integration)
+
+`gateway/review_attestation.py` adds an unregistered candidate Core adapter
+for `release-review.attest_capture` and an exact-scope ASK predicate for
+`release-registry-collector-v1` and the fixed `fortis-approvals` pilot.
+It uses the existing Core approval fingerprint and audit protocol rather
+than trusting an owner flag, chat message, or caller-supplied receipt.
+No active policy map, gateway composition, capability or route is changed.
+
+Future trusted server composition must inject the protected capture store,
+owner-configured provider, **independent checkpoint reader** and actual Core
+with its trusted owner verifier. The request's checkpoint is a precondition
+only. Prepare binds the exact capture UUID, event digest, HEAD, body digest,
+PR number and anchored revision/digest, as well as retained PR base and
+branch. The same exact body must still be observed from an open, same-repo
+PR. Core's fingerprint covers actor, full request, policy version and
+immutable preview. Core rechecks the preview after owner approval; apply
+and confirm re-read these material bindings. No GitHub write or extra
+capture journal write is performed. Drift stops, and no separate effect
+receipt is invented when Core's outcome is uncertain.
+
+Internal readback reads the protected Core record and audit, not a DTO
+provided by the client. It requires the exact original fingerprint,
+EXECUTED state, approved decision by the configured owner, ASK at submission,
+and matching PENDING/APPROVED/DISPATCHED/EXECUTED events with the approval
+proof digest. ALLOW without an owner decision, rejection, pending, stale,
+uncertain, changed policy/preview or mismatching audit cannot attest.
+The result is OWNER_CAPTURE_DECISION_BOUND for that precise **body-review
+decision**, including its timestamp. It is not GitHub merge approval and
+does not prove that the body remained unchanged between review and merge.
+historicalMergeCutoffVerified, evidenceVerified, admissionAllowed, and
+deploymentAllowed are always false.
+
+The current Core owner portal/credential modes are unchanged. A future
+owner-only UI must allow the actual retained body/Impact to be inspected
+before the explicit decision, enforce the accepted owner proof mode, and
+keep raw material out of AI-facing previews. An audit proof digest alone
+does not establish which proof mode was used or that the user saw the body.
+Independent protected checkpoint and Core audit retention are deployment
+prerequisites; the source-only readback does not authenticate an arbitrary
+Core instance. Automated tests instantiate actual Core with an isolated
+temporary DB, fake provider, test-only verifier and fixture checkpoint;
+they do not exercise real owner WebAuthn or a production decision.
+
+Next integrate the exact decision with complete changed paths, historical
+CI rule/attempts, catalog/Impact validation and post-merge observations.
+The final trusted capture/merge binding, protected placement, rollout and
+authorized Registry ingestion remain separate owner-reviewed work.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
