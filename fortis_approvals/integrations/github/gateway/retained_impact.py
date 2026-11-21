@@ -53,10 +53,55 @@ if any(r==v['repository'] and t not in by_id for r,t in dependencies):
     raise ValueError('missing local dependency')
 if any(d['repository']==v['repository'] and d['number']==v['number'] for d in info['dependencies']['pullRequests']):
     raise ValueError('self PR dependency')
+# Enumerate only the reachable graph in this exact validated catalog.
+# External repository names are requirements, not selected source versions.
+# Explicit impact dependencies are additional roots, not inferred edges from
+# each declared deployment target.
+roots=sorted(t['id'] for t in info['targets'])
+explicit=sorted((d['repository'],d['target']) for d in info['dependencies']['targets'])
+visited,visiting,edges,external=set(),set(),set(),set()
+def visit(t):
+    if t in visiting:
+        raise ValueError('dependency cycle')
+    if t in visited:
+        return
+    if t not in by_id:
+        raise ValueError('missing local dependency')
+    visiting.add(t)
+    for dep in by_id[t].get('dependsOn',[]):
+        r,n=dep['repository'],dep['target']
+        edges.add((t,r,n))
+        if len(edges)>256:
+            raise ValueError('dependency edge limit')
+        if r==v['repository']:
+            visit(n)
+        else:
+            external.add((r,n))
+    visiting.remove(t)
+    visited.add(t)
+for t in roots:
+    visit(t)
+for r,t in explicit:
+    if r==v['repository']:
+        visit(t)
+    else:
+        external.add((r,t))
+if len(visited)>200 or len(external)>256:
+    raise ValueError('dependency graph limit')
+local=sorted({n for _,r,n in edges if r==v['repository']} |
+             {n for r,n in explicit if r==v['repository']})
+graph=dict(declaredRoots=roots,
+    explicitTargets=[dict(repository=r,target=t) for r,t in explicit],
+    localTargets=sorted(visited),localDependencyTargets=local,
+    catalogEdges=[dict(fromTarget=t,repository=r,target=n) for t,r,n in sorted(edges)],
+    unresolvedExternalTargets=[dict(repository=r,target=t) for r,t in sorted(external)],
+    unresolvedPullRequests=sorted(info['dependencies']['pullRequests'],
+                                  key=lambda d:(d['repository'],d['number'])))
 print(json.dumps(dict(classification=result['classification'],affectedTargets=result['affectedTargets'],
     changedFiles=result['changedFiles'],declaredTargets=info['targets'],
     pullRequestDependencies=info['dependencies']['pullRequests'],
-    targetDependencies=[dict(repository=r,target=t) for r,t in sorted(dependencies)])))
+    targetDependencies=[dict(repository=r,target=t) for r,t in sorted(dependencies)],
+    dependencyGraph=graph)))
 """
 
 
@@ -174,18 +219,36 @@ class RetainedImpactValidator:
                 except (ValueError, UnicodeError):
                     raise Denied('P5_IMPACT_OUTPUT_INVALID') from None
         _need(type(result) is dict and set(result)=={'classification','affectedTargets','changedFiles',
-                   'declaredTargets','pullRequestDependencies','targetDependencies'}
+                   'declaredTargets','pullRequestDependencies','targetDependencies','dependencyGraph'}
               and result['classification'] in ('deployment','no-deployment')
               and result['changedFiles']==len(impact_paths)
               and all(type(result[k]) is list for k in ('affectedTargets','declaredTargets',
                   'pullRequestDependencies','targetDependencies')), 'P5_IMPACT_OUTPUT_INVALID')
+        graph=result['dependencyGraph']
+        _need(type(graph) is dict and set(graph)=={'declaredRoots','explicitTargets','localTargets',
+              'localDependencyTargets','catalogEdges','unresolvedExternalTargets','unresolvedPullRequests'}
+              and all(type(v) is list for v in graph.values())
+              and len(graph['localTargets'])<=200 and len(graph['catalogEdges'])<=256
+              and len(graph['unresolvedExternalTargets'])<=256
+              and len(graph['unresolvedPullRequests'])<=50,
+              'P5_IMPACT_DEPENDENCY_GRAPH_INVALID')
+        origin=request['repository']
+        local_edges=[{'repository':origin,'target':t,'sourceSha':head}
+                     for t in graph['localDependencyTargets']]
+        dependency_observation={'schemaVersion':1,'repository':origin,'catalogHeadSha':head,
+                                'catalogSha256':expected['sha256'],'graph':graph,
+                                'localDependencyEdges':local_edges,
+                                'unresolvedRequirements':bool(graph['unresolvedExternalTargets'] or
+                                                               graph['unresolvedPullRequests'])}
         _need(checkpoint_reader()==checkpoint and store.checkpoint(expected=checkpoint)==checkpoint,
               'P5_IMPACT_CHECKPOINT_CHANGED')
         observation={'validatorRevision':self.revision,'captureEventDigest':receipt['eventDigest'],
                      'bundleDigest':receipt['bundleDigest'],'repository':request['repository'],
                      'number':request['number'],'headSha':head,'baseSha':base,
                      'catalogSha256':expected['sha256'],'changedPathRecordsSha256':paths['sha256'],
-                     'impactSha256':bundle['impactSha256'],'validatedImpact':result}
+                     'impactSha256':bundle['impactSha256'],'validatedImpact':result,
+                     'dependencyObservation':dependency_observation,
+                     'dependencyObservationSha256':_hash(dependency_observation)}
         return {'result':'RETAINED_IMPACT_VALIDATED','observation':observation,
                 'observationDigest':_hash(observation),'dependencyClosureVerified':False,
                 'historicalPolicyVerified':False,'evidenceVerified':False,
