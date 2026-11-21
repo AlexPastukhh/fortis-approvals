@@ -76,6 +76,7 @@ def smoke():
     # installed package, not just the default IncidentCore path. No real
     # credentials, listeners, owner enrollment or provider effects.
     smoke_owner_local_deny()
+    smoke_owner_policy_v2()
     print('IMAGE_EXTENSIONS_OFFLINE_PASS')
     print('IMAGE_NATIVE_GIT_IMPORT_PASS')
     print('IMAGE_SONAR_OFFLINE_SMOKE_PASS')
@@ -133,6 +134,56 @@ def smoke_owner_local_deny():
             assert db.execute('SELECT COUNT(*) FROM owner_local_denials').fetchone()[0]==0
         assert not remote.calls
     print('IMAGE_OWNER_LOCAL_DENY_OPT_IN_PASS')
+
+
+def smoke_owner_policy_v2():
+    from fortis_approvals.r7_unified_server import _owner_release_unified_policy
+    from fortis_approvals.extensions.runtime import ExtensionConfig
+    from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+    from fortis_approvals.extensions.owner_policy_editor_v2 import UnifiedPolicyPortal
+    from fortis_approvals.extensions.staging import StagedOwner, ReleaseGate
+    from fortis_approvals.r7_unified_candidate import ACTOR
+    import sqlite3
+    from io import BytesIO
+    config=ExtensionConfig({'schemaVersion':1,'providers':{},'ownerPolicyEditor':'UNIFIED_V2'})
+    nonce=str(uuid.uuid4())
+    selector=_owner_release_unified_policy(config,nonce,lambda:'b'*64)
+    grant='OFFLINE-ONLY-SYNTHETIC-MACHINE-GRANT-00001'
+    pilot=GitHubPilotConfig('OfflineOwner','offline_repo',
+        file_pr_branch='fortis-e2e/'+str(uuid.uuid4())+'-approve',
+        ci_reads=True,native_worktree=True,required_workflows=(1,),dynamic_repositories=True)
+    github=GitHubHTTPTransport('OFFLINE_TEST_TOKEN_NOT_A_REAL_SECRET_00001')
+    with tempfile.TemporaryDirectory(prefix='fortis-image-owner-policy-v2-') as tmp:
+        root=Path(tmp);state=root/'private';state.mkdir(mode=0o700)
+        remote=FakeSonar()
+        core,owner,portal,ingress=build_r7_unified_candidate(
+            state=state,owner_origin='http://localhost:19203',
+            ingress_host='host.docker.internal:19204',ingress_grant=grant,
+            sonar_transport=remote,organizations=('offline_org',),
+            project_keys=('offline_project',),extensions=config,
+            github_pilot=pilot,github_transport=github,
+            unified_policy_source_opt_in=selector)
+        assert type(core) is UnifiedPolicyCore and type(portal) is UnifiedPolicyPortal
+        assert portal.core is core and portal.editor.core is core and ingress.base.broker.core is core
+        assert core.policy_version.endswith('|owner-policy-v2:0')
+        choices=core.authority.choices
+        assert choices[(ACTOR,'github','create_pull_request')]=={'DENY','ASK','ALLOW'}
+        assert choices[(ACTOR,'github','merge_pull_request')]=={'DENY','ASK'}
+        assert choices[(ACTOR,'workspace','commit')]=={'DENY','ASK','ALLOW'}
+        assert choices[(ACTOR,'sonarcloud','get_quality_gate')]=={'DENY','ALLOW'}
+        assert choices[(ACTOR,'sonarcloud','accept_issue')]=={'DENY','ASK'}
+        assert (ACTOR,'github','push_commits') not in choices
+        gate=ReleaseGate(nonce,portal._extension_runtime.digest,marker=root/'unactivated.json')
+        staged=StagedOwner(portal,gate)
+        statuses=[]
+        body=b''.join(staged({'REQUEST_METHOD':'POST','PATH_INFO':'/v1/owner/policy/editor/begin',
+            'wsgi.input':BytesIO(b'')},lambda status,headers:statuses.append(status)))
+        assert statuses[0].startswith('403 ')
+        assert json.loads(body)['error']=='RELEASE_STAGED_OWNER_WRITES_BLOCKED'
+        assert not remote.calls
+        with core._db() as db:
+            assert core._snapshot(db)[0]==0
+    print('IMAGE_OWNER_POLICY_V2_OPT_IN_PASS')
 
 
 if __name__ == '__main__':

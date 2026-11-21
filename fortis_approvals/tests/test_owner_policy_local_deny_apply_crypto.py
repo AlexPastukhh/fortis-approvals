@@ -133,6 +133,35 @@ class LocalDenyRealVirtualWebAuthn(unittest.TestCase):
         self.assertEqual('ASK',self.core._policy('agent-1',dict(
             service='synthetic',operation='set_ask',target='R3')))
 
+    def test_unified_owner_policy_expansion_and_restriction_real_uv(self):
+        from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        from fortis_approvals.extensions.owner_policy_editor_v2 import OwnerPolicyEditor
+        core=UnifiedPolicyCore(self.core.path.parent/'unified.sqlite',
+            adapters={'synthetic':self.adapter},policies={COORD:'ASK'},
+            authenticator=self.core.auth,owner_verifier=self.owner,policy_version='unified-test')
+        core.install_policy_authority({COORD:{'DENY','ASK','ALLOW'}})
+        editor=OwnerPolicyEditor(core,self.owner,source_digest=SOURCE,
+                                 credential_generation=lambda:CREDS)
+        candidate=dict(actor=COORD[0],provider=COORD[1],operation=COORD[2],scope='exact',
+                       target=COORD[3],expectedPolicy='ASK',desiredPolicy='ALLOW',
+                       expectedRevision=0,expectedPolicyVersion=core.policy_version,
+                       reasonCode='OWNER_POLICY_CHANGE')
+        def finish(b,response):
+            return editor.finish(self.session,self.csrf,b['ceremonyId'],response,b['change'])
+        started=editor.begin(self.session,self.csrf,candidate)
+        with self.assertRaises(Denied):
+            finish(started,self.key.assert_(started,uv=False))
+        started=editor.begin(self.session,self.csrf,candidate)
+        self.assertTrue(finish(started,self.key.assert_(started))['found'])
+        payload=dict(service='synthetic',operation='set_ask',target='R3')
+        self.assertEqual(core._policy('agent-1',payload),'ALLOW')
+        candidate.update(expectedPolicy='ALLOW',desiredPolicy='DENY',
+                         expectedRevision=1,expectedPolicyVersion=core.policy_version)
+        started=editor.begin(self.session,self.csrf,candidate)
+        self.assertTrue(finish(started,self.key.assert_(started))['found'])
+        self.assertEqual(core._policy('agent-1',payload),'DENY')
+        self.assertEqual(self.adapter.get('R3')['value'],'before')
+
     def _one_db(self):
         db=self.core._db()
         connection=db.__enter__()

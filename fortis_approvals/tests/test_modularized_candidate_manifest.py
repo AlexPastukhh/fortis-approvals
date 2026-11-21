@@ -118,6 +118,11 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                 "from fortis_approvals.extensions.owner_policy_local_bundle_phase6c3 "
                 "import OwnerLocalDenyInventoryPortal; "
                 "assert OwnerLocalDenyInventoryPortal; "
+                "from fortis_approvals.extensions.owner_policy_editor_v2 "
+                "import UnifiedPolicyPortal; "
+                "from fortis_approvals.extensions.owner_policy_engine_v2 "
+                "import UnifiedPolicyCore; "
+                "assert UnifiedPolicyPortal and UnifiedPolicyCore; "
                 "print('MODULARIZED_GATEWAY_IMPORTS_PASS'); "
             )
             if smoke:
@@ -133,6 +138,7 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
             self.assertIn("MODULARIZED_GATEWAY_IMPORTS_PASS", completed.stdout)
             if smoke:
                 self.assertIn("IMAGE_OWNER_LOCAL_DENY_OPT_IN_PASS", completed.stdout)
+                self.assertIn("IMAGE_OWNER_POLICY_V2_OPT_IN_PASS", completed.stdout)
 
     def test_review_compose_uses_dedicated_state_and_alternate_origins(self):
         deploy = ROOT / "fortis_approvals/deploy"

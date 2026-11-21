@@ -69,6 +69,76 @@ class OptInR7BuilderTests(unittest.TestCase):
     def candidate(self):
         return R7LocalDenySourceOptIn(SOURCE,CREDS)
 
+    def test_unified_r7_composition_enforces_real_broker_and_extension(self):
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        from fortis_approvals.extensions.owner_policy_editor_v2 import UnifiedPolicyPortal
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.model import Operation, Provider
+        from fortis_approvals.integrations.review_schema import object_schema
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        from fortis_approvals.deploy.image_offline_smoke import FakeSonar
+        import sqlite3
+        state=self.root/'v2-state';state.mkdir(mode=0o700)
+        remote=FakeSonar()
+        calls=[]
+        empty=object_schema({})
+        provider=Provider('fixture',(
+            Operation('read_item','Read test record','read',empty,empty,
+                      lambda ctx: calls.append(ctx.target) or {}),
+        ))
+        settings=ExtensionConfig({'schemaVersion':1,'providers':{'fixture':{
+            'credentials':{},'operations':{'read_item':{'policy':'ALLOW','targets':['record']}}}}})
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner):
+            core,owner,portal,ingress=build_r7_unified_candidate(**dict(
+                self.kwargs,state=state,sonar_transport=remote,organizations=('offline_org',),
+                project_keys=('offline_project',),extensions=settings,extension_providers=(provider,),
+                unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(SOURCE,lambda:CREDS)))
+        self.assertIs(type(core),UnifiedPolicyCore)
+        self.assertIs(type(portal),UnifiedPolicyPortal)
+        self.assertIs(ingress.base.broker.core,core)
+        self.assertIs(portal._extension_runtime.core,core)
+        self.assertEqual(core.authority.choices[(ACTOR,'sonarcloud','get_quality_gate')],{'ALLOW','DENY'})
+        self.assertEqual(core.authority.choices[(ACTOR,'sonarcloud','accept_issue')],{'ASK','DENY'})
+        self.assertEqual(core.authority.choices[(ACTOR,'fixture','read_item','record')],{'DENY','ASK','ALLOW'})
+        self.assertIn(('fixture','read_item'),portal.strong_operations)
+        def change(service,op,scope,target,old,new):
+            with core._db() as db: rev,_,_=core._snapshot(db)
+            candidate=dict(actor=ACTOR,provider=service,operation=op,scope=scope,target=target,
+                expectedPolicy=old,desiredPolicy=new,expectedRevision=rev,
+                expectedPolicyVersion=core.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+            b=portal.editor.begin(owner._session,owner._csrf,candidate)
+            return portal.editor.finish(owner._session,owner._csrf,b['ceremonyId'],
+                {'syntheticTestOnlyUv':True},b['change'])
+        call=dict(requestId=str(uuid.uuid4()),service='sonarcloud',operation='get_quality_gate',
+                  target='offline_project',params={},reason='Offline V2')
+        self.assertEqual(ingress.base.broker.read(GRANT,call)['data']['status'],'OK')
+        change('sonarcloud','get_quality_gate','actor',None,'ALLOW','DENY')
+        count=len(remote.calls)
+        with self.assertRaises(Denied): ingress.base.broker.read(GRANT,call)
+        self.assertEqual(len(remote.calls),count)
+        change('sonarcloud','get_quality_gate','actor',None,'DENY','ALLOW')
+        self.assertEqual(ingress.base.broker.read(GRANT,call)['data']['status'],'OK')
+        change('sonarcloud','accept_issue','exact',ISSUE,'ASK','DENY')
+        with self.assertRaises(Denied):
+            ingress.base.broker.submit(GRANT,dict(requestId=str(uuid.uuid4()),service='sonarcloud',
+                operation='accept_issue',target=ISSUE,params={'projectKey':'offline_project'},
+                reason='Do not contact the provider'))
+        rt=portal._extension_runtime
+        change('fixture','read_item','exact','record','ALLOW','ASK')
+        payload=dict(requestId=str(uuid.uuid4()),service='fixture',operation='read_item',
+                     target='record',params={},reason='Offline test')
+        self.assertEqual(rt.call(GRANT,payload)['state'],'PENDING')
+        self.assertEqual(calls,[])
+        change('fixture','read_item','exact','record','ASK','ALLOW')
+        payload['requestId']=str(uuid.uuid4())
+        self.assertEqual(rt.call(GRANT,payload)['state'],'EXECUTED')
+        self.assertEqual(calls,['record'])
+        with sqlite3.connect(core.path) as db:
+            receipt=_local_policy_receipt(db)
+            self.assertEqual(receipt['revision'],5)
+            self.assertEqual(receipt['schemaVersion'],2)
+
     def test_server_selector_is_explicit_owner_config_only(self):
         from fortis_approvals.extensions.runtime import ExtensionConfig
         from unittest.mock import patch
@@ -162,6 +232,119 @@ class OptInR7BuilderTests(unittest.TestCase):
         self.assertEqual('ASK',core._policy(ACTOR,dict(
             service='sonarcloud',operation='accept_issue',target='OTHER')))
         self.assertEqual(0,self.sonar.calls)
+
+    def test_v2_server_explicit_release_gate_and_credential_binding(self):
+        from types import SimpleNamespace
+        import sqlite3
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.staging import ReleaseGate, StagedOwner
+        from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+        self.owner.path=self.root/'owner-fixture-v2.sqlite'
+        with sqlite3.connect(self.owner.path) as db:
+            db.execute('CREATE TABLE credentials(id TEXT PRIMARY KEY,data BLOB,active INTEGER,counter INTEGER)')
+            db.execute("INSERT INTO credentials VALUES('fixture-key',x'1234',1,0)")
+        state=self.root/'server-v2';state.mkdir(mode=0o700)
+        paths={}
+        for name,content in [('grant',GRANT),('sonar','synthetic-sonar-credential'),
+                             ('cert','synthetic-cert'),('key','synthetic-key')]:
+            p=self.root/name;p.write_text(content);p.chmod(0o600);paths[name]=p
+        config=ExtensionConfig({'schemaVersion':1,'providers':{},'ownerPolicyEditor':'UNIFIED_V2'})
+        with self.assertRaises(RuntimeError):
+            r7_unified_server._owner_release_unified_policy(config,None,lambda:CREDS)
+        with self.assertRaises(Denied):
+            ExtensionConfig({**config.value,'ownerLocalDeny':'SONAR_ACCEPT_ISSUE_V1'})
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner), patch.object(r7_unified_server,'SonarHTTPTransport',return_value=self.sonar), patch.object(r7_unified_server,'make_server',side_effect=lambda h,p,a,**kw:SimpleNamespace(app=a)), patch.object(r7_unified_server.ssl,'SSLContext'):
+            owner_server,machine_server=r7_unified_server.create_servers(
+                state=state,grant_path=paths['grant'],sonar_token_path=paths['sonar'],
+                cert_path=paths['cert'],key_path=paths['key'],region='eu',
+                organizations=('acme',),project_key='acme',extensions=config,
+                release_nonce=str(uuid.uuid4()))
+        app=owner_server.app
+        self.assertIsInstance(app,StagedOwner)
+        core=app.delegate.core
+        self.assertIs(type(core),UnifiedPolicyCore)
+        self.assertIs(machine_server.app.broker.core,core)
+        editor=app.delegate.editor
+        def post(path,body):
+            raw=json.dumps(body).encode();status=[]
+            env={'REQUEST_METHOD':'POST','PATH_INFO':'/v1/owner/policy/editor/'+path,
+                'HTTP_HOST':'localhost:19103','HTTP_ORIGIN':'http://localhost:19103',
+                'HTTP_COOKIE':'fortis_owner='+self.owner._session,
+                'HTTP_X_FORTIS_CSRF':self.owner._csrf,'QUERY_STRING':'',
+                'CONTENT_TYPE':'application/json','CONTENT_LENGTH':str(len(raw)),
+                'wsgi.input':BytesIO(raw)}
+            result=b''.join(app(env,lambda line,headers:status.append(line)))
+            return int(status[0][:3]),json.loads(result)
+        candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',
+            scope='actor',target=None,expectedPolicy='ASK',desiredPolicy='DENY',
+            expectedPolicyVersion=core.policy_version,expectedRevision=0,
+            reasonCode='OWNER_POLICY_CHANGE')
+        with patch.object(ReleaseGate,'ready',return_value=False):
+            self.assertEqual(post('begin',{'candidate':candidate})[0],403)
+        with patch.object(ReleaseGate,'ready',return_value=True):
+            self.assertEqual(post('begin',{'candidate':candidate})[0],200)
+            before=editor.generation()
+            with self.owner._db() as db:
+                db.execute('UPDATE credentials SET counter=1')
+            self.assertEqual(editor.generation(),before)
+            code,b=post('begin',{'candidate':candidate})
+            self.assertEqual(code,200)
+            paths['sonar'].write_text('rotated-synthetic-credential')
+            code,_=post('finish',{'ceremonyId':b['ceremonyId'],'change':b['change'],
+                'response':{'syntheticTestOnlyUv':True}})
+            self.assertEqual(code,403)
+            paths['sonar'].write_text('synthetic-sonar-credential')
+            code,b=post('begin',{'candidate':candidate})
+            self.assertEqual(code,200)
+            code,result=post('finish',{'ceremonyId':b['ceremonyId'],'change':b['change'],
+                'response':{'syntheticTestOnlyUv':True}})
+            self.assertEqual(code,200,result)
+            self.assertEqual(result['appliedRevision'],1)
+        self.assertEqual(core._policy(ACTOR,{'service':'sonarcloud','operation':'accept_issue','target':ISSUE}),'DENY')
+        self.assertEqual(self.sonar.calls,0)
+
+    def test_r7_v1_to_v2_legacy_receipt_and_restart_scope_binding(self):
+        import sqlite3
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
+        state=self.root/'migration';state.mkdir(mode=0o700)
+        selector=R7UnifiedPolicySourceOptIn(SOURCE,lambda:CREDS)
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner):
+            args=dict(self.kwargs,state=state)
+            old,owner,portal,_=build_r7_unified_candidate(**args,
+                local_deny_source_opt_in=R7LocalDenySourceOptIn(SOURCE,CREDS))
+            apply=portal._local_deny_apply
+            candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',
+                target=ISSUE,expectedConfiguredScope='actor',expectedConfiguredPolicy='ASK',
+                expectedPolicyVersion=old.policy_version,expectedRevision=0,reasonCode='OWNER_DENY_EXACT')
+            b=apply.begin_deny(owner._session,owner._csrf,candidate)
+            apply.finish_deny(owner._session,owner._csrf,b['ceremonyId'],
+                {'syntheticTestOnlyUv':True},b['change'])
+            with sqlite3.connect(old.path) as db: legacy=_local_policy_receipt(db)
+            core,owner,portal,_=build_r7_unified_candidate(**args,
+                unified_policy_source_opt_in=selector)
+            with sqlite3.connect(core.path) as db: receipt=_local_policy_receipt(db)
+            self.assertEqual(receipt['legacy'],legacy)
+            payload={'service':'sonarcloud','operation':'accept_issue','target':ISSUE}
+            self.assertEqual(core._policy(ACTOR,payload),'DENY')
+            candidate=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',
+                scope='exact',target=ISSUE,expectedPolicy='DENY',desiredPolicy='ASK',
+                expectedRevision=0,expectedPolicyVersion=core.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+            b=portal.editor.begin(owner._session,owner._csrf,candidate)
+            portal.editor.finish(owner._session,owner._csrf,b['ceremonyId'],
+                {'syntheticTestOnlyUv':True},b['change'])
+            restarted,*_=build_r7_unified_candidate(**args,unified_policy_source_opt_in=selector)
+            self.assertEqual(restarted._policy(ACTOR,payload),'ASK')
+            with sqlite3.connect(restarted.path) as db:
+                self.assertEqual(_local_policy_receipt(db)['legacy'],legacy)
+            with self.assertRaises(Denied):
+                build_r7_unified_candidate(**{**args,'organizations':('changed',)},
+                    unified_policy_source_opt_in=selector)
+
+    def test_packaged_unified_smoke_with_offline_owner(self):
+        from fortis_approvals.deploy.image_offline_smoke import smoke_owner_policy_v2
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',return_value=self.owner):
+            smoke_owner_policy_v2()
 
     def test_selector_is_not_external_attestation(self):
         self.assertNotIn('local_deny_source_opt_in',

@@ -1,0 +1,128 @@
+"""Trusted R7 composition for explicit owner-reviewed policy editor V2.
+
+No machine request or unreviewed environment flag selects this candidate.
+Only the owner release configuration and trusted builder bind identities.
+Native synchronous READ and mandatory ASK execution contracts remain intact.
+"""
+from dataclasses import asdict, dataclass
+import re
+
+from ..core import Denied
+from .owner_policy_engine_v2 import POLICIES, UnifiedPolicyCore
+
+
+@dataclass(frozen=True)
+class R7UnifiedPolicySourceOptIn:
+    source_digest: str
+    credential_generation: object
+
+    def __post_init__(self):
+        if (type(self.source_digest) is not str or
+                not re.fullmatch(r"[a-f0-9]{64}",self.source_digest) or
+                not callable(self.credential_generation)):
+            raise Denied("R7_UNIFIED_POLICY_IDENTITY_REQUIRED")
+
+
+# Explicit effect ceilings, not guessed from the current ASK/ALLOW string.
+# These operations keep existing typed adapter validation and Core dispatch.
+# Mandatory release-label/CI/merge/workflow controls never auto-approve.
+_GITHUB_FLEXIBLE = frozenset(("create_pull_request","publish_visual_review",
+                             "append_visual_revision"))
+_GITHUB_ASK_ONLY = frozenset(("mark_pr_ready","merge_pull_request","update_pull_request",
+    "update_workflow_file","create_release_label","add_pr_release_labels",
+    "remove_pr_release_label"))
+
+
+def derive_admission(core, broker, *, native, extension_runtime):
+    """Only installed, actor-granted, literal policy rows may become editable.
+
+    READ-ASK needs a new deferred result protocol, not a misleading selector.
+    Conditional push/cleanup and publisher profile guards are not replaced.
+    Exact configuration DENY is not a new grant: leave it fixed.
+    """
+    if type(core) is not UnifiedPolicyCore or broker.core is not core:
+        raise Denied("R7_UNIFIED_POLICY_COMPOSITION_REQUIRED")
+    from ..workflow.common import WORKSPACE_OPS
+    from ..integrations.github.analysis_contract import ACTIONS as CI_ACTIONS
+    from ..integrations.github.publisher_profile import ACTOR as PUBLISHER_ACTOR
+    rt = extension_runtime
+    choices = {}
+    for key, baseline in core.policies.items():
+        if (len(key) not in (3,4) or type(baseline) is not str or
+                baseline not in ("ASK","ALLOW") or not core.auth.active(key[0]) or
+                key[0]==PUBLISHER_ACTOR or key[1] not in core.adapters):
+            continue
+        actor, service, operation = key[:3]
+        pair = (service,operation)
+        permitted = None
+        if rt is not None and service in rt.credentials:
+            if len(key)!=4 or rt.rules.get(key)!=baseline:
+                continue
+            op = rt.operations[pair]
+            aliases = rt.credentials[service]
+            if not op.ready or any(role and role not in aliases for role in
+                                   (op.credential,op.signing_credential)):
+                continue
+            # An extension-specific WRITE may enforce mandatory owner proof
+            # or narrower host authority beyond the generic Core contract.
+            # Only existing ALLOW (restrict/restore) or READ can gain ALLOW.
+            if op.signing_credential:
+                permitted = {"DENY","ASK"}
+            elif op.kind=="read" or baseline=="ALLOW":
+                permitted = POLICIES
+            else:
+                permitted = {"DENY","ASK"}
+        elif pair in broker.actor_read_operations.get(actor,()):
+            # Direct synchronous read cannot execute an ASK ceremony.
+            if baseline=="ALLOW" and service in broker.read_adapters:
+                permitted = {"DENY","ALLOW"}
+        elif pair in broker.actor_operations.get(actor,()):
+            if service=="sonarcloud":
+                permitted = {"DENY","ASK"}
+            elif service=="github" and native is not None:
+                if operation in _GITHUB_FLEXIBLE:
+                    permitted = POLICIES
+                elif operation in _GITHUB_ASK_ONLY or pair in CI_ACTIONS:
+                    permitted = {"DENY","ASK"}
+        elif native is not None and actor==native["actor"]:
+            if service=="workspace" and operation in WORKSPACE_OPS:
+                # All literal operations use Core's DISPATCHED worker contract.
+                # cleanup_task is conditional and already excluded above.
+                permitted = POLICIES
+            elif service=="powershell" and operation=="execute" and len(key)==4:
+                permitted = {"DENY","ASK"}
+        if permitted is not None and baseline in permitted:
+            choices[key] = frozenset(permitted)
+    return choices
+
+
+def trusted_scope_binding(*,organizations,region,project_keys,github_pilot,
+                          analysis_review,profile,machine_shell,runtime,broker):
+    """Persist only the authority digest, not secrets or mutable host paths.
+
+    A changed owner/repo/project/actor/definition scope must not inherit
+    a previously approved ALLOW silently. A reviewed migration is required.
+    """
+    github = asdict(github_pilot) if github_pilot is not None else None
+    if github is not None:
+        # Bootstrap task is lifecycle metadata, not provider authority.
+        github.pop("bootstrap_task",None)
+    review = None if analysis_review is None else {
+        "owner":analysis_review.owner,"bindings":analysis_review.bindings,
+        "sonarMutations":analysis_review.sonar_mutations}
+    machine = None if machine_shell is None else {
+        "actor":machine_shell.actor,"target":machine_shell.target,
+        "executorGitSha":machine_shell.executor_git_sha,
+        "executorIdentity":machine_shell.executor_identity}
+    extensions = None if runtime is None else {
+        "credentials":runtime.credentials,
+        "definitions":{name:{"source":provider.source_digest,
+            "operations":[[op.name,op.version,op.kind,op.ready,op.credential,op.signing_credential]
+                          for op in sorted(provider.operations,key=lambda item:item.name)]}
+            for name,provider in runtime.providers.items()}}
+    return {"region":region,"organizations":sorted(organizations),
+            "projects":None if project_keys is None else sorted(project_keys),
+            "github":github,"analysis":review,"publisher":asdict(profile),
+            "machineShell":machine,"extensions":extensions,
+            "readGrants":{a:sorted(ops) for a,ops in broker.actor_read_operations.items()},
+            "writeGrants":{a:sorted(ops) for a,ops in broker.actor_operations.items()}}

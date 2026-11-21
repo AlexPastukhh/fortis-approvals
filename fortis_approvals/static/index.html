@@ -18,10 +18,35 @@
 <section id="providers-view" hidden aria-label="API и политики">
  <h2>API и политики · инвентаризация</h2>
  <p class="small">Инвентаризация — только чтение. Для native-методов версия, тип операции и готовность upstream могут быть неизвестны. Блок локального DENY доступен только в отдельно подключённом режиме владельца.</p>
- <label for="providers-filter">Поиск по провайдеру, методу, actor, target или policy</label>
- <input id="providers-filter" type="search" autocomplete="off">
+ <div class="provider-controls">
+  <div>
+   <label for="providers-select">Провайдер</label>
+   <select id="providers-select"><option value="">Все провайдеры</option></select>
+  </div>
+  <div>
+   <label for="providers-filter">Поиск по методу, actor, target или политике</label>
+   <input id="providers-filter" type="search" autocomplete="off">
+  </div>
+ </div>
+ <p class="small">Actor — вызывающий субъект. Target — объект операции. Правило на уровне actor может иметь точечные исключения.</p>
  <p id="providers-summary" role="status"></p>
  <div id="providers-results" aria-live="polite"></div>
+  <section id="policy-editor-panel" class="policy-editor" hidden aria-label="Изменение политики">
+   <h3>Изменение политики</h3>
+   <p id="policy-editor-selection">Выберите правило.</p>
+   <div class="provider-controls">
+    <div><label for="policy-editor-scope">Область</label><select id="policy-editor-scope" disabled>
+     <option value="actor">Метод для actor</option><option value="exact">Точный target</option>
+    </select></div>
+    <div><label for="policy-editor-target">Target</label><input id="policy-editor-target" type="text" maxlength="128" autocomplete="off" disabled></div>
+    <div><label for="policy-editor-value">Новая политика</label><select id="policy-editor-value" disabled></select></div>
+   </div>
+   <p class="small">Только разрешённые сервером переходы. Изменение метода сохраняет отдельные точечные исключения. Любое изменение требует свежего подтверждения владельца.</p>
+   <button id="policy-editor-prepare" type="button" disabled>Проверить последствия</button>
+   <button id="policy-editor-confirm" type="button" disabled>Изменить через WebAuthn</button>
+   <button id="policy-editor-readback" type="button" disabled>Проверить исходный UUID</button>
+   <pre id="policy-editor-result" role="status" aria-live="polite"></pre>
+  </section>
   <section aria-label="Предпросмотр настройки политики" id="policy-preview-panel">
    <h3>План изменения правила — без применения</h3>
    <p class="small">Выберите настроенное правило с точными actor и target. Предпросмотр ничего не сохраняет и не даёт разрешения менять политику.</p>

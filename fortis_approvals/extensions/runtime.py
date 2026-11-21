@@ -21,9 +21,11 @@ def validate_with(callback, value, *, limit=65536):
 class ExtensionConfig:
     def __init__(self, value):
         check(type(value) is dict and set(value) in (
-            {'schemaVersion', 'providers'}, {'schemaVersion', 'providers', 'ownerLocalDeny'}) and
+            {'schemaVersion', 'providers'}, {'schemaVersion', 'providers', 'ownerLocalDeny'},
+            {'schemaVersion', 'providers', 'ownerPolicyEditor'}) and
               type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and
-              ('ownerLocalDeny' not in value or value['ownerLocalDeny'] == 'SONAR_ACCEPT_ISSUE_V1'),
+              ('ownerLocalDeny' not in value or value['ownerLocalDeny'] == 'SONAR_ACCEPT_ISSUE_V1') and
+              ('ownerPolicyEditor' not in value or value['ownerPolicyEditor'] == 'UNIFIED_V2'),
               'INTEGRATION_CONFIG_INVALID')
         providers = value['providers']
         check(type(providers) is dict and 0 <= len(providers) <= 50, 'INTEGRATION_CONFIG_INVALID')
@@ -332,7 +334,8 @@ class ExtensionRuntime:
         portal.strong_operations |= frozenset((s, o) for (a, s, o, t), p in self.rules.items() if p == 'ASK')
         # Extend the baseline, not the live revision-bearing version.
         from .owner_policy_local_core_phase6c import LocalDenyCore
-        if type(core) is LocalDenyCore:
+        from .owner_policy_engine_v2 import UnifiedPolicyCore
+        if type(core) in (LocalDenyCore,UnifiedPolicyCore):
             core._baseline_policy_version += ':extensions-' + self.digest
         else:
             core.policy_version += ':extensions-' + self.digest

@@ -178,3 +178,67 @@ test('global, extension, nonliteral, inactive or previously denied rows are not 
    active:true,localDenialApplied:false,localDenyEditable:true});
  }
 });
+
+test('provider filter catalog counts and exact provider selection',()=>{
+ const filterStart=full.indexOf('function providerFilterOptions(');
+ const filterEnd=full.indexOf('function resetProviderSelections(',filterStart);
+ const code=full.slice(filterStart,filterEnd);
+ const inventory={providers:[{provider:'sonarcloud'},{provider:'github'},{provider:'mirror'}],
+  operations:[{provider:'github',operation:'create_pull_request',configuredPolicy:'ALLOW'},{provider:'github',operation:'merge_pull_request',configuredPolicy:'ASK'},
+   {provider:'sonarcloud',operation:'accept_issue',configuredPolicy:'ASK'}]};
+ const ctx=vm.createContext({inventory});
+ vm.runInContext(code,ctx);
+ const result=vm.runInContext("JSON.stringify({options:providerFilterOptions(inventory),all:visibleProviderRows(inventory,'','').length,github:visibleProviderRows(inventory,'github','').length,ask:visibleProviderRows(inventory,'github','ASK').map(r=>r.operation),none:visibleProviderRows(inventory,'mirror','').length})",ctx);
+ assert.deepEqual(JSON.parse(result),{options:[['github',2],['mirror',0],['sonarcloud',1]],all:3,github:2,ask:['merge_pull_request'],none:0});
+ assert.match(html,/id="providers-select"/);
+});
+
+test('unified editor supports scoped transition, verifies descriptor and never retries finish',async()=>{
+ const a=full.indexOf('// Unified V2 editor');
+ const z=full.indexOf('// Separate, opt-in local restriction UI.',a);
+ const code=full.slice(a,z);
+ const elements=new Map(),calls=[];
+ const $=id=>{
+  if(!elements.has(id))elements.set(id,{value:'',hidden:true,disabled:true,textContent:'',
+   children:[],append(x){this.children.push(x);},replaceChildren(){this.children=[];},
+   addEventListener(type,callback){this[type]=callback;}});
+  return elements.get(id);
+ };
+ let sentChange=null,failFinish=false,tamper=false,uv=0;
+ const row={provider:'github',operation:'create_pull_request',actor:'agent',scope:'actor',
+  target:null,currentPolicy:'ASK',editablePolicies:['DENY','ASK','ALLOW'],active:true};
+ const context=vm.createContext({$,row,document:{createElement:()=>({})},action:f=>f,
+  ceremony:async()=>{uv++;return {test:true};},
+  api:async(url,body)=>{
+   calls.push({url,body});
+   if(url.endsWith('/begin')){
+    const c=body.candidate;
+    sentChange={...c,purpose:'OWNER_UNIFIED_POLICY_APPLY_V2',requestId:uuid,
+     authorityDigest:'a'.repeat(64),sourceDigest:'b'.repeat(64),
+     credentialGenerationDigest:'c'.repeat(64),expiresAt:2000};
+    return {kind:'OWNER_UNIFIED_POLICY_CEREMONY_V2',ceremonyId:'ceremony',
+     options:{publicKey:{userVerification:'required'}},changeDigest:'d'.repeat(64),
+     change:tamper?{...sentChange,desiredPolicy:'DENY'}:sentChange,
+     preview:{revision:0,oldPolicy:'ASK',newPolicy:'ALLOW',risk:'EXPANDS',
+      exactExceptions:0,unresolvedRequests:{},globalRevisionImpact:{}}};
+   }
+   if(url.endsWith('/finish')&&failFinish)throw Error('lost answer');
+   return {found:true,requestId:uuid,appliedRevision:1,currentRevision:1,change:sentChange};
+  }});
+ const run=x=>vm.runInContext(x,context);
+ run("let csrf='owner',tab='providers',providerInventory={policyEditorVersion:2,policyRevision:0,policyVersion:'v|owner-policy-v2:0'},localDenyBusy=false,policyReviewBusy=false; const localDenyCoordinate=/^[A-Za-z0-9_.:-]+$/,localDenyUuid=/^[a-f0-9-]{36}$/;"+code);
+ run('unifiedEnabled=true;chooseUnified(row)');
+ $('policy-editor-scope').value='exact';$('policy-editor-target').value='repo-1';
+ $('policy-editor-value').value='ALLOW';$('policy-editor-value').change();
+ tamper=true;await assert.rejects(run('prepareUnified()'));assert.equal(uv,0);
+ await run('confirmUnified()');assert.equal(uv,0);
+ tamper=false;await run('prepareUnified()');
+ assert.match($('policy-editor-result').textContent,/РАСШИРЕНИЕ ПРАВ/);
+ assert.equal(calls.at(-1).body.candidate.target,'repo-1');
+ assert.equal(uv,0);
+ failFinish=true;await assert.rejects(run('confirmUnified()'));assert.equal(uv,1);
+ assert.match($('policy-editor-result').textContent,/Исход неизвестен/);
+ await run('confirmUnified()');assert.equal(calls.filter(c=>c.url.endsWith('/finish')).length,1);
+ await run('readbackUnified()');
+ assert.match($('policy-editor-result').textContent,/Запись исходного UUID подтверждена/);
+});
