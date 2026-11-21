@@ -75,6 +75,12 @@ dependency closure, component/environment binding, and protected
 collector/Registry recovery remain prerequisites. They cannot be
 implemented by making the current flags configurable.
 
+The source-only [collector candidate journal](RELEASE-REGISTRY-P5-POST-MERGE-GATEWAY-CONTRACT.md#collector-snapshot-and-independently-witnessed-candidate-receipt)
+can be composed as the evidence reader; unconfirmed checkpoints refuse
+reads, including after restart. A matching external checkpoint only
+binds the original candidate bytes. It does not clear any of the fixed
+admission gaps, and the collector receipt is not a Registry receipt.
+
 ## Original receipt boundary (no writer yet)
 
 The closed lookup key is authenticated principal + exact repository +
