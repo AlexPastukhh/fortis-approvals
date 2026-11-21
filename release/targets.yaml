@@ -118,6 +118,10 @@ noDeploymentPaths:
   - fortis_approvals/workflow/client.py
   - fortis_approvals/workflow/powershell_client.py
   - fortis_approvals/workflow/intents.py
+  # Offline P5 separate Registry contract, not packaged into any current
+  # runtime. A real Registry image/target needs a separately reviewed catalog.
+  - fortis_approvals/registry/__init__.py
+  - fortis_approvals/registry/boundary.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md

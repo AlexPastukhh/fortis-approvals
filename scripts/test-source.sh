@@ -133,6 +133,7 @@ tests=(
   test_workspace_intents.py
   test_intent_native_integration.py
   test_release_storage_source.py
+  test_registry_boundary.py
 )
 for test in "${tests[@]}"; do
   echo "=== $test ==="

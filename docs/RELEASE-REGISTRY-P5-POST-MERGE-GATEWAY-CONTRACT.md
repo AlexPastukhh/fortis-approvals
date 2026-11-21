@@ -625,6 +625,14 @@ a seventh mandatory real-validator case for this composition (six
 existing retained Impact cases plus this case), with no skips allowed.
 Workflow bytes and the existing publisher/P5 workflow pins are unchanged.
 
+## Registry preview/receipt boundary (separate source module)
+
+The [closed Registry source-only boundary](RELEASE-REGISTRY-P5-TYPED-BOUNDARY.md)
+consumes the present selected-main observation by exact reference/digest;
+it returns only blocked preview and explicit unavailable storage errors.
+It does not promote this collector result to trusted admission, expose
+a live route or create any canonical desired records.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
