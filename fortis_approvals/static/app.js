@@ -468,6 +468,7 @@ async function loadLocalDenyCapabilities(session,epoch){
 function canSelectLocalDeny(row){
  return localDenyEnabled&&localDenySnapshotValid()&&row.providerType==='native'&&
   row.active===true&&row.configured===true&&row.localDenialApplied===false&&
+  row.localDenyEditable===true&&
   ['ASK','ALLOW'].includes(row.configuredPolicy)&&
   [row.actor,row.provider,row.operation].every(x=>typeof x==='string'&&localDenyCoordinate.test(x))&&
   (row.scope==='actor'||(row.scope==='exact'&&typeof row.target==='string'&&

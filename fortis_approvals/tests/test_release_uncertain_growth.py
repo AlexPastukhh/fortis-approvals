@@ -167,6 +167,34 @@ class UncertainGrowthWitnessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_CLAIMED_JOBS'):
             self.review(baseline)
 
+    def test_local_policy_state_is_preserved_during_uncertain_growth(self):
+        from fortis_approvals.extensions.owner_policy_local_core_phase6c import LocalDenyCore
+        from fortis_approvals.core import Authenticator
+        LocalDenyCore(self.core,adapters={},policies={},authenticator=Authenticator({'fixture':'fixture'}))
+        baseline=self.snapshot()
+        self.assertEqual(0,baseline['receipt']['summary']['localPolicy']['revision'])
+        self.append_uncertain()
+        result=self.review(baseline)
+        self.assertEqual(baseline['receipt']['summary']['localPolicy'],
+                         result['receipt']['summary']['localPolicy'])
+
+    def test_changed_local_policy_is_not_uncertain_growth(self):
+        from fortis_approvals.extensions.owner_policy_local_core_phase6c import LocalDenyCore
+        from fortis_approvals.core import Authenticator
+        LocalDenyCore(self.core,adapters={},policies={},authenticator=Authenticator({'fixture':'fixture'}))
+        baseline=self.snapshot()
+        self.append_uncertain()
+        with sqlite3.connect(self.core) as db:
+            db.execute("UPDATE owner_local_policy_meta SET revision=1")
+            db.execute("INSERT INTO owner_local_denials VALUES(?,?,?,?,?)",
+                       (ACTOR,'sonarcloud','accept_issue','ISSUE-1','DENY'))
+            change=dict(actor=ACTOR,provider='sonarcloud',operation='accept_issue',target='ISSUE-1',
+                        requestId=NEW2,expectedRevision=0,newPolicy='DENY',purpose='OWNER_LOCAL_EXACT_DENY_APPLY_V1')
+            db.execute("INSERT INTO owner_local_policy_events VALUES(?,?,?,?,?,?)",
+                       (NEW2,45,'owner',json.dumps(change),0,1))
+        with self.assertRaisesRegex(RuntimeError,'SUMMARY_CHANGED'):
+            self.review(baseline)
+
     def test_growth_cannot_remove_previous_unknown(self):
         baseline=self.snapshot()
         with sqlite3.connect(self.core) as db:

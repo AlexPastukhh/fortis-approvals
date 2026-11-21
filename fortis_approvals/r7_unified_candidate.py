@@ -81,8 +81,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     Restricted machine actor is authorized for four READ + one ASK proposal;
     the same actor NEVER receives owner decisions, raw service token or POST.
     """
-    # An explicit source-only test selector; the default production server
-    # never passes it. It is NOT attestation of installed source or workers.
+    # Explicit trusted composition selector. The normal server only creates
+    # the restricted variant for the reviewed owner release config.
     if local_deny_source_opt_in is not None:
         from .extensions.owner_policy_r7_optin_phase6c4 import R7LocalDenySourceOptIn
         if type(local_deny_source_opt_in) is not R7LocalDenySourceOptIn:
@@ -187,6 +187,10 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     core = core_type(root/'approvals.sqlite',adapters={'sonarcloud':writer},
                 policies=policies,authenticator=auth,owner_verifier=owner,
                 policy_version='r7-p1-sonar-accept-issue-write-v1')
+    if local_deny_source_opt_in is not None and local_deny_source_opt_in.runtime_sonar_only:
+        with core._db() as db:
+            if db.execute("SELECT 1 FROM owner_local_denials WHERE service!='sonarcloud' OR operation!='accept_issue'").fetchone():
+                raise Denied('R7_LOCAL_DENY_RUNTIME_SCOPE_INVALID')
     from .owner_shell import OwnerShellClient
     if local_deny_source_opt_in is None:
         portal = IncidentOwnerPortal(core,owner,strong_operations={G4_OPERATION},
@@ -197,7 +201,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         from .extensions.owner_policy_local_bundle_phase6c3 import OwnerLocalDenyInventoryPortal
         apply_adapter = OwnerLocalDenyApply(
             core,owner,source_digest=local_deny_source_opt_in.source_digest,
-            credential_generation_digest=local_deny_source_opt_in.credential_generation_digest)
+            credential_generation_digest=local_deny_source_opt_in.credential_generation_digest,
+            runtime_sonar_only=local_deny_source_opt_in.runtime_sonar_only)
         portal = OwnerLocalDenyInventoryPortal(
             core,owner,local_deny_apply=apply_adapter,
             strong_operations={G4_OPERATION},read_only_banner=False,

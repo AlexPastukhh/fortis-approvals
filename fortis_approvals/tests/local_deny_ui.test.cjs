@@ -26,7 +26,7 @@ function harness(){
  };
  const row={provider:'sonarcloud',providerType:'native',operation:'accept_issue',
   scope:'actor',actor:'agent-1',target:null,active:true,configured:true,
-  configuredPolicy:'ASK',effectivePolicy:'UNKNOWN',localDenialApplied:false};
+  configuredPolicy:'ASK',effectivePolicy:'UNKNOWN',localDenialApplied:false,localDenyEditable:true};
  const $=id=>{
   if(!elements.has(id))elements.set(id,{value:'',hidden:true,disabled:true,
     textContent:'',addEventListener(type,callback){this[type]=callback;}});
@@ -170,11 +170,11 @@ test('global, extension, nonliteral, inactive or previously denied rows are not 
  const h=harness();await h.load();
  for(const patch of [
   {scope:'global'},{providerType:'extension'},{configuredPolicy:'CONDITIONAL'},
-  {active:false},{configuredPolicy:'DENY'},{localDenialApplied:true}
+  {active:false},{configuredPolicy:'DENY'},{localDenialApplied:true},{localDenyEditable:false}
  ]){
   Object.assign(h.row,patch);
   assert.equal(h.run('canSelectLocalDeny(row)'),false);
   Object.assign(h.row,{scope:'actor',providerType:'native',configuredPolicy:'ASK',
-   active:true,localDenialApplied:false});
+   active:true,localDenialApplied:false,localDenyEditable:true});
  }
 });

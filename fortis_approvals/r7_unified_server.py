@@ -5,6 +5,7 @@ WebAuthn approval; the machine ingress has no decision or execute route.
 No tokens are included; no Docker/host changes. R7 uses its own private state
 and must NEVER attach old A3/R5/G2/G4 volumes or auto-provision credentials.
 """
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -48,6 +49,40 @@ def runtime_endpoints():
     return owner_origin, machine_host
 
 
+def _owner_release_local_deny(extensions, release_nonce, grant, sonar_token):
+    # The owner controller already seals the full config and activates its
+    # root-owned release gate. No new machine route, grant or environment toggle.
+    if extensions is None or 'ownerLocalDeny' not in extensions.value:
+        return None
+    if extensions.value['ownerLocalDeny'] != 'SONAR_ACCEPT_ISSUE_V1':
+        raise RuntimeError('R7_LOCAL_DENY_MODE_INVALID')
+    import uuid
+    if (type(release_nonce) is not str or
+            str(uuid.UUID(release_nonce)) != release_nonce):
+        raise RuntimeError('R7_LOCAL_DENY_REVIEWED_RELEASE_REQUIRED')
+    from .core import canonical
+    from .extensions.owner_policy_r7_optin_phase6c4 import R7LocalDenySourceOptIn
+    root = Path(__file__).resolve().parent
+    files = sorted(p for p in root.rglob('*')
+                   if p.is_file() and (p.suffix == '.py' or 'static' in p.relative_to(root).parts)
+                   and '__pycache__' not in p.parts)
+    if not files:
+        raise RuntimeError('R7_LOCAL_DENY_SOURCE_REQUIRED')
+    manifest = []
+    for path in files:
+        if path.is_symlink():
+            raise RuntimeError('R7_LOCAL_DENY_SOURCE_SYMLINK')
+        manifest.append([path.relative_to(root).as_posix(),
+                         hashlib.sha256(path.read_bytes()).hexdigest()])
+    source = hashlib.sha256(canonical(manifest).encode()).hexdigest()
+    # Bind the actual admitted Sonar credential and machine grant. Only
+    # the combined digest is retained; raw credential bytes never leave R7.
+    credentials = hashlib.sha256(canonical({
+        'purpose':'OWNER_LOCAL_DENY_SONAR_RUNTIME_V1',
+        'grant':grant,'sonarToken':sonar_token}).encode()).hexdigest()
+    return R7LocalDenySourceOptIn(source, credentials, runtime_sonar_only=True)
+
+
 def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
                    bind_host='0.0.0.0', github_pilot=None, analysis_review=None, extensions=None, release_nonce=None,
@@ -74,7 +109,9 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         organizations=organizations,region=region,
         project_keys=(project_key,), github_pilot=github_pilot, analysis_review=analysis_review,
         extensions=extensions, publisher_profile=publisher_profile, publisher_grant=publisher_grant,
-        machine_shell=machine_shell)
+        machine_shell=machine_shell,
+        local_deny_source_opt_in=_owner_release_local_deny(
+            extensions, release_nonce, grant, sonar_token))
     if release_nonce is not None:
         from .extensions.staging import ReleaseGate, StagedMachine, StagedOwner
         runtime = getattr(portal, '_extension_runtime', None)
