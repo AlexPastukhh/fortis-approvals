@@ -243,6 +243,15 @@ class UncertainGrowthWitnessTests(unittest.TestCase):
         self.assertEqual((self.target/'private'/'approvals.sqlite').read_bytes(),
                          self.core.read_bytes())
 
+    def test_read_approval_spend_without_unique_pk_is_not_releasable(self):
+        # No completed spends are needed: a broken one-use schema alone must
+        # block the protected release snapshot, before owner activation.
+        with sqlite3.connect(self.core) as db:
+            db.execute('CREATE TABLE owner_read_approval_spent('
+                       'request_id TEXT,actor TEXT NOT NULL,used_at INTEGER NOT NULL)')
+        with self.assertRaisesRegex(RuntimeError,'PILOT_READ_APPROVAL_SCHEMA_INVALID'):
+            self.snapshot()
+
     def test_changed_local_policy_is_not_uncertain_growth(self):
         from fortis_approvals.extensions.owner_policy_local_core_phase6c import LocalDenyCore
         from fortis_approvals.core import Authenticator

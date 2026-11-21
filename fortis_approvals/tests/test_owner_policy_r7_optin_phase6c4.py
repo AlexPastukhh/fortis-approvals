@@ -91,6 +91,113 @@ class OptInR7BuilderTests(unittest.TestCase):
         self.assertTrue(opt.allow_label_policy_upgrade)
         self.assertIs(type(opt),R7UnifiedPolicySourceOptIn)
 
+    def test_all_method_r7_read_ask_installed_and_provider_not_called_before_uv(self):
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.deploy.image_offline_smoke import FakeSonar
+        state=self.root/'r7-read-ask';state.mkdir(mode=0o700)
+        sonar=FakeSonar()
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',
+                   return_value=self.owner):
+            core,owner,portal,ingress=build_r7_unified_candidate(**dict(
+                self.kwargs,state=state,sonar_transport=sonar,
+                organizations=('offline_org',),project_keys=('offline_project',),
+                unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(
+                    SOURCE,lambda:CREDS,allow_all_method_policy_upgrade=True)))
+        broker=ingress.broker
+        self.assertIs(broker.read_approval,core._owner_read_approval)
+        coord=(ACTOR,'sonarcloud','get_quality_gate')
+        self.assertEqual(core.authority.choices[coord],{'DENY','ASK','ALLOW'})
+        rows=portal.editor.inventory()['operations']
+        row=next(r for r in rows if r['actor']==ACTOR and
+                 (r['provider'],r['operation'])==coord[1:] and r['scope']=='actor')
+        self.assertEqual(row['editablePolicies'],['ALLOW','ASK','DENY'])
+        candidate=dict(actor=ACTOR,provider='sonarcloud',operation='get_quality_gate',
+                       scope='actor',target=None,expectedPolicy='ALLOW',
+                       desiredPolicy='ASK',expectedRevision=0,
+                       expectedPolicyVersion=core.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+        begun=portal.editor.begin(owner._session,owner._csrf,candidate)
+        portal.editor.finish(owner._session,owner._csrf,begun['ceremonyId'],
+                             {'syntheticTestOnlyUv':True},begun['change'])
+        query=dict(requestId=str(uuid.uuid4()),service='sonarcloud',
+                   operation='get_quality_gate',target='offline_project',
+                   params={},reason='Offline R7 one-use read')
+        def wire_read():
+            raw=json.dumps(query).encode()
+            env={'REQUEST_METHOD':'POST','PATH_INFO':'/v1/reads',
+                 'QUERY_STRING':'','SCRIPT_NAME':'',
+                 'HTTP_HOST':'host.docker.internal:19104',
+                 'HTTP_AUTHORIZATION':'Bearer '+GRANT,
+                 'wsgi.url_scheme':'https','CONTENT_TYPE':'application/json',
+                 'CONTENT_LENGTH':str(len(raw)),'wsgi.input':BytesIO(raw)}
+            statuses=[]
+            data=b''.join(ingress(env,lambda status,headers:statuses.append(status)))
+            return int(statuses[0][:3]),json.loads(data)
+        status,pending=wire_read()
+        self.assertEqual((status,pending['state']),(202,'PENDING'))
+        self.assertEqual(set(pending),{'requestId','service','operation','state'})
+        self.assertEqual(len(sonar.calls),0)
+        with patch.object(owner,'verify',return_value='offline-owner',create=True):
+            self.assertEqual(core.owner_decide(query['requestId'],'approve',
+                                               {'offlineFakeProof':True})['state'],'EXECUTED')
+        status,result=wire_read()
+        self.assertEqual((status,result['data']['status']),(200,'OK'))
+        provider_calls=len(sonar.calls)
+        self.assertGreater(provider_calls,0)
+        status,denied=wire_read()
+        self.assertEqual((status,denied['error']),(403,'REPO_DENIED'))
+        self.assertEqual(len(sonar.calls),provider_calls)
+
+    def test_all_method_initial_deny_extension_can_be_allowed_without_widening_grants(self):
+        from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
+        from fortis_approvals.extensions.runtime import ExtensionConfig
+        from fortis_approvals.extensions.model import Provider,Operation
+        from fortis_approvals.integrations.review_schema import object_schema
+        from fortis_approvals.deploy.image_offline_smoke import FakeSonar
+        state=self.root/'deny-extension';state.mkdir(mode=0o700)
+        called=[]
+        empty=object_schema({})
+        provider=Provider('fixture',(
+            Operation('read_item','Read only registered record','read',empty,empty,
+                      lambda ctx: called.append(ctx.target) or {}),))
+        config=ExtensionConfig({'schemaVersion':1,'providers':{'fixture':{
+            'credentials':{},'operations':{'read_item':{
+                'policy':'DENY','targets':['record']}}}}})
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',
+                   return_value=self.owner):
+            core,owner,portal,_=build_r7_unified_candidate(**dict(
+                self.kwargs,state=state,sonar_transport=FakeSonar(),
+                extensions=config,extension_providers=(provider,),
+                unified_policy_source_opt_in=R7UnifiedPolicySourceOptIn(
+                    SOURCE,lambda:CREDS,allow_all_method_policy_upgrade=True)))
+        rt=portal._extension_runtime
+        coord=(ACTOR,'fixture','read_item','record')
+        self.assertEqual(core.authority.choices[coord],{'DENY','ASK','ALLOW'})
+        rows=portal.editor.inventory(rt)['operations']
+        matching=[row for row in rows if row['scope']=='exact' and
+                  (row['actor'],row['provider'],row['operation'],row['target'])==coord]
+        self.assertEqual(len(matching),1)
+        self.assertEqual((matching[0]['currentPolicy'],matching[0]['editablePolicies']),
+                         ('DENY',['ALLOW','ASK','DENY']))
+        def call(target):
+            return rt.call(GRANT,dict(requestId=str(uuid.uuid4()),service='fixture',
+                       operation='read_item',target=target,params={},reason='Offline registered read'))
+        with self.assertRaises(Denied):
+            call('record')
+        self.assertEqual(called,[])
+        candidate=dict(actor=ACTOR,provider='fixture',operation='read_item',
+                       scope='exact',target='record',expectedPolicy='DENY',
+                       desiredPolicy='ALLOW',expectedRevision=0,
+                       expectedPolicyVersion=core.policy_version,
+                       reasonCode='OWNER_POLICY_CHANGE')
+        begin=portal.editor.begin(owner._session,owner._csrf,candidate)
+        portal.editor.finish(owner._session,owner._csrf,begin['ceremonyId'],
+                             {'syntheticTestOnlyUv':True},begin['change'])
+        with self.assertRaises(Denied):
+            call('unregistered')
+        self.assertEqual(called,[])
+        self.assertEqual(call('record')['state'],'EXECUTED')
+        self.assertEqual(called,['record'])
+
     def test_owner_label_allow_admission_and_persistence_opt_in(self):
         from fortis_approvals.extensions.owner_policy_r7_v2 import R7UnifiedPolicySourceOptIn
         from fortis_approvals.extensions.owner_policy_engine_v2 import UnifiedPolicyCore
@@ -188,6 +295,9 @@ class OptInR7BuilderTests(unittest.TestCase):
         with self.assertRaises(Denied):
             build()
         widened,*_=build(all_methods=True)
+        # Verify the real R7 composition installs the one-shot READ gate,
+        # not merely that an isolated broker test can install it.
+        self.assertIsNotNone(getattr(widened,'_owner_read_approval',None))
         for provider,op in (('github','update_pull_request'),
                             ('github','merge_pull_request'),
                             ('sonarcloud','accept_issue'),

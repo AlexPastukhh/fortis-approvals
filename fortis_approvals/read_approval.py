@@ -14,6 +14,20 @@ _SERVICE = "read-authorization"
 _OPERATION = "approve"
 
 
+def _assert_spent_schema(db):
+    """Never treat a pre-existing table without a one-use primary key as safe."""
+    columns = tuple((row[1], row[2], row[3], row[5]) for row in
+                    db.execute('PRAGMA table_info(owner_read_approval_spent)'))
+    primary_keys = tuple((row[2], row[3]) for row in
+                         db.execute('PRAGMA index_list(owner_read_approval_spent)')
+                         if row[3] == 'pk')
+    if (columns != (('request_id', 'TEXT', 0, 1),
+                    ('actor', 'TEXT', 1, 0),
+                    ('used_at', 'INTEGER', 1, 0)) or
+            primary_keys != ((1, 'pk'),)):
+        raise Denied('OWNER_READ_SPEND_SCHEMA_INVALID')
+
+
 class OwnerReadApprovalAdapter:
     def __init__(self, core, broker):
         self.core, self.broker = core, broker
@@ -91,12 +105,15 @@ class OwnerReadApprovalAdapter:
                 'expectedVersion':0,'reason':query['reason']}
 
     def begin_or_consume(self, credential, actor, query):
+        with self.core._db() as db:
+            _assert_spent_schema(db)
         payload=self.request(actor,query)
         row=self.core.client(credential,'submit',payload)
         if row['state'] != 'EXECUTED':
             return row['state']
         with self.core._db() as db:
             db.execute('BEGIN IMMEDIATE')
+            _assert_spent_schema(db)
             persisted=db.execute('SELECT * FROM requests WHERE id=?',
                                  (query['requestId'],)).fetchone()
             if persisted is None:
@@ -135,12 +152,13 @@ def install_owner_read_approval(core,broker,portal):
     if (getattr(broker,'read_approval',None) is not None or
             _SERVICE in core.adapters):
         raise Denied("OWNER_READ_ALREADY_INSTALLED")
+    with core._db() as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS owner_read_approval_spent(
+            request_id TEXT PRIMARY KEY,actor TEXT NOT NULL,used_at INTEGER NOT NULL)""")
+        _assert_spent_schema(db)
     adapter=OwnerReadApprovalAdapter(core,broker)
     core.adapters[_SERVICE]=adapter
     core._owner_read_approval=adapter
     broker.read_approval=adapter
     portal.strong_operations |= {(_SERVICE,_OPERATION)}
-    with core._db() as db:
-        db.execute("""CREATE TABLE IF NOT EXISTS owner_read_approval_spent(
-            request_id TEXT PRIMARY KEY,actor TEXT NOT NULL,used_at INTEGER NOT NULL)""")
     return adapter

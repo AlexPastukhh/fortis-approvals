@@ -166,9 +166,12 @@ class RepoIntentBroker:
         if action not in self.actor_read_operations.get(actor, ()):
             raise Denied('REPO_READ_GRANT_DENIED')
         policy=self.core._policy(actor,request)
-        if policy != 'ALLOW' and not (policy=='ASK' and
-                getattr(self,'read_approval',None) is not None):
-            raise Denied('REPO_READ_POLICY_DENIED')
+        approval=getattr(self,'read_approval',None)
+        if policy != 'ALLOW' and not (policy=='ASK' and approval is not None):
+            # Existing R1-R7 READ admission kept this denial category. The
+            # new one-shot ASK route is enabled only by explicit R7 install.
+            raise Denied('REPO_SONAR_READ_ALLOW_REQUIRED' if approval is None
+                         else 'REPO_READ_POLICY_DENIED')
         return request
 
     def read(self, ingress_credential, query):
@@ -246,6 +249,23 @@ class RepoIntentBroker:
         # policy fingerprint, Sonar credential or remote API response here.
         return {'requestId': row['requestId'], 'state': row['state']}
 
+    def _sonar_mutation_policy(self, actor, payload):
+        """Legacy Sonar remains ASK-only; only reviewed V2 may allow writes.
+
+        A caller cannot widen a historical ASK-only Core by replacing its
+        in-memory policy literal. V2 authority instead binds owner-UV events,
+        admission and revision before permitting outer ALLOW.
+        """
+        policy=self.core._policy(actor,payload)
+        if policy=='ASK':
+            return
+        if policy=='ALLOW':
+            from .extensions.owner_policy_engine_v2 import UnifiedPolicyCore
+            if type(self.core) is UnifiedPolicyCore and self.core.authority is not None:
+                return
+        raise Denied('REPO_SONAR_ASK_REQUIRED' if policy=='ALLOW' else
+                     'REPO_SONAR_POLICY_DENIED')
+
     def submit(self, ingress_credential, intent):
         # Authenticate and authorize the actor BEFORE any remote GET.
         actor = self.core.auth.authenticate(ingress_credential)
@@ -265,8 +285,7 @@ class RepoIntentBroker:
             from .integrations.sonarcloud.gateway.review_actions import SonarReviewAdapter
             if not isinstance(adapter, SonarReviewAdapter):
                 raise Denied('REPO_SONAR_REVIEW_UNAVAILABLE')
-            if self.core._policy(actor, request) not in ('ASK','ALLOW'):
-                raise Denied('REPO_SONAR_POLICY_DENIED')
+            self._sonar_mutation_policy(actor,request)
             try:
                 prior = self.core.client(ingress_credential, 'status', request['requestId'])
             except Denied as exc:
@@ -281,8 +300,7 @@ class RepoIntentBroker:
                 body = original
             else:
                 body = adapter.build_intent(request)
-            if self.core._policy(actor, body) not in ('ASK','ALLOW'):
-                raise Denied('REPO_SONAR_POLICY_DENIED')
+            self._sonar_mutation_policy(actor,body)
         elif action == ('sonarcloud', 'accept_issue'):
             from .integrations.sonarcloud.gateway.sonar import SonarIssueAdapter
             # Scope and exact readback digest are trusted-adapter outputs,
@@ -300,8 +318,7 @@ class RepoIntentBroker:
                            'expectedIssueSha256': '0' * 64},
                 'expectedVersion': 0, 'reason': request['reason'],
             }
-            if self.core._policy(actor, provisional) not in ('ASK','ALLOW'):
-                raise Denied('REPO_SONAR_POLICY_DENIED')
+            self._sonar_mutation_policy(actor,provisional)
             issue = adapter.read_issue(params['projectKey'], request['target'])
             body = {
                 'requestId': request['requestId'],
@@ -314,8 +331,7 @@ class RepoIntentBroker:
             }
             # The Core/executor still validates the frozen issue projection
             # and immutable request fingerprint before any provider effect.
-            if self.core._policy(actor, body) not in ('ASK','ALLOW'):
-                raise Denied('REPO_SONAR_POLICY_DENIED')
+            self._sonar_mutation_policy(actor,body)
         elif action in GITHUB_ACTION_OPERATIONS:
             body = {
                 'requestId': request['requestId'],

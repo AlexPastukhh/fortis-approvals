@@ -149,8 +149,11 @@ class NativeIngress:
             # not keep ASK-only method-name ceilings in machine capabilities.
             # A target-specific visual operation uses its existing exact
             # registered policy coordinate.
+            # Some legacy integrations expose a read-only wrapper without
+            # a broker operation inventory. Missing grants advertise no
+            # methods; never infer access from packaged method names.
             registered_ops=sorted(op for service,op in
-                self.broker.actor_operations.get(actor,())
+                getattr(self.broker,'actor_operations',{}).get(actor,())
                 if service=='github' and op!='push_commits')
             method_policies={}
             for op in registered_ops:

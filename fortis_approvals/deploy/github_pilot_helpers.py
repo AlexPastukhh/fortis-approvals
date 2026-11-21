@@ -102,6 +102,19 @@ def _policy_json(value):
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
 
 
+def _read_approval_spend_schema(db, code):
+    # Operator-side independent check: the same one-use uniqueness required
+    # by the installed Gateway must survive protected backup/restore.
+    columns=tuple((row[1],row[2],row[3],row[5]) for row in
+                  db.execute('PRAGMA table_info(owner_read_approval_spent)'))
+    primary_keys=tuple((row[2],row[3]) for row in
+                       db.execute('PRAGMA index_list(owner_read_approval_spent)')
+                       if row[3]=='pk')
+    require(columns==(('request_id','TEXT',0,1),
+                      ('actor','TEXT',1,0),('used_at','INTEGER',1,0)) and
+            primary_keys==((1,'pk'),),code)
+
+
 def _legacy_local_policy_receipt(db):
     # V1 receipt shape and digest remain exactly backward compatible.
     for table, columns in _LOCAL_POLICY_TABLES.items():
@@ -402,11 +415,9 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         spent_names={x[0] for x in a.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='owner_read_approval_spent'")}
         if spent_names:
-            require(spent_names == {'owner_read_approval_spent'} and
-                    tuple(x[1] for x in a.execute(
-                    'PRAGMA table_info(owner_read_approval_spent)')) ==
-                    ('request_id','actor','used_at'),
+            require(spent_names == {'owner_read_approval_spent'},
                     'PILOT_READ_APPROVAL_SCHEMA_INVALID')
+            _read_approval_spend_schema(a,'PILOT_READ_APPROVAL_SCHEMA_INVALID')
             spent=list(a.execute('SELECT request_id,actor,used_at '
                                   'FROM owner_read_approval_spent ORDER BY request_id'))
             require(len(spent)<=100000 and all(
@@ -615,9 +626,7 @@ def _core_growth_witness(volume):
         # The guarded V3 native READ-ASK receipt adds one strictly
         # bounded, append-only spent-ID table to Core state.
         if 'owner_read_approval_spent' in names:
-            require(tuple(x[1] for x in db.execute(
-                'PRAGMA table_info(owner_read_approval_spent)')) ==
-                ('request_id','actor','used_at'),'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
+            _read_approval_spend_schema(db,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
             extra.add('owner_read_approval_spent')
         require(names==set(expected)|extra,'PILOT_GROWTH_CORE_SCHEMA_CHANGED')
         for table,names in expected.items():

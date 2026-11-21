@@ -1,6 +1,8 @@
 """Source-only exact one-shot native READ ASK contract, no provider network."""
+import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -102,6 +104,71 @@ class ReadAskTests(unittest.TestCase):
         with self.assertRaises((Denied,Stale,Conflict)):
             self.broker.read(GRANT,changed)
         self.assertEqual(self.reader.calls,[])
+
+    def test_expired_approved_read_never_contacts_provider(self):
+        self.change('ALLOW','ASK')
+        query=self.query()
+        self.assertEqual(self.broker.read(GRANT,query)['state'],'PENDING')
+        with patch.object(self.owner,'verify',return_value='offline-owner',create=True):
+            self.assertEqual(self.core.owner_decide(query['requestId'],'approve',
+                             {'offlineFakeProof':True})['state'],'EXECUTED')
+        expires=self.core._read(query['requestId'])['expiresAt']
+        with patch.object(self.core,'clock',return_value=expires):
+            with self.assertRaises(Stale):
+                self.broker.read(GRANT,query)
+        self.assertEqual(self.reader.calls,[])
+
+    def test_parallel_consume_allows_exactly_one_provider_read(self):
+        self.change('ALLOW','ASK')
+        query=self.query()
+        self.assertEqual(self.broker.read(GRANT,query)['state'],'PENDING')
+        with patch.object(self.owner,'verify',return_value='offline-owner',create=True):
+            self.assertEqual(self.core.owner_decide(query['requestId'],'approve',
+                             {'offlineFakeProof':True})['state'],'EXECUTED')
+        def attempt(_):
+            try:
+                return self.broker.read(GRANT,query)
+            except Denied as exc:
+                return str(exc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes=list(pool.map(attempt,range(2)))
+        self.assertEqual(sum(type(x) is dict and 'data' in x for x in outcomes),1)
+        self.assertEqual(sum('ALREADY_USED' in x for x in outcomes if type(x) is str),1)
+        self.assertEqual(len(self.reader.calls),1)
+
+    def test_altered_spend_schema_fails_closed_before_read(self):
+        self.change('ALLOW','ASK')
+        query=self.query()
+        self.assertEqual(self.broker.read(GRANT,query)['state'],'PENDING')
+        with patch.object(self.owner,'verify',return_value='offline-owner',create=True):
+            self.assertEqual(self.core.owner_decide(query['requestId'],'approve',
+                             {'offlineFakeProof':True})['state'],'EXECUTED')
+        with self.core._db() as db:
+            db.execute('DROP TABLE owner_read_approval_spent')
+            db.execute('CREATE TABLE owner_read_approval_spent('
+                       'request_id TEXT,actor TEXT NOT NULL,used_at INTEGER NOT NULL)')
+        with self.assertRaisesRegex(Denied,'OWNER_READ_SPEND_SCHEMA_INVALID'):
+            self.broker.read(GRANT,query)
+        self.assertEqual(self.reader.calls,[])
+
+    def test_preexisting_unsafe_spend_schema_rejected_on_install(self):
+        path=self.root/'unsafe-core.sqlite'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE owner_read_approval_spent('
+                       'request_id TEXT,actor TEXT NOT NULL,used_at INTEGER NOT NULL)')
+        path.chmod(0o600)
+        core=UnifiedPolicyCore(path,adapters={'sonarcloud':object()},
+            policies={COORD:'ALLOW'},authenticator=Authenticator({GRANT:ACTOR}),
+            owner_verifier=self.owner,policy_version='native-read')
+        core.install_policy_authority({COORD:{'DENY','ASK','ALLOW'}})
+        broker=RepoIntentBroker(core,actor_operations={ACTOR:{('synthetic','set_ask')}},
+            actor_read_operations={ACTOR:{(SERVICE,OPERATION)}},
+            read_adapters={'sonarcloud':self.reader})
+        portal=UnifiedPolicyPortal(core,self.owner)
+        with self.assertRaisesRegex(Denied,'OWNER_READ_SPEND_SCHEMA_INVALID'):
+            install_owner_read_approval(core,broker,portal)
+        self.assertNotIn('read-authorization',core.adapters)
+        self.assertIsNone(getattr(broker,'read_approval',None))
 
     def test_no_approval_if_owner_rejects(self):
         self.change('ALLOW','ASK')
