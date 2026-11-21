@@ -258,6 +258,25 @@ class CollectorSnapshotStore:
                 raise Stale('P5_SNAPSHOT_ANCHOR_CHANGED')
             return value
 
+    def anchored_batch(self,evidence_ids):
+        """Internal bounded consistent snapshot/receipt read, not admission."""
+        _need(type(evidence_ids) is list and len(evidence_ids)<=64
+              and all(_uuid(e) for e in evidence_ids)
+              and len(set(evidence_ids))==len(evidence_ids),
+              'P5_SNAPSHOT_BATCH_INVALID')
+        anchor=self._anchor()
+        with self._db() as db:
+            rows,actual=self._checked(db)
+            _need(anchor==actual,'P5_SNAPSHOT_ANCHOR_MISMATCH')
+            by_id={row[1]:row for row in rows}
+            _need(all(e in by_id for e in evidence_ids),'P5_SNAPSHOT_NOT_FOUND')
+            result={'checkpoint':actual,'entries':[
+                {'snapshot':loads_strict(by_id[e][4]),
+                 'receipt':self._receipt(by_id[e],anchored=True)} for e in evidence_ids]}
+            if self._anchor()!=anchor:
+                raise Stale('P5_SNAPSHOT_ANCHOR_CHANGED')
+            return result
+
     def read(self,evidence_id):
         """Source-only reader for RegistryBoundary; refuses unanchored bytes."""
         return self._read(evidence_id,snapshot=True)
