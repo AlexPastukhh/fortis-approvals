@@ -9,8 +9,11 @@ function harness(){
   const elements=new Map(),notifications=[],requests=[],timers=[];
   const state={pending:[],history:[], logged:true, csrf:'known-csrf',permission:'default'};
   class Element{
-    constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.hidden=false;this.textContent='';
+    constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.hidden=false;this.textContent='';this.value='';
       this.classList={toggle(){}};this.onclick=null;this.onsubmit=null;}
+    addEventListener(type,fn){this['on'+type]=fn;}
+    setAttribute(name,value){this[name]=value;}
+    querySelectorAll(selector){assert.equal(selector,'.detail-actions button');return this.children.filter(e=>e.className==='detail-actions').flatMap(e=>e.children.filter(b=>b.tag==='button'));}
     replaceChildren(...args){this.children=[...args];}
     append(...args){this.children.push(...args);}
     get childElementCount(){return this.children.length;}
@@ -29,6 +32,7 @@ function harness(){
     if(url==='/v1/owner/session')return state.logged?response({owner:'owner',csrf:state.csrf}):{
       ok:false,status:403,json:async()=>({error:'OWNER_SESSION_REQUIRED'})};
     if(url==='/v1/owner/pending')return response(state.pending);
+    if(url==='/v1/owner/unresolved')return response({items:[],total:0,truncated:false});
     if(url==='/v1/owner/history')return response(state.history);
     if(url==='/v1/owner/decision/session'){
       const body=JSON.parse(opts.body);
@@ -77,7 +81,7 @@ test('candidate G4 ASK preview cannot approve while WRITE disabled, but can reje
     request:{service:'sonarcloud',operation:'accept_issue',target:'ISSUE-1',reason:'review'}});
   await h.timers[0].f();await h.flush();
   h.elements.get('requests').children[0].onclick();
-  const buttons=h.elements.get('detail').children.filter(e=>e.tag==='button');
+  const buttons=h.elements.get('detail').children.find(e=>e.className==='detail-actions').children.filter(e=>e.tag==='button');
   assert.equal(buttons.length,2);
   assert.equal(buttons[0].textContent,'Подтвердить');
   assert.equal(buttons[0].disabled,true);
@@ -94,7 +98,7 @@ test('ordinary approval uses session+CSRF+exact fingerprint, not WebAuthn prompt
   const buttons=h.elements.get('requests').children;
   assert.equal(buttons.length,1);
   buttons[0].onclick();
-  const decisionButton=h.elements.get('detail').children.find(e=>e.tag==='button'&&e.textContent==='Подтвердить');
+  const decisionButton=h.elements.get('detail').children.find(e=>e.className==='detail-actions').children.find(e=>e.tag==='button'&&e.textContent==='Подтвердить');
   assert.ok(decisionButton);
   await decisionButton.onclick();await h.flush();
   const decision=h.requests.find(r=>r.url==='/v1/owner/decision/session');

@@ -47,7 +47,7 @@ function signedOut(message){
  shellConfigured=false;$('powershell-execute').disabled=true;
  if($('policy-review-button'))clearPolicyReview('Сессия владельца завершена.');
  policyPreviewRow=null;providerInventory=null;policyReviewCapabilities=null;
- resetLocalDenyPanel();
+ resetLocalDenyPanel();resetUnifiedPolicyPanel();
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
@@ -362,7 +362,7 @@ $('enroll').onsubmit=action(async()=>{const begin=await api('/v1/enroll/begin',{
  const response=await ceremony(begin,true);await api('/v1/enroll/finish',{ceremonyId:begin.ceremonyId,response});
  $('invitation').value='';$('registration').hidden=true;status('Ключ зарегистрирован. Теперь войдите.');});
 function switchWorkspaceTab(which){
- if(which!=='providers')resetLocalDenyPanel();
+ if(which!=='providers'){resetLocalDenyPanel();resetUnifiedPolicyPanel();}
  tab=which;
  $('approval-view').hidden=which==='powershell'||which==='providers';
  $('powershell-view').hidden=which!=='powershell';
@@ -417,6 +417,160 @@ function clearPolicyReview(message='Для подтверждения снача
  $('policy-review-button').disabled=true;
  $('policy-review-output').textContent=message;
 }
+
+// Unified V2 editor is never enabled by source presence. Inventory and a
+// separate owner-only capability must both confirm the installed authority.
+const unifiedPrefix='/v1/owner/policy/editor';
+const unifiedValues=['DENY','ASK','ALLOW'];
+let unifiedEnabled=false,unifiedRow=null,unifiedPrepared=null,unifiedUnknown=null,unifiedBusy=false,unifiedEpoch=0;
+function unifiedSame(epoch,session){
+ return !!session&&csrf===session&&tab==='providers'&&unifiedEnabled&&unifiedEpoch===epoch;
+}
+function updateUnifiedControls(){
+ const available=!!csrf&&tab==='providers'&&unifiedEnabled;
+ const edit=available&&!unifiedBusy&&!unifiedUnknown&&!!unifiedRow;
+ const exact=$('policy-editor-scope').value==='exact';
+ $('policy-editor-scope').disabled=!edit||unifiedRow.scope!=='actor';
+ $('policy-editor-target').disabled=!edit||!exact||unifiedRow.scope==='exact';
+ $('policy-editor-value').disabled=!edit;
+ $('policy-editor-prepare').disabled=!edit||!unifiedCandidate();
+ $('policy-editor-confirm').disabled=!edit||!unifiedPrepared;
+ $('policy-editor-readback').disabled=!available||unifiedBusy||!unifiedUnknown;
+}
+function resetUnifiedPolicyPanel(){
+ unifiedEpoch++;unifiedEnabled=false;unifiedRow=null;unifiedPrepared=null;
+ $('policy-editor-panel').hidden=true;
+ $('policy-editor-selection').textContent='Выберите правило.';
+ $('policy-editor-result').textContent='';
+ updateUnifiedControls();
+}
+function canSelectUnified(row){
+ return unifiedEnabled&&!!row&&row.active===true&&
+  ['actor','exact'].includes(row.scope)&&unifiedValues.includes(row.currentPolicy)&&
+  Array.isArray(row.editablePolicies)&&row.editablePolicies.every(p=>unifiedValues.includes(p))&&
+  row.editablePolicies.some(p=>p!==row.currentPolicy);
+}
+function unifiedCandidate(){
+ if(!unifiedRow||!canSelectUnified(unifiedRow)||!providerInventory)return null;
+ const row=unifiedRow,scope=$('policy-editor-scope').value;
+ const target=scope==='exact'?$('policy-editor-target').value:null;
+ const desiredPolicy=$('policy-editor-value').value;
+ if(!['actor','exact'].includes(scope)||(row.scope==='exact'&&(scope!=='exact'||target!==row.target))||
+    (scope==='exact'&&!localDenyCoordinate.test(target))||
+    !row.editablePolicies.includes(desiredPolicy)||desiredPolicy===row.currentPolicy)return null;
+ return {actor:row.actor,provider:row.provider,operation:row.operation,scope,target,
+  expectedPolicy:row.currentPolicy,desiredPolicy,expectedRevision:providerInventory.policyRevision,
+  expectedPolicyVersion:providerInventory.policyVersion,reasonCode:'OWNER_POLICY_CHANGE'};
+}
+function chooseUnified(row){
+ if(unifiedBusy||unifiedUnknown||!canSelectUnified(row))return;
+ unifiedEpoch++;unifiedPrepared=null;unifiedRow=row;
+ $('policy-editor-selection').textContent=[row.provider,row.operation,row.actor,
+   row.target??'Все target','Сейчас: '+row.currentPolicy].join(' · ');
+ $('policy-editor-scope').value=row.scope;
+ $('policy-editor-target').value=row.target??'';
+ const select=$('policy-editor-value');select.replaceChildren();
+ for(const policy of unifiedValues){
+  if(!row.editablePolicies.includes(policy)||policy===row.currentPolicy)continue;
+  const option=document.createElement('option');option.value=policy;option.textContent=policy;select.append(option);
+ }
+ select.value=unifiedValues.find(p=>row.editablePolicies.includes(p)&&p!==row.currentPolicy)??'';
+ $('policy-editor-result').textContent='Проверьте параметры и последствия. Права ещё не изменены.';
+ updateUnifiedControls();
+}
+function verifiedUnifiedBegin(begin,candidate){
+ const change=begin?.change;
+ return begin?.kind==='OWNER_UNIFIED_POLICY_CEREMONY_V2'&&
+  typeof begin.ceremonyId==='string'&&!!begin.ceremonyId&&
+  /^[a-f0-9]{64}$/.test(begin.changeDigest)&&
+  begin.options?.publicKey?.userVerification==='required'&&
+  change?.purpose==='OWNER_UNIFIED_POLICY_APPLY_V2'&&
+  Object.keys(change).length===Object.keys(candidate).length+6&&
+  Object.keys(candidate).every(k=>candidate[k]===change[k])&&
+  localDenyUuid.test(change.requestId)&&Number.isSafeInteger(change.expiresAt)&&
+  ['authorityDigest','sourceDigest','credentialGenerationDigest'].every(k=>/^[a-f0-9]{64}$/.test(change[k]))&&
+  begin.preview?.revision===candidate.expectedRevision&&
+  begin.preview?.oldPolicy===candidate.expectedPolicy&&begin.preview?.newPolicy===candidate.desiredPolicy&&
+  ['EXPANDS','RESTRICTS'].includes(begin.preview?.risk);
+}
+async function prepareUnified(){
+ if(unifiedBusy||unifiedUnknown||localDenyBusy||policyReviewBusy||!csrf)return;
+ const candidate=unifiedCandidate();
+ if(!candidate)return;
+ const epoch=++unifiedEpoch,session=csrf;
+ unifiedPrepared=null;unifiedBusy=true;updateUnifiedControls();
+ try{
+  const begin=await api(unifiedPrefix+'/begin',{candidate},true);
+  if(!unifiedSame(epoch,session))return;
+  if(!verifiedUnifiedBegin(begin,candidate))throw Error('Описание изменения не соответствует выбранному правилу.');
+  unifiedPrepared={begin,epoch,session};
+  $('policy-editor-result').textContent=[
+   [candidate.provider,candidate.operation,candidate.actor,candidate.target??'Правило метода'].join(' · '),
+   candidate.expectedPolicy+' → '+candidate.desiredPolicy,
+   begin.preview.risk==='EXPANDS'?'РАСШИРЕНИЕ ПРАВ: метод может получить дополнительные полномочия.':'Ограничение прав.',
+   'Точечные исключения сохраняются: '+begin.preview.exactExceptions,
+   'Незавершённые заявки этого правила: '+JSON.stringify(begin.preview.unresolvedRequests),
+   'Общая ревизия изменится. PENDING/APPROVED требуют нового рассмотрения: '+JSON.stringify(begin.preview.globalRevisionImpact),
+   'UUID: '+begin.change.requestId,
+   'Права не изменены. Для применения необходимо отдельное подтверждение WebAuthn.'
+  ].join('\n');
+ }catch(err){
+  if(unifiedSame(epoch,session))$('policy-editor-result').textContent=err.message;
+  throw err;
+ }finally{unifiedBusy=false;updateUnifiedControls();}
+}
+function unifiedReceiptMatches(result,change){
+ return result?.found===true&&result.requestId===change.requestId&&
+  result.appliedRevision===change.expectedRevision+1&&Number.isSafeInteger(result.currentRevision)&&
+  result.currentRevision>=result.appliedRevision&&
+  result.change&&Object.keys(result.change).length===Object.keys(change).length&&
+  Object.keys(change).every(k=>result.change[k]===change[k]);
+}
+async function confirmUnified(){
+ const prepared=unifiedPrepared;
+ if(!prepared||unifiedBusy||unifiedUnknown||!unifiedSame(prepared.epoch,prepared.session))return;
+ const {begin,epoch,session}=prepared;
+ unifiedPrepared=null;unifiedBusy=true;updateUnifiedControls();
+ let sent=false;
+ try{
+  const response=await ceremony(begin);
+  if(!unifiedSame(epoch,session))return;
+  unifiedUnknown=begin.change;sent=true;
+  const result=await api(unifiedPrefix+'/finish',{ceremonyId:begin.ceremonyId,response,change:begin.change},true);
+  if(!unifiedReceiptMatches(result,begin.change))throw Error('Запись не подтверждена.');
+  unifiedUnknown=null;unifiedRow=null;unifiedEnabled=false;
+  if(csrf===session&&tab==='providers')$('policy-editor-result').textContent='Изменение подтверждено. UUID: '+result.requestId+
+   '. Ревизия: '+result.appliedRevision+'. Обновите инвентарь.';
+ }catch(err){
+  if(unifiedSame(epoch,session))$('policy-editor-result').textContent=sent?
+   'Исход неизвестен. UUID: '+begin.change.requestId+'. Используйте проверку UUID, не повторяйте изменение.':
+   'WebAuthn не завершён. Изменение не отправлено.';
+  throw err;
+ }finally{unifiedBusy=false;updateUnifiedControls();}
+}
+async function readbackUnified(){
+ if(!unifiedUnknown||unifiedBusy||!unifiedEnabled||!csrf||tab!=='providers')return;
+ const change=unifiedUnknown,epoch=unifiedEpoch,session=csrf;
+ unifiedBusy=true;updateUnifiedControls();
+ try{
+  const result=await api(unifiedPrefix+'/readback',{requestId:change.requestId},true);
+  if(!unifiedSame(epoch,session))return;
+  if(!unifiedReceiptMatches(result,change)){
+   $('policy-editor-result').textContent='Исход не подтверждён. Не повторяйте изменение. UUID: '+change.requestId;return;
+  }
+  unifiedUnknown=null;unifiedRow=null;unifiedEnabled=false;
+  $('policy-editor-result').textContent='Запись исходного UUID подтверждена. Обновите инвентарь.';
+ }finally{unifiedBusy=false;updateUnifiedControls();}
+}
+for(const id of ['policy-editor-scope','policy-editor-target','policy-editor-value']){
+ $(id).addEventListener(id==='policy-editor-target'?'input':'change',()=>{
+  unifiedEpoch++;unifiedPrepared=null;updateUnifiedControls();
+ });
+}
+$('policy-editor-prepare').onclick=action(prepareUnified);
+$('policy-editor-confirm').onclick=action(confirmUnified);
+$('policy-editor-readback').onclick=action(readbackUnified);
+
 
 // Separate, opt-in local restriction UI. Server WebAuthn/CAS is the authority.
 const localDenyPrefix='/v1/owner/policy/local-deny';
@@ -599,17 +753,62 @@ $('local-deny-prepare').onclick=action(prepareLocalDeny);
 $('local-deny-confirm').onclick=action(confirmLocalDeny);
 $('local-deny-readback').onclick=action(readbackLocalDeny);
 
+let selectedProviderFilter='';
+function providerFilterOptions(inventory){
+ const counts=new Map();
+ for(const provider of inventory.providers)counts.set(provider.provider,0);
+ for(const row of inventory.operations)counts.set(row.provider,(counts.get(row.provider)??0)+1);
+ return [...counts.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+}
+function syncProviderFilter(){
+ const select=$('providers-select'),previous=select.value??'';
+ const options=providerFilterOptions(providerInventory);
+ const all=document.createElement('option');all.value='';
+ all.textContent='Все провайдеры ('+providerInventory.operations.length+')';
+ select.replaceChildren(all);
+ for(const [provider,count] of options){
+  const option=document.createElement('option');option.value=provider;
+  option.textContent=provider+' ('+count+')';select.append(option);
+ }
+ select.value=options.some(([provider])=>provider===previous)?previous:'';
+ selectedProviderFilter=select.value;
+}
+function visibleProviderRows(inventory,provider,query){
+ const search=query.trim().toLowerCase();
+ return inventory.operations.filter(row=>(!provider||row.provider===provider)&&[
+  row.provider,row.operation,row.actor,row.target,row.configuredPolicy,row.effectivePolicy
+ ].some(value=>String(value??'').toLowerCase().includes(search)));
+}
+function resetProviderSelections(){
+ if(localDenyBusy||policyReviewBusy||localDenyUnknown||unifiedBusy||unifiedUnknown)return false;
+ unifiedEpoch++;unifiedRow=null;unifiedPrepared=null;
+ $('policy-editor-selection').textContent='Выберите правило.';
+ $('policy-editor-result').textContent='';
+ updateUnifiedControls();
+ policyPreviewRow=null;
+ $('policy-preview-selection').textContent='Правило не выбрано.';
+ $('policy-preview-value').disabled=true;
+ $('policy-preview-button').disabled=true;
+ $('policy-preview-output').textContent='Выберите правило для предпросмотра.';
+ clearPolicyReview();
+ localDenyEpoch++;localDenyRow=null;localDenyPrepared=null;
+ $('local-deny-selection').textContent='Выберите доступное правило.';
+ $('local-deny-target').value='';
+ $('local-deny-result').textContent='';
+ updateLocalDenyControls();
+ return true;
+}
 function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
  if(!providerInventory)return;
- const search=$('providers-filter').value.trim().toLowerCase();
- const rows=providerInventory.operations.filter(row=>[
-  row.provider,row.operation,row.actor,row.target,row.configuredPolicy,row.effectivePolicy
- ].some(value=>String(value??'').toLowerCase().includes(search)));
- $('providers-summary').textContent=`${rows.length} из ${providerInventory.operations.length} правил · ${providerInventory.providers.length} провайдеров · ${providerInventory.coverage}`;
+ const provider=$('providers-select').value??'';
+ const rows=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
+ const total=providerInventory.operations.filter(row=>!provider||row.provider===provider).length;
+ $('providers-summary').textContent=`${rows.length} из ${total} правил · ${provider||providerInventory.providers.length+' провайдеров'} · ${providerInventory.coverage}`;
+ if(!rows.length){const empty=document.createElement('p');empty.textContent='Нет правил по выбранному фильтру.';target.append(empty);return;}
  const table=document.createElement('table');
  const head=document.createElement('thead');const tr=document.createElement('tr');
- for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Эффективно','Готовность','Предпросмотр']){
+ for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Действующая политика','Готовность','Действия']){
   const th=document.createElement('th');th.textContent=label;tr.append(th);
  }
  head.append(tr);table.append(head);
@@ -617,17 +816,17 @@ function displayProviderInventory(){
  for(const row of rows){
   const cells=[row.provider+' ('+row.providerType+')',row.operation+' · '+(row.version??'неизвестна'),
    row.kind,(row.scope==='unconfigured'?'не назначен':(row.actor??'все'))+' / '+(row.target??'все'),
-   row.configuredPolicy,row.effectivePolicy,
+   row.configuredPolicy,(row.currentPolicy&&row.scope==='actor'?row.currentPolicy+' · с точечными исключениями':row.effectivePolicy==='UNKNOWN'&&['actor','global'].includes(row.scope)&&['DENY','ASK','ALLOW'].includes(row.configuredPolicy)?'Зависит от target':row.effectivePolicy),
    (row.active?'active':'inactive')+' / '+row.credentialStatus+' / upstream '+row.upstreamStatus];
   const tr=document.createElement('tr');
   for(const value of cells){const td=document.createElement('td');td.textContent=value;tr.append(td);}
   const cell=document.createElement('td');
-  if(row.scope==='exact'&&row.configured&&row.active&&
+  if(!unifiedEnabled&&row.scope==='exact'&&row.configured&&row.active&&
      ['DENY','ASK','ALLOW'].includes(row.configuredPolicy)&&
      ['DENY','ASK','ALLOW'].includes(row.effectivePolicy)){
-   const button=document.createElement('button');button.type='button';button.textContent='Выбрать';
+   const button=document.createElement('button');button.type='button';button.textContent='Предпросмотр';
    button.onclick=()=>{
-    if(policyReviewBusy)return;
+    if(localDenyBusy||policyReviewBusy||localDenyUnknown)return;
     policyPreviewRow=row;
     $('policy-preview-selection').textContent=[row.provider,row.operation,row.actor,row.target].join(' · ');
     $('policy-preview-value').value=row.configuredPolicy;
@@ -638,7 +837,10 @@ function displayProviderInventory(){
    };
    cell.append(button);
   }
-  if(canSelectLocalDeny(row)){
+  if(canSelectUnified(row)){
+   const button=document.createElement('button');button.type='button';button.textContent='Изменить политику';
+   button.disabled=unifiedBusy||!!unifiedUnknown;button.onclick=()=>chooseUnified(row);cell.append(button);
+  }else if(canSelectLocalDeny(row)){
    const button=document.createElement('button');button.type='button';
    button.textContent='Точечный DENY';button.disabled=localDenyBusy||!!localDenyUnknown;
    button.onclick=()=>selectLocalDeny(row);cell.append(button);
@@ -649,12 +851,25 @@ function displayProviderInventory(){
  table.append(body);target.append(table);
 }
 async function loadProviderInventory(){
- if(localDenyBusy||policyReviewBusy)return;
- resetLocalDenyPanel();
+ if(localDenyBusy||policyReviewBusy||unifiedBusy)return;
+ resetLocalDenyPanel();resetUnifiedPolicyPanel();
  const session=csrf,epoch=localDenyEpoch;
  const inventory=await api('/v1/owner/provider-inventory');
  if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
  providerInventory=inventory;
+ syncProviderFilter();
+ $('policy-preview-panel').hidden=false;
+ if(inventory.policyEditorVersion===2){
+  const editorCaps=await api(unifiedPrefix+'/capabilities');
+  if(!session||csrf!==session||tab!=='providers'||epoch!==localDenyEpoch)return;
+  unifiedEnabled=editorCaps.configured===true&&editorCaps.version===2&&editorCaps.ownerOnly===true&&
+   editorCaps.requiresFreshStrongWebAuthn===true&&Number.isSafeInteger(inventory.policyRevision)&&
+   inventory.policyVersion.endsWith('|owner-policy-v2:'+inventory.policyRevision);
+  $('policy-editor-panel').hidden=!unifiedEnabled;
+  $('policy-preview-panel').hidden=true;
+  if(unifiedUnknown)$('policy-editor-result').textContent='Исход неизвестен. UUID: '+unifiedUnknown.requestId;
+  updateUnifiedControls();displayProviderInventory();return;
+ }
  policyReviewCapabilities=null;
  try{
   policyReviewCapabilities=await api('/v1/owner/policy/review/capabilities');
@@ -676,7 +891,7 @@ async function loadProviderInventory(){
 }
 $('policy-preview-button').onclick=action(async()=>{
  if(!policyPreviewRow||!providerInventory)return;
- const row=policyPreviewRow;
+ const row=policyPreviewRow,inventory=providerInventory,session=csrf;
  clearPolicyReview();
  $('policy-preview-button').disabled=true;
  $('policy-preview-output').textContent='Проверяю текущее правило…';
@@ -688,6 +903,7 @@ $('policy-preview-button').onclick=action(async()=>{
     expectedPolicyVersion:providerInventory.policyVersion
   };
   const result=await api('/v1/owner/policy/preview',candidate,true);
+  if(policyPreviewRow!==row||providerInventory!==inventory||csrf!==session||tab!=='providers')return;
   $('policy-preview-output').textContent=[
    'Правило: '+result.identity.provider+' / '+result.identity.operation,
    'Actor: '+result.identity.actor+' · Target: '+result.identity.target,
@@ -704,9 +920,10 @@ $('policy-preview-button').onclick=action(async()=>{
    $('policy-review-output').textContent='После проверки параметров потребуется отдельное касание WebAuthn-ключа. Правило не изменится.';
   }
  }catch(error){
+  if(policyPreviewRow!==row||providerInventory!==inventory||csrf!==session||tab!=='providers')return;
   $('policy-preview-output').textContent='Предпросмотр отклонён: '+error.message+'. Обновите инвентаризацию.';
   throw error;
- }finally{$('policy-preview-button').disabled=false;}
+ }finally{if(policyPreviewRow===row&&providerInventory===inventory&&csrf===session&&tab==='providers')$('policy-preview-button').disabled=false;}
 });
 $('policy-preview-value').addEventListener('change',()=>clearPolicyReview());
 $('policy-review-button').onclick=action(async()=>{
@@ -739,6 +956,13 @@ $('policy-review-button').onclick=action(async()=>{
   $('policy-preview-value').disabled=!policyPreviewRow;
   $('policy-preview-button').disabled=!policyPreviewRow;
  }
+});
+$('providers-select').addEventListener('change',()=>{
+ // A prepared or unknown mutation always remains bound to its original rule.
+ // Never make a hidden selection appear to apply to another provider.
+ const select=$('providers-select');
+ if(!resetProviderSelections()){select.value=selectedProviderFilter;return;}
+ selectedProviderFilter=select.value;displayProviderInventory();
 });
 $('providers-filter').addEventListener('input',displayProviderInventory);
 $('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});

@@ -118,6 +118,11 @@ class ModularizedCandidateManifestTests(unittest.TestCase):
                 "from fortis_approvals.extensions.owner_policy_local_bundle_phase6c3 "
                 "import OwnerLocalDenyInventoryPortal; "
                 "assert OwnerLocalDenyInventoryPortal; "
+                "from fortis_approvals.extensions.owner_policy_editor_v2 "
+                "import UnifiedPolicyPortal; "
+                "from fortis_approvals.extensions.owner_policy_engine_v2 "
+                "import UnifiedPolicyCore; "
+                "assert UnifiedPolicyPortal and UnifiedPolicyCore; "
                 "print('MODULARIZED_GATEWAY_IMPORTS_PASS'); "
             )
             if smoke:
