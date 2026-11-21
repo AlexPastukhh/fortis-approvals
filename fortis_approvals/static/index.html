@@ -16,8 +16,8 @@
 <p class="small">Очередь заявок обновляется каждые 5 секунд, даже когда открыта вкладка PowerShell.</p>
 <div class="layout" id="approval-view"><div id="requests" aria-label="Заявки"></div><article id="detail"><p>Выберите заявку.</p></article></div>
 <section id="providers-view" hidden aria-label="API и политики">
- <h2>API и политики · только чтение</h2>
- <p class="small">Показана конфигурация загруженного Gateway. Для native-методов версия, тип операции и готовность upstream могут быть неизвестны. Это не редактор прав.</p>
+ <h2>API и политики · инвентаризация</h2>
+ <p class="small">Инвентаризация — только чтение. Для native-методов версия, тип операции и готовность upstream могут быть неизвестны. Блок локального DENY доступен только в отдельно подключённом режиме владельца.</p>
  <label for="providers-filter">Поиск по провайдеру, методу, actor, target или policy</label>
  <input id="providers-filter" type="search" autocomplete="off">
  <p id="providers-summary" role="status"></p>
@@ -37,6 +37,17 @@
    <p id="policy-review-availability" role="status">Проверка режима подтверждения…</p>
    <button id="policy-review-button" type="button" disabled>Подтвердить просмотр через WebAuthn (без применения)</button>
    <pre id="policy-review-output" role="status" aria-live="polite">Подтверждение просмотра недоступно.</pre>
+  </section>
+  <section id="local-deny-panel" hidden aria-label="Точечный локальный запрет">
+   <h3>Локальный DENY · отдельное подтверждение владельца</h3>
+   <p class="small">Только ограничение существующего доступа. Не выдаёт ALLOW и не снимает DENY. Общая защита всех процессов и восстановление старых копий здесь не подтверждаются.</p>
+   <p id="local-deny-selection">Выберите доступное правило.</p>
+   <label for="local-deny-target">Точный target</label>
+   <input id="local-deny-target" type="text" maxlength="128" autocomplete="off" disabled>
+   <button id="local-deny-prepare" type="button" disabled>Подготовить точечный DENY</button>
+   <button id="local-deny-confirm" type="button" disabled>Подтвердить локальный DENY через WebAuthn</button>
+   <button id="local-deny-readback" type="button" disabled>Проверить исходный UUID (без повторного применения)</button>
+   <pre id="local-deny-result" aria-live="polite"></pre>
   </section>
 </section>
 <section id="powershell-view" hidden aria-label="PowerShell Windows">
