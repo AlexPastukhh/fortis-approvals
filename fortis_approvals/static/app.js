@@ -537,41 +537,61 @@ function unifiedReceiptMatches(result,change){
   result.change&&Object.keys(result.change).length===Object.keys(change).length&&
   Object.keys(change).every(k=>result.change[k]===change[k]);
 }
+async function refreshConfirmedUnified(message,session){
+ // Never render stale policies after a confirmed write. The fresh inventory
+ // comes only from the authenticated owner GET, with no additional mutation.
+ providerInventory=null;
+ $('providers-results').replaceChildren();
+ $('providers-summary').textContent='Изменение записано. Обновляю инвентаризацию…';
+ try{
+  await loadProviderInventory();
+  if(csrf===session&&tab==='providers'&&unifiedEnabled)
+   $('policy-editor-result').textContent=message;
+ }catch(_error){
+  $('providers-summary').textContent='Изменение записано, но инвентаризация не обновлена. Нажмите «Обновить».';
+ }
+}
 async function confirmUnified(){
  const prepared=unifiedPrepared;
  if(!prepared||unifiedBusy||unifiedUnknown||!unifiedSame(prepared.epoch,prepared.session))return;
  const {begin,epoch,session}=prepared;
  unifiedPrepared=null;unifiedBusy=true;updateUnifiedControls();
- let sent=false;
+ let sent=false,committedMessage='';
  try{
   const response=await ceremony(begin);
   if(!unifiedSame(epoch,session))return;
   unifiedUnknown=begin.change;sent=true;
   const result=await api(unifiedPrefix+'/finish',{ceremonyId:begin.ceremonyId,response,change:begin.change},true);
   if(!unifiedReceiptMatches(result,begin.change))throw Error('Запись не подтверждена.');
-  unifiedUnknown=null;unifiedRow=null;unifiedEnabled=false;
-  if(csrf===session&&tab==='providers')$('policy-editor-result').textContent='Изменение подтверждено. UUID: '+result.requestId+
-   '. Ревизия: '+result.appliedRevision+'. Обновите инвентарь.';
+  unifiedUnknown=null;unifiedRow=null;
+  committedMessage='Изменение подтверждено. UUID: '+result.requestId+
+   '. Ревизия: '+result.appliedRevision+'. Инвентаризация обновлена.';
  }catch(err){
   if(unifiedSame(epoch,session))$('policy-editor-result').textContent=sent?
    'Исход неизвестен. UUID: '+begin.change.requestId+'. Используйте проверку UUID, не повторяйте изменение.':
    'WebAuthn не завершён. Изменение не отправлено.';
   throw err;
  }finally{unifiedBusy=false;updateUnifiedControls();}
+ if(committedMessage&&csrf===session&&tab==='providers')
+  await refreshConfirmedUnified(committedMessage,session);
 }
 async function readbackUnified(){
  if(!unifiedUnknown||unifiedBusy||!unifiedEnabled||!csrf||tab!=='providers')return;
  const change=unifiedUnknown,epoch=unifiedEpoch,session=csrf;
  unifiedBusy=true;updateUnifiedControls();
+ let confirmedMessage='';
  try{
   const result=await api(unifiedPrefix+'/readback',{requestId:change.requestId},true);
   if(!unifiedSame(epoch,session))return;
   if(!unifiedReceiptMatches(result,change)){
    $('policy-editor-result').textContent='Исход не подтверждён. Не повторяйте изменение. UUID: '+change.requestId;return;
   }
-  unifiedUnknown=null;unifiedRow=null;unifiedEnabled=false;
-  $('policy-editor-result').textContent='Запись исходного UUID подтверждена. Обновите инвентарь.';
+  unifiedUnknown=null;unifiedRow=null;
+  confirmedMessage='Запись исходного UUID подтверждена. Инвентаризация обновлена.';
+  $('policy-editor-result').textContent=confirmedMessage;
  }finally{unifiedBusy=false;updateUnifiedControls();}
+ if(confirmedMessage&&csrf===session&&tab==='providers')
+  await refreshConfirmedUnified(confirmedMessage,session);
 }
 for(const id of ['policy-editor-scope','policy-editor-target','policy-editor-value']){
  $(id).addEventListener(id==='policy-editor-target'?'input':'change',()=>{
@@ -867,19 +887,22 @@ function displayProviderInventory(){
  const provider=$('providers-select').value??'';
  const matching=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
  const total=providerInventory.operations.filter(row=>!provider||row.provider===provider).length;
- const rows=unifiedEnabled&&$('providers-editable-only').checked?
+ // Capability controls WRITE permissions, not the presentation of a V2
+ // inventory. Never switch to the legacy table during a capability refresh.
+ const v2Inventory=providerInventory.policyEditorVersion===2;
+ const rows=v2Inventory&&unifiedEnabled&&$('providers-editable-only').checked?
   matching.filter(canSelectUnified):matching;
  $('providers-summary').textContent=rows.length+' из '+total+' правил · '+
   (provider||providerInventory.providers.length+' провайдеров')+
-  (unifiedEnabled?' · редактор V2':' · инвентаризация');
+  (v2Inventory?' · редактор V2':' · инвентаризация');
  if(!rows.length){
   const empty=document.createElement('p');empty.textContent=
-   unifiedEnabled&&$('providers-editable-only').checked?
+   v2Inventory&&unifiedEnabled&&$('providers-editable-only').checked?
    'Нет изменяемых правил. Снимите флажок «Только изменяемые», чтобы увидеть все операции.':
    'Нет правил по выбранному фильтру.';
   target.append(empty);return;
  }
- if(unifiedEnabled){renderUnifiedProviderCards(target,rows);return;}
+ if(v2Inventory){renderUnifiedProviderCards(target,rows);return;}
  const table=document.createElement('table');
  const head=document.createElement('thead');const tr=document.createElement('tr');
  for(const label of ['Провайдер','Метод / версия','Тип','Actor / target','Настроено','Действующая политика','Готовность','Действия']){

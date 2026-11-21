@@ -207,7 +207,9 @@ test('unified editor supports scoped transition, verifies descriptor and never r
  let sentChange=null,failFinish=false,tamper=false,uv=0;
  const row={provider:'github',operation:'create_pull_request',actor:'agent',scope:'actor',
   target:null,currentPolicy:'ASK',editablePolicies:['DENY','ASK','ALLOW'],active:true};
- const context=vm.createContext({$,row,document:{createElement:()=>({})},displayProviderInventory(){},action:f=>f,
+ let inventoryRefreshes=0;
+ const context=vm.createContext({$,row,document:{createElement:()=>({})},displayProviderInventory(){},
+  loadProviderInventory:async()=>{inventoryRefreshes++;},action:f=>f,
   ceremony:async()=>{uv++;return {test:true};},
   api:async(url,body)=>{
    calls.push({url,body});
@@ -241,7 +243,9 @@ test('unified editor supports scoped transition, verifies descriptor and never r
  assert.match($('policy-editor-result').textContent,/Исход неизвестен/);
  await run('confirmUnified()');assert.equal(calls.filter(c=>c.url.endsWith('/finish')).length,1);
  await run('readbackUnified()');
+ assert.equal(inventoryRefreshes,1);
  assert.match($('policy-editor-result').textContent,/Запись исходного UUID подтверждена/);
+ assert.equal(run('providerInventory'),null);
 });
 
 
@@ -275,9 +279,9 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
    configuredPolicy:'ALLOW'}
  ];
  const context=vm.createContext({$,document:{createElement:tag=>new Element(tag)},
-  providerInventory:{operations:rows,providers:[{provider:'github'},{provider:'workspace'}]},
+  providerInventory:{policyEditorVersion:2,operations:rows,providers:[{provider:'github'},{provider:'workspace'}]},
   unifiedEnabled:true,unifiedRow:null,
-  canSelectUnified:r=>Array.isArray(r.editablePolicies)&&r.editablePolicies.length>1,
+  canSelectUnified:r=>context.unifiedEnabled&&Array.isArray(r.editablePolicies)&&r.editablePolicies.length>1,
   chooseUnified:r=>selected.push(r.operation),
   visibleProviderRows:()=>rows});
  vm.runInContext(full.slice(begin,finish),context);
@@ -299,6 +303,14 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
  vm.runInContext('displayProviderInventory()',context);
  assert.equal(context.$('providers-summary').textContent,'2 из 3 правил · 2 провайдеров · редактор V2');
  assert.equal(context.$('providers-results').children.length,2);
+ // Regression: capability invalidation after WebAuthn must not switch an
+ // already V2 inventory back to the legacy table on a provider-filter event.
+ context.unifiedEnabled=false;
+ context.$('providers-editable-only').checked=false;
+ vm.runInContext('displayProviderInventory()',context);
+ assert.equal(context.$('providers-results').children[0].tag,'section');
+ assert.equal(context.$('providers-results').children[0].children[1].children[0].children[0].disabled,true);
+ assert.match(context.$('providers-summary').textContent,/редактор V2/);
 });
 test('ASK-only native control explains excluded ALLOW and permanent policy vs per-request approval',()=>{
  const begin=full.indexOf('function unifiedChoiceExplanation(');
