@@ -126,6 +126,7 @@ noDeploymentPaths:
   - fortis_approvals/registry/state_journal_v2.py
   - fortis_approvals/registry/recovery_snapshot.py
   - fortis_approvals/registry/checkpoint_cas.py
+  - fortis_approvals/registry/recovery_reconcile.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md

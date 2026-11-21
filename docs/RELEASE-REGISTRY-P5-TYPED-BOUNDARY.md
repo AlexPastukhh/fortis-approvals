@@ -423,3 +423,73 @@ wrong enrollment/source path, missing or forged pending operation,
 modified ledger, private-path permissions, and a rolled-back witness.
 They use local temporary SQLite databases with a synthetic owner
 boundary — not an actual separate UID or trusted anchor service.
+
+
+### Read-only owner/Registry checkpoint reconciliation candidate
+
+`registry/recovery_reconcile.py::reconcile_inactive` implements an
+**offline-only, read-only** recovery preflight across the exact v2
+Registry journal, its registered owner-side
+`OfflineCheckpointCAS` ledger and an optional exact inactive SQLite
+backup. It accepts concrete locally composed object instances, not a
+caller-supplied checkpoint, arbitrary SQL or public actor flag. It
+requires the same scope, instance, v2 genesis, registered Registry path
+and the exact bound owner-checkpoint reader; another instance or
+anonymous callable is refused. This checks the *source protocol*, NOT
+a privilege boundary. Both modules remain under the same test UID,
+not under a separately provisioned owner or service identity.
+
+The preflight independently replays the full immutable Registry
+request/evidence/receipt/record/supersession history and the complete
+owner checkpoint ledger, then cross-matches **every** owner operation
+against the Registry receipt and the original pending transition.
+It re-reads both journals before returning and stops on any change
+or divergence. If they exactly agree, it reports
+`MATCHED_LOCAL_CANDIDATES`, together with the source candidate cursor
+and owner/Registry checkpoint. This is not a protected-authority
+assertion, not a release queue and not a permission to write.
+
+If Registry is ahead by exactly one locally committed operation,
+the result is `UNRESOLVED_LOCAL_COMMIT_OR_OWNER_ROLLBACK` with the
+original operation ID and checkpoint pair but **no candidate cursor**.
+This is deliberately NOT named "safe to advance": without an
+independently protected monotonic witness, an interrupted commit and
+a rolled-back owner ledger can be indistinguishable. No automatic
+owner CAS, rollback, retry, witness reseeding, blank rebuild or active
+restore is possible from this API. An owner-ledger advance ahead of
+Registry, a larger gap, conflicting original receipts, missing
+operations, corrupted ledgers or changing checkpoint produces STOP
+via a strict error.
+
+An optional backup requires a complete backup directory plus UUID.
+It is checked only when both live local journals match; the existing
+inactive backup verifier checks the copied bytes, full original
+Registry history, exact scope, independent owner checkpoint and
+candidate cursor. A backup even one revision behind is **not**
+accepted as a current recovery point. The backup file is never
+copied into the active instance. A missing backup does not silently
+become a verified backup; the observation records `backup=null`.
+The result `REGISTRY_RECOVERY_READBACK_CANDIDATE` and its digest
+always retain false `protectedCheckpointVerified`,
+`enrollmentVerified`, `backupRestorable`, `restoreAllowed`,
+`admissionAllowed` and `deploymentAllowed`. No owner security
+claim follows from a matching local hash chain.
+
+The private SQLite path guards also tolerate the narrow race where
+SQLite unlinks an optional WAL/SHM sidecar between the existence check
+and `lstat`; any newly appearing sidecar is rechecked, while symlinks,
+bad permissions and unexpected file types remain denied. This fixes
+an observed concurrent source test failure and is not a relaxation of
+the private database/parent permissions policy.
+
+A host-owner protected monotonic witness with separately verified
+access controls, authenticated origin and enrollment acceptance
+remains a prerequisite. Even this preflight cannot detect rollback
+of **both** local copies without external protected retention.
+Real restore switchover, backup lifecycle, runtime and E2E are
+still unimplemented and require owner approval. Fourteen dedicated
+offline tests cover genesis, first and second operations, inactive
+backup readback, old backup rejection, pending and rolled-back
+witness ambiguity, larger gaps, wrong source binding, storage
+tampering, race detection and no-write replay. No deployment or
+service route is added.
