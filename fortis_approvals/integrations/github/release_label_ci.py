@@ -170,9 +170,8 @@ def _latest(rows, workflow):
     return row
 
 
-def collect_ci(reader, *, profile, registry_actor, owner, head, number, branch):
-    """Pure admission over a bounded trusted reader; no deployment/label authority."""
-    require(profile.enabled, 'GITHUB_PUBLISHER_DISABLED')
+def collect_workflow_evidence(reader, *, owner, head, number, branch):
+    """Shared source observation; no publisher grant or merge authority."""
     rows = _inventory(reader, head)
     full = owner+'/'+REPOSITORY
     evidence = []
@@ -219,6 +218,13 @@ def collect_ci(reader, *, profile, registry_actor, owner, head, number, branch):
         require((latest['id'], latest['runAttempt'], latest['runNumber']) ==
                 (entry['runId'], entry['attempt'], entry['runNumber']),
                 'GITHUB_RELEASE_CI_LATEST_CHANGED')
+    return evidence
+
+
+def collect_ci(reader, *, profile, registry_actor, owner, head, number, branch):
+    """Publisher admission remains gated by its separately composed profile."""
+    require(profile.enabled, 'GITHUB_PUBLISHER_DISABLED')
+    evidence = collect_workflow_evidence(reader, owner=owner, head=head, number=number, branch=branch)
     return dict(version=1, repository=REPOSITORY, number=number, headSha=head, branch=branch,
         profileSha256=profile.fingerprint(registry_actor), validatorRevision=profile.validator_revision,
         requiredCI=evidence)
