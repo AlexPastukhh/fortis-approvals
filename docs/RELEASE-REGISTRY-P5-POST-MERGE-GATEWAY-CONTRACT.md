@@ -407,6 +407,59 @@ SQLite files, synthetic provider observations and a test-only Core verifier.
 No new provider transport route, ingress, grant, owner proof mode, live
 policy, persistent production path, or deployment is activated.
 
+## Retained Release Impact validation against exact Git data (source only)
+
+`gateway/retained_impact.py::RetainedImpactValidator` reads a retained
+bundle from the private capture journal under an independently supplied
+checkpoint. The server composition must provide the trusted local source
+Git object repository, trusted validator Git object repository, explicit
+validator revision and private temporary state root. These are not machine
+request fields. For this pilot the shared implementation is
+`fortis-container/tools/release/validate.py` with its two v1 schemas;
+the tested source reference for optional real integration is container
+commit `f763ea53169c2151df4a3212524221404b9aa990`. The deployment owner must
+separately accept the actual code/dependency pin and protected object stores.
+
+The adapter checks exact base and HEAD commits, the unique Git merge base
+and an independent bounded NUL-separated name/status diff including
+rename identities. It requires exact agreement with retained provider
+records (ambiguous/differently detected renames fail closed). Both old
+and new rename paths are supplied to the shared validator. It reuses
+`publisher_source.materialize` to read regular raw Git blobs from the
+validator pin and exact source HEAD into fresh separate private directories.
+The bytes of the source catalog must match the retained text, Git blob ID
+and SHA-256. Neither dirty checkout contents nor PR Python modules are
+imported; the isolated subprocess imports only the pinned validator code
+and trusted installed dependencies, with a minimal environment, bounded
+input/output, CPU/memory/file limits and timeout. This is not an OS sandbox
+or protection against a compromised trusted local object store/interpreter.
+
+The fixed shim invokes the existing YAML parser, catalog schema and
+filesystem semantics, Impact marker parser, schema and changed-path
+classification. It rejects unknown actions, missing local target refs
+and direct self PR dependency, and returns declared/affected targets and
+dependency requirements, not proof of closure. It binds the result to
+the validator revision, capture event, bundle, exact base/HEAD, catalog,
+changed records and impact hashes; checkpoint drift stops. No raw body or
+catalog is returned. `RETAINED_IMPACT_VALIDATED` is a partial validation
+observation: dependency closure, historical policy, evidence verification,
+admission and deployment flags remain false. The result is not yet
+persisted in an owner-attested complete merge envelope. The actual merge
+tree and historical CI/owner-cutoff proofs still need integration.
+
+Tests use real temporary Git objects, private journal, fake provider and a
+pinned protocol validator double; negative tests cover wrong paths/catalog,
+checkpoint and pin and opaque subprocess failure. Optional real shared
+validator positive and false-no-deployment tests require
+`FORTIS_TEST_RELEASE_VALIDATOR_ROOT` pointing to the trusted container
+Git repository with the reviewed commit and installed pinned
+`tools/release/requirements.txt` dependencies (PyYAML/jsonschema).
+The default Approvals CI installs owner-runtime dependencies only.
+A skipped real integration is not semantic acceptance; enabling the
+collector requires the real cross-repository suite and trusted
+composition/dependency review. No new active route, fetch, grant, package
+installation, policy or Registry write is introduced by this source.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
