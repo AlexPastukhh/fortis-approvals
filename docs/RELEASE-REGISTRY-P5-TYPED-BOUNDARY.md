@@ -713,3 +713,92 @@ owner volume has been provisioned. Negative tests cover accessible
 files, missing/symlink paths, permission-vs-other error codes, exact
 read/readwrite attempts, role spoofing, missing or replayed evidence,
 scope and process drift and false admission flags.
+
+
+### First protected enrollment exact-cutover preflight (offline candidate)
+
+`registry/enrollment_cutover.py::inspect_first_enrollment` introduces
+a **strictly source-only** preflight for the first enrolled
+`AlexPastukhh/fortis-approvals` main SHA. It combines existing
+candidate-only v2 Registry state, the separately provisioned local
+owner checkpoint CAS ledger, an immutable baseline reference, a
+current-main READ and the previously reviewed host isolation and
+Registry/Repo denied-access observations. This is **not** a WebAuthn
+ceremony, an authenticated host observation, an actual cutover
+or a protected enrollment receipt. No host processes or DB
+files are provisioned; no CAS, branch update, registry WRITE,
+restore, credential activation or release is performed.
+
+The exact baseline reader supplies only the original closed reference
+(`schemaVersion, repository, enrollmentId, baselineSha,
+catalogSha256, acceptanceReceiptDigest, bindingDigest`).
+Its canonical hash must match the independently configured
+Registry `baselineDigest`. The instance/scope, catalog raw SHA,
+component binding digest, enrollment ID, baseline SHA and
+owner checkpoint's enrollment receipt digest are bound to the
+same original values. The reference is **not** automatically
+accepted merely because it has a matching digest.
+
+The current-main reader must return exactly `{repository, branch:
+"main", sha}` for the selected immutable baseline SHA on both
+reads. If main advances before or during the first cutover preflight,
+STOP; do not silently rebaseline or skip intermediate PRs. The source
+does not reconstruct pre-baseline PR history. The actual live
+source read must eventually be authenticated and independently
+pinned by the owner; the injected test reader is not a real GitHub
+receipt.
+
+The exact local `RegistryStateJournalV2` and its bound
+`OfflineCheckpointCAS` must match the instance, enrolled scope,
+original registered Registry journal path and exact owner checkpoint
+reader. Both complete immutable journals are verified and **must
+be at initial revision 0/genesis with no operations**, and the
+candidate cursor must equal the baseline SHA. A preexisting,
+pending, partially advanced or rolled-back history is STOP:
+the first-enrollment constructor cannot be used to wipe, reseed,
+reuse or supersede an already existing Registry enrollment.
+Subsequent recovery requires a separate protected procedure.
+
+The owner-peer profile and Linux runtime layout are validated by
+their exact pinned digests and matched to both concrete DB paths,
+instance, scope and pinned acceptance receipt digest. The supplied
+host isolation candidate is re-assessed for correct process UID/GID,
+all capability sets, distinct mounts/cgroups, private state ownership,
+socket inode and false authority flags. Registry and Repo denied-access
+candidate observations are checked against their exact pinned identity,
+matching process start ticks, original role, scope and the three
+required `EACCES/EPERM` outcomes. Altered or missing observations,
+an accessible owner file, cross-role evidence substitution, a changed
+peer/layout pin or an inconsistent kernel-process snapshot block.
+The module rechecks both local immutable journals and the source/
+profile references before returning.
+
+An untrusted caller with Repo access can fabricate these host
+observation JSON values, matching SHA-256, baseline/current-main
+READs or even a local owner checkpoint SQLite file. Thus **even a
+complete matching offline preflight cannot authenticate the original
+host or confer owner approval**. The result is always
+`FIRST_ENROLLMENT_CUTOVER_PREFLIGHT_CANDIDATE`, with
+`originalHostEvidenceAuthenticated=false`,
+`ownerAcceptanceVerified=false`,
+`protectedCheckpointVerified=false`,
+`runtimeActivated=false`, `enrollmentAllowed=false`,
+`registryWriteAllowed=false` and `admissionAllowed=false`.
+
+Before a real first enrollment the owner must establish and
+independently verify the protected runtime/principals/volumes, collect
+and attest original host evidence, authenticate source/main and
+evidence retention, validate encrypted backup and recovery,
+accept the immutable baseline and component/target policy, authorize
+the exact owner operation through a separate WebAuthn ceremony
+and verify the protected monotonic checkpoint on the **real** host.
+An unchanged main SHA or complete post-baseline merge coverage
+is mandatory at the moment of actual activation. These steps are
+not performed by this module, by CI or by merging the PR.
+
+Thirteen new offline negative and source-composition tests cover
+genesis, exact main and acceptance/binding identity, pending and
+already anchored data, unexpected local state, altered host process,
+wrong owner/Registry path, changed owner/Repo denial observations,
+reader drift and no-write readback. They do not constitute a real
+separate-principal host E2E test.

@@ -130,6 +130,7 @@ noDeploymentPaths:
   - fortis_approvals/registry/owner_peer_boundary.py
   - fortis_approvals/registry/owner_runtime_isolation.py
   - fortis_approvals/registry/owner_storage_denial.py
+  - fortis_approvals/registry/enrollment_cutover.py
   - README.md
   - CONTRIBUTING.md
   - SECURITY.md
