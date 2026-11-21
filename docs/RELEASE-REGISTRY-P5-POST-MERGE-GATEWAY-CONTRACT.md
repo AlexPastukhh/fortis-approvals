@@ -470,7 +470,7 @@ with read-only contents permission and no persisted checkout
 credentials or extra secrets. It checks both revisions and requirements
 hash before installing the existing pinned validator requirements in CI.
 The script `scripts/test-p5-retained-impact.py` checks the public revision
-and installed dependency versions, then executes six named real-validator
+and installed dependency versions, then executes six named retained-impact real-validator
 cases: valid exact-source Impact, false no-deployment, unknown local
 dependency, duplicate YAML mapping key, reachable transitive local
 dependency graph, and unresolved external requirement. Any missing dependency,
@@ -579,6 +579,51 @@ branch, cycle, missing transitive local target and unresolved PR ref.
 The separate real-validator CI runner also executes positive transitive
 and external-requirement cases without skips; workflow bytes and the
 publisher/P5 CI source pins are unchanged.
+
+## Selected-main local source binding (single exact tip merge, source-only)
+
+`gateway/selected_main_binding.py::observe_selected_main` composes
+existing owner-Core-reviewed v2 capture, provider merge observation,
+and RetainedImpactValidator under one independently read checkpoint.
+It does not accept request-supplied observation DTOs. Trusted deployment
+composition must supply the actual protected Core/store/provider,
+validator pin, dependency runtime and server Git object repository.
+
+This conservative pilot only accepts selected main equal to the
+reviewed merge SHA, with the retained base as the unique Git merge base.
+It recomputes SHA-1 of raw base/head/merge commit objects using the
+existing commit parser, compares provider head/merge parent and tree
+projections, requires exact two-parent merge [base, head] and identical
+complete root tree IDs for head and merge. It independently reads raw
+HEAD workflow blobs and matches the fixed retained policy hashes.
+The existing retained validator materializes HEAD raw regular blobs and
+checks catalog bytes, exact paths and impact semantics. Equal tree
+identity permits transferring the local dependency source versions
+from PR HEAD to that exact selected-main SHA. No later main commit,
+diverged base, modified merge tree, old bundle schema, policy pin drift
+or mismatching provider projection is silently accepted.
+
+The result contains the bound owner/merge and retained-impact
+observations and their hashes, raw-commit-binding digest, selected
+tree SHA, local selected-main dependencies and explicit unresolved
+external target/PR requirements. The independent checkpoint and
+reviewed merge observation are read again after the validation.
+This does not claim complete multi-PR attribution, raw tree storage
+protection, complete dependency closure or owner component/environment
+bindings. No fabricated source versions or full envelope coverage:
+historicalPolicyVerified, historicalMergeCutoffVerified,
+dependencyClosureVerified, componentBindingsVerified, evidenceVerified,
+admissionAllowed and deploymentAllowed all remain false. No new live
+route, scope, credentials, protected storage or Registry write.
+
+Seven source cases use actual temporary Git commits, actual private
+capture journal and Core ASK, synthetic provider and validator protocol
+double. They cover exact tip composition, unresolved external
+requirements, tree/projection/workflow mismatch, older bundle rejection
+and later main rejection. The separate pinned semantic runner adds
+a seventh mandatory real-validator case for this composition (six
+existing retained Impact cases plus this case), with no skips allowed.
+Workflow bytes and the existing publisher/P5 workflow pins are unchanged.
 
 ## Proposed future typed operation (NOT implemented)
 
