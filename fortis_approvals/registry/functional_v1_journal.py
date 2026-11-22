@@ -10,10 +10,12 @@ from pathlib import Path
 import os
 import re
 import sqlite3
+import uuid
+from types import MappingProxyType
 
 from ..core import Conflict, Denied, Stale
 from .state_journal import (
-    REPOSITORY, PLANNER, _checkpoint, _decode, _hash, _need,
+    COLLECTOR, REPOSITORY, PLANNER, _checkpoint, _decode, _hash, _hex, _need,
     _plan, _private, _raw, _request, _scope, _uuid, _CommitUncertain,
 )
 from .state_journal_v2 import (
@@ -297,3 +299,144 @@ class FunctionalV1CandidateJournal(RegistryStateJournalV2):
             _need(len(_raw(result).encode('utf-8')) <= 8192,
                   'REGISTRY_LOCAL_PAGE_TOO_LARGE')
             return result
+
+
+# Source-only P5 owner composition. Keep inside the existing explicitly
+# noDeploymentPaths Registry module: this does not add a live Gateway route.
+class OfflineSourceRangeComposition:
+    """Explicitly bound source-plan ingestion without caller-supplied plan DTO.
+
+    A future owner-reviewed runtime must authenticate its original evidence
+    readers, secure the single-writer filesystem and authorize exact Gateway
+    operations. None of those trust assumptions are implemented here.
+    """
+
+    def __init__(self, *, path, instance_id, scope, adapter, journal, validator,
+                 baseline_reader, expected_baseline_digest, policy_reader,
+                 expected_policy_digest, binding_reader):
+        self.path = path
+        self.instance_id = instance_id
+        self.scope = _scope(scope)
+        _need(_uuid(instance_id)
+              and _hex(expected_baseline_digest, 64)
+              and _hex(expected_policy_digest, 64)
+              and self.scope['baselineDigest'] == expected_baseline_digest
+              and self.scope['policyReferenceDigest'] == expected_policy_digest
+              and callable(baseline_reader) and callable(policy_reader)
+              and callable(binding_reader), 'REGISTRY_SOURCE_COMPOSITION_INVALID')
+        self.sources = MappingProxyType({
+            'adapter': adapter, 'journal': journal, 'validator': validator,
+            'baseline_reader': baseline_reader,
+            'expected_baseline_digest': expected_baseline_digest,
+            'policy_reader': policy_reader,
+            'expected_policy_digest': expected_policy_digest,
+            'binding_reader': binding_reader,
+        })
+
+    def _store(self, plan_reader=None):
+        def no_plan(_):
+            raise Denied('REGISTRY_SOURCE_PLAN_UNAVAILABLE')
+        return FunctionalV1CandidateJournal(
+            self.path, instance_id=self.instance_id, scope=self.scope,
+            plan_reader=plan_reader if plan_reader is not None else no_plan,
+        )
+
+    def operation(self, *, operation_id):
+        """Recover exact local result after a lost ACK; no source recapture."""
+        _need(_uuid(operation_id), 'REGISTRY_SOURCE_REQUEST_INVALID')
+        return self._store().operation(actor=PLANNER, operation_id=operation_id)
+
+    def candidate_page(self, *, limit, cursor=None):
+        """Read inactive desired candidates; never a live empty queue claim."""
+        return self._store().list_desired_candidates(limit=limit, cursor=cursor)
+
+    def compose_and_append(self, *, operation_id, expected_revision,
+                           selected_main_sha, evidence_ids):
+        """Plan from pinned source readers, then perform one local CAS commit.
+
+        The caller chooses only an original operation UUID, expected revision,
+        observed selected-main SHA and *references* to original evidence.
+        Complete source-plan content, derived desired and digest are recomputed
+        by the existing P5 Git planner and cannot be supplied by the caller.
+        This is intentionally NOT exposed as registry.ingest_merged.
+        """
+        _need(_uuid(operation_id)
+              and type(expected_revision) is int
+              and 0 <= expected_revision <= 2**63 - 1
+              and _hex(selected_main_sha, 40)
+              and type(evidence_ids) is list and len(evidence_ids) <= 64
+              and all(_uuid(e) for e in evidence_ids)
+              and len(set(evidence_ids)) == len(evidence_ids),
+              'REGISTRY_SOURCE_REQUEST_INVALID')
+        store = self._store()
+        before = store.checkpoint()
+        _need(before['integrityModel'] == 'LOCAL_EVENT_CHAIN_ONLY'
+              and before['evidenceVerified'] is False
+              and before['admissionAllowed'] is False
+              and before['deploymentAllowed'] is False,
+              'REGISTRY_SOURCE_HEAD_UNSAFE')
+        if before['localCheckpoint']['revision'] != expected_revision:
+            raise Stale('REGISTRY_SOURCE_REVISION_STALE')
+
+        # Import only inside this offline composition, never into a deployed
+        # Registry/Gateway route. Original journal/adapter credentials are not
+        # established merely by having callable source-fixture objects.
+        from ..integrations.github.gateway import admission_plan
+        kwargs = {
+            **self.sources,
+            'selected_main_sha': selected_main_sha,
+            'evidence_ids': list(evidence_ids),
+        }
+        if expected_revision == 0:
+            plan = admission_plan.observe_initial_plan(**kwargs)
+        else:
+            plan = admission_plan.observe_suffix_plan(
+                cursor_reader=store.checkpoint, **kwargs)
+        _need(type(plan) is dict and plan.get('result') in (
+              'INITIAL_RANGE_PLAN_CANDIDATE','SUFFIX_RANGE_PLAN_CANDIDATE')
+              and plan.get('evidenceVerified') is False
+              and plan.get('admissionAllowed') is False
+              and plan.get('deploymentAllowed') is False,
+              'REGISTRY_SOURCE_PLAN_UNSAFE')
+        # Exact evidence ID is a stable per-operation local reference, not a
+        # collector credential or a claimed authentic original receipt.
+        local_evidence_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            'fortis-local-source-v1:' + self.instance_id + ':' + operation_id))
+        payload = _decode(_raw({
+            'schemaVersion': 1, 'issuer': COLLECTOR,
+            # Pinned enrollment scope, never a user-selected repository.
+            'repository': self.scope['repository'],
+            'evidenceId': local_evidence_id, 'plan': plan,
+        }))
+        evidence_digest = _hash(payload)
+
+        # Detect an intervening local write before attempting CAS. SQLite's
+        # own recheck is still authoritative against concurrent writers.
+        if self._store().checkpoint() != before:
+            raise Stale('REGISTRY_SOURCE_CURSOR_CHANGED')
+
+        def sealed_reader(reference):
+            _need(reference == local_evidence_id,
+                  'REGISTRY_SOURCE_EVIDENCE_ID_MISMATCH')
+            return _decode(_raw(payload))
+        accepted = self._store(sealed_reader).append_range(
+            actor=PLANNER, operation_id=operation_id,
+            evidence_id=local_evidence_id, evidence_digest=evidence_digest,
+            expected_revision=expected_revision)
+        _need(accepted['result'] in (
+              'LOCAL_DESIRED_CANDIDATE_COMMITTED','UNKNOWN_OUTCOME')
+              and accepted['integrityModel']=='LOCAL_EVENT_CHAIN_ONLY',
+              'REGISTRY_SOURCE_RESULT_UNSAFE')
+        return {
+            # An ambiguous post-COMMIT readback is never presented as an
+            # accepted candidate; callers must query the original UUID.
+            'result': ('INACTIVE_SOURCE_RANGE_CANDIDATE'
+                       if accepted['result']=='LOCAL_DESIRED_CANDIDATE_COMMITTED'
+                       else 'UNKNOWN_OUTCOME'),
+            'operationId': operation_id, 'localEvidenceId': local_evidence_id,
+            'selectedMainSha': selected_main_sha, 'storage': accepted,
+            'integrityModel': 'LOCAL_EVENT_CHAIN_ONLY',
+            'evidenceVerified': False, 'admissionAllowed': False,
+            'deploymentAllowed': False, 'writeEnabled': False,
+        }
