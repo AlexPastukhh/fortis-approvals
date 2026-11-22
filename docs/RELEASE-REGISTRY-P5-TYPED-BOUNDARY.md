@@ -325,6 +325,57 @@ implementation acceptance contract** in this PR, while the original
 central roadmap edit remains an independent repository action and
 will not be performed by bypassing the PR workflow.
 
+## Functional V1 schema 3 inactive WAL-safe backup — source cut (2026-11-23)
+
+`registry/recovery_snapshot.py` now provides
+`create_inactive_local_backup(store,directory,backup_id)` and
+`verify_inactive_local_backup(directory,backup_id,instance_id,scope,plan_reader)`
+for **exact** `FunctionalV1CandidateJournal` SQLite schema 3.
+These are separate from the existing schema-2 owner-checkpoint-backed
+backup APIs and do **not** inject or simulate a trusted anchor.
+The one-writer P5 source remains inactive and is not packaged into
+the running Gateway image.
+
+Only a host-selected, separate, absolute private `0700` directory is
+accepted; existing/symlink output paths are refused and files are
+created exclusively `0600`. Capture uses SQLite's **online backup
+API** with a bounded progress deadline, not a raw filesystem copy
+of a database with live WAL pages. Before capture, the full local
+operation/event/record/supersession chain is replayed and the local
+head/cursor/counts are pinned. After capture, both source and inactive
+copy are replayed, matched exactly and reread to detect changed
+source; the `0600` database bytes are hashed and bounded. A canonical
+size-limited manifest records `instanceId`, exact scope digest,
+local checkpoint, cursor, event/record counts, file size/digest and
+`integrityModel=LOCAL_EVENT_CHAIN_ONLY`; both files and the parent
+directory are fsynced before success. The verifier validates the
+snapshot again without changing any active state or writing a
+replacement DB. No automatic restore, backup rotation or migration
+is added.
+
+**What this proves:** private snapshot **local consistency and
+byte integrity** under the supplied manifest, schema 3 identity,
+and replayable immutable history. It handles concurrent normal
+append changes by failing closed rather than declaring a mismatched
+snapshot current. Tests include initial and suffix, no-deployment,
+changed source, corrupt DB, modified manifest, schema-v2 confusion,
+permissions, wrong scope/instance and source state advancing while
+copying. An **older but internally consistent backup remains readable**
+even after new merges.
+
+**What this explicitly does NOT prove:** backup authenticity against
+the owner of the backup directory, an externally monotonic current
+version or protection from coordinated replacement/rollback of both
+the SQLite DB and its manifest. `rollbackProtected=false`,
+`restoreAllowed=false`, `admissionAllowed=false`,
+`deploymentAllowed=false` on every successful readback. There is
+no unattended recovery or switchover. Host ACL/encryption, offline
+restore into a fresh instance, backup lifecycle, trusted collector
+admission, Gateway actors and non-Production E2E still need separate
+owner review before limited `FUNCTIONAL_V1_GO`. Later
+`HARDENED_REGISTRY_GO` requires an independently protected
+checkpoint/witness; this backup cannot substitute for it.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into

@@ -184,3 +184,167 @@ def create_verified_backup(*,store,directory,backup_id):
                 anchor_reader=store.anchor_reader,plan_reader=store.plan_reader)
     except (OSError,sqlite3.Error):
         raise Denied('REGISTRY_BACKUP_UNAVAILABLE') from None
+
+
+# Functional V1 uses a *different on-disk schema* and a deliberately weaker
+# local-chain threat model. Never reuse v2's owner checkpoint validation by
+# passing a synthetic anchor or "verified=True" witness.
+LOCAL_MANIFEST_FIELDS={
+    'schemaVersion','format','backupId','instanceId','scopeDigest',
+    'localCheckpoint','candidateCursor','integrityModel','sqliteBytes',
+    'sqliteSha256','operationCount','recordCount','supersessionCount',
+}
+LOCAL_FORMAT='registry-functional-v1-local-inactive-sqlite'
+
+
+def _local_state(store):
+    """Verify full local history in a read-only transaction."""
+    with store._read_only_db() as db:
+        head,cursor,_,_,_=store._state(db)
+        counts={name:db.execute('SELECT COUNT(*) FROM '+name).fetchone()[0]
+                for name in _COUNTS}
+    return head,cursor,counts
+
+
+def _local_backup_manifest(directory,backup_id,*,instance_id,scope,
+                           plan_reader,manifest=None):
+    from .functional_v1_journal import FunctionalV1CandidateJournal
+    dbpath,mpath=_paths(directory,backup_id)
+    _need(callable(plan_reader),'REGISTRY_LOCAL_BACKUP_READER_REQUIRED')
+    _private(dbpath)
+    if manifest is None:
+        _private(mpath)
+        _need(0<mpath.stat().st_size<=12000,
+              'REGISTRY_LOCAL_BACKUP_MANIFEST_INVALID')
+        try:manifest=_decode(mpath.read_text('utf-8'))
+        except (UnicodeError,OSError):
+            raise Denied('REGISTRY_LOCAL_BACKUP_MANIFEST_INVALID') from None
+    _need(type(manifest) is dict and set(manifest)==LOCAL_MANIFEST_FIELDS
+          and type(manifest['schemaVersion']) is int and
+          manifest['schemaVersion']==1
+          and manifest['format']==LOCAL_FORMAT
+          and manifest['backupId']==backup_id
+          and manifest['instanceId']==instance_id
+          and manifest['scopeDigest']==_hash(scope)
+          and manifest['integrityModel']=='LOCAL_EVENT_CHAIN_ONLY'
+          and type(manifest['sqliteBytes']) is int
+          and 0<manifest['sqliteBytes']<=MAX_SQLITE_BYTES
+          and _hex(manifest['sqliteSha256'],64)
+          and _hex(manifest['candidateCursor'],40)
+          and all(type(manifest[key]) is int and 0<=manifest[key]<=1024
+                  for key in ('operationCount','recordCount','supersessionCount')),
+          'REGISTRY_LOCAL_BACKUP_MANIFEST_INVALID')
+    size,digest=_digest_file(dbpath)
+    _need((size,digest)==(manifest['sqliteBytes'],manifest['sqliteSha256']),
+          'REGISTRY_LOCAL_BACKUP_DIGEST_MISMATCH')
+    copy=FunctionalV1CandidateJournal(
+        dbpath,instance_id=instance_id,scope=scope,plan_reader=plan_reader)
+    head,cursor,counts=_local_state(copy)
+    _need(head==manifest['localCheckpoint']
+          and cursor==manifest['candidateCursor']
+          and counts=={name:manifest[prefix+'Count'] for name,prefix in
+                      (('operations','operation'),('records','record'),
+                       ('supersessions','supersession'))},
+          'REGISTRY_LOCAL_BACKUP_CONTENT_MISMATCH')
+    # Readonly snapshot read must never alter the captured database bytes.
+    _need(_digest_file(dbpath)==(size,digest),'REGISTRY_LOCAL_BACKUP_CHANGED')
+    return manifest
+
+
+def verify_inactive_local_backup(*,directory,backup_id,instance_id,scope,
+                                 plan_reader):
+    """Check exact private SQLite snapshot and local event-chain continuity.
+
+    A full database + manifest rollback can still pass. This is NOT a
+    protected witness or a restore/activation procedure.
+    """
+    try:
+        manifest=_local_backup_manifest(
+            directory,backup_id,instance_id=instance_id,
+            scope=scope,plan_reader=plan_reader)
+        return {
+            'result':'INACTIVE_LOCAL_BACKUP_MATCH_CANDIDATE',
+            'backupId':backup_id,'manifestDigest':_hash(manifest),
+            'localCheckpoint':manifest['localCheckpoint'],
+            'candidateCursor':manifest['candidateCursor'],
+            'integrityModel':'LOCAL_EVENT_CHAIN_ONLY',
+            'admissionAllowed':False,'restoreAllowed':False,
+            'deploymentAllowed':False,'rollbackProtected':False,
+        }
+    except OSError:
+        raise Denied('REGISTRY_LOCAL_BACKUP_UNAVAILABLE') from None
+
+
+def create_inactive_local_backup(*,store,directory,backup_id):
+    """Produce a WAL-consistent *inactive* copy; never install/restore it."""
+    from .functional_v1_journal import FunctionalV1CandidateJournal
+    _need(type(store) is FunctionalV1CandidateJournal,
+          'REGISTRY_LOCAL_BACKUP_STORE_REQUIRED')
+    dbpath,mpath=_paths(directory,backup_id)
+    _need(dbpath.parent!=store.path.parent and
+          dbpath.parent.resolve()!=store.path.parent.resolve(),
+          'REGISTRY_LOCAL_BACKUP_NOT_SEPARATE')
+    _need(not dbpath.exists() and not dbpath.is_symlink()
+          and not mpath.exists() and not mpath.is_symlink(),
+          'REGISTRY_LOCAL_BACKUP_ALREADY_EXISTS')
+    head,cursor,counts=_local_state(store)
+    try:
+        fd=os.open(dbpath,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+        os.close(fd)
+        try:
+            with sqlite3.connect(store.path.as_uri()+'?mode=ro',
+                                 uri=True,timeout=3) as source:
+                with sqlite3.connect(dbpath.as_uri()+'?mode=rw',
+                                     uri=True,timeout=3) as target:
+                    deadline=time.monotonic()+20
+                    def bounded(*_args):
+                        _need(time.monotonic()<=deadline,
+                              'REGISTRY_LOCAL_BACKUP_TIMEOUT')
+                    source.backup(target,pages=128,progress=bounded,sleep=0.05)
+        except sqlite3.Error:
+            raise Denied('REGISTRY_LOCAL_BACKUP_SQLITE_FAILED') from None
+        _private(dbpath)
+        _need(_local_state(store)==(head,cursor,counts),
+              'REGISTRY_LOCAL_BACKUP_SOURCE_CHANGED')
+        copied=FunctionalV1CandidateJournal(
+            dbpath,instance_id=store.instance_id,scope=store.scope,
+            plan_reader=store.plan_reader)
+        copy_head,copy_cursor,copy_counts=_local_state(copied)
+        _need((copy_head,copy_cursor,copy_counts)==(head,cursor,counts),
+              'REGISTRY_LOCAL_BACKUP_SOURCE_CHANGED')
+        size,digest=_digest_file(dbpath)
+        manifest={
+            'schemaVersion':1,'format':LOCAL_FORMAT,
+            'backupId':backup_id,'instanceId':store.instance_id,
+            'scopeDigest':_hash(store.scope),
+            'localCheckpoint':head,'candidateCursor':cursor,
+            'integrityModel':'LOCAL_EVENT_CHAIN_ONLY',
+            'sqliteBytes':size,'sqliteSha256':digest,
+            'operationCount':counts['operations'],
+            'recordCount':counts['records'],
+            'supersessionCount':counts['supersessions'],
+        }
+        _need(_local_backup_manifest(
+            directory,backup_id,instance_id=store.instance_id,
+            scope=store.scope,plan_reader=store.plan_reader,
+            manifest=manifest)==manifest
+            and _local_state(store)==(head,cursor,counts),
+            'REGISTRY_LOCAL_BACKUP_SOURCE_CHANGED')
+        with dbpath.open('rb') as source_file:
+            os.fsync(source_file.fileno())
+        fd=os.open(mpath,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'wb') as output:
+            output.write(_raw(manifest).encode('utf-8'))
+            output.flush()
+            os.fsync(output.fileno())
+        parent_fd=os.open(dbpath.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(parent_fd)
+        finally:os.close(parent_fd)
+        _need(_local_state(store)==(head,cursor,counts),
+              'REGISTRY_LOCAL_BACKUP_SOURCE_CHANGED')
+        return verify_inactive_local_backup(
+            directory=directory,backup_id=backup_id,
+            instance_id=store.instance_id,scope=store.scope,
+            plan_reader=store.plan_reader)
+    except (OSError,sqlite3.Error):
+        raise Denied('REGISTRY_LOCAL_BACKUP_UNAVAILABLE') from None
