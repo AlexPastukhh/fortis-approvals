@@ -142,11 +142,56 @@ This is an inactive *source integration seam*, **not** a deployable
 Registry service, protected witness transport or launch readiness. No
 socket bind/listener, container or owner image, registered Gateway
 adapter/grant/policy, WebAuthn ceremony, installation or enrollment exists
-from this change. Actual separate UID/GID, encrypted volumes, protected
-witness and independently verified owner acceptance remain required by the
-[central P5 runtime runbook](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-REGISTRY-P5-OWNER-RUNTIME-RUNBOOK.md).
+from this change. Dedicated principal, protected checkpoint transport and
+independent witness acceptance remain requirements of **later hardened**
+anti-rollback operation under the
+[host runbook](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-REGISTRY-P5-OWNER-RUNTIME-RUNBOOK.md),
+not a prerequisite for the separately reviewed limited functional V1.
 The authoritative outstanding work sequence remains **only** in the
 [central CD Queue roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
+
+## Offline v2 desired-record page — functional P5 READ source cut (2026-11-23)
+
+`RegistryStateJournalV2.list_desired_candidates(limit, cursor=None)` reads
+the **existing** SQLite v2 journal through `mode=ro`, `query_only=ON`
+and a deferred transaction. It replays all immutable operations, local
+records and supersession edges before deriving the active
+`repository / target / environment` desired records. It does not use
+`BEGIN IMMEDIATE`, write to SQLite, initialize a missing database, invoke
+an evidence collector, update installed state or create a receipt.
+
+The bounded `INACTIVE_DESIRED_CANDIDATE_PAGE` result exposes
+`snapshotRevision`, `snapshotDigest`, `candidateSourceSha`, exact
+active record IDs, desired source/catalog, deployment procedure/actions and
+an optional deterministic cursor. A cursor is bound to the local snapshot
+and last active record ID; malformed, mismatched or stale cursors fail
+closed. This hash-based cursor is **not** a secret, signature or
+authorization token; it protects pagination consistency, not against
+a malicious client fabricating a matching public hash.
+No-deployment advances the observed source cursor without inventing
+a desired record. Superseded records stay in immutable history but only
+the latest target version appears on the candidate page. The response
+is capped at 8192 bytes; oversized responses are an error, not truncated
+or silently accepted as complete.
+
+**No authorization or availability is implied.** Even an empty page is
+an inactive *candidate observation*, **not** proof that the live release
+queue is empty. Every page has `evidenceVerified=false`,
+`admissionAllowed=false`, `deploymentVerified=false`,
+`writeEnabled=false` and `actual=null` for each record.
+No `REPORTED_COMPLETE` event, `DEPLOYED` claim, target readback,
+Gateway `registry.list_records` registration or owner grant is
+created. The currently merged offline SQLite v2 still **requires an
+injected owner checkpoint reader** and must not be made authoritative by
+fake `verified=true` flags or a synthetic witness.
+
+Under the [revised single P5–P8 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue),
+the future `FUNCTIONAL_V1_GO` needs a separately reviewed owner-provisioned
+persistent Registry, independently trusted collector, local append-only
+event/receipt continuity, backups, Gateway grants and non-Production E2E.
+Independent owner checkpoint transport and monotonic witness move to
+the separate `HARDENED_REGISTRY_GO`, which must be satisfied before
+asserting rollback resistance. This source cut changes **neither** gate.
 
 ## Closed candidate contract
 

@@ -6,6 +6,7 @@ admission, live API, deployment or actual-state authority.
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import re
 import sqlite3
 
 from ..core import Conflict, Denied, Stale
@@ -348,3 +349,76 @@ class RegistryStateJournalV2(RegistryStateJournal):
             if self._anchor()!=anchor:raise Stale('REGISTRY_STATE_ANCHOR_CHANGED')
             return {'checkpoint':head,'candidateCursor':cursor,
                     'evidenceVerified':False,'admissionAllowed':False}
+
+    def list_desired_candidates(self, *, limit, cursor=None):
+        """Offline, read-only v2 desired projection, NOT a live Registry queue.
+
+        Cursor is bound to one local checkpoint and record ID, but is not
+        authenticated or an admission proof. It cannot authorize any effect.
+        This reads existing records only; no new event or installed state.
+        """
+        _need(type(limit) is int and 1<=limit<=100
+              and (cursor is None or
+                   (type(cursor) is str and re.fullmatch(
+                       r'[0-9a-f]{64}_[0-9a-f]{64}',cursor) is not None)),
+              'REGISTRY_STATE_PAGE_REQUEST_INVALID')
+        anchor=self._anchor()
+        with self._read_only_db() as db:
+            head,selected_sha,_,active,_=self._checked(db)
+            _need(head==anchor,'REGISTRY_STATE_ANCHOR_MISMATCH')
+            ids=sorted(active.values())
+            start=0
+            if cursor is not None:
+                last,proof=cursor.split('_',1)
+                _need(last in ids,'REGISTRY_STATE_PAGE_CURSOR_STALE')
+                expected=_hash(['registry-v2-candidate-page',self.instance_id,
+                                head['revision'],head['eventDigest'],last])
+                _need(proof==expected,'REGISTRY_STATE_PAGE_CURSOR_STALE')
+                start=ids.index(last)+1
+            selected=ids[start:start+limit]
+            rows=[]
+            for record_id in selected:
+                payload=db.execute(
+                    'SELECT revision,payload FROM records WHERE record_id=?',
+                    (record_id,)).fetchone()
+                _need(payload is not None,'REGISTRY_STATE_CORRUPT')
+                revision,raw=payload
+                record=_decode(raw)
+                _need(record['recordId']==record_id
+                      and record['subjectId'] in active
+                      and active[record['subjectId']]==record_id
+                      and record['actual'] is None
+                      and record['evidenceVerified'] is False
+                      and record['planningState']=='PLANNED_UNVERIFIED',
+                      'REGISTRY_STATE_CORRUPT')
+                rows.append({
+                    'recordId':record_id,'subjectId':record['subjectId'],
+                    'recordRevision':revision,'identity':record['identity'],
+                    'componentId':record['componentId'],
+                    'buildUnitId':record['buildUnitId'],
+                    'requiredActions':record['requiredActions'],
+                    'deploymentProcedure':record['deploymentProcedure'],
+                    'planningState':'PLANNED_UNVERIFIED',
+                    'actual':None,'evidenceVerified':False,
+                })
+            has_more=start+len(selected)<len(ids)
+            last=selected[-1] if has_more else None
+            next_cursor=(last+'_'+_hash([
+                'registry-v2-candidate-page',self.instance_id,
+                head['revision'],head['eventDigest'],last
+            ])) if last is not None else None
+            result={
+                'result':'INACTIVE_DESIRED_CANDIDATE_PAGE',
+                'repository':REPOSITORY,
+                'snapshotRevision':head['revision'],
+                'snapshotDigest':head['eventDigest'],
+                'candidateSourceSha':selected_sha,
+                'records':rows,'nextCursor':next_cursor,
+                'evidenceVerified':False,'admissionAllowed':False,
+                'deploymentVerified':False,'writeEnabled':False,
+            }
+            _need(len(_raw(result).encode('utf-8'))<=8192,
+                  'REGISTRY_STATE_PAGE_TOO_LARGE')
+        if self._anchor()!=anchor:
+            raise Stale('REGISTRY_STATE_ANCHOR_CHANGED')
+        return result
