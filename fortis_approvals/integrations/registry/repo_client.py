@@ -4,12 +4,13 @@ The caller supplies an authenticated Gateway transport. This never creates
 grants, credentials, a runtime listener or Registry write authority.
 Unreachable/denied/ASK reads remain errors, not an empty release queue.
 """
+import re
 import uuid
 
-from ...core import Denied
+from ...core import Denied, Stale
 from ...repo_action_contract import validate_read_query
 from .read_contract import (
-    GATEWAY_TARGET, REPOSITORY, validate_gateway_read_projection,
+    GATEWAY_TARGET, REPOSITORY, _uuid, validate_gateway_read_projection,
 )
 
 _OPS = frozenset((
@@ -62,3 +63,70 @@ class RegistryCandidateClient:
         return self._read('candidate_original_operation', {
             'operationId': operation_id,
         })
+
+    def observe_e1_candidate(self, *, expected_source_sha, original_operation_id,
+                             page_limit=20):
+        """Bounded live READ chain; NOT host acceptance or a Registry queue.
+
+        Caller pins the intended source and original UUID independently.
+        Any source/revision drift, truncated page, or absence of a real
+        persisted candidate record is STOP, never 'nothing to deploy'.
+        """
+        if (type(expected_source_sha) is not str or
+                re.fullmatch(r'[0-9a-f]{40}', expected_source_sha) is None or
+                not _uuid(original_operation_id) or
+                type(page_limit) is not int or not 1 <= page_limit <= 100):
+            raise Denied('REGISTRY_E1_READBACK_INPUT_DENIED')
+        head = self.head()
+        cp = head['data']['localCheckpoint']
+        if (cp['revision'] == 0 or
+                head['data']['candidateCursor'] != expected_source_sha):
+            raise Denied('REGISTRY_E1_READBACK_SOURCE_MISMATCH')
+        operation = self.original_operation(original_operation_id)['data']
+        if (operation['localCheckpoint'] != cp or
+                operation['candidateSourceSha'] != expected_source_sha):
+            raise Stale('REGISTRY_E1_READBACK_OPERATION_STALE')
+        records, cursors = set(), set()
+        cursor = None
+        pages = 0
+        while True:
+            if pages >= 10:
+                raise Denied('REGISTRY_E1_READBACK_PAGE_BOUND')
+            page = self.list_desired(limit=page_limit, cursor=cursor)['data']
+            pages += 1
+            if (page['localRevision'] != cp['revision'] or
+                    page['localEventDigest'] != cp['eventDigest'] or
+                    page['candidateSourceSha'] != expected_source_sha):
+                raise Stale('REGISTRY_E1_READBACK_PAGE_STALE')
+            for row in page['records']:
+                if row['recordId'] in records:
+                    raise Denied('REGISTRY_E1_READBACK_DUPLICATE_RECORD')
+                records.add(row['recordId'])
+            next_cursor = page['nextCursor']
+            if next_cursor is None:
+                break
+            if next_cursor in cursors or not page['records']:
+                raise Denied('REGISTRY_E1_READBACK_CURSOR_CYCLE')
+            cursors.add(next_cursor)
+            cursor = next_cursor
+        after = self.head()
+        if (after['data']['localCheckpoint'] != cp or
+                after['data']['candidateCursor'] != expected_source_sha or
+                after['instanceId'] != head['instanceId'] or
+                after['scopeDigest'] != head['scopeDigest']):
+            raise Stale('REGISTRY_E1_READBACK_HEAD_CHANGED')
+        if (not records or not operation['recordIds'] or
+                not set(operation['recordIds']) <= records):
+            raise Denied('REGISTRY_E1_READBACK_NO_MATCHING_CANDIDATES')
+        return {
+            'result': 'SOURCE_ONLY_E1_GATEWAY_READ_OBSERVED',
+            'repository': REPOSITORY,
+            'selectedMainSha': expected_source_sha,
+            'localRevision': cp['revision'],
+            'localEventDigest': cp['eventDigest'],
+            'originalOperationId': original_operation_id,
+            'candidateCount': len(records), 'pages': pages,
+            'crossUidHostVerified': False, 'evidenceVerified': False,
+            'admissionAllowed': False, 'writeEnabled': False,
+            'functionalV1Accepted': False,
+        }
