@@ -18,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fortis_approvals.core import Authenticator, Core, Denied, canonical
+from fortis_approvals.core import Authenticator, Core, Denied, Stale, canonical
 from fortis_approvals.repo_action_contract import RepoIntentBroker
 from fortis_approvals.repo_ingress import RepoIngress
 from fortis_approvals.r7_unified_candidate import ACTOR as R7_ACTOR, build_r7_unified_candidate
@@ -86,6 +86,12 @@ class GatewayUnixCandidateTests(unittest.TestCase):
                 return reply
         return RegistryCandidateClient(TestGateway())
 
+    def permit_r7_for_test(self, core, app):
+        app.broker.actor_read_operations[R7_ACTOR] |= frozenset(
+            ('registry', op) for op in READ_OPS)
+        for op in READ_OPS:
+            core.policies[(R7_ACTOR, 'registry', op)] = 'ALLOW'
+
     def test_r7_candidate_adapter_opt_in_has_no_automatic_registry_grant(self):
         self.accept()
         self.setup_broker()
@@ -108,10 +114,7 @@ class GatewayUnixCandidateTests(unittest.TestCase):
         core, app = self.r7_candidate_app()
         broker = app.broker
         # In-memory *test-only* grant/policy; NOT installed or added to R7.
-        broker.actor_read_operations[R7_ACTOR] |= frozenset(
-            ('registry', op) for op in READ_OPS)
-        for op in READ_OPS:
-            core.policies[(R7_ACTOR, 'registry', op)] = 'ALLOW'
+        self.permit_r7_for_test(core, app)
         client = self.local_repo_client(app)
         with patch.object(gateway.GatewayRegistryUnixCandidateRead,
                           '_check_identity', return_value=None), \
@@ -135,6 +138,60 @@ class GatewayUnixCandidateTests(unittest.TestCase):
                           side_effect=AssertionError('revoked must not connect')):
             with self.assertRaisesRegex(Denied, 'TEST_R7_REGISTRY_HTTP_DENIED'):
                 client.head()
+        self.assertEqual(self.failures, [])
+
+    def test_e1_repo_gateway_readback_pins_uuid_pages_and_revision(self):
+        receipt = self.accept()
+        self.setup_broker()
+        core, app = self.r7_candidate_app()
+        self.permit_r7_for_test(core, app)
+        client = self.local_repo_client(app)
+        with patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_check_identity', return_value=None), \
+             patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_peer', return_value=self.reader._registry):
+            result = client.observe_e1_candidate(
+                expected_source_sha='b'*40,
+                original_operation_id=receipt['operationId'], page_limit=1)
+            self.assertEqual(result['result'],
+                             'SOURCE_ONLY_E1_GATEWAY_READ_OBSERVED')
+            self.assertEqual(result['localRevision'], 1)
+            self.assertEqual(result['originalOperationId'], receipt['operationId'])
+            self.assertEqual(result['candidateCount'], 1)
+            self.assertEqual(result['pages'], 1)
+            for key in ('crossUidHostVerified', 'evidenceVerified',
+                        'admissionAllowed', 'writeEnabled', 'functionalV1Accepted'):
+                self.assertIs(result[key], False)
+            with self.assertRaisesRegex(Denied, 'READBACK_INPUT_DENIED'):
+                client.observe_e1_candidate(expected_source_sha='bad',
+                    original_operation_id=receipt['operationId'])
+            with self.assertRaisesRegex(Denied, 'READBACK_INPUT_DENIED'):
+                client.observe_e1_candidate(expected_source_sha='b'*40,
+                    original_operation_id='not-uuid')
+            with self.assertRaisesRegex(Denied, 'READBACK_SOURCE_MISMATCH'):
+                client.observe_e1_candidate(expected_source_sha='f'*40,
+                    original_operation_id=receipt['operationId'])
+        self.assertEqual(self.failures, [])
+
+    def test_e1_readback_stops_if_real_sqlite_changes_during_pages(self):
+        receipt = self.accept()
+        self.setup_broker()
+        core, app = self.r7_candidate_app()
+        self.permit_r7_for_test(core, app)
+        client = self.local_repo_client(app)
+        actual_page = client.list_desired
+        def changed_between_reads(**kwargs):
+            self.suffix()
+            self.accept()
+            return actual_page(**kwargs)
+        with patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_check_identity', return_value=None), \
+             patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_peer', return_value=self.reader._registry), \
+             patch.object(client, 'list_desired', side_effect=changed_between_reads):
+            with self.assertRaisesRegex(Stale, 'READBACK_PAGE_STALE'):
+                client.observe_e1_candidate(expected_source_sha='b'*40,
+                    original_operation_id=receipt['operationId'])
         self.assertEqual(self.failures, [])
 
     def test_r7_rejects_untrusted_reader_before_state_creation(self):

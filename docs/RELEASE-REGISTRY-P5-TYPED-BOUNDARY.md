@@ -711,6 +711,20 @@ source/image, real distinct principals, pinned mount/socket state, permissions,
 backup/restart and actual denied Repo access. E2 trusted original collector,
 first enrollment and authorized `ingest_merged` remain unavailable.
 
+**E1 Repo→Gateway live READ observation (source-only):**
+`RegistryCandidateClient.observe_e1_candidate` and
+`scripts/probe-functional-v1-registry-gateway-read.py` use only the existing
+authenticated Gateway `/v1/reads` methods; the owner supplies a previously
+pinned selected-main SHA and *original* local operation UUID. The bounded
+head → original UUID → full candidate page(s) → head readback requires matching
+instance/scope, revision/event digest/source cursor and matching nonempty
+record IDs. Missing grant/socket/DB, absent UUID, source mismatch, incomplete
+pages and concurrent changes STOP, never return an authoritative empty queue.
+Only a sanitized `SOURCE_ONLY_E1_GATEWAY_READ_OBSERVED` diagnostic is emitted;
+all approval/WRITE/host-proof fields remain false. This does **not** replace
+the independent host cross-principal denial probe, owner review or E2
+authenticated collector/ingestion; source-only tests are not host acceptance.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
