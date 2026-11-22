@@ -194,6 +194,159 @@ class RegistryRecoveryReconcileTests(unittest.TestCase):
             self.assertTrue(called[0])
             self.assertFalse(transient.exists())
 
+    def startup(self,owner=None,witness=None):
+        import copy
+        # This witness is a SAME-UID fixture. A matching value cannot
+        # authenticate a protected monotonic witness or permit runtime.
+        return r.observe_inactive_registry_startup(
+            store=self.state,
+            owner_checkpoint_reader=owner or self.authority.read_checkpoint,
+            witness_checkpoint_reader=witness or
+                (lambda:copy.deepcopy(self.authority.read_checkpoint())))
+
+    def test_inactive_startup_genesis_never_enrolls_or_opens_reads(self):
+        self.setup_pair()
+        result=self.startup()
+        self.assertEqual(result['result'],'REGISTRY_RUNTIME_STARTUP_SOURCE_CANDIDATE')
+        self.assertEqual(result['status'],'INACTIVE_UNVERIFIED')
+        self.assertEqual(result['observation']['operationCount'],0)
+        self.assertEqual(result['observation']['activeCandidateCount'],0)
+        self.assertEqual(result['observation']['checkpoint'],self.state.initial)
+        self.assertEqual(result['observationDigest'],r._hash(result['observation']))
+        for flag in ('protectedCheckpointVerified','independentWitnessVerified',
+                     'hostIsolationVerified','ownerAcceptanceVerified',
+                     'liveReadAllowed','writeAllowed','runtimeActivationAllowed',
+                     'admissionAllowed','deploymentAllowed'):
+            self.assertIs(result[flag],False)
+
+    def test_inactive_startup_committed_state_remains_non_authoritative(self):
+        self.setup_pair();self.accept();self.prepare_suffix();self.accept()
+        result=self.startup()
+        self.assertEqual(result['observation']['checkpoint']['revision'],2)
+        self.assertEqual(result['observation']['operationCount'],2)
+        self.assertEqual(result['observation']['candidateCursor'],'c'*40)
+        self.assertEqual(result['observation']['activeCandidateCount'],1)
+        self.assertFalse(result['liveReadAllowed'])
+        self.assertFalse(result['admissionAllowed'])
+
+    def test_inactive_startup_does_not_write_or_directly_read_owner_store(self):
+        self.setup_pair();self.accept()
+        before_registry=self.state.path.read_bytes()
+        before_owner=self.authority.path.read_bytes()
+        # A changed owner DB path is not read: the callback may return a
+        # remote authenticated checkpoint in the future; this is a fixture.
+        with patch.object(self.authority,'_db',side_effect=AssertionError('owner DB accessed')):
+            for _ in range(2):
+                result=r.observe_inactive_registry_startup(
+                    store=self.state,owner_checkpoint_reader=lambda:self.anchor,
+                    witness_checkpoint_reader=lambda:self.anchor)
+                self.assertFalse(result['runtimeActivationAllowed'])
+        self.assertEqual(before_registry,self.state.path.read_bytes())
+        self.assertEqual(before_owner,self.authority.path.read_bytes())
+        with self.state._read_only_db() as db:
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute("INSERT INTO meta VALUES('forged','forged')")
+
+    def test_inactive_startup_rejects_checkpoint_and_witness_regression(self):
+        self.setup_pair();self.accept()
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_OWNER_CHECKPOINT_MISMATCH'):
+            self.startup(owner=lambda:self.state.initial,
+                         witness=lambda:self.state.initial)
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_WITNESS_CHECKPOINT_MISMATCH'):
+            self.startup(witness=lambda:self.state.initial)
+        bad={**self.anchor,'eventDigest':'f'*64}
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_WITNESS_CHECKPOINT_MISMATCH'):
+            self.startup(witness=lambda:bad)
+
+    def test_inactive_startup_rejects_reader_errors_and_forged_claims(self):
+        self.setup_pair()
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_READERS_REQUIRED'):
+            r.observe_inactive_registry_startup(
+                store=self.state,owner_checkpoint_reader=None,
+                witness_checkpoint_reader=lambda:self.anchor)
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_READERS_REQUIRED'):
+            r.observe_inactive_registry_startup(
+                store=self.state,owner_checkpoint_reader=lambda:self.anchor,
+                witness_checkpoint_reader=None)
+        with self.assertRaisesRegex(Denied,'REGISTRY_RUNTIME_EXTERNAL_READ_UNAVAILABLE'):
+            self.startup(owner=lambda:(_ for _ in ()).throw(OSError('socket offline')))
+        with self.assertRaisesRegex(Denied,'REGISTRY_CHECKPOINT_INVALID'):
+            self.startup(owner=lambda:{**self.anchor,'revision':True})
+        with self.assertRaisesRegex(Denied,'REGISTRY_CHECKPOINT_INVALID'):
+            self.startup(witness=lambda:{**self.anchor,'ownerAcceptanceVerified':True})
+
+    def test_inactive_startup_detects_claim_change_during_read(self):
+        self.setup_pair()
+        updates=[self.anchor,{**self.anchor,'eventDigest':'f'*64}]
+        def change():
+            return updates.pop(0)
+        with self.assertRaisesRegex(Stale,'REGISTRY_RUNTIME_CHANGED_DURING_PREFLIGHT'):
+            self.startup(owner=change)
+
+    def test_inactive_startup_missing_store_never_creates_one(self):
+        self.setup_pair()
+        missing=self.root/'not-registered.sqlite'
+        original=self.state.path
+        self.state.path=missing
+        with patch.object(self.authority,'read_checkpoint',
+                          side_effect=AssertionError('owner called')) as owner_read:
+            with self.assertRaises(Denied):
+                self.startup()
+            owner_read.assert_not_called()
+        self.assertFalse(missing.exists())
+        self.state.path=original
+
+    def test_inactive_startup_state_change_between_readbacks_stops(self):
+        self.setup_pair()
+        called=[0]
+        def witness():
+            called[0]+=1
+            if called[0]==1:
+                # Simulate a competing offline candidate commit after the
+                # first local read. No startup authority may be inferred.
+                before=dict(self.anchor)
+                self.accept()
+                return before
+            return self.anchor
+        with self.assertRaisesRegex(Stale,'REGISTRY_RUNTIME_CHANGED_DURING_PREFLIGHT'):
+            self.startup(witness=witness)
+        self.assertEqual(called[0],2)
+
+    def test_inactive_startup_invalid_schema_never_runs_remote_read(self):
+        self.setup_pair()
+        with sqlite3.connect(self.state.path) as db:
+            db.execute('PRAGMA user_version=99')
+        with patch.object(self.authority,'read_checkpoint',
+                          side_effect=AssertionError('owner called')) as owner_read:
+            with self.assertRaisesRegex(Denied,'REGISTRY_STATE_SCHEMA_MISMATCH'):
+                self.startup()
+            owner_read.assert_not_called()
+
+    def test_inactive_startup_tampered_sqlite_is_denied(self):
+        self.setup_pair();self.accept()
+        with sqlite3.connect(self.state.path) as db:
+            db.execute("UPDATE operations SET evidence_digest='f'")
+        with self.assertRaises(Denied):
+            self.startup()
+
+    def test_inactive_startup_wrong_scope_instance_refused(self):
+        self.setup_pair()
+        old=self.state.instance_id
+        self.state.instance_id=str(uuid.uuid4())
+        with self.assertRaises(Denied):
+            self.startup()
+        self.state.instance_id=old
+
+    def test_inactive_startup_source_claims_do_not_ensure_anti_rollback(self):
+        self.setup_pair()
+        # Even if both externally supplied claims describe the same
+        # rolled-back genesis, a matching local DB has NO protected proof.
+        result=self.startup(owner=lambda:self.state.initial,
+                            witness=lambda:self.state.initial)
+        self.assertEqual(result['status'],'INACTIVE_UNVERIFIED')
+        self.assertFalse(result['independentWitnessVerified'])
+        self.assertFalse(result['runtimeActivationAllowed'])
+
     def test_symlink_sidecars_still_fail_closed(self):
         from fortis_approvals.registry import checkpoint_cas, state_journal
         self.setup_pair()
