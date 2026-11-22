@@ -69,10 +69,52 @@ class GatewayRegistryUnixCandidateRead:
         self._check_identity()
 
     def _check_identity(self):
-        _need(os.getuid() == os.geteuid() == self._reader[0]
-              and os.getgid() == os.getegid() == self._reader[1]
-              and self._reader[0] > 0,
+        """Fail closed on the ACTUAL reader process, never claimed request IDs."""
+        uid, gid = self._reader
+        _need(os.getresuid() == (uid, uid, uid)
+              and os.getresgid() == (gid, gid, gid)
+              and os.getuid() == os.geteuid() == uid
+              and os.getgid() == os.getegid() == gid,
               'REGISTRY_CANDIDATE_READER_IDENTITY_DENIED')
+        groups = os.getgroups()
+        _need(len(groups) <= 64 and len(set(groups)) == len(groups)
+              and self._registry[2] not in groups,
+              'REGISTRY_CANDIDATE_READER_GROUP_DENIED')
+        try:
+            raw = Path('/proc/self/status').read_bytes()
+        except OSError:
+            raise Denied('REGISTRY_CANDIDATE_PROC_UNAVAILABLE') from None
+        _need(0 < len(raw) <= 16384, 'REGISTRY_CANDIDATE_PROC_DENIED')
+        fields = {}
+        names = {'Uid', 'Gid', 'Groups', 'CapInh', 'CapPrm',
+                 'CapEff', 'CapBnd', 'CapAmb', 'NoNewPrivs',
+                 'Seccomp', 'TracerPid'}
+        try:
+            for line in raw.decode('ascii').splitlines():
+                key, sep, value = line.partition(':')
+                if sep and key in names:
+                    _need(key not in fields, 'REGISTRY_CANDIDATE_PROC_DENIED')
+                    fields[key] = value.strip()
+            _need(set(fields) == names, 'REGISTRY_CANDIDATE_PROC_DENIED')
+            _need([int(v) for v in fields['Uid'].split()] == [uid] * 4
+                  and [int(v) for v in fields['Gid'].split()] == [gid] * 4
+                  and sorted(int(v) for v in fields['Groups'].split()) ==
+                  sorted(groups),
+                  'REGISTRY_CANDIDATE_READER_IDENTITY_DENIED')
+            _need(all(int(fields[k], 16) == 0 for k in
+                      ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
+                  and fields['NoNewPrivs'] == '1'
+                  and fields['Seccomp'] == '2'
+                  and fields['TracerPid'] == '0',
+                  'REGISTRY_CANDIDATE_READER_PRIVILEGE_DENIED')
+        except Denied:
+            raise
+        except (UnicodeError, ValueError, OverflowError):
+            raise Denied('REGISTRY_CANDIDATE_PROC_DENIED') from None
+        _need(os.getresuid() == (uid, uid, uid)
+              and os.getresgid() == (gid, gid, gid)
+              and os.getgroups() == groups,
+              'REGISTRY_CANDIDATE_READER_IDENTITY_CHANGED')
 
     def _check_socket(self):
         path = self._path

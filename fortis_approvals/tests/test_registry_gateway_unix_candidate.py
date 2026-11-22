@@ -41,6 +41,61 @@ class GatewayUnixCandidateTests(unittest.TestCase):
     suffix = fixture.LocalCandidateReadServiceTests.suffix
     setup_service = fixture.LocalCandidateReadServiceTests.setup_service
 
+    def principal_status(self, *, capabilities='0', no_new_privs='1',
+                         seccomp='2', trace='0', groups=None):
+        """Synthetic /proc snapshot; never a distinct-UID host acceptance."""
+        uid, gid = self.reader._reader
+        groups = [] if groups is None else groups
+        rows = {
+            'Uid': f'{uid} {uid} {uid} {uid}',
+            'Gid': f'{gid} {gid} {gid} {gid}',
+            'Groups': ' '.join(map(str, groups)),
+            'CapInh': capabilities, 'CapPrm': capabilities,
+            'CapEff': capabilities, 'CapBnd': capabilities,
+            'CapAmb': capabilities, 'NoNewPrivs': no_new_privs,
+            'Seccomp': seccomp, 'TracerPid': trace,
+        }
+        return ''.join(f'{k}:\t{v}\n' for k,v in rows.items()).encode()
+
+    def check_synthetic_process(self, raw, *, groups=None):
+        uid, gid = self.reader._reader
+        with patch.object(gateway.os, 'getresuid', return_value=(uid,)*3), \
+             patch.object(gateway.os, 'getresgid', return_value=(gid,)*3), \
+             patch.object(gateway.os, 'getuid', return_value=uid), \
+             patch.object(gateway.os, 'geteuid', return_value=uid), \
+             patch.object(gateway.os, 'getgid', return_value=gid), \
+             patch.object(gateway.os, 'getegid', return_value=gid), \
+             patch.object(gateway.os, 'getgroups', return_value=(
+                 [] if groups is None else groups)), \
+             patch.object(gateway.Path, 'read_bytes', return_value=raw):
+            return self.reader._check_identity()
+
+    def test_reader_process_security_guard_is_fail_closed(self):
+        self.setup_broker()
+        self.check_synthetic_process(self.principal_status())
+        cases = [
+            ('capability', {'capabilities':'1'}, None,
+             'READER_PRIVILEGE_DENIED'),
+            ('no_new_privs', {'no_new_privs':'0'}, None,
+             'READER_PRIVILEGE_DENIED'),
+            ('seccomp', {'seccomp':'0'}, None,
+             'READER_PRIVILEGE_DENIED'),
+            ('tracer', {'trace':'42'}, None,
+             'READER_PRIVILEGE_DENIED'),
+            ('registry_group', {}, [self.reader._registry[2]],
+             'READER_GROUP_DENIED'),
+            ('extra_proc_field_missing', {}, None, 'PROC_DENIED'),
+        ]
+        for label, options, groups, code in cases:
+            with self.subTest(label=label), self.assertRaisesRegex(Denied,code):
+                raw=self.principal_status(groups=groups,**options)
+                if label=='extra_proc_field_missing':
+                    raw=raw.replace(b'CapBnd:',b'Unknown:')
+                self.check_synthetic_process(raw,groups=groups)
+        with self.assertRaisesRegex(Denied,'READER_IDENTITY_DENIED'):
+            self.check_synthetic_process(self.principal_status(
+                groups=[123]),groups=[])
+
     def setup_broker(self):
         self.setup_service()
         self.listener=self.service.bind()
