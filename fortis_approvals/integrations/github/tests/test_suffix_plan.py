@@ -182,6 +182,92 @@ class SuffixPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied,'P5_PLAN_CURSOR_NOT_ALLOWED_FOR_INITIAL'):
             planner.observe_initial_plan(**(self.args()|{'cursor_reader':self.state.checkpoint}))
 
+
+    def test_actual_git_initial_then_suffix_into_local_schema3(self):
+        """Real retained Git/planner fixtures → local V1 desired history.
+
+        Source test only; injected collector fixtures and local event digest
+        are not original trusted evidence or anti-rollback proof.
+        """
+        from fortis_approvals.registry import functional_v1_journal as local
+        self.setup_suffix()
+        scope=copy.deepcopy(self.state.scope)
+        path=secure_dir(self.fixture.root/'registry-local-v1')/'state.sqlite'
+        self.state_id=str(uuid.uuid4())
+        self.active_plan=copy.deepcopy(self.plan_snapshot)
+        source_id=self.active_plan['evidenceId']
+        def read(eid):
+            self.assertEqual(eid,self.active_plan['evidenceId'])
+            return copy.deepcopy(self.active_plan)
+        self.state=local.FunctionalV1CandidateJournal.initialize(
+            path,instance_id=self.state_id,scope=scope,plan_reader=read)
+        first_result=self.state.append_range(
+            actor=state.PLANNER,operation_id=str(uuid.uuid4()),
+            evidence_id=source_id,evidence_digest=state._hash(self.active_plan),
+            expected_revision=0)
+        self.assertEqual(first_result['result'],'LOCAL_DESIRED_CANDIDATE_COMMITTED')
+        first=first_result['receipt']
+        self.assertEqual(self.state.checkpoint()['localCheckpoint']['revision'],1)
+        self.assertFalse(first['admissionAllowed'])
+
+        merge,eid,suffix,batch=self.second()
+        planned=self.query(merge,eid,batch=batch)
+        observation=planned['observation']
+        self.assertEqual(planned['result'],'SUFFIX_RANGE_PLAN_CANDIDATE')
+        self.assertEqual(observation['registryCursorCheckpoint'],
+                         self.state.checkpoint()['localCheckpoint'])
+        self.assertEqual(observation['startCursorSha'],self.fixture.selected)
+        self.assertEqual(observation['selectedMainSha'],merge)
+        self.assertFalse(planned['evidenceVerified'])
+        self.assertFalse(planned['admissionAllowed'])
+
+        self.active_plan={
+            'schemaVersion':1,'issuer':state.COLLECTOR,'repository':state.REPOSITORY,
+            'evidenceId':str(uuid.uuid4()),'plan':planned}
+        second=self.state.append_range(
+            actor=state.PLANNER,operation_id=str(uuid.uuid4()),
+            evidence_id=self.active_plan['evidenceId'],
+            evidence_digest=state._hash(self.active_plan),expected_revision=1)
+        self.assertEqual(second['result'],'LOCAL_DESIRED_CANDIDATE_COMMITTED')
+        receipt=second['receipt']
+        self.assertEqual(receipt['startCursorSha'],self.fixture.selected)
+        self.assertEqual(receipt['candidateCursor'],merge)
+        self.assertEqual(receipt['supersessions'],[
+            {'fromRecordId':first['recordIds'][0],
+             'toRecordId':receipt['recordIds'][0]}])
+        page=self.state.list_desired_candidates(limit=10)
+        self.assertEqual(page['candidateSourceSha'],merge)
+        self.assertEqual(len(page['records']),1)
+        self.assertEqual(page['records'][0]['recordId'],receipt['recordIds'][0])
+        self.assertIsNone(page['records'][0]['actual'])
+        self.assertFalse(page['deploymentVerified'])
+        self.assertEqual(page['integrityModel'],'LOCAL_EVENT_CHAIN_ONLY')
+
+    def test_local_schema3_cursor_denies_wrappers_wrong_scope_and_zero_revision(self):
+        """A caller's hash-compatible dictionary is not a Registry reader."""
+        from fortis_approvals.registry import functional_v1_journal as local
+        from fortis_approvals.integrations.github.gateway import forward_lineage
+        self.setup_suffix()
+        scope=copy.deepcopy(self.state.scope)
+        path=secure_dir(self.fixture.root/'registry-local-denials')/'state.sqlite'
+        owner=local.FunctionalV1CandidateJournal.initialize(
+            path,instance_id=str(uuid.uuid4()),scope=scope,
+            plan_reader=lambda _:copy.deepcopy(self.plan_snapshot))
+        self.assertEqual(owner.checkpoint()['localCheckpoint']['revision'],0)
+        expected=planner._hash(self.baseline)
+        with self.assertRaisesRegex(Denied,'P5_FORWARD_CURSOR_INVALID'):
+            forward_lineage._registry_cursor(
+                owner.checkpoint,self.baseline,expected,self.pin)
+        with self.assertRaisesRegex(Denied,'P5_FORWARD_CURSOR_READER_REQUIRED'):
+            forward_lineage._registry_cursor(
+                lambda: owner.checkpoint(),self.baseline,expected,self.pin)
+        with self.assertRaisesRegex(Denied,'P5_FORWARD_CURSOR_SCOPE_MISMATCH'):
+            forward_lineage._registry_cursor(
+                owner.checkpoint,self.baseline,'f'*64,self.pin)
+        with self.assertRaisesRegex(Denied,'P5_FORWARD_CURSOR_READER_REQUIRED'):
+            forward_lineage._registry_cursor(
+                self.state.checkpoint.__call__,self.baseline,expected,self.pin)
+
     def test_original_source_plan_then_suffix_to_v2_state(self):
         from fortis_approvals.registry import state_journal_v2 as v2
         self.setup_suffix()

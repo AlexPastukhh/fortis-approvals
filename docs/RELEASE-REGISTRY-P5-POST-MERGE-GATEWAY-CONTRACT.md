@@ -950,18 +950,22 @@ admission or a real deployment.
 
 ## Suffix planning from Registry cursor (source candidate only)
 
-After the first anchored candidate transaction, the Registry-owned
-`RegistryStateJournal.checkpoint` may supply a host-composed
-`cursor_reader` to `gateway/admission_plan.py::observe_suffix_plan`.
-The reader must be the actual journal's bound method, not an arbitrary
-closure or request-supplied cursor/complete flag. The journal verifies
-its original operation/evidence chain, locally persisted cursor and
-independent checkpoint before returning a candidate cursor. The source
-verifier also checks the exact immutable repository/enrollment/baseline/
-catalog/binding/policy scope digest, positive Registry revision,
-false authority flags and source cursor SHA. The selected current main
-is independently re-read, as for initial planning. This does not assert
-that the external anchor is actually protected in production.
+After the first accepted **candidate** range, `observe_suffix_plan`
+requires the actual Registry journal's bound `checkpoint` reader,
+not a request-provided SHA, arbitrary closure, proxy or asserted
+completion flag. Schema 1/2 checkpoint-backed journal readers remain
+supported. With the functional V1 source addition, the **exact**
+`FunctionalV1CandidateJournal.checkpoint` bound method (SQLite schema 3)
+is also accepted. Its `LOCAL_SOURCE_CANDIDATE_HEAD` is strictly checked
+for the expected `LOCAL_EVENT_CHAIN_ONLY` marker, false admission and
+deployment flags, immutable enrollment/scope, positive revision, local
+event digest and source SHA. Only for *existing candidate plan schema*
+is its `localCheckpoint` projected into the `registryCursorCheckpoint`
+field; that does **not** make it an independent checkpoint/witness.
+The full local event chain is replayed on read, and the owner method
+is re-read after source composition. The selected `main` is independently
+re-read as for initial planning. A forged dictionary/wrapper is denied.
+This step is **not** owner enrollment or trusted runtime admission.
 
 The suffix walk checks every first-parent merge between the Registry
 candidate cursor and the selected main, without re-reading or including
@@ -980,15 +984,21 @@ changes after lineage composition. Empty suffix is not re-enqueued.
 
 No arbitrary start SHA, cursor reset, retrospective backfill or automatic
 policy/catalog transition is permitted. The original immutable
-enrollment baseline is unchanged. The initial plan API rejects a cursor
-argument; the new suffix API requires one. The original Registry
-SQLite schema intentionally still supports only the first candidate
-transaction: **a suffix plan cannot yet be appended**. Nothing
-advances the state journal, supersedes prior records, marks actual
-installed, or returns admitted data. Supersession will require
-separately verified continuity, immutable old/current records,
-Registry CAS/anchor integration and owner acceptance. Existing
-evidenceVerified, admissionAllowed and deploymentAllowed remain false.
+enrollment baseline is unchanged. Initial plan rejects any cursor
+override; suffix planning requires the exact journal reader.
+The *historical schema 1* supports only an initial transaction. The
+separately reviewed schema 2 and **local-only schema 3** support
+candidate initial and suffix CAS/supersession; source tests now exercise
+a real first Git-fixture plan followed by a second synthetic retained
+merge through schema 3 and a persisted latest desired projection.
+This **still** does not establish original collector authentication,
+an authoritative Registry queue, installed actual, `DEPLOYED`,
+unattended CD, or permission to turn on a Registry WRITE. Before
+`FUNCTIONAL_V1_GO`, require trusted collector/owner composition,
+first cutover, grants, host isolation, backup/restore and non-Production
+E2E. False `evidenceVerified`, `admissionAllowed` and
+`deploymentAllowed` are preserved; later hardening requires
+independent checkpoint/witness, not a local hash.
 
 Seven source tests include a real first fixture Core/Git/collector
 and matching Registry initial transaction, then a real second Git

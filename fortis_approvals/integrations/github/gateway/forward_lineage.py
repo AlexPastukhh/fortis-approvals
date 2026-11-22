@@ -39,18 +39,25 @@ def _baseline(reader, pin):
 
 
 def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
-    """Read the registry-owned candidate cursor, not an arbitrary SHA.
+    """Read the exact Registry journal cursor, never caller-selected SHA.
 
-    The existing journal verifies its own original operation chain and
-    independent checkpoint; this does not confer protected admission.
+    Schemas 1/2 use an independent checkpoint. Functional source schema 3
+    exposes a *local event-chain head only*. It is valid for candidate
+    planning, NEVER owner acceptance, protected rollback verification or
+    admission. Do not accept a generic wrapper or a fake checkpoint reader.
     """
     from ....registry.state_journal import RegistryStateJournal
     from ....registry.state_journal_v2 import RegistryStateJournalV2
+    from ....registry.functional_v1_journal import FunctionalV1CandidateJournal
     owner=getattr(reader,'__self__',None)
-    _need((type(owner) is RegistryStateJournal and
-           getattr(reader,'__func__',None) is RegistryStateJournal.checkpoint) or
+    method=getattr(reader,'__func__',None)
+    local=(type(owner) is FunctionalV1CandidateJournal and
+           method is FunctionalV1CandidateJournal.checkpoint)
+    _need(local or
+          (type(owner) is RegistryStateJournal and
+           method is RegistryStateJournal.checkpoint) or
           (type(owner) is RegistryStateJournalV2 and
-           getattr(reader,'__func__',None) is RegistryStateJournalV2.checkpoint),
+           method is RegistryStateJournalV2.checkpoint),
           'P5_FORWARD_CURSOR_READER_REQUIRED')
     scope={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
            'baselineSha':baseline['baselineSha'],'baselineDigest':baseline_digest,
@@ -59,6 +66,20 @@ def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
     _need(reader.__self__.scope==scope,'P5_FORWARD_CURSOR_SCOPE_MISMATCH')
     try:
         ref=reader()
+        if local:
+            _need(type(ref) is dict and set(ref)=={
+                'result','localCheckpoint','candidateCursor','integrityModel',
+                'evidenceVerified','admissionAllowed','deploymentAllowed'}
+                and ref['result']=='LOCAL_SOURCE_CANDIDATE_HEAD'
+                and ref['integrityModel']=='LOCAL_EVENT_CHAIN_ONLY'
+                and ref['deploymentAllowed'] is False,
+                'P5_FORWARD_LOCAL_CURSOR_INVALID')
+            # Schema 3's strictly owned LOCAL checkpoint is normalized only
+            # for source-plan schema compatibility. NOT a witnessed anchor.
+            ref={'checkpoint':ref['localCheckpoint'],
+                 'candidateCursor':ref['candidateCursor'],
+                 'evidenceVerified':ref['evidenceVerified'],
+                 'admissionAllowed':ref['admissionAllowed']}
         _need(type(ref) is dict and set(ref)==CURSOR_FIELDS
               and ref['evidenceVerified'] is False and ref['admissionAllowed'] is False
               and _hex(ref['candidateCursor'],40),'P5_FORWARD_CURSOR_INVALID')
