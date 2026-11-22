@@ -232,6 +232,19 @@ schema 2** and does not modify schema 2's accepted invariants or
   and `deploymentVerified` (where applicable) remain **false**.
   An empty local candidate list must **not** be exposed as an
   authoritative empty live Release Queue.
+- **Functional forward planning source integration:** the existing
+  `forward_lineage._registry_cursor` now accepts only schema 3's
+  *exact bound* `FunctionalV1CandidateJournal.checkpoint` method in
+  addition to existing schema 1/2 checkpoint readers. It rejects
+  wrapper functions, incompatible scope, a zero-revision cursor,
+  false evidence/authority markers and invalid local checkpoint
+  layout. The local head is normalized **only** into the source
+  suffix-plan's `registryCursorCheckpoint` field. It is **not** an
+  independent witness and grants no new actor/method permission.
+  Offline test exercises original Git-fixture initial evidence,
+  a second retained-merge fixture, source planner, two schema 3
+  append-range CAS receipts, supersession and read-only latest
+  desired pagination. No live collector or Registry service exists.
 
 **Threat boundary:** local event hashes detect ordinary corruption
 without allowing routine API edits, but do **not** detect an adversary
