@@ -125,6 +125,15 @@ class SourceView:
                 not (self.repository/'.git/objects/info/alternates').exists() and
                 not self.git.text(['for-each-ref','refs/replace'], cwd=self.repository),
                 'PUBLISHER_INCOMPLETE_HISTORY')
+        # The freshly initialized private repository otherwise has an unborn
+        # HEAD despite its two fetched, exact-SHA verified refs. Point HEAD at
+        # a distinct verified-view ref before strict refs/object fsck; do not
+        # mutate verified-main when HEAD is later advanced to the PR head.
+        self.git.run(['symbolic-ref','HEAD','refs/heads/verified-view'],cwd=self.repository)
+        self.git.run(['update-ref','refs/heads/verified-view',main_sha],cwd=self.repository)
+        require(self.git.text(['--no-replace-objects','rev-parse','HEAD'],
+                              cwd=self.repository) == main_sha,
+                'PUBLISHER_SOURCE_SHA_CHANGED')
         self.git.run(['--no-replace-objects','fsck','--strict','--full','--no-reflogs'],
                      cwd=self.repository)
         objects = self.git.text(['--no-replace-objects','cat-file',
