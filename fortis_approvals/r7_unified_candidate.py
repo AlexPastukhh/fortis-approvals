@@ -76,7 +76,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               github_transport=None, analysis_review=None, extensions=None, extension_providers=None, credential_vault=None,
                               publisher_profile=None, publisher_grant=None,
                               machine_shell=None, local_deny_source_opt_in=None,
-                              unified_policy_source_opt_in=None):
+                              unified_policy_source_opt_in=None,
+                              registry_candidate_reader=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
@@ -160,6 +161,14 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     if (machine_shell is not None and
             machine_shell.actor != grants[ingress_grant]):
         raise Denied('MACHINE_POWERSHELL_ACTOR_SCOPE_DENIED')
+    # E1 source-only composition. The normal server passes None; no read
+    # policy, machine principal, broker grant or Registry WRITE is created.
+    # A future owner-reviewed host must provide the already-bound reader.
+    if registry_candidate_reader is not None:
+        from .integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
+        if type(registry_candidate_reader) is not GatewayRegistryUnixCandidateRead:
+            raise Denied('R7_REGISTRY_CANDIDATE_READER_INVALID')
+        registry_candidate_reader._check_identity()
     # Construct adapters *before* modifying state: invalid org/region fail closed.
     reader = SonarReadAdapter(sonar_transport,
                               organization_keys=organizations, region=region,
@@ -229,7 +238,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         broker_reads[PUBLISHER_ACTOR] = frozenset(('github', op) for op in PUBLISHER_READS)
     broker = RepoIntentBroker(
         core,actor_operations=broker_actions,
-        actor_read_operations=broker_reads,read_adapter=reader)
+        actor_read_operations=broker_reads,read_adapter=reader,
+        read_adapters=({'registry':registry_candidate_reader}
+                       if registry_candidate_reader is not None else None))
     native = None
     if github_pilot is not None:
         if github_pilot.native_worktree:

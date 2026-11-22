@@ -15,11 +15,14 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fortis_approvals.core import Authenticator, Core, Denied, canonical
 from fortis_approvals.repo_action_contract import RepoIntentBroker
 from fortis_approvals.repo_ingress import RepoIngress
+from fortis_approvals.r7_unified_candidate import ACTOR as R7_ACTOR, build_r7_unified_candidate
+from fortis_approvals.integrations.registry.repo_client import RegistryCandidateClient
 from fortis_approvals.integrations.registry import candidate_gateway as gateway
 from fortis_approvals.integrations.registry.read_contract import (
     REPOSITORY, validate_gateway_read_projection,
@@ -40,6 +43,143 @@ class GatewayUnixCandidateTests(unittest.TestCase):
     accept = fixture.LocalCandidateReadServiceTests.accept
     suffix = fixture.LocalCandidateReadServiceTests.suffix
     setup_service = fixture.LocalCandidateReadServiceTests.setup_service
+
+    def r7_candidate_app(self):
+        """Real R7 factory, test-only fake owner and same-UID reader pins."""
+        state = self.path.parent / 'r7-candidate'
+        state.mkdir(mode=0o700)
+        class SonarUnavailable:
+            def call(self, *args):
+                raise AssertionError('Registry GET must not query Sonar')
+        with patch('fortis_approvals.r7_unified_candidate.IncidentOwnerWebAuthn',
+                   return_value=SimpleNamespace(origin='http://localhost:19503')), \
+             patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_check_identity', return_value=None):
+            core, _, _, app = build_r7_unified_candidate(
+                state=state, owner_origin='http://localhost:19503',
+                ingress_host='host.docker.internal:19504',
+                ingress_grant=GRANT, sonar_transport=SonarUnavailable(),
+                organizations=('fortis-test',),
+                registry_candidate_reader=self.reader)
+        return core, app
+
+    def local_repo_client(self, app):
+        """Exercise the real R7 machine WSGI ingress without host grants."""
+        class TestGateway:
+            def post(self, path, payload, *, accept_202=False):
+                if path != '/v1/reads':
+                    raise AssertionError('No other route is allowed')
+                raw = canonical(payload).encode('utf-8')
+                env = {
+                    'REQUEST_METHOD': 'POST', 'PATH_INFO': path,
+                    'HTTP_HOST': 'host.docker.internal:19504',
+                    'QUERY_STRING': '', 'CONTENT_TYPE': 'application/json',
+                    'CONTENT_LENGTH': str(len(raw)),
+                    'HTTP_AUTHORIZATION': 'Bearer ' + GRANT,
+                    'wsgi.url_scheme': 'https', 'wsgi.input': io.BytesIO(raw),
+                }
+                statuses = []
+                reply = json.loads(b''.join(app(
+                    env, lambda status, headers: statuses.append(status))))
+                if statuses != ['200 OK']:
+                    raise Denied('TEST_R7_REGISTRY_HTTP_DENIED')
+                return reply
+        return RegistryCandidateClient(TestGateway())
+
+    def test_r7_candidate_adapter_opt_in_has_no_automatic_registry_grant(self):
+        self.accept()
+        self.setup_broker()
+        core, app = self.r7_candidate_app()
+        broker = app.broker
+        self.assertIs(broker.read_adapters.get('registry'), self.reader)
+        self.assertNotIn(('registry', 'candidate_head'),
+                         broker.actor_read_operations[R7_ACTOR])
+        self.assertNotIn((R7_ACTOR, 'registry', 'candidate_head'), core.policies)
+        with patch.object(self.reader, '_socket_read',
+                          side_effect=AssertionError('MUST NOT CONNECT')):
+            with self.assertRaisesRegex(Denied, 'TEST_R7_REGISTRY_HTTP_DENIED'):
+                self.local_repo_client(app).head()
+        self.assertNotIn('registry', core.adapters)
+        self.assertEqual(self.failures, [])
+
+    def test_r7_repo_client_reads_real_socket_and_schema3_only_with_test_grants(self):
+        receipt = self.accept()
+        self.setup_broker()
+        core, app = self.r7_candidate_app()
+        broker = app.broker
+        # In-memory *test-only* grant/policy; NOT installed or added to R7.
+        broker.actor_read_operations[R7_ACTOR] |= frozenset(
+            ('registry', op) for op in READ_OPS)
+        for op in READ_OPS:
+            core.policies[(R7_ACTOR, 'registry', op)] = 'ALLOW'
+        client = self.local_repo_client(app)
+        with patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_check_identity', return_value=None), \
+             patch.object(gateway.GatewayRegistryUnixCandidateRead,
+                          '_peer', return_value=self.reader._registry):
+            head = client.head()
+            page = client.list_desired(limit=1)
+            original = client.original_operation(receipt['operationId'])
+        self.assertEqual(head['result'], 'SOURCE_ONLY_CANDIDATE_READ')
+        self.assertEqual(head['data']['localCheckpoint']['revision'], 1)
+        self.assertEqual(page['data']['records'][0]['identity']['repository'], REPOSITORY)
+        self.assertEqual(page['data']['records'][0]['planningState'], 'PLANNED_UNVERIFIED')
+        self.assertIsNone(page['data']['records'][0]['actual'])
+        self.assertEqual(original['data']['operationId'], receipt['operationId'])
+        self.assertFalse(original['admissionAllowed'])
+        self.assertFalse(page['liveRegistryAvailable'])
+        self.assertFalse(head['writeEnabled'])
+        # Revoking an owner-controlled Core rule must DENY before any Unix IO.
+        core.policies[(R7_ACTOR, 'registry', 'candidate_head')] = 'DENY'
+        with patch.object(self.reader, '_socket_read',
+                          side_effect=AssertionError('revoked must not connect')):
+            with self.assertRaisesRegex(Denied, 'TEST_R7_REGISTRY_HTTP_DENIED'):
+                client.head()
+        self.assertEqual(self.failures, [])
+
+    def test_r7_rejects_untrusted_reader_before_state_creation(self):
+        root = self.path.parent / 'reject-untrusted-registry-reader'
+        class UnusedSonar:
+            def call(self, *args):
+                raise AssertionError('Sonar call forbidden')
+        with self.assertRaisesRegex(Denied, 'R7_REGISTRY_CANDIDATE_READER_INVALID'):
+            build_r7_unified_candidate(
+                state=root, owner_origin='http://localhost:19503',
+                ingress_host='host.docker.internal:19504',
+                ingress_grant=GRANT, sonar_transport=UnusedSonar(),
+                organizations=('fortis-test',),
+                registry_candidate_reader=object())
+        self.assertFalse(root.exists())
+
+    def test_repo_client_rejects_ask_spoofed_response_and_unsupported_calls(self):
+        with self.assertRaisesRegex(Denied, 'REGISTRY_CLIENT_GATEWAY_REQUIRED'):
+            RegistryCandidateClient(object())
+        class PendingGateway:
+            def post(self, path, request, *, accept_202=False):
+                return {'requestId': request['requestId'],
+                        'service': 'registry', 'operation': request['operation'],
+                        'state': 'PENDING'}
+        with self.assertRaisesRegex(Denied, 'REGISTRY_CLIENT_RESPONSE_DENIED'):
+            RegistryCandidateClient(PendingGateway()).head()
+        class SpoofGateway:
+            def post(self, path, request, *, accept_202=False):
+                return {'requestId': str(uuid.uuid4()),
+                        'service': 'registry', 'operation': request['operation'],
+                        'data': {}}
+        with self.assertRaisesRegex(Denied, 'REGISTRY_CLIENT_RESPONSE_DENIED'):
+            RegistryCandidateClient(SpoofGateway()).head()
+        class ForbiddenGateway:
+            def post(self, *a, **kw):
+                raise AssertionError('Invalid query reached remote Gateway')
+        client = RegistryCandidateClient(ForbiddenGateway())
+        with self.assertRaises(Denied):
+            client.original_operation('forged')
+        with self.assertRaises(Denied):
+            client.list_desired(limit=0)
+        with self.assertRaises(Denied):
+            client.list_desired(limit=101)
+        with self.assertRaises(Denied):
+            client.list_desired(cursor='/etc/passwd')
 
     def principal_status(self, *, capabilities='0', no_new_privs='1',
                          seccomp='2', trace='0', groups=None):

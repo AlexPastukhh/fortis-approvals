@@ -692,6 +692,25 @@ establish real cross-UID isolation. The existing owner-run host probe and
 separate E1 host/ACL/image/grant review remain required; neither Registry
 WRITE nor an authoritative queue is enabled.
 
+**E1 existing R7 + Repo READ composition (source-only):**
+`build_r7_unified_candidate(..., registry_candidate_reader=...)` accepts
+only the preconstructed exact `GatewayRegistryUnixCandidateRead` class and
+checks its invoking identity before wiring that existing adapter into the
+existing Core/Broker `/v1/reads` route. The normal `r7_unified_server` passes
+no such input. There is **no** automatic actor, grant, ALLOW/ASK policy,
+capability advertisement, Registry socket creation or image activation.
+The Repo-side `integrations/registry/repo_client.py::RegistryCandidateClient`
+uses the existing authenticated Gateway transport with fixed target/repository
+and exposes only `head`, bounded `list_desired` and original local UUID READ.
+It rejects ASK/PENDING, malformed/forged replies and unavailable storage,
+never converting them to empty records or installed actual. A real R7 WSGI
+→ Core/Broker → AF_UNIX → schema-3 regression uses **test-only** grant/policy
+and same-UID mocks; neither a live machine grant nor host cross-UID proof.
+E1 still requires separately owner-reviewed non-Production host, installed
+source/image, real distinct principals, pinned mount/socket state, permissions,
+backup/restart and actual denied Repo access. E2 trusted original collector,
+first enrollment and authorized `ingest_merged` remain unavailable.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
