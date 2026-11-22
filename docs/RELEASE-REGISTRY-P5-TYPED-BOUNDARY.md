@@ -193,6 +193,67 @@ Independent owner checkpoint transport and monotonic witness move to
 the separate `HARDENED_REGISTRY_GO`, which must be satisfied before
 asserting rollback resistance. This source cut changes **neither** gate.
 
+## Functional P5 V1 local desired journal candidate — schema 3 (2026-11-23)
+
+The owner-approved product direction in the
+[single P5–P8 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue)
+separates a **limited functional** Registry from **later anti-rollback
+hardening**. As a source-only implementation step,
+`registry/functional_v1_journal.py::FunctionalV1CandidateJournal`
+offers a **separately versioned SQLite schema 3** for locally retained
+desired *candidates*. It is **not a migration of checkpoint-backed
+schema 2** and does not modify schema 2's accepted invariants or
+`RegistryStateJournalV2` methods.
+
+- Private parent directory `0700`, exclusive existing-file creation,
+  database `0600`, exact schema/version/scope, WAL, `synchronous=FULL`,
+  append-only operation rows/desired records/supersession links. No
+  public path selector or automatic data migration.
+- `append_range` requires exact typed planner operation/evidence UUID,
+  digest, expected revision, and an independently injected offline
+  `plan_reader`. It revalidates full stored source-plan chain/merge
+  continuity and candidate target IDs, local event digest chain, schema,
+  record lineage and supersession. Initial and suffix ranges are
+  distinguished, no-deployment ranges preserve cursor without inventing
+  a release row. SQLite `BEGIN IMMEDIATE` protects a **single
+  transaction** with revision CAS. Original-operation replay returns
+  the same receipt; changed fingerprint conflicts. Unknown commit
+  receipt is `UNKNOWN_OUTCOME`, not permission to blindly retry.
+- `operation`, `checkpoint` (explicitly **local checkpoint only**)
+  and bounded `list_desired_candidates` provide an offline readback
+  of accepted *candidate* rows. The last desired record per
+  target/environment is projected, previous versions remain in history.
+  Pagination cursors are tied to local revision/digest; a public
+  hash is not authorization. The page size is capped at 100 entries
+  and 8192 bytes. No runtime actual, installed version, owner report
+  or deployment claim exists in this schema.
+- Every output says `integrityModel=LOCAL_EVENT_CHAIN_ONLY`.
+  `evidenceVerified`, `admissionAllowed`, `deploymentAllowed`
+  and `deploymentVerified` (where applicable) remain **false**.
+  An empty local candidate list must **not** be exposed as an
+  authoritative empty live Release Queue.
+
+**Threat boundary:** local event hashes detect ordinary corruption
+without allowing routine API edits, but do **not** detect an adversary
+rolling back the entire SQLite DB/WAL/backup domain. No outside
+checkpoint, trusted collector identity, original Core/Owner Portal
+acceptance, protected host runtime, accepted first enrollment or
+registry WRITE grants are present. The callback supplying a plan is
+**not authenticated by this class**. Future `FUNCTIONAL_V1_GO`
+requires explicitly reviewing that composition: owner-controlled
+single-writer placement, trusted original post-merge collector and
+cutover, restricted Gateway methods/actors, WAL-safe backup/restore,
+unknown-outcome recovery and non-Production E2E. Source-only schema 3
+cannot be installed automatically just because its tests pass.
+`HARDENED_REGISTRY_GO` subsequently adds independently protected
+checkpoint/witness and cross-principal tests; it is not silently
+replaced by the local event hash.
+
+This module is under `release/targets.yaml:noDeploymentPaths` until
+a separately reviewed Registry target/catalog/image is introduced.
+It is **not** imported into either currently deployed Gateway/Repo
+service, so it cannot publish a live queue or write to Production.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
