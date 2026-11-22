@@ -1058,6 +1058,39 @@ cross-repository milestone ordering is the
 its stale completion references require an eventual *container*
 repository edit, which this single *approvals* PR cannot perform.
 
+## Exact persisted collector source pin for inactive schema-3 composition (2026-11-23)
+
+The existing `OfflineSourceRangeComposition` has been narrowed:
+`journal` **must** be an actual
+`gateway/collector_snapshot.py::CollectorSnapshotStore`, plus an
+explicit **host-composed** `expected_collector_checkpoint` with the
+same instance ID and a positive revision. The composer captures the
+store's original bound `anchored_batch` method at construction
+and checks its full SQLite journal replay against the pinned head
+before, during and immediately before schema-3 append. A compatible
+JSON object, fake journal wrapper or later replacement of the public
+instance method cannot manufacture accepted source evidence. The
+range planner continues to verify original reference IDs, owner
+request binding, retained policy/CI/catalog/dependencies, first-parent
+Git tree/lineage and a consistent source checkpoint.
+
+This change intentionally **revokes the previous positive synthetic
+cross-store suffix test**: a fabricated second retained receipt,
+injected by monkeypatch, now fails because it is absent from the
+persisted original collector journal. The individual source planner
+and SQLite schema-3 suffix/supersession tests continue to cover
+mechanics, but a real second owner-accepted and originally retained
+collector event remains required for pilot E2E.
+
+This is not authentication of GitHub, owner, process, time or source
+anchor. The expected checkpoint is an offline host **input**; the
+legacy collector's independent checkpoint reader is synthetic in
+tests and still requires separate runtime acceptance. Every result
+remains `evidenceVerified=false`, `admissionAllowed=false`,
+`deploymentAllowed=false`; `collectorProvenanceVerified=false`
+is explicitly returned. No new live Registry WRITE, Gateway grant,
+enrollment, container runtime or production operation is activated.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).

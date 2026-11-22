@@ -303,6 +303,55 @@ class FunctionalV1CandidateJournal(RegistryStateJournalV2):
 
 # Source-only P5 owner composition. Keep inside the existing explicitly
 # noDeploymentPaths Registry module: this does not add a live Gateway route.
+class _PinnedOriginalCollector:
+    """Bound original persisted collector reader, not a caller batch provider.
+
+    The pin is a HOST-INPUT expected head, *not* authenticated owner approval.
+    This rejects arbitrary fake journals and mutable method replacements.
+    It does not authenticate the host, its independent checkpoint reader,
+    or the original Core/GitHub source from which it gathered the snapshot.
+    """
+
+    __slots__ = ('__read', '__expected')
+
+    def __init__(self, journal, expected_checkpoint):
+        from ..integrations.github.gateway.collector_snapshot import (
+            CollectorSnapshotStore,
+        )
+        _need(type(journal) is CollectorSnapshotStore
+              and getattr(journal.anchored_batch, '__func__', None)
+                  is CollectorSnapshotStore.anchored_batch,
+              'REGISTRY_SOURCE_ORIGINAL_COLLECTOR_REQUIRED')
+        _need(type(expected_checkpoint) is dict
+              and set(expected_checkpoint) == {
+                  'schemaVersion', 'instanceId', 'revision', 'eventDigest'}
+              and type(expected_checkpoint['schemaVersion']) is int
+              and expected_checkpoint['schemaVersion'] == 1
+              and expected_checkpoint['instanceId'] == journal.instance_id
+              and type(expected_checkpoint['revision']) is int
+              and 0 < expected_checkpoint['revision'] <= 128
+              and _hex(expected_checkpoint['eventDigest'], 64),
+              'REGISTRY_SOURCE_COLLECTOR_PIN_INVALID')
+        self.__read = journal.anchored_batch
+        self.__expected = _decode(_raw(expected_checkpoint))
+        # Full original event/history validation and comparison with the
+        # independently injected collector anchor happen inside this method.
+        self.anchored_batch([])
+
+    def anchored_batch(self, evidence_ids):
+        result = self.__read(evidence_ids)
+        _need(type(result) is dict and set(result) == {
+            'checkpoint', 'entries'}
+              and result['checkpoint'] == self.__expected
+              and type(result['entries']) is list
+              and len(result['entries']) == len(evidence_ids),
+              'REGISTRY_SOURCE_COLLECTOR_CHANGED')
+        return result
+
+    def head(self):
+        return self.anchored_batch([])['checkpoint']
+
+
 class OfflineSourceRangeComposition:
     """Explicitly bound source-plan ingestion without caller-supplied plan DTO.
 
@@ -311,7 +360,8 @@ class OfflineSourceRangeComposition:
     operations. None of those trust assumptions are implemented here.
     """
 
-    def __init__(self, *, path, instance_id, scope, adapter, journal, validator,
+    def __init__(self, *, path, instance_id, scope, adapter, journal,
+                 expected_collector_checkpoint, validator,
                  baseline_reader, expected_baseline_digest, policy_reader,
                  expected_policy_digest, binding_reader):
         self.path = path
@@ -324,8 +374,10 @@ class OfflineSourceRangeComposition:
               and self.scope['policyReferenceDigest'] == expected_policy_digest
               and callable(baseline_reader) and callable(policy_reader)
               and callable(binding_reader), 'REGISTRY_SOURCE_COMPOSITION_INVALID')
+        self._collector = _PinnedOriginalCollector(
+            journal, expected_collector_checkpoint)
         self.sources = MappingProxyType({
-            'adapter': adapter, 'journal': journal, 'validator': validator,
+            'adapter': adapter, 'journal': self._collector, 'validator': validator,
             'baseline_reader': baseline_reader,
             'expected_baseline_digest': expected_baseline_digest,
             'policy_reader': policy_reader,
@@ -368,6 +420,9 @@ class OfflineSourceRangeComposition:
               and all(_uuid(e) for e in evidence_ids)
               and len(set(evidence_ids)) == len(evidence_ids),
               'REGISTRY_SOURCE_REQUEST_INVALID')
+        # Pin the original persisted collector checkpoint before any Git or
+        # Core reads, not a caller-built "anchored" receipt structure.
+        collector_head = self._collector.head()
         store = self._store()
         before = store.checkpoint()
         _need(before['integrityModel'] == 'LOCAL_EVENT_CHAIN_ONLY'
@@ -415,10 +470,16 @@ class OfflineSourceRangeComposition:
         # own recheck is still authoritative against concurrent writers.
         if self._store().checkpoint() != before:
             raise Stale('REGISTRY_SOURCE_CURSOR_CHANGED')
+        if self._collector.head() != collector_head:
+            raise Stale('REGISTRY_SOURCE_COLLECTOR_CHANGED')
 
         def sealed_reader(reference):
             _need(reference == local_evidence_id,
                   'REGISTRY_SOURCE_EVIDENCE_ID_MISMATCH')
+            # Recheck the real collector source at the exact plan-reader
+            # boundary, immediately before SQLite's own revision CAS.
+            if self._collector.head() != collector_head:
+                raise Stale('REGISTRY_SOURCE_COLLECTOR_CHANGED')
             return _decode(_raw(payload))
         accepted = self._store(sealed_reader).append_range(
             actor=PLANNER, operation_id=operation_id,
@@ -436,6 +497,8 @@ class OfflineSourceRangeComposition:
                        else 'UNKNOWN_OUTCOME'),
             'operationId': operation_id, 'localEvidenceId': local_evidence_id,
             'selectedMainSha': selected_main_sha, 'storage': accepted,
+            'collectorCheckpointCandidate': collector_head,
+            'collectorProvenanceVerified': False,
             'integrityModel': 'LOCAL_EVENT_CHAIN_ONLY',
             'evidenceVerified': False, 'admissionAllowed': False,
             'deploymentAllowed': False, 'writeEnabled': False,
