@@ -1,8 +1,8 @@
 """P5 owner-checkpoint peer identity and read-only UDS envelope source candidate.
 
-No server, socket bind/listen lifecycle, checkpoint advance,
-credential issuance, protected enrollment or WebAuthn. Source-only accepted
-peer READ and pinned outbound checkpoint.get READ use Linux AF_UNIX/SO_PEERCRED
+No listener/bind lifecycle, checkpoint advance, credential issuance,
+protected enrollment or WebAuthn. Source-only accepted peer and one-shot
+checkpoint.get response plus pinned outbound READ use Linux AF_UNIX/SO_PEERCRED
 but never certify owner acceptance or independent anti-rollback protection.
 All returned authority/admission flags remain false.
 """
@@ -137,7 +137,8 @@ def _one_frame(sock, *, limit=_MAX_FRAME):
         except OSError:pass
 
 
-def observe_accepted_peer(*,connection,profile_reader,expected_profile_digest):
+def observe_accepted_peer(*,connection,profile_reader,expected_profile_digest,
+                          require_request_eof=False):
     """Host-side source candidate; no outbound response or checkpoint read.
 
     connection must be an accepted Linux filesystem Unix stream socket.
@@ -165,6 +166,18 @@ def observe_accepted_peer(*,connection,profile_reader,expected_profile_digest):
     except OSError:
         raise Denied('REGISTRY_PEER_CREDENTIAL_UNAVAILABLE') from None
     request=_one_frame(connection)
+    if require_request_eof:
+        # No pipelined requests or trailing data may reach the ledger.
+        # A single READ request must be half-closed by its client.
+        previous=connection.gettimeout()
+        try:
+            connection.settimeout(2)
+            _need(connection.recv(1)==b'', 'REGISTRY_PEER_TRAILING_REQUEST')
+        except (OSError,TimeoutError):
+            raise Denied('REGISTRY_PEER_REQUEST_EOF_UNAVAILABLE') from None
+        finally:
+            try:connection.settimeout(previous)
+            except OSError:pass
     result=_classify(profile,pid=pid,uid=uid,gid=gid,request=request)
     _need(_endpoint(profile)==before
           and _profile(profile_reader(),expected_profile_digest)==profile,
@@ -177,7 +190,8 @@ _MAX_RESPONSE_BYTES=8192
 
 
 def read_accepted_checkpoint(*, connection, profile_reader, expected_profile_digest,
-                             ledger):
+                             ledger, require_request_eof=False,
+                             checkpoint_get_only=False):
     """Read one fixed owner ledger through a previously accepted connection.
 
     Caller must provision and own the Unix listener in a separate owner
@@ -196,7 +210,9 @@ def read_accepted_checkpoint(*, connection, profile_reader, expected_profile_dig
     before=_endpoint(profile)
     observed=observe_accepted_peer(connection=connection,
                                    profile_reader=profile_reader,
-                                   expected_profile_digest=expected_profile_digest)
+                                   expected_profile_digest=expected_profile_digest,
+                                   **({'require_request_eof':True}
+                                      if require_request_eof else {}))
     _need(type(observed) is dict
           and observed.get('result')=='OWNER_PEER_BOUNDARY_CANDIDATE'
           and observed.get('instanceId')==profile['instanceId']
@@ -206,6 +222,9 @@ def read_accepted_checkpoint(*, connection, profile_reader, expected_profile_dig
           and observed.get('ownerAcceptanceVerified') is False,
           'REGISTRY_OWNER_READ_PEER_INVALID')
     operation=observed.get('operation')
+    if checkpoint_get_only:
+        _need(operation=='checkpoint.get',
+              'REGISTRY_OWNER_GET_ONLY_OPERATION_DENIED')
     if operation=='checkpoint.get':
         _need(observed.get('role') in ('registry-reader','owner-operator')
               and 'operationId' not in observed,
@@ -345,3 +364,39 @@ def read_pinned_checkpoint(*,profile_reader,expected_profile_digest):
           and _profile(profile_reader(),expected_profile_digest)==profile,
           'REGISTRY_OWNER_CLIENT_BINDING_CHANGED')
     return _checkpoint_read_response(response,profile,request_id)
+
+
+def respond_accepted_checkpoint_get(*, connection, profile_reader,
+                                    expected_profile_digest, ledger):
+    """Emit one bounded checkpoint.get response on a pre-accepted Unix socket.
+
+    The caller owns the socket listener/lifetime. This source-only responder
+    does not listen, authenticate the human owner, advance checkpoint state,
+    or certify a protected host/witness. It never sends an error envelope.
+    """
+    _need(isinstance(connection,socket.socket)
+          and connection.family==socket.AF_UNIX
+          and (connection.type & 0xf)==socket.SOCK_STREAM,
+          'REGISTRY_OWNER_RESPONDER_UNIX_REQUIRED')
+    response=read_accepted_checkpoint(
+        connection=connection,profile_reader=profile_reader,
+        expected_profile_digest=expected_profile_digest,ledger=ledger,
+        require_request_eof=True,checkpoint_get_only=True)
+    profile=_profile(profile_reader(),expected_profile_digest)
+    _checkpoint_read_response(response,profile,response['requestId'])
+    # One complete, canonical line. Never stream database rows or raw errors.
+    payload=canonical(response).encode('utf-8')+b'\n'
+    _need(len(payload)<=_MAX_RESPONSE_BYTES+1,
+          'REGISTRY_OWNER_READ_RESPONSE_LIMIT')
+    previous=connection.gettimeout()
+    try:
+        connection.settimeout(2)
+        connection.sendall(payload)
+        connection.shutdown(socket.SHUT_WR)
+    except (OSError,TimeoutError):
+        raise Denied('REGISTRY_OWNER_RESPONDER_TRANSPORT_UNAVAILABLE') from None
+    finally:
+        try:connection.settimeout(previous)
+        except OSError:pass
+    # A socket write is not a durable client receipt or owner acceptance.
+    return None
