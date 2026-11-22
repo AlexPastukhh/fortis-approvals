@@ -153,6 +153,7 @@ tests=(
   test_registry_owner_peer_boundary.py
   test_registry_owner_read_boundary.py
   test_registry_checkpoint_read_transport.py
+  test_registry_checkpoint_read_responder.py
   test_registry_owner_runtime_isolation.py
   test_registry_owner_storage_denial.py
   test_registry_enrollment_cutover.py

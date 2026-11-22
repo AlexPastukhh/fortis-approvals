@@ -53,6 +53,35 @@ input has real build-target Release Impact even though the new Registry
 Current work and host/recovery gates remain solely in the
 [central P5 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
+## One-shot accepted checkpoint.get responder — source only
+
+`registry/owner_peer_boundary.py::respond_accepted_checkpoint_get` is the
+bounded **sending** counterpart to `read_accepted_checkpoint`. It accepts
+one pre-accepted filesystem Unix stream connection and the exact private
+`OfflineCheckpointCAS` reader. No process, listener, socket bind, new owner
+authority, grant, checkpoint writer or monotonic witness is created.
+The responder explicitly requires EOF after the single canonical request
+**before touching the owner ledger**; appended data, pipelining, missing
+half-close, unknown operation and `checkpoint.original` are refused on this
+route. `checkpoint.advance` remains denied for every peer. It reuses the
+original kernel `SO_PEERCRED` and owner profile/inode/instance/scope
+checks, validates the exact checkpoint projection and sends precisely one
+bounded canonical UTF-8 JSON line. All authorization/acceptance/admission
+claims remain false. Failure sends **no success or synthetic error frame**;
+the host caller owns the accepted connection and must close it.
+
+Positive exchange tests use one same-UID Linux test host and **only**
+simulate the role classification at the source seam, while the real
+kernel peer credential is still read. One pinned-client ↔ responder
+integration test also simulates Registry EUID/GID at the caller-side
+identity check. Real same-UID access must be refused **without ledger READ**.
+These tests do **not** demonstrate separately provisioned principals,
+protected host transport, a true external witness or authorization to
+activate the Registry. The protected listener/process and cross-UID host
+tests require later owner-reviewed implementation. Source milestones and
+remaining gates are tracked only in the
+[central CD Queue roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
+
 ## Source-only pinned owner checkpoint READ client
 
 `owner_peer_boundary.read_pinned_checkpoint()` is the **outbound Registry
@@ -74,9 +103,11 @@ instance/scope and exact bounded checkpoint shape, with all
 
 This is **not** a service or a live Registry connection. It creates no
 listener, owner SQLite handle, witness, credentials, grants, owner policy or
-checkpoint mutation. The existing accepted-peer adapter does not yet write a
-network response; its independently reviewed host-side listener and
-response-sending loop remain a later implementation. Positive socket tests
+checkpoint mutation. The separate source-only
+`respond_accepted_checkpoint_get()` now emits a single fixed READ candidate
+frame on an **already accepted** connection. It is **not** a listening
+service or independently protected host process; host-side listener and
+runtime lifecycle remain unimplemented. Positive socket tests
 run under one real test UID and simulate the Registry EUID/GID **only in the
 client identity check**. They do not prove kernel cross-UID isolation or
 authorize runtime acceptance. The source client may ultimately supply a
