@@ -4,6 +4,7 @@ A source-only schema is NOT a method grant, runtime listener, writer or
 owner authorization. Gateway imports this small contract; the Registry
 source-only implementation itself stays outside the current Gateway image.
 """
+import hashlib
 import re
 import uuid
 
@@ -17,6 +18,11 @@ READS = {
     'registry.get_operation': ('repository', 'operationId'),
     'registry.get_record': ('repository', 'recordId'),
     'registry.list_records': ('repository', 'limit', 'cursor'),
+    # Explicit diagnostics. NEVER alias candidate_* to authoritative
+    # registry.list_records/get_operation or grant the methods by default.
+    'registry.candidate_head': ('repository',),
+    'registry.candidate_list_desired': ('repository', 'limit', 'cursor'),
+    'registry.candidate_original_operation': ('repository', 'operationId'),
 }
 GATEWAY_READ_OPERATIONS = frozenset(
     ('registry', name.removeprefix('registry.')) for name in READS
@@ -62,12 +68,15 @@ def validate_gateway_read_query(operation, target, params):
     for field in ('evidenceDigest', 'recordId'):
         if field in params:
             _need(_hex(params[field], 64), 'REGISTRY_PARAMS_INVALID')
-    if operation == 'list_records':
+    if operation in ('list_records', 'candidate_list_desired'):
         _need(type(params['limit']) is int and 1 <= params['limit'] <= 100
               and (params['cursor'] is None
                    or type(params['cursor']) is str
-                   and re.fullmatch('[A-Za-z0-9_-]{1,256}',
-                                    params['cursor']) is not None),
+                   and re.fullmatch(
+                       ('[0-9a-f]{64}_[0-9a-f]{64}'
+                        if operation == 'candidate_list_desired'
+                        else '[A-Za-z0-9_-]{1,256}'),
+                       params['cursor']) is not None),
               'REGISTRY_PARAMS_INVALID')
     try:
         _need(len(canonical({'operation': name, 'params': params}).encode('utf-8'))
@@ -75,6 +84,152 @@ def validate_gateway_read_query(operation, target, params):
     except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise Denied('REGISTRY_PARAMS_INVALID') from None
     return name, params
+
+
+
+_CANDIDATE_FLAGS = (
+    'authenticatedCollectorAvailable', 'admissionAllowed',
+    'deploymentAllowed', 'writeEnabled', 'liveRegistryAvailable',
+    'rollbackProtected',
+)
+_CANDIDATE_ACTIONS = frozenset((
+    'image-rebuild', 'config-deploy', 'windows-update',
+    'package-build', 'migration-required',
+))
+
+
+def _candidate_checkpoint(cp, instance, scope):
+    return (type(cp) is dict and set(cp) == {
+        'schemaVersion', 'instanceId', 'scopeDigest', 'revision',
+        'eventDigest',
+    } and type(cp['schemaVersion']) is int
+        and cp['schemaVersion'] == 1
+        and cp['instanceId'] == instance
+        and cp['scopeDigest'] == scope
+        and type(cp['revision']) is int
+        and 0 <= cp['revision'] <= 64
+        and _hex(cp['eventDigest'], 64))
+
+
+def _candidate_record(row):
+    if type(row) is not dict or set(row) != {
+        'recordId', 'identity', 'requiredActions', 'planningState',
+        'actual', 'evidenceVerified',
+    }:
+        return False
+    identity = row['identity']
+    if type(identity) is not dict or set(identity) != {
+        'repository', 'targetId', 'environment', 'desiredSourceSha',
+        'catalogCommitSha', 'catalogSha256',
+    }:
+        return False
+    actions = row['requiredActions']
+    return (
+        identity['repository'] == REPOSITORY
+        and all(type(identity[k]) is str
+                and re.fullmatch(r'[a-z0-9][a-z0-9._/-]{0,127}', identity[k])
+                and '..' not in identity[k] and '//' not in identity[k]
+                for k in ('targetId', 'environment'))
+        and all(_hex(identity[k], 40) for k in (
+            'desiredSourceSha', 'catalogCommitSha'))
+        and _hex(identity['catalogSha256'], 64)
+        and _hex(row['recordId'], 64)
+        and row['recordId'] == hashlib.sha256(
+            canonical(identity).encode('utf-8')).hexdigest()
+        and type(actions) is list and bool(actions)
+        and len(actions) <= len(_CANDIDATE_ACTIONS)
+        and all(type(action) is str for action in actions)
+        and actions == sorted(set(actions))
+        and set(actions) <= _CANDIDATE_ACTIONS
+        and row['planningState'] == 'PLANNED_UNVERIFIED'
+        and row['actual'] is None
+        and row['evidenceVerified'] is False
+    )
+
+
+def _validate_candidate_projection(operation, result):
+    """Never promote local SQLite candidate into installed/admitted records."""
+    _need(set(result) == {
+        'schemaVersion', 'result', 'candidateOperation', 'repository',
+        'instanceId', 'scopeDigest', 'data', *_CANDIDATE_FLAGS,
+    } and type(result['schemaVersion']) is int
+        and result['schemaVersion'] == 1
+        and result['result'] == 'SOURCE_ONLY_CANDIDATE_READ'
+        and result['candidateOperation'] == operation
+        and result['repository'] == REPOSITORY
+        and _uuid(result['instanceId'])
+        and _hex(result['scopeDigest'], 64)
+        and all(result[field] is False for field in _CANDIDATE_FLAGS),
+        'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    data = result['data']
+    _need(type(data) is dict and data.get('integrityModel') ==
+          'LOCAL_EVENT_CHAIN_ONLY',
+          'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    if operation == 'candidate_head':
+        _need(set(data) == {
+            'result', 'localCheckpoint', 'candidateCursor',
+            'integrityModel', 'evidenceVerified', 'admissionAllowed',
+            'deploymentAllowed',
+        } and data['result'] == 'LOCAL_SOURCE_CANDIDATE_HEAD'
+            and _candidate_checkpoint(
+                data['localCheckpoint'], result['instanceId'],
+                result['scopeDigest'])
+            and _hex(data['candidateCursor'], 40)
+            and all(data[f] is False for f in (
+                'evidenceVerified', 'admissionAllowed', 'deploymentAllowed')),
+              'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    elif operation == 'candidate_list_desired':
+        rows = data.get('records')
+        _need(set(data) == {
+            'result', 'localRevision', 'localEventDigest',
+            'candidateSourceSha', 'records', 'nextCursor', 'integrityModel',
+            'evidenceVerified', 'admissionAllowed', 'deploymentVerified',
+            'writeEnabled',
+        } and data['result'] == 'LOCAL_DESIRED_CANDIDATE_PAGE'
+            and type(data['localRevision']) is int
+            and 0 <= data['localRevision'] <= 64
+            and _hex(data['localEventDigest'], 64)
+            and _hex(data['candidateSourceSha'], 40)
+            and type(rows) is list and len(rows) <= 100
+            and all(_candidate_record(row) for row in rows)
+            and len({row['recordId'] for row in rows}) == len(rows)
+            and (data['nextCursor'] is None or
+                 type(data['nextCursor']) is str and
+                 re.fullmatch(r'[0-9a-f]{64}_[0-9a-f]{64}',
+                              data['nextCursor']) is not None)
+            and all(data[f] is False for f in (
+                'evidenceVerified', 'admissionAllowed', 'deploymentVerified',
+                'writeEnabled')),
+              'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    elif operation == 'candidate_original_operation':
+        cp = data.get('localCheckpoint')
+        ids = data.get('recordIds')
+        links = data.get('supersessions')
+        _need(set(data) == {
+            'result', 'operationId', 'localCheckpoint',
+            'candidateSourceSha', 'recordIds', 'supersessions',
+            'receiptDigest', 'integrityModel', 'evidenceVerified',
+            'admissionAllowed', 'deploymentAllowed',
+        } and data['result'] == 'LOCAL_DESIRED_CANDIDATE_COMMITTED'
+            and _uuid(data['operationId'])
+            and _candidate_checkpoint(cp, result['instanceId'],
+                                      result['scopeDigest'])
+            and cp['revision'] > 0
+            and _hex(data['candidateSourceSha'], 40)
+            and _hex(data['receiptDigest'], 64)
+            and type(ids) is list and len(ids) <= 200
+            and all(_hex(row, 64) for row in ids)
+            and ids == sorted(set(ids))
+            and type(links) is list and len(links) <= 200
+            and all(type(link) is dict and set(link) == {
+                'fromRecordId', 'toRecordId'}
+                and all(_hex(link[k], 64) for k in link)
+                for link in links)
+            and all(data[f] is False for f in (
+                'evidenceVerified', 'admissionAllowed', 'deploymentAllowed')),
+              'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    else:
+        raise Denied('REGISTRY_GATEWAY_PROJECTION_DENIED')
 
 
 def validate_gateway_read_projection(operation, data):
@@ -98,6 +253,8 @@ def validate_gateway_read_projection(operation, data):
               and data['storeAvailable'] is False
               and data['authenticatedCollectorAvailable'] is False,
               'REGISTRY_GATEWAY_PROJECTION_DENIED')
+    elif operation.startswith('candidate_'):
+        _validate_candidate_projection(operation, data)
     elif operation == 'preview_merged':
         allowed = set(MISSING) | {'PROTECTED_REGISTRY_REVIEW_POLICY_ACCEPTANCE',
                                   'EXTERNAL_TARGET_DEPENDENCY_UNRESOLVED',
