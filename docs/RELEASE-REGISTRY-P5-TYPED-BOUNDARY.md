@@ -404,13 +404,28 @@ local event chain still reports `LOCAL_EVENT_CHAIN_ONLY`.
 
 The prior synthetic test that monkey-patched an invented second
 collector receipt and observed successful desired supersession is
-now **correctly rejected**. Genuine suffix planning and SQLite
-supersession are still independently tested, but a full integration
-test with **two genuinely retained original collector receipts**
-and real owner acceptance remains outstanding. Tests also deny
-fake journal providers, malformed/mismatched host pins,
-unauthenticated method replacement, changed original anchor and
-tampered source DB.
+**correctly rejected**. A follow-up P5 source regression now covers
+**two genuinely persisted test-fixture original collector receipts**:
+two distinct pre-merge `ReviewCaptureStore.capture_bundle` operations,
+two independent `Core` ASK/approved/executed owner-audit rows, two
+real `CollectorSnapshotStore.retain` transactions with checkpoint
+advancement, actual Git commit/tree objects and first-parent merges,
+then initial/suffix planning and two SQLite schema-3 CAS commits with
+immutable supersession. A new owner-composed collector head pin is
+required for the second transaction; the first pin fails closed.
+No `anchored_batch` or owner-decision JSON is forged by the test.
+Separate negative cases deny missing original second evidence, replay
+of the earlier merge as new suffix evidence, and unavailable original
+Core readback (zero collector/desired changes).
+
+**This is an offline E2E with an emulated GitHub provider, pinned
+synthetic Release Impact validator and Core test owner verifier,
+NOT a live owner-accepted non-Production release.** Real trusted
+provider/source-host identity, real owner acceptance, live Registry
+deployment, original operation credentials and grants remain
+outstanding. Earlier tests also deny fake journal providers,
+malformed/mismatched host pins, unauthenticated method replacement,
+changed original anchor and tampered source DB.
 
 **Threat boundary:** Python class identity and an expected
 collector head bind which *source API* we read; they do **not**

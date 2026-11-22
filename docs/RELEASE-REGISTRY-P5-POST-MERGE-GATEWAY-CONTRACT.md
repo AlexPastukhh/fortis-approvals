@@ -1074,13 +1074,23 @@ range planner continues to verify original reference IDs, owner
 request binding, retained policy/CI/catalog/dependencies, first-parent
 Git tree/lineage and a consistent source checkpoint.
 
-This change intentionally **revokes the previous positive synthetic
-cross-store suffix test**: a fabricated second retained receipt,
-injected by monkeypatch, now fails because it is absent from the
-persisted original collector journal. The individual source planner
-and SQLite schema-3 suffix/supersession tests continue to cover
-mechanics, but a real second owner-accepted and originally retained
-collector event remains required for pilot E2E.
+The prior positive synthetic cross-store suffix test is **revoked**:
+a fabricated second receipt injected into `anchored_batch` fails
+because it is absent from the original journal. The new
+`test_registry_original_two_merges.py` instead executes two distinct
+pre-merge capture and **test Core-approved** owner requests using
+the actual `ReviewCaptureStore`, `Core`, Git commit objects,
+`CollectorSnapshotStore.retain` and Registry schema-3 CAS methods.
+After the first initial plan/commit it advances the original
+collector with a different PR/owner audit, explicitly pins the
+new collector checkpoint and commits a suffix with immutable
+supersession. Missing second evidence, resubmitting old evidence
+and unavailable original Core readback fail closed. No caller-made
+collector receipt or monkeypatched `anchored_batch` is used.
+The GitHub source is a **fixture** and Core's verifier is a **test**
+owner. Authenticated live post-merge provider identity, original
+real owner authorization and non-Production runtime E2E remain
+requirements for the P5 pilot; this is not their substitute.
 
 This is not authentication of GitHub, owner, process, time or source
 anchor. The expected checkpoint is an offline host **input**; the
