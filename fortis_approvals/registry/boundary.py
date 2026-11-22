@@ -70,13 +70,21 @@ def parse_request(raw):
     op,p=request['operation'],request['params']
     _need(type(p) is dict and set(p)==set(FIELDS[op]),'REGISTRY_PARAMS_INVALID')
     _need(p['repository']==REPOSITORY,'REGISTRY_SCOPE_DENIED')
-    if op in READS:
-        validate_gateway_read_query(op.removeprefix('registry.'), GATEWAY_TARGET, p)
-    else:
-        _need(_uuid(p['operationId']) and _uuid(p['evidenceId'])
-              and _hex(p['evidenceDigest'],64)
-              and type(p['expectedRevision']) is int
-              and 0 <= p['expectedRevision'] <= 2**63-1,
+    # Registry source and Gateway READ are separate enforcement boundaries:
+    # shared method shapes, but each validates its own untrusted ingress.
+    for field in ('operationId','evidenceId'):
+        if field in p:
+            _need(_uuid(p[field]),'REGISTRY_PARAMS_INVALID')
+    for field in ('evidenceDigest','recordId'):
+        if field in p:
+            _need(_hex(p[field],64),'REGISTRY_PARAMS_INVALID')
+    if 'expectedRevision' in p:
+        _need(type(p['expectedRevision']) is int and 0<=p['expectedRevision']<=2**63-1,
+              'REGISTRY_PARAMS_INVALID')
+    if op=='registry.list_records':
+        _need(type(p['limit']) is int and 1<=p['limit']<=100 and
+              (p['cursor'] is None or type(p['cursor']) is str and
+               re.fullmatch('[A-Za-z0-9_-]{1,256}',p['cursor']) is not None),
               'REGISTRY_PARAMS_INVALID')
     return op,p
 

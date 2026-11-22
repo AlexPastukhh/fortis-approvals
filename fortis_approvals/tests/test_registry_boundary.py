@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from fortis_approvals.core import Authenticator, Denied, canonical
 from fortis_approvals.registry import boundary as b
-from fortis_approvals.integrations.registry import read_contract as shared
 
 EVIDENCE='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 OPERATION='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -173,8 +172,7 @@ class RegistryBoundaryTests(unittest.TestCase):
         fixture.setup_case(external=True)
         fixture.approve()
         result=fixture.observe()
-        with patch.object(b,'REPOSITORY',result['observation']['repository']), \
-             patch.object(shared,'REPOSITORY',result['observation']['repository']):
+        with patch.object(b,'REPOSITORY',result['observation']['repository']):
             self.snapshot={'schemaVersion':1,'issuer':b.COLLECTOR,'repository':b.REPOSITORY,
                            'evidenceId':EVIDENCE,'result':result}
             r=self.preview()
