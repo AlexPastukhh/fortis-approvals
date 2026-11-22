@@ -521,6 +521,104 @@ SOURCE_ONLY/blocked results and must **not** be silently widened by
 this service. `FUNCTIONAL_V1_GO` and `HARDENED_REGISTRY_GO`
 are not granted. A source merge is not host installation.
 
+## Functional V1: owner-run real cross-principal host access probe (2026-11-23)
+
+**SOURCE-ONLY verification tooling; NO host installation / enrollment /
+live GO.** To follow the executable candidate READ service cut (#231),
+`scripts/probe-functional-v1-registry-access.py` can be invoked by an
+independently authorized host operator under each **already-existing,
+distinct** Linux `reader` and `repo` process UID. It is a read-only
+kernel/filesystem/AF_UNIX observation tool, **not** a UID allocator,
+privilege switch, Docker controller, owner approval API or Registry
+write client. It cannot provision its own host or impersonate principals.
+
+**Preconditions (owner-only, no AI rollout):** the owner has independently
+reviewed and pinned the exact script/Registry binary SHA and source
+version, selected a non-Production host, and provisioned/inspected distinct
+owner, Registry, reader and Repo UIDs; distinct Registry/reader/Repo GIDs;
+a private Registry schema-3 SQLite in a Registry-owned `0700` directory,
+file `0600`, and a *separate* Registry-owned `0710` socket directory
+with a `0660` listener assigned to the reader group. The accepted
+Registry **candidate** reader is running under the Registry UID and the
+owner independently verified its PID, actual UID/GID, socket device/inode,
+mounts, groups and relevant kernel restrictions. A fictional process, a
+stale/unbound socket, same-UID fixture or a fake "readback" is NOT
+acceptable. This limited Functional V1 preflight **does not require**
+installing a protected checkpoint or independent witness.
+
+Owner constructs a **canonical UTF-8** JSON profile from those *actual*
+post-bind facts (not values chosen by Repo/AI), with EXACT fields:
+`schemaVersion=1`, `format=functional-v1-host-access-profile-v1`,
+`ownerUid`, `registryUid`, `registryGid`, `readerUid`,
+`readerGid`, `repoUid`, `repoGid`, `serverPid`,
+`socketDev`, `socketInode`, `instanceId`, `scopeDigest`,
+`registryStatePath`, `socketPath`. Publish a pinned SHA256 digest of
+the canonical profile, and the owner-owned immutable-to-the-peers
+`0444` file under an owner-owned `0755` directory. Profile contains
+**no token, credential or original owner receipt**. A SHA256 digest of a
+caller-editable file is NOT owner authenticity; the host operator must
+independently verify the file and the invoking principals.
+
+Under the **real reader UID**, execute this command from the
+owner-reviewed, **non-Repo-writable** accepted source copy (paths are
+illustrative command placeholders, not prescribed host paths):
+
+```sh
+PYTHONPATH=<owner-pinned-source-root> python3 -B <owner-pinned-source-root>/scripts/probe-functional-v1-registry-access.py --role reader --profile <owner-published-absolute-profile-path> --expected-sha256 <owner-pinned-profile-sha256>
+```
+
+Run the same command in a **separate real Repo UID** process with
+`--role repo`. The tool does **not** switch UIDs. A valid role must have
+matching real/effective/saved Linux IDs, zero permitted/bounding/effective/
+ambient capabilities, `NoNewPrivs=1`, `Seccomp=2`, no forbidden
+supplemental DB/socket groups, and must be distinct from Registry and
+owner. The UID identities are read from the real running process, not
+from a request actor claim.
+
+Both roles attempt OS `open` on the Registry DB parent (directory),
+DB read-only FD, and DB read-write FD. **No DB data is read or written**;
+no directory/file is created or unlinked. Each must fail with actual
+kernel `EACCES` or `EPERM`: `ENOENT`, `EROFS`, `ELOOP`,
+`ENOTDIR`, `ECONNREFUSED` or an unexpectedly successful open are
+**STOP**, not denial evidence. The reader must additionally inspect the
+exact `0710/0660` listener inode and receive a bounded original
+`SOURCE_ONLY_CANDIDATE_READ` `candidate.head` over AF_UNIX. The kernel
+server `SO_PEERCRED` must equal the owner-pinned PID/Registry UID/GID;
+its exact instance/scope/revision and all false authority fields are
+checked. Repo must fail the **real socket connect** with `EACCES` or
+`EPERM` without receiving a valid Registry response. An inaccessible
+parent might yield `EACCES` even if a socket does not exist; that is
+**not proof of a live denied listener without the separate original
+reader PASS and owner host inspection**.
+
+Each execution emits only
+`SOURCE_ONLY_CROSS_UID_ACCESS_OBSERVATION` with the pinned profile
+digest, actual process identity, kernel denials and bounded socket
+evidence. `originalHostVerified=false`,
+`ownerAcceptanceVerified=false`, `collectorAuthenticated=false`,
+`liveRegistryAvailable=false`, `admissionAllowed=false`,
+`deploymentAllowed=false`, `runtimeActivationAllowed=false`,
+`rollbackProtected=false` are always explicit. The owner must compare
+the **two original process observations and the same pinned profile**
+against an independent host inspection after running the probe,
+including mount namespace, UID mapping, backup/restart and writer
+identity. No programmatic GO, Gateway grant or automatic promotion is
+performed.
+
+**Evidence limit:** these source tests run under one unprivileged UID
+(`uid=1000` in the current Repo environment); user namespaces are
+blocked (`EPERM`). Tests exercise the actual Unix socket, actual
+`SO_PEERCRED`, permission-denial classification, strict profile and
+fail-closed same-UID behavior, but **cannot** assert the real
+cross-principal host acceptance condition here. A real owner-managed
+non-Production host execution under two separately provisioned UIDs
+remains outstanding. Even successful host probes do **not** establish
+authentic GitHub/Core collector, owner enrollment, a working Gateway
+`registry.ingest_merged`, protected rollback witness or
+`FUNCTIONAL_V1_GO`. The next vertical integration must provide
+bounded collector admission and a separately reviewed Gateway API
+before live Registry desired can be authoritative.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
