@@ -1,15 +1,17 @@
 """P5 owner-checkpoint peer identity and read-only UDS envelope source candidate.
 
-No server, socket bind/listen lifecycle, remote checkpoint read/advance,
-credential issuance, protected enrollment or WebAuthn. The only entrypoint
-observes a Linux accepted AF_UNIX/SOCK_STREAM socket using kernel SO_PEERCRED.
-The resulting observation has dispatchAllowed=False in every case.
+No server, socket bind/listen lifecycle, checkpoint advance,
+credential issuance, protected enrollment or WebAuthn. Source-only accepted
+peer READ and pinned outbound checkpoint.get READ use Linux AF_UNIX/SO_PEERCRED
+but never certify owner acceptance or independent anti-rollback protection.
+All returned authority/admission flags remain false.
 """
 import os
 from pathlib import Path
 import socket
 import stat
 import struct
+from uuid import uuid4
 
 from ..core import Denied, canonical, loads_strict
 from .state_journal import _hash, _need, _uuid, _hex
@@ -104,15 +106,15 @@ def _classify(profile,*,pid,uid,gid,request):
     return result
 
 
-def _one_frame(sock):
-    """One bounded canonical UTF-8 JSON line. No second frame or pipelining."""
+def _one_frame(sock, *, limit=_MAX_FRAME):
+    """One bounded canonical UTF-8 JSON line, with explicit size limit."""
     previous=sock.gettimeout()
     try:
         sock.settimeout(2)
         raw=bytearray()
         while True:
-            data=sock.recv(min(1024,_MAX_FRAME+2-len(raw)))
-            _need(data and len(raw)+len(data)<=_MAX_FRAME+1,
+            data=sock.recv(min(1024,limit+2-len(raw)))
+            _need(data and len(raw)+len(data)<=limit+1,
                   'REGISTRY_PEER_FRAME_INVALID')
             raw.extend(data)
             if b'\n' in data:
@@ -120,7 +122,7 @@ def _one_frame(sock):
                       'REGISTRY_PEER_FRAME_INVALID')
                 break
         payload=bytes(raw[:-1])
-        _need(0<len(payload)<=_MAX_FRAME,'REGISTRY_PEER_FRAME_INVALID')
+        _need(0<len(payload)<=limit,'REGISTRY_PEER_FRAME_INVALID')
         try:
             decoded=loads_strict(payload)
             _need(canonical(decoded).encode('utf-8')==payload,
@@ -244,3 +246,102 @@ def read_accepted_checkpoint(*, connection, profile_reader, expected_profile_dig
     _need(len(canonical(result).encode('utf-8'))<=_MAX_RESPONSE_BYTES,
           'REGISTRY_OWNER_READ_RESPONSE_LIMIT')
     return result
+
+
+def _server_peer_credentials(connection,profile):
+    """Read the server's real Linux peer identity; never accept JSON actor IDs."""
+    _need(isinstance(connection,socket.socket)
+          and connection.family==socket.AF_UNIX
+          and (connection.type & 0xf)==socket.SOCK_STREAM
+          and hasattr(socket,'SO_PEERCRED'),
+          'REGISTRY_OWNER_CLIENT_UNIX_REQUIRED')
+    try:
+        raw=connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,
+                                  struct.calcsize('3i'))
+        _need(type(raw) is bytes and len(raw)==struct.calcsize('3i'),
+              'REGISTRY_OWNER_CLIENT_CREDENTIAL_INVALID')
+        pid,uid,gid=struct.unpack('3i',raw)
+    except OSError:
+        raise Denied('REGISTRY_OWNER_CLIENT_CREDENTIAL_UNAVAILABLE') from None
+    _need(pid>1 and uid==profile['authorityUid']
+          and gid==profile['authorityGid'],
+          'REGISTRY_OWNER_CLIENT_SERVER_IDENTITY_DENIED')
+    return (pid,uid,gid)
+
+
+def _checkpoint_read_response(value,profile,request_id):
+    """Exact unprivileged source READ projection; cannot turn into owner GO."""
+    from .state_journal_v2 import MAX_REVISIONS
+    _need(type(value) is dict and
+          set(value)=={'schemaVersion','result','requestId','operation',
+                       'instanceId','scopeDigest','data',
+                       'protectedAuthorityVerified','ownerAcceptanceVerified',
+                       'dispatchAllowed','admissionAllowed'} and
+          type(value['schemaVersion']) is int and value['schemaVersion']==1 and
+          value['result']=='OWNER_CHECKPOINT_READ_CANDIDATE' and
+          value['requestId']==request_id and
+          value['operation']=='checkpoint.get' and
+          value['instanceId']==profile['instanceId'] and
+          value['scopeDigest']==profile['scopeDigest'] and
+          all(value[key] is False for key in
+              ('protectedAuthorityVerified','ownerAcceptanceVerified',
+               'dispatchAllowed','admissionAllowed')),
+          'REGISTRY_OWNER_CLIENT_RESPONSE_INVALID')
+    cp=value['data']
+    _need(type(cp) is dict
+          and set(cp)=={'schemaVersion','instanceId','scopeDigest',
+                        'revision','eventDigest'}
+          and type(cp['schemaVersion']) is int and cp['schemaVersion']==1
+          and cp['instanceId']==profile['instanceId']
+          and cp['scopeDigest']==profile['scopeDigest']
+          and type(cp['revision']) is int and 0<=cp['revision']<=MAX_REVISIONS
+          and _hex(cp['eventDigest'],64),
+          'REGISTRY_OWNER_CLIENT_CHECKPOINT_INVALID')
+    return value
+
+
+def read_pinned_checkpoint(*,profile_reader,expected_profile_digest):
+    """One-shot Registry-principal checkpoint.get over pinned Unix socket.
+
+    Source-only: real server SO_PEERCRED and inode are checked, but no owner
+    service is started and no protected witness/host/enrollment is attested.
+    Only the owner-checkpoint READ-candidate envelope is permitted.
+    """
+    _need(callable(profile_reader) and _hex(expected_profile_digest,64),
+          'REGISTRY_OWNER_CLIENT_PROFILE_REQUIRED')
+    profile=_profile(profile_reader(),expected_profile_digest)
+    _need(os.geteuid()==profile['registryUid']
+          and os.getegid()==profile['registryGid'],
+          'REGISTRY_OWNER_CLIENT_READER_IDENTITY_DENIED')
+    endpoint=_endpoint(profile)
+    request_id=str(uuid4())
+    request={'schemaVersion':1,'operation':'checkpoint.get',
+             'instanceId':profile['instanceId'],
+             'scopeDigest':profile['scopeDigest'],
+             'requestId':request_id}
+    payload=canonical(request).encode('utf-8')+b'\n'
+    _need(len(payload)<=_MAX_FRAME+1,
+          'REGISTRY_OWNER_CLIENT_REQUEST_LIMIT')
+    try:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(profile['socketPath'])
+            _need(connection.getpeername()==profile['socketPath'],
+                  'REGISTRY_OWNER_CLIENT_WRONG_SOCKET')
+            server=_server_peer_credentials(connection,profile)
+            _need(_endpoint(profile)==endpoint,
+                  'REGISTRY_OWNER_CLIENT_SOCKET_CHANGED')
+            connection.sendall(payload)
+            connection.shutdown(socket.SHUT_WR)
+            response=_one_frame(connection,limit=_MAX_RESPONSE_BYTES)
+            _need(connection.recv(1)==b'',
+                  'REGISTRY_OWNER_CLIENT_TRAILING_RESPONSE')
+            _need(_server_peer_credentials(connection,profile)==server,
+                  'REGISTRY_OWNER_CLIENT_PEER_CHANGED')
+    except (OSError,TimeoutError):
+        raise Denied('REGISTRY_OWNER_CLIENT_TRANSPORT_UNAVAILABLE') from None
+    # Re-read pinned values and actual socket inode after all remote I/O.
+    _need(_endpoint(profile)==endpoint
+          and _profile(profile_reader(),expected_profile_digest)==profile,
+          'REGISTRY_OWNER_CLIENT_BINDING_CHANGED')
+    return _checkpoint_read_response(response,profile,request_id)
