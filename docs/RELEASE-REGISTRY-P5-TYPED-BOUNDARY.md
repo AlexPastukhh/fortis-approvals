@@ -619,6 +619,69 @@ authentic GitHub/Core collector, owner enrollment, a working Gateway
 bounded collector admission and a separately reviewed Gateway API
 before live Registry desired can be authoritative.
 
+## Registry candidate READ through existing Gateway Core/Broker and Unix transport (2026-11-23)
+
+**Implementation source accepted only after PR review, not installed or
+granted.** The P5 candidate reader from #231 can now be addressed through
+the **existing authenticated** `RepoIntentBroker` and `RepoIngress`
+`/v1/reads` contract, using new
+`fortis_approvals/integrations/registry/candidate_gateway.py`.
+The adapter does not install itself into the running R7 Gateway.
+It requires a trusted host to supply an **already bound** exact private
+socket path, Registry instance UUID/scope digest, server PID/UID/GID,
+reader UID/GID and current socket device/inode. Runtime requests cannot
+select any of these, a credential, actor, filesystem path or SQL.
+
+The separate **candidate-only** typed operations are:
+`registry.candidate_head` with `{repository}`,
+`registry.candidate_list_desired` with
+`{repository,limit,cursor}`, and
+`registry.candidate_original_operation` with
+`{repository,operationId}`. Existing Core actor/grant/policy checks
+run **before** any AF_UNIX connection and again before returning data;
+revocation, DENY, unapproved ASK, scope mismatch, stale socket inode,
+wrong kernel server `SO_PEERCRED` PID/UID/GID, request/response
+mismatch, invalid canonical framing, oversize data or unavailable DB
+must STOP. The adapter invokes the source process's exact
+`candidate.head`/`candidate.list_desired`/
+`candidate.original_operation`, never a Registry WRITE.
+
+The Gateway response is strictly
+`SOURCE_ONLY_CANDIDATE_READ` with source `LOCAL_EVENT_CHAIN_ONLY`
+and explicit `authenticatedCollectorAvailable=false`,
+`admissionAllowed=false`, `deploymentAllowed=false`,
+`writeEnabled=false`, `liveRegistryAvailable=false`,
+`rollbackProtected=false`. Page records are bounded, validated
+against exact identity/source SHA, canonical SHA256 record ID,
+approved required actions, `PLANNED_UNVERIFIED` and
+`actual=null`. The original operation response includes only
+the exact request UUID, local checkpoint, source SHA, record IDs,
+supersession links and a local receipt digest; it does not expose
+raw Core/owner credentials or assert an authorized release.
+A missing local original operation is **DENY**, not canonical
+`NOT_FOUND`. The live `registry.list_records`,
+`registry.get_record`, `registry.get_operation`,
+`registry.ingest_merged` and `registry.report_manual_complete`
+remain closed. No candidate DTO is valid as a live Registry record
+or verified installed actual. Existing `registry.capabilities`
+continues to indicate `SOURCE_ONLY` with zero live operations.
+
+**Security and activation constraints:** this integration adds
+new **potential** typed read method names to packaged Gateway source,
+but does **not** register an R7 read adapter, owner policy, machine
+principal or grant, nor change the Registry host/service image or
+Production state. Source regression runs real WSGI → Core/Broker →
+AF_UNIX → local SQLite under one UID, deliberately mocks
+cross-principal identity checking solely to exercise protocol;
+the real-host source acceptance probe from #232 must run under
+distinct verified UIDs before any non-Production rollout.
+Full original collector authentication, policy/owner acceptance,
+bounded source-only-to-authoritative admission, isolated writer,
+first forward-only enrollment and original UUID recovery across
+live processes still require separate review. Modifying a packaged
+Gateway input creates a **release impact obligation for
+`fortis-gateway`**, not approval to build/replace an image.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into

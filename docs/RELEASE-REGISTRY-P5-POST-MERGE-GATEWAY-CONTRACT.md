@@ -1101,6 +1101,42 @@ remains `evidenceVerified=false`, `admissionAllowed=false`,
 is explicitly returned. No new live Registry WRITE, Gateway grant,
 enrollment, container runtime or production operation is activated.
 
+## Explicit candidate-only Gateway READ over a real private Unix socket (2026-11-23)
+
+The first implementation after the isolated AF_UNIX source reader (#231)
+and cross-UID owner-run probe (#232) closes a **transport/integration**
+gap without activating Registry. An explicitly host-composed
+`GatewayRegistryUnixCandidateRead` reuses the existing Core-backed
+`RepoIntentBroker` and `RepoIngress /v1/reads` request/grant/policy
+path. It binds the exact original Registry socket inode and server
+`SO_PEERCRED` PID/UID/GID and disallows caller-selected socket path,
+actor, owner token or evidence. The exact typed methods are separate:
+`candidate_head`, `candidate_list_desired`,
+`candidate_original_operation`. All responses are **SOURCE_ONLY**
+with `LOCAL_EVENT_CHAIN_ONLY` and every deployment, admission, live
+writer/collector and anti-rollback authority flag false.
+
+This permits reading a local candidate head, bounded desired
+`PLANNED_UNVERIFIED` rows and a redacted original local operation
+receipt through a **real** Unix socket and existing policy-bound
+Gateway read path in offline integration tests. It does **not**
+turn `candidate_list_desired` into authoritative
+`registry.list_records` nor does it expose verified actual,
+`registry.ingest_merged`, a writer or owner-report operation.
+The R7 Gateway does not register this adapter, machine actor, grant,
+owner policy or real socket. The new packaged Gateway source is a
+release-impact candidate subject to owner review, **not** an image
+rollout. The positive test uses the same Unix UID on both sides
+with synthetic/mocked separate-principal checks only; exact real
+host UID, mount, socket and privileged-provisioning evidence remains
+required before non-Production activation.
+
+Next mandatory vertical: independently accepted original collector
+provenance and owner CI/review policy, single-writer admission
+interface, first forward-only enrollment and original non-Production
+Core/Gateway/Registry E2E. A local candidate receipt is never a
+substitute for original trusted post-merge evidence.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).
