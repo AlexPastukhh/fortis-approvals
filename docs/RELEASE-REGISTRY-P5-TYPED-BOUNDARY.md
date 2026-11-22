@@ -53,6 +53,40 @@ input has real build-target Release Impact even though the new Registry
 Current work and host/recovery gates remain solely in the
 [central P5 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
+## Source-only pinned owner checkpoint READ client
+
+`owner_peer_boundary.read_pinned_checkpoint()` is the **outbound Registry
+reader** counterpart of the existing accepted-peer
+`read_accepted_checkpoint()` source adapter. It performs exactly one
+`checkpoint.get` using canonical bounded newline-framed JSON over Linux
+filesystem `AF_UNIX/SOCK_STREAM` — no arbitrary URL, path, actor, token,
+operator command, checkpoint advance or enrollment. A separately provisioned
+pinned profile binds instance UUID, scope digest, expected Registry UID/GID,
+owner UID/GID, socket path, directory/socket modes and socket device/inode.
+The client reads the server kernel `SO_PEERCRED` (before and after the
+exchange), rechecks the filesystem socket and pinned profile after the
+exchange, requires EOF after the one response, and rejects malformed,
+duplicate-key, noncanonical, oversized, extra-field or replayed/wrong-request
+responses. A successful response must match the original UUID, operation,
+instance/scope and exact bounded checkpoint shape, with all
+`protectedAuthorityVerified`, `ownerAcceptanceVerified`,
+`dispatchAllowed` and `admissionAllowed` flags **false**.
+
+This is **not** a service or a live Registry connection. It creates no
+listener, owner SQLite handle, witness, credentials, grants, owner policy or
+checkpoint mutation. The existing accepted-peer adapter does not yet write a
+network response; its independently reviewed host-side listener and
+response-sending loop remain a later implementation. Positive socket tests
+run under one real test UID and simulate the Registry EUID/GID **only in the
+client identity check**. They do not prove kernel cross-UID isolation or
+authorize runtime acceptance. The source client may ultimately supply a
+readback claim to `observe_inactive_registry_startup`, but that startup
+result still must be `INACTIVE_UNVERIFIED`, even if all local reads match.
+Owner actions remain authorized by existing Gateway/Owner Portal; checkpoint
+transport is only an integrity/readback boundary. The deployment/evidence
+gates and sequence remain in the [single CD Queue
+roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
+
 ## Inactive Registry startup readback (source only, P5 next cut)
 
 `RegistryStateJournalV2._read_only_db()` now opens an **existing** fixed-scope
