@@ -295,6 +295,146 @@ class RegistryStateV2Tests(unittest.TestCase):
         self.assertEqual(self.state.operation(actor=s.PLANNER,operation_id=operation['operation_id'])
                          ['result'],'ANCHORED_CANDIDATE_TRANSACTION')
 
+
+    def test_desired_page_initial_empty_is_source_only_not_authoritative_queue(self):
+        page=self.state.list_desired_candidates(limit=5)
+        self.assertEqual(page['result'],'INACTIVE_DESIRED_CANDIDATE_PAGE')
+        self.assertEqual(page['records'],[])
+        self.assertEqual(page['candidateSourceSha'],self.scope['baselineSha'])
+        self.assertEqual(page['snapshotRevision'],0)
+        self.assertIsNone(page['nextCursor'])
+        for key in ('evidenceVerified','admissionAllowed',
+                    'deploymentVerified','writeEnabled'):
+            self.assertIs(page[key],False)
+        self.assertEqual(self.query('records'),[])
+
+    def test_desired_page_reads_committed_record_without_write_or_installed_claim(self):
+        receipt=self.accept()
+        # Read is from SQLite read-only transaction, not the writer context.
+        self.state._db=lambda *args,**kwargs:self.fail('writer context was used')
+        self.state.plan_reader=lambda _:self.fail('untrusted collector read was used')
+        before=self.query('operations')
+        page=self.state.list_desired_candidates(limit=10)
+        self.assertEqual(self.query('operations'),before)
+        self.assertEqual(page['snapshotRevision'],1)
+        self.assertEqual(page['snapshotDigest'],receipt['checkpoint']['eventDigest'])
+        self.assertEqual(page['candidateSourceSha'],'b'*40)
+        self.assertEqual(len(page['records']),1)
+        item=page['records'][0]
+        self.assertEqual(item['recordId'],receipt['recordIds'][0])
+        self.assertEqual(item['identity']['desiredSourceSha'],'b'*40)
+        self.assertEqual(item['planningState'],'PLANNED_UNVERIFIED')
+        self.assertIs(item['actual'],None)
+        self.assertIs(item['evidenceVerified'],False)
+        self.assertIs(page['deploymentVerified'],False)
+        self.assertIsNone(page['nextCursor'])
+
+    def test_desired_page_two_targets_paginate_without_double_count(self):
+        self.accept();self.prepare_suffix(target='dependency');self.accept()
+        first=self.state.list_desired_candidates(limit=1)
+        self.assertEqual(len(first['records']),1)
+        self.assertIsNotNone(first['nextCursor'])
+        self.assertLessEqual(len(first['nextCursor']),256)
+        second=self.state.list_desired_candidates(limit=1,cursor=first['nextCursor'])
+        self.assertEqual(len(second['records']),1)
+        self.assertIsNone(second['nextCursor'])
+        ids=[first['records'][0]['recordId'],second['records'][0]['recordId']]
+        self.assertEqual(ids,sorted(set(ids)))
+        self.assertEqual(
+            {x['identity']['targetId'] for x in first['records']+second['records']},
+            {'app','dependency'})
+        whole=self.state.list_desired_candidates(limit=100)
+        self.assertEqual(whole['records'],first['records']+second['records'])
+        self.assertFalse(whole['deploymentVerified'])
+
+    def test_desired_page_supersession_returns_latest_record_only(self):
+        first=self.accept()
+        self.prepare_suffix();second=self.accept()
+        page=self.state.list_desired_candidates(limit=20)
+        self.assertEqual(len(page['records']),1)
+        self.assertEqual(page['records'][0]['recordId'],second['recordIds'][0])
+        self.assertNotEqual(page['records'][0]['recordId'],first['recordIds'][0])
+        self.assertEqual(page['records'][0]['identity']['desiredSourceSha'],'c'*40)
+        self.assertEqual(len(self.query('records')),2)  # older row remains immutable
+
+    def test_desired_page_no_deployment_advances_cursor_not_installed(self):
+        first=self.accept()
+        self.prepare_suffix(deploy=False);self.accept()
+        page=self.state.list_desired_candidates(limit=5)
+        self.assertEqual(page['candidateSourceSha'],'c'*40)
+        self.assertEqual(page['records'][0]['recordId'],first['recordIds'][0])
+        self.assertEqual(page['records'][0]['identity']['desiredSourceSha'],'b'*40)
+        self.assertIsNone(page['records'][0]['actual'])
+
+    def test_desired_page_refuses_stale_and_tampered_cursors(self):
+        self.accept();self.prepare_suffix(target='dependency');self.accept()
+        page=self.state.list_desired_candidates(limit=1)
+        token=page['nextCursor']
+        self.assertIsNotNone(token)
+        for bad in (token[:-1]+('0' if token[-1]!='0' else '1'),
+                    '0'*64+'_'+token.split('_')[1],
+                    token+'x','../db.sqlite','',123):
+            with self.subTest(bad=bad),self.assertRaises(Denied):
+                self.state.list_desired_candidates(limit=1,cursor=bad)
+        self.prepare_suffix();self.accept()
+        with self.assertRaisesRegex(Denied,'PAGE_CURSOR_STALE'):
+            self.state.list_desired_candidates(limit=1,cursor=token)
+
+    def test_desired_page_cursor_stale_even_after_no_deployment_suffix(self):
+        self.accept()
+        self.prepare_suffix(target='dependency');self.accept()
+        old=self.state.list_desired_candidates(limit=1)['nextCursor']
+        self.assertIsNotNone(old)
+        self.prepare_suffix(deploy=False);self.accept()
+        with self.assertRaisesRegex(Denied,'REGISTRY_STATE_PAGE_CURSOR_STALE'):
+            self.state.list_desired_candidates(limit=1,cursor=old)
+        fresh=self.state.list_desired_candidates(limit=10)
+        self.assertEqual(len(fresh['records']),2)
+        self.assertEqual(fresh['candidateSourceSha'],'d'*40)
+
+    def test_desired_page_invalid_limits_fail_before_sql(self):
+        for bad in (0,-1,101,True,1.1,'1',None):
+            with self.subTest(limit=bad),self.assertRaisesRegex(
+                    Denied,'PAGE_REQUEST_INVALID'):
+                self.state.list_desired_candidates(limit=bad)
+
+    def test_desired_page_unknown_outcome_and_anchor_rollback_block_read(self):
+        old=self.witness()
+        args=self.args()
+        pending=self.state.append_range(**args)
+        self.assertEqual(pending['result'],'UNKNOWN_OUTCOME')
+        with self.assertRaisesRegex(Denied,'ANCHOR_MISMATCH'):
+            self.state.list_desired_candidates(limit=1)
+        self.anchor=copy.deepcopy(pending['pendingCheckpoint'])
+        self.assertEqual(len(self.state.list_desired_candidates(limit=1)['records']),1)
+        self.anchor=old
+        with self.assertRaisesRegex(Denied,'ANCHOR_MISMATCH'):
+            self.state.list_desired_candidates(limit=1)
+
+    def test_desired_page_schema_or_event_tamper_does_not_return_partial_queue(self):
+        self.accept()
+        with sqlite3.connect(self.path) as db:
+            old=db.execute('SELECT payload FROM records LIMIT 1').fetchone()[0]
+            db.execute("UPDATE records SET payload='{}'")
+        with self.assertRaisesRegex(Denied,'REGISTRY_STATE_CORRUPT'):
+            self.state.list_desired_candidates(limit=10)
+        with sqlite3.connect(self.path) as db:
+            db.execute('UPDATE records SET payload=?',(old,))
+        self.assertEqual(len(self.state.list_desired_candidates(limit=10)['records']),1)
+
+    def test_desired_page_anchor_change_during_read_stops(self):
+        self.accept()
+        good=self.witness()
+        shifted={**good,'revision':0}
+        calls=[]
+        def changing_anchor():
+            calls.append(1)
+            return copy.deepcopy(good if len(calls)==1 else shifted)
+        self.state.anchor_reader=changing_anchor
+        with self.assertRaisesRegex(Stale,'ANCHOR_CHANGED'):
+            self.state.list_desired_candidates(limit=1)
+        self.assertEqual(len(calls),2)
+
     def test_bad_collector_revision_and_duplicate_old_approval(self):
         first=self.accept();self.prepare_suffix()
         base=copy.deepcopy(self.current)
