@@ -1,6 +1,17 @@
 # P5 Registry typed preview / receipt boundary — source only
 
-Status: **OFFLINE SOURCE CANDIDATE — NOT LIVE**.
+Status: **OFFLINE SOURCE CANDIDATE — NOT LIVE**. The read-only accepted-peer
+checkpoint adapter landed in merged PR [#211](https://github.com/AlexPastukhh/fortis-approvals/pull/211);
+no Registry runtime/API/ingest or protected checkpoint/witness is activated.
+The existing Gateway Core/Owner Portal (including source mode
+`OWNER_ALL_METHODS_V1`, merged PR [#216](https://github.com/AlexPastukhh/fortis-approvals/pull/216))
+owns `DENY/ASK/ALLOW` and owner WebAuthn. Registry integration must register
+**exact typed planner/reader operations and grants** there, not create another
+owner policy authority. The protected checkpoint store/service is an independent
+integrity/recovery boundary, not the owner decision API. Actual installed
+owner-policy mode and Registry grants must be verified separately; existing
+machine capabilities do not advertise Registry operations. Remaining tasks and
+ordering belong only to [the central P5 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
 Authority: the owner-merged [concrete D1–D7 source design in fortis-container
 PR #41](https://github.com/AlexPastukhh/fortis-container/blob/6bf24812d5d32c5afd17e65afcdf8efbec9afd0c/docs/RELEASE-REGISTRY-P5-DESIGN.md#21-concrete-first-pilot-decision-proposal-2026-11-21).
@@ -9,6 +20,68 @@ operational/evidence gates. Existing [Gateway source evidence
 contract](RELEASE-REGISTRY-P5-POST-MERGE-GATEWAY-CONTRACT.md) remains the
 owner of upstream collection details. No change to the current Gateway or
 Publisher routes, grants, credentials, images or owner release procedure.
+
+## Gateway source-only READ registration (current task candidate)
+
+The shared closed method/query/projection contract lives at
+`fortis_approvals/integrations/registry/read_contract.py`; the existing
+`RepoIntentBroker` accepts its five `registry` READ names only through
+normal `validate_read_query`, exact `fortis-approvals` target, canonical
+repository and explicitly provisioned actor READ grants. These source schemas
+**do not** install an adapter, register an actor, populate owner policy,
+or enable an R7 route by themselves. Source-only
+`registry/boundary.py::GatewayRegistryReadCandidate` can be composed by
+trusted test/host code with an independent, fixed reader identity and
+`RegistryBoundary` only; current R7 builder **does not compose it**.
+
+The normal Gateway Core and Owner Portal keep ownership of
+`DENY/ASK/ALLOW`; existing one-use native READ ASK applies if installed and
+configured, with no second WebAuthn or policy store. Registry reads recheck
+actor/grant/policy before and after the adapter call. Only
+`SOURCE_ONLY` capabilities and `BLOCKED_EVIDENCE_GAP` preview can be
+returned. `get_record`, `list_records`, `get_operation` still return
+`STORAGE_UNAVAILABLE`; `ingest_merged` and any deploy/advance routes
+remain outside Broker READ/WRITE grants. No empty queue, owner proof or
+live enrollment is fabricated.
+
+The lightweight shared contract is packaged as an image **input** to
+Gateway and the separate Publisher source image (because they import the
+shared Repo Broker); no Registry DB, collector, checkpoint or reader
+credentials are copied into either image. A later PR with this Gateway
+input has real build-target Release Impact even though the new Registry
+**runtime** remains uninstalled; it must not claim `no-deployment`.
+Current work and host/recovery gates remain solely in the
+[central P5 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
+
+## Inactive Registry startup readback (source only, P5 next cut)
+
+`RegistryStateJournalV2._read_only_db()` now opens an **existing** fixed-scope
+SQLite v2 database with `mode=ro`, `PRAGMA query_only=ON`, a deferred READ
+transaction, the shared exact schema/scope validator and complete local
+event/record/supersession replay checks. It does not initialize a missing
+database, migrate schemas, append a record, or call `BEGIN IMMEDIATE`.
+
+`recovery_reconcile.observe_inactive_registry_startup` composes only that
+Registry-side reader and **two externally supplied READ callbacks** for
+the owner checkpoint and independent witness claims. It binds exact
+instance/scope/revision/eventDigest, rejects missing, malformed, divergent,
+corrupt, or changing inputs and reads all three observations twice. It does
+**not** open an owner ledger from the Registry principal, call a checkpoint
+CAS, trust caller-provided paths or invoke a collector. It always returns
+`INACTIVE_UNVERIFIED` with all live READ, WRITE, admission, activation,
+host-isolation, owner-acceptance and protected-witness flags **false**.
+Matching fixture claims (including genesis) are **not** proof that two storage
+domains cannot be rolled back together.
+
+This is an inactive *source integration seam*, **not** a deployable
+Registry service, protected witness transport or launch readiness. No
+socket bind/listener, container or owner image, registered Gateway
+adapter/grant/policy, WebAuthn ceremony, installation or enrollment exists
+from this change. Actual separate UID/GID, encrypted volumes, protected
+witness and independently verified owner acceptance remain required by the
+[central P5 runtime runbook](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-REGISTRY-P5-OWNER-RUNTIME-RUNBOOK.md).
+The authoritative outstanding work sequence remains **only** in the
+[central CD Queue roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
 ## Closed candidate contract
 

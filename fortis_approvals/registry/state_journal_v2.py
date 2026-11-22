@@ -69,6 +69,17 @@ class RegistryStateJournalV2(RegistryStateJournal):
             db.execute('INSERT INTO meta VALUES(?,?)',(instance_id,_raw(scope)))
         return obj
 
+    def _verify_schema(self,db):
+        """One exact schema/scope check shared by write and read-only opens."""
+        actual=db.execute(
+            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_autoindex_%' ORDER BY name"
+        ).fetchall()
+        _need(actual==sorted((sql,) for sql in _SCHEMA[:-1])
+              and db.execute('PRAGMA user_version').fetchone()==(2,)
+              and db.execute('SELECT * FROM meta LIMIT 2').fetchall()==
+                  [(self.instance_id,_raw(self.scope))],
+              'REGISTRY_STATE_SCHEMA_MISMATCH')
+
     @contextmanager
     def _db(self,initialize=False):
         self._paths();db=None
@@ -85,14 +96,7 @@ class RegistryStateJournalV2(RegistryStateJournal):
                       'REGISTRY_STATE_WAL_REQUIRED')
             db.execute('BEGIN IMMEDIATE')
             if not initialize:
-                actual=db.execute(
-                    "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_autoindex_%' ORDER BY name"
-                ).fetchall()
-                _need(actual==sorted((sql,) for sql in _SCHEMA[:-1])
-                      and db.execute('PRAGMA user_version').fetchone()==(2,)
-                      and db.execute('SELECT * FROM meta LIMIT 2').fetchall()==
-                          [(self.instance_id,_raw(self.scope))],
-                      'REGISTRY_STATE_SCHEMA_MISMATCH')
+                self._verify_schema(db)
             yield db
             try:db.commit()
             except sqlite3.Error:
@@ -101,6 +105,35 @@ class RegistryStateJournalV2(RegistryStateJournal):
             raise Denied('REGISTRY_STATE_UNAVAILABLE') from None
         finally:
             if db is not None:db.close()
+
+    @contextmanager
+    def _read_only_db(self):
+        """Inspect existing v2 state without opening it for writes.
+
+        A live writer/owner may change the WAL concurrently. This method is
+        strictly an *inactive source preflight*, not a stable live snapshot,
+        authoritative checkpoint, admission or recovery authorization.
+        """
+        self._paths()
+        db=None
+        try:
+            db=sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True,
+                               timeout=3,isolation_level=None)
+            db.execute('PRAGMA query_only=ON')
+            db.execute('PRAGMA trusted_schema=OFF')
+            db.execute('PRAGMA foreign_keys=ON')
+            db.execute('PRAGMA busy_timeout=3000')
+            _need(db.execute('PRAGMA journal_mode').fetchone()==('wal',),
+                  'REGISTRY_STATE_WAL_REQUIRED')
+            db.execute('BEGIN')  # Deferred read transaction, never IMMEDIATE.
+            self._verify_schema(db)
+            yield db
+            db.rollback()
+        except sqlite3.Error:
+            raise Denied('REGISTRY_STATE_UNAVAILABLE') from None
+        finally:
+            if db is not None:db.close()
+            self._paths()
 
     def _anchor(self):
         try:

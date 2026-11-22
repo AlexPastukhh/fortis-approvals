@@ -251,6 +251,38 @@ class RunnerTests(unittest.TestCase):
         again=self.f.runner.request(7)
         self.assertEqual(again['intent']['attemptIds'],first['intent']['attemptIds'])
 
+    def test_verified_view_has_resolved_head_before_strict_fsck(self):
+        # A private git init starts with an unborn HEAD. Strict fsck must see
+        # a real, exact-SHA ref, while verified-main stays pinned after the
+        # view is materialized at the untrusted PR head.
+        from fortis_approvals.workflow.common import Git
+        original = Git.run
+        inspections = []
+        def verify(git, args, **kwargs):
+            if list(args) == ['--no-replace-objects','fsck','--strict',
+                             '--full','--no-reflogs']:
+                cwd = kwargs['cwd']
+                self.assertEqual(git.text(['symbolic-ref','HEAD'],cwd=cwd),
+                                 'refs/heads/verified-view')
+                self.assertEqual(git.text(['rev-parse','HEAD'],cwd=cwd),
+                                 self.f.graph.main)
+                self.assertEqual(git.text(['rev-parse','refs/heads/verified-main'],
+                                          cwd=cwd),self.f.graph.main)
+                inspections.append('strict-fsck-precondition')
+            return original(git, args, **kwargs)
+        with patch.object(Git,'run',verify):
+            with source_view(self.f.client.gateway,self.f.config.cache_root,
+                    main_sha=self.f.graph.main,head_sha=self.f.graph.head,
+                    base_sha=self.f.graph.base,
+                    task_branch='task/release-pilot') as (view, _):
+                self.assertEqual(view.git.text(['rev-parse','HEAD'],cwd=view.data),
+                                 self.f.graph.head)
+                self.assertEqual(view.git.text(['rev-parse','refs/heads/verified-main'],
+                                               cwd=view.data),self.f.graph.main)
+                self.assertEqual(view.git.text(['rev-parse','refs/heads/verified-view'],
+                                               cwd=view.data),self.f.graph.head)
+        self.assertEqual(inspections,['strict-fsck-precondition'])
+
     def test_poll_timestamps_do_not_change_admission_or_intent(self):
         first=self.f.runner.request(7)
         original=self.f.api.runs
