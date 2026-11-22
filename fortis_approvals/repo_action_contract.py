@@ -22,6 +22,10 @@ from .integrations.github.contract import (
     GITHUB_ACTION_OPERATIONS, GITHUB_READ_OPERATIONS,
     validate_github_action, validate_github_read, validate_github_read_projection,
 )
+from .integrations.registry.read_contract import (
+    GATEWAY_READ_OPERATIONS as REGISTRY_GATEWAY_READ_OPERATIONS,
+    validate_gateway_read_query, validate_gateway_read_projection,
+)
 
 INTENT_FIELDS = frozenset({'requestId', 'service', 'operation', 'target',
                            'params', 'reason'})
@@ -32,7 +36,9 @@ OPERATIONS = frozenset(
     {('synthetic', 'set_free'), ('synthetic', 'set_ask'),
      ('synthetic', 'set_deny')}
 )
-READ_OPERATIONS = frozenset(SONAR_READ_OPERATIONS | GITHUB_READ_OPERATIONS)
+READ_OPERATIONS = frozenset(
+    SONAR_READ_OPERATIONS | GITHUB_READ_OPERATIONS | REGISTRY_GATEWAY_READ_OPERATIONS
+)
 _TARGET = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}')
 
 def _envelope(value, allowed_operations):
@@ -102,6 +108,8 @@ def validate_read_query(value):
         validate_sonar_read(action[1], value['target'], params)
     elif action in GITHUB_READ_OPERATIONS:
         validate_github_read(action[1], value['target'], params)
+    elif action in REGISTRY_GATEWAY_READ_OPERATIONS:
+        validate_gateway_read_query(action[1], value['target'], params)
     return _checked_copy(value)
 
 
@@ -193,9 +201,21 @@ class RepoIntentBroker:
         adapter = self.read_adapters.get(service)
         if adapter is None:
             raise Denied('REPO_READ_ADAPTER_UNAVAILABLE')
+        if service == 'registry':
+            # An ASK one-use receipt is already consumed by the normal Core
+            # bridge; rechecks here must NOT consume or recreate an approval.
+            self.authorize_read(ingress_credential, request)
+            if self.core._policy(actor, request) != policy:
+                raise Denied('REGISTRY_READ_POLICY_CHANGED')
         result = adapter.read(request)
         if service == 'github':
             validate_github_read_projection(request['operation'], result)
+        elif service == 'registry':
+            # No response leaves the broker after actor/grant/policy drift.
+            self.authorize_read(ingress_credential, request)
+            if self.core._policy(actor, request) != policy:
+                raise Denied('REGISTRY_READ_POLICY_CHANGED')
+            validate_gateway_read_projection(request['operation'], result)
         elif request['operation'] in SONAR_ANALYSIS_READS:
             validate_sonar_analysis_result(request['operation'], result)
         else:
