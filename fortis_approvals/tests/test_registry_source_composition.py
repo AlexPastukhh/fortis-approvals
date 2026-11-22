@@ -39,12 +39,16 @@ class OfflineSourceCompositionTests(unittest.TestCase):
             path,instance_id=self.instance,scope=self.scope,
             plan_reader=lambda _:self.fail('source callback must be sealed'))
         args=self.args()
+        self.collector_checkpoint=copy.deepcopy(
+            self.journal.anchored_batch([])['checkpoint'])
+        self.inputs={name:args[name] for name in (
+            'adapter','journal','validator','baseline_reader',
+            'expected_baseline_digest','policy_reader',
+            'expected_policy_digest','binding_reader')}
+        self.inputs['expected_collector_checkpoint']=self.collector_checkpoint
         self.composition=local.OfflineSourceRangeComposition(
             path=path,instance_id=self.instance,scope=self.scope,
-            **{name:args[name] for name in (
-                'adapter','journal','validator','baseline_reader',
-                'expected_baseline_digest','policy_reader',
-                'expected_policy_digest','binding_reader')})
+            **self.inputs)
         self.path=path
         return self.composition
 
@@ -74,29 +78,126 @@ class OfflineSourceCompositionTests(unittest.TestCase):
                     selected_main_sha=merge,evidence_ids=[eid])
         return merge,response
 
-    def test_github_core_plan_to_two_persistent_desired_versions(self):
+    def test_github_core_original_persisted_collector_plan_into_desired(self):
         comp=self.compose()
         first=self.append_initial()
-        initial_id=first['storage']['receipt']['recordIds'][0]
-        merge,second=self.append_suffix()
-        self.assertEqual(second['storage']['result'],
-                         'LOCAL_DESIRED_CANDIDATE_COMMITTED')
-        receipt=second['storage']['receipt']
-        self.assertEqual(receipt['startCursorSha'],self.fixture.selected)
-        self.assertEqual(receipt['candidateCursor'],merge)
-        self.assertEqual(receipt['supersessions'],[{
-            'fromRecordId':initial_id,'toRecordId':receipt['recordIds'][0]}])
+        original=first['storage']['receipt']
+        self.assertEqual(first['collectorCheckpointCandidate'],
+                         self.collector_checkpoint)
+        self.assertIs(first['collectorProvenanceVerified'],False)
         latest=comp.candidate_page(limit=10)
-        self.assertEqual(latest['candidateSourceSha'],merge)
-        self.assertEqual(latest['localRevision'],2)
+        self.assertEqual(latest['candidateSourceSha'],self.fixture.selected)
+        self.assertEqual(latest['localRevision'],1)
         self.assertEqual(latest['integrityModel'],'LOCAL_EVENT_CHAIN_ONLY')
         self.assertEqual([x['recordId'] for x in latest['records']],
-                         receipt['recordIds'])
+                         original['recordIds'])
         self.assertIsNone(latest['records'][0]['actual'])
         self.assertFalse(latest['deploymentVerified'])
         with __import__('sqlite3').connect(self.path) as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM records').fetchone()[0],2)
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM records').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0],1)
+
+    def test_fake_second_retained_receipt_cannot_supersede_original(self):
+        comp=self.compose()
+        first=self.append_initial()
+        # The old source-only test monkeypatched journal.anchored_batch to
+        # invent a second retained receipt and advance desired. The pinned
+        # original method must now ignore the patch and refuse this event.
+        with self.assertRaisesRegex(Denied,'P5_SNAPSHOT_NOT_FOUND'):
+            self.append_suffix()
+        latest=comp.candidate_page(limit=10)
+        self.assertEqual(latest['localRevision'],1)
+        self.assertEqual(latest['records'][0]['recordId'],
+                         first['storage']['receipt']['recordIds'][0])
+        self.assertIsNone(latest['records'][0]['actual'])
+
+
+    def test_requires_real_original_collector_and_exact_bound_method(self):
+        comp=self.compose()
+        real=dict(self.inputs)
+        fake=type('SelfConsistentJournal',(),{
+            'instance_id':self.journal.instance_id,
+            'anchored_batch':lambda _self,eids:self.journal.anchored_batch(eids),
+        })()
+        with self.assertRaisesRegex(
+                Denied,'REGISTRY_SOURCE_ORIGINAL_COLLECTOR_REQUIRED'):
+            local.OfflineSourceRangeComposition(
+                path=self.path,instance_id=self.instance,
+                scope=self.scope,**(real|{'journal':fake}))
+        with patch.object(self.journal,'anchored_batch',
+                          return_value=self.journal.anchored_batch([])):
+            with self.assertRaisesRegex(
+                    Denied,'REGISTRY_SOURCE_ORIGINAL_COLLECTOR_REQUIRED'):
+                local.OfflineSourceRangeComposition(
+                    path=self.path,instance_id=self.instance,
+                    scope=self.scope,**real)
+        self.assertEqual(comp.candidate_page(limit=2)['localRevision'],0)
+
+    def test_collector_checkpoint_is_host_pinned_not_self_selected(self):
+        self.compose()
+        cases=(
+            {**self.collector_checkpoint,'instanceId':str(uuid.uuid4())},
+            {**self.collector_checkpoint,'revision':0},
+            {**self.collector_checkpoint,'eventDigest':'f'*64},
+            {**self.collector_checkpoint,'revision':True},
+            {'schemaVersion':1},
+        )
+        for candidate in cases:
+            with self.subTest(candidate=candidate),self.assertRaises(Denied):
+                local.OfflineSourceRangeComposition(
+                    path=self.path,instance_id=self.instance,
+                    scope=self.scope,
+                    **(self.inputs|{
+                        'expected_collector_checkpoint':candidate}))
+        self.assertEqual(
+            local.OfflineSourceRangeComposition(
+                path=self.path,instance_id=self.instance,
+                scope=self.scope,**self.inputs).candidate_page(limit=2)
+                 ['localRevision'],0)
+
+    def test_original_collector_anchor_drift_after_plan_cannot_commit(self):
+        comp=self.compose()
+        real=planner.observe_initial_plan
+        initial=copy.deepcopy(self.anchor)
+        def drift(**kwargs):
+            plan=real(**kwargs)
+            self.anchor={**self.anchor,'eventDigest':'f'*64}
+            return plan
+        try:
+            with patch.object(planner,'observe_initial_plan',side_effect=drift):
+                with self.assertRaisesRegex(
+                        Denied,'P5_SNAPSHOT_ANCHOR_MISMATCH'):
+                    comp.compose_and_append(
+                        operation_id=str(uuid.uuid4()),expected_revision=0,
+                        selected_main_sha=self.fixture.selected,
+                        evidence_ids=[self.eid])
+        finally:
+            self.anchor=initial
+        self.assertEqual(comp.candidate_page(limit=2)['localRevision'],0)
+
+    def test_replacing_collector_method_after_constructor_does_not_forge_evidence(self):
+        comp=self.compose()
+        # The bound method was already captured by the pinned adapter.
+        with patch.object(self.journal,'anchored_batch',
+                          side_effect=AssertionError('forged batch called')):
+            result=comp.compose_and_append(
+                operation_id=str(uuid.uuid4()),expected_revision=0,
+                selected_main_sha=self.fixture.selected,evidence_ids=[self.eid])
+        self.assertEqual(result['result'],'INACTIVE_SOURCE_RANGE_CANDIDATE')
+        self.assertFalse(result['collectorProvenanceVerified'])
+        self.assertEqual(comp.candidate_page(limit=2)['localRevision'],1)
+
+    def test_corrupt_persisted_collector_snapshot_cannot_create_desired(self):
+        import sqlite3
+        comp=self.compose()
+        with sqlite3.connect(self.journal.path) as db:
+            db.execute("UPDATE snapshots SET snapshot_digest=?",('f'*64,))
+        with self.assertRaisesRegex(Denied,'P5_SNAPSHOT_INTEGRITY_INVALID'):
+            comp.compose_and_append(
+                operation_id=str(uuid.uuid4()),expected_revision=0,
+                selected_main_sha=self.fixture.selected,
+                evidence_ids=[self.eid])
+        self.assertEqual(comp.candidate_page(limit=2)['localRevision'],0)
 
     def test_exact_operation_lookup_after_commit_without_collector_or_effect(self):
         comp=self.compose()
@@ -147,7 +248,7 @@ class OfflineSourceCompositionTests(unittest.TestCase):
             local.OfflineSourceRangeComposition(
                 path=self.path,instance_id=self.instance,
                 scope={**self.scope,'policyReferenceDigest':'0'*64},
-                **{k:v for k,v in comp.sources.items()})
+                **self.inputs)
         with self.assertRaises((Denied,Stale)):
             comp.compose_and_append(
                 operation_id=str(uuid.uuid4()),expected_revision=0,

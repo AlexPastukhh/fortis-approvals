@@ -376,6 +376,60 @@ owner review before limited `FUNCTIONAL_V1_GO`. Later
 `HARDENED_REGISTRY_GO` requires an independently protected
 checkpoint/witness; this backup cannot substitute for it.
 
+## P5 original collector journal pin at source composition (2026-11-23)
+
+`OfflineSourceRangeComposition` now **requires** the exact
+`CollectorSnapshotStore` (not a caller-supplied `anchored_batch`
+function, proxy or self-consistent dictionary) plus an explicit
+`expected_collector_checkpoint` pinned by host composition.
+The pin has the actual collector instance UUID, **positive**
+revision and original event digest. It is compared to the full
+replayed, SQLite-backed `CollectorSnapshotStore.anchored_batch`
+result on construction and on every range. The bound original
+method is captured once in a private adapter: later monkey-patching
+`journal.anchored_batch` cannot inject fabricated evidence.
+An expected head change, missing original retained evidence,
+source SQLite tampering, mismatched checkpoint or changed
+collector anchor is a **DENY/STALE** condition, never an
+implicit no-deployment or empty desired projection.
+
+Before/after the Git/Core planning pass, the adapter checks the
+same original collector head. The sealed Registry `plan_reader`
+rechecks it again just before schema-3's transactional CAS.
+Original operation lookup after uncertain commit **does not**
+re-read or replay provider effects. The candidate response
+includes `collectorCheckpointCandidate` for exact diagnostic
+binding and `collectorProvenanceVerified=false`. The Registry
+local event chain still reports `LOCAL_EVENT_CHAIN_ONLY`.
+
+The prior synthetic test that monkey-patched an invented second
+collector receipt and observed successful desired supersession is
+now **correctly rejected**. Genuine suffix planning and SQLite
+supersession are still independently tested, but a full integration
+test with **two genuinely retained original collector receipts**
+and real owner acceptance remains outstanding. Tests also deny
+fake journal providers, malformed/mismatched host pins,
+unauthenticated method replacement, changed original anchor and
+tampered source DB.
+
+**Threat boundary:** Python class identity and an expected
+collector head bind which *source API* we read; they do **not**
+establish the actual identity of the OS process, original Core
+owner approval, trusted time, GitHub authenticity, effective CI
+policy, or protected journal anchor. The current collector
+reader still requires its own externally injected checkpoint
+reader; the test one is synthetic. An attacker who controls the
+host composition and its pin can create self-consistent false
+data. Neither `FUNCTIONAL_V1_GO` nor `HARDENED_REGISTRY_GO`
+is granted. The separate limited Registry schema 3 still does
+**not** require an independently protected monotonic witness;
+trust in any future collector must be accepted by owner-reviewed
+runtime/grants/evidence, not inferred from this source test.
+
+No new Gateway operation, protected owner listener, live Registry
+WRITE, enrollment, Docker/Windows/Production action or unattended
+CD is installed by this change.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
