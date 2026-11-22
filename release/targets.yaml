@@ -126,6 +126,8 @@ noDeploymentPaths:
   - fortis_approvals/registry/state_journal.py
   - fortis_approvals/registry/state_journal_v2.py
   - fortis_approvals/registry/functional_v1_journal.py
+  # Non-Production source-only private AF_UNIX candidate reader; no live image.
+  - fortis_approvals/registry/local_candidate_read_service.py
   - fortis_approvals/registry/recovery_snapshot.py
   - fortis_approvals/registry/checkpoint_cas.py
   - fortis_approvals/registry/recovery_reconcile.py
