@@ -65,6 +65,8 @@ COPY fortis_approvals/integrations/github/gateway/__init__.py fortis_approvals/i
 # this container has no Sonar adapter, token, actor or service transport.
 COPY fortis_approvals/integrations/sonarcloud/__init__.py fortis_approvals/integrations/sonarcloud/analysis_contract.py fortis_approvals/integrations/sonarcloud/contract.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/sonarcloud/
 COPY fortis_approvals/integrations/sonarcloud/gateway/__init__.py fortis_approvals/integrations/sonarcloud/gateway/analysis_reader.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/sonarcloud/gateway/
+# Shared typed request schema only; Registry runtime/credentials stay absent.
+COPY fortis_approvals/integrations/registry/__init__.py fortis_approvals/integrations/registry/read_contract.py /usr/local/lib/python3.11/site-packages/fortis_approvals/integrations/registry/
 # No owner API/Portal, GitHub PAT, machine grant, validator code, PR source,
 # Repo worktrees, config, journal, network routing, mount or timer in image.
 USER 10002:10002

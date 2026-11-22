@@ -138,6 +138,7 @@ tests=(
   test_release_storage_source.py
   test_release_uncertain_growth.py
   test_registry_boundary.py
+  test_registry_gateway_read.py
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
   test_registry_recovery_snapshot.py

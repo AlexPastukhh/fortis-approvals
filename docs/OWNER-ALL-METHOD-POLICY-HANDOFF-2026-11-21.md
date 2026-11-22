@@ -1,5 +1,11 @@
 # Handoff — Owner Portal DENY / ASK / ALLOW for every registered method
 
+> **Historical source snapshot (2026-11-21):** the unfinished feature task below
+> was subsequently accepted in merged [PR #216](https://github.com/AlexPastukhh/fortis-approvals/pull/216).
+> Do **not** resume the old uncommitted-worktree instructions as current work.
+> Current remaining owner-policy tasks belong to the [single approvals backlog](BACKLOG-IMPROVEMENTS.md#api-onboarding-program);
+> production activation must be verified separately against protected owner-host evidence.
+
 **Snapshot:** 2026-11-21, focused source reconnaissance and repo check. This document is the **current** chat-to-chat handoff for the all-method policy program. [Implementation plan](OWNER-ALL-METHOD-POLICY-PLAN-2026-11-21.md). [Historical 2026-11-20 handoff](OWNER-POLICY-HANDOFF-2026-11-20.md) describes earlier Phase 1–5 and its *then-current* READ-ONLY HOLD; do not interpret its source/deployment snapshot as current.
 
 > **Receiving chat:** first read the required Fortis repo/Container UC-CONT-002, UC-CONT-003, UC-GW-009 and this handoff; then verify live repo/branch/CI and user approval before effects. Do not assume this document grants merge, production policy changes, Windows update, backup/promote or cleanup. The unfinished task worktree **belongs to the active implementation and must not be reset/cleaned/recreated**.

@@ -10,31 +10,19 @@ import re
 import uuid
 
 from ..core import Denied, canonical, loads_strict
+from ..integrations.registry.read_contract import (
+    REPOSITORY, READS, MISSING, GATEWAY_TARGET, GATEWAY_READ_OPERATIONS,
+    validate_gateway_read_query, validate_gateway_read_projection,
+)
 
-REPOSITORY = 'AlexPastukhh/fortis-approvals'
 COLLECTOR = 'release-registry-collector-v1'
 PLANNER = 'release-registry-planner-v1'
 READER = 'release-registry-reader-v1'
 MAX_REQUEST = 4096
 MAX_EVIDENCE = 2_000_000
 
-READS = {
-    'registry.capabilities': ('repository',),
-    'registry.preview_merged': ('repository','evidenceId','evidenceDigest'),
-    'registry.get_operation': ('repository','operationId'),
-    'registry.get_record': ('repository','recordId'),
-    'registry.list_records': ('repository','limit','cursor'),
-}
 INGEST = 'registry.ingest_merged'
 FIELDS = {**READS, INGEST: ('repository','operationId','evidenceId','evidenceDigest','expectedRevision')}
-MISSING = (
-    'HISTORICAL_EFFECTIVE_POLICY_AND_MERGE_CUTOFF',
-    'COMPLETE_BASELINE_AND_SELECTED_SOURCE_COVERAGE',
-    'DEPENDENCY_CLOSURE_PROVENANCE',
-    'OWNER_COMPONENT_ENVIRONMENT_BINDINGS',
-    'AUTHENTICATED_PROTECTED_COLLECTOR',
-    'PROTECTED_REGISTRY_STATE_AND_RECOVERY',
-)
 FLAGS = ('historicalPolicyVerified','historicalMergeCutoffVerified',
          'dependencyClosureVerified','componentBindingsVerified',
          'evidenceVerified','admissionAllowed','deploymentAllowed')
@@ -82,19 +70,13 @@ def parse_request(raw):
     op,p=request['operation'],request['params']
     _need(type(p) is dict and set(p)==set(FIELDS[op]),'REGISTRY_PARAMS_INVALID')
     _need(p['repository']==REPOSITORY,'REGISTRY_SCOPE_DENIED')
-    for field in ('operationId','evidenceId'):
-        if field in p:
-            _need(_uuid(p[field]),'REGISTRY_PARAMS_INVALID')
-    for field in ('evidenceDigest','recordId'):
-        if field in p:
-            _need(_hex(p[field],64),'REGISTRY_PARAMS_INVALID')
-    if 'expectedRevision' in p:
-        _need(type(p['expectedRevision']) is int and 0<=p['expectedRevision']<=2**63-1,
-              'REGISTRY_PARAMS_INVALID')
-    if op=='registry.list_records':
-        _need(type(p['limit']) is int and 1<=p['limit']<=100 and
-              (p['cursor'] is None or type(p['cursor']) is str and
-               re.fullmatch('[A-Za-z0-9_-]{1,256}',p['cursor']) is not None),
+    if op in READS:
+        validate_gateway_read_query(op.removeprefix('registry.'), GATEWAY_TARGET, p)
+    else:
+        _need(_uuid(p['operationId']) and _uuid(p['evidenceId'])
+              and _hex(p['evidenceDigest'],64)
+              and type(p['expectedRevision']) is int
+              and 0 <= p['expectedRevision'] <= 2**63-1,
               'REGISTRY_PARAMS_INVALID')
     return op,p
 
@@ -215,3 +197,36 @@ class RegistryBoundary:
         # lookup cannot fabricate NOT_FOUND, UNKNOWN_OUTCOME resolution or
         # an empty queue; no readback is inferred from a preview.
         raise Denied('REGISTRY_STORAGE_UNAVAILABLE')
+
+
+class GatewayRegistryReadCandidate:
+    """Explicit opt-in source-only adapter for the existing Repo READ Broker.
+
+    A future trusted Gateway release must supply the source boundary and its
+    pinned private reader identity, configure Core's native registry policy and
+    exact actor read grants, then separately prove a real runtime. This class
+    never installs itself into R7, binds a listener, or exposes Registry WRITE.
+    """
+
+    def __init__(self, *, boundary, reader_credential):
+        _need(type(boundary) is RegistryBoundary
+              and type(reader_credential) is str and bool(reader_credential),
+              'REGISTRY_GATEWAY_BINDING_DENIED')
+        try:
+            principal = boundary.authenticator.authenticate(reader_credential)
+        except Exception:
+            raise Denied('REGISTRY_GATEWAY_BINDING_DENIED') from None
+        _need(principal == READER and boundary.authenticator.active(READER),
+              'REGISTRY_GATEWAY_BINDING_DENIED')
+        self._boundary = boundary
+        self._reader_credential = reader_credential
+
+    def read(self, request):
+        _need(type(request) is dict and request.get('service') == 'registry',
+              'REGISTRY_GATEWAY_SCOPE_DENIED')
+        operation = request.get('operation')
+        _name, params = validate_gateway_read_query(
+            operation, request.get('target'), request.get('params'))
+        raw = canonical({'operation': _name, 'params': params}).encode('utf-8')
+        result = self._boundary.dispatch(self._reader_credential, raw)
+        return validate_gateway_read_projection(operation, result)
