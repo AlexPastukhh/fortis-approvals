@@ -2,13 +2,15 @@
 import copy
 from pathlib import Path
 import sqlite3
+import time
 import unittest
 import uuid
 from unittest.mock import patch
 
-from fortis_approvals.core import Authenticator, Conflict, Denied, Stale, canonical
+from fortis_approvals.core import Authenticator, Core, Conflict, Denied, Stale, canonical
 from fortis_approvals.integrations.github.gateway import collector_snapshot as c
 from fortis_approvals.integrations.github.tests import test_selected_main_binding as fixture
+from fortis_approvals.integrations.github.tests import test_integrated_capture as review_fixture
 from fortis_approvals.registry import boundary as b
 from fortis_approvals.workflow.common import secure_dir
 
@@ -18,7 +20,15 @@ class CollectorSnapshotTests(unittest.TestCase):
         self.fixture=fixture.SelectedMainTests()
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setup_case()
-        self.fixture.approve()
+        # Synthetic clock only: Core samples createdAt and PENDING audit
+        # timestamps separately; a wall-second rollover can invalidate the
+        # source fixture nondeterministically. Production timestamp binding
+        # still requires independent E2 source/runtime acceptance.
+        audit_second = int(time.time())
+        def stable_core(*args, **kwargs):
+            return Core(*args, clock=lambda: audit_second, **kwargs)
+        with patch.object(review_fixture, 'Core', stable_core):
+            self.fixture.approve()
         self.enterContext(patch.object(c,'REPOSITORY',self.fixture.api.head_repo))
         self.enterContext(patch.object(b,'REPOSITORY',c.REPOSITORY))
         self.instance=str(uuid.uuid4())
