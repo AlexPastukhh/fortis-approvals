@@ -60,6 +60,8 @@ class Operation:
     # Additive optional fields preserve legacy positional Operation definitions.
     signing_credential: str = None
     signing_key_id: str = None
+    # Empty for legacy hand-written providers; reviewed compiled methods supply a closed scope.
+    allowed_targets: tuple = ()
 
     def __post_init__(self):
         ident(self.name)
@@ -83,6 +85,10 @@ class Operation:
                   'INTEGRATION_SIGNING_DEFINITION_INVALID')
         check(type(self.routes) is tuple and len(set(self.routes)) == len(self.routes) and
               all(type(x) is str and IDENT.fullmatch(x) for x in self.routes))
+        check(type(self.allowed_targets) is tuple and len(self.allowed_targets) <= 100 and
+              all(type(t) is str and TARGET.fullmatch(t) for t in self.allowed_targets) and
+              len(set(self.allowed_targets)) == len(self.allowed_targets),
+              'INTEGRATION_OPERATION_TARGET_SCOPE_INVALID')
 
 
 @dataclass(frozen=True)
