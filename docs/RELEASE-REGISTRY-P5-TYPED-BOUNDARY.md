@@ -682,6 +682,16 @@ live processes still require separate review. Modifying a packaged
 Gateway input creates a **release impact obligation for
 `fortis-gateway`**, not approval to build/replace an image.
 
+**E1 reader identity guard (source-only):** the existing Gateway-to-Unix
+candidate adapter now verifies real/effective/saved UID/GID, supplementary
+groups (excluding the Registry group), complete `/proc/self/status`
+identity, zero capabilities, `NoNewPrivs=1`, `Seccomp=2` and no tracer
+before/after socket reads. Missing or changed evidence is a DENY, not
+an empty queue. Unit tests use synthetic `/proc` data, so they do not
+establish real cross-UID isolation. The existing owner-run host probe and
+separate E1 host/ACL/image/grant review remain required; neither Registry
+WRITE nor an authoritative queue is enabled.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
