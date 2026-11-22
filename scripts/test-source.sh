@@ -148,6 +148,7 @@ tests=(
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
   test_registry_functional_v1_journal.py
+  test_registry_source_composition.py
   test_registry_recovery_snapshot.py
   test_registry_checkpoint_cas.py
   test_registry_recovery_reconcile.py

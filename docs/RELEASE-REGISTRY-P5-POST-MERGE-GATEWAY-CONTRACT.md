@@ -1016,6 +1016,48 @@ it returns only blocked preview and explicit unavailable storage errors.
 It does not promote this collector result to trusted admission, expose
 a live route or create any canonical desired records.
 
+## Source-only Git planner → Registry schema 3 composition (2026-11-23)
+
+The exact initial/suffix planning source and schema-3 local desired journal
+are now connected by the opt-in
+`fortis_approvals.registry.functional_v1_journal.OfflineSourceRangeComposition`.
+In a single **offline** call, fixed host-supplied Git/Core/policy/catalog
+readers compute the candidate through the existing
+`observe_initial_plan` / `observe_suffix_plan` (exact bound
+schema-3 local cursor); the composer seals a deterministic
+per-operation local evidence reference and passes the recomputed
+candidate to the existing SQLite revision-CAS writer. It rechecks the
+local head both before committing and inside the transaction. The
+caller cannot provide a plan, desired records, issuer, source
+classification, installed version or a changed file path on ingest.
+Only original operation lookup and bounded candidate READ are exposed
+as source-only methods.
+
+Tests cover a real Git/Core/retained-plan fixture, a synthetic second
+merge, two persistent desired versions and immutable supersession,
+missing/forged evidence references, incorrect main SHA/scope, concurrent
+source-plan drift, lost post-COMMIT ACK and exact-UUID recovery.
+`UNKNOWN_OUTCOME` is not a committed/admitted success; the original
+operation must be looked up, never blindly replayed. **No source-only
+issuer label/digest is authenticated collector provenance**: local
+`evidenceVerified`, `admissionAllowed` and
+`deploymentAllowed` remain false, and no Gateway route or grant is
+registered. This is a combined *source implementation + contract* cut,
+not the promised full `FUNCTIONAL_V1_GO`.
+
+Before the first authorized non-Production P5 pilot, still required:
+authenticated original collector/Core evidence and owner approval
+cutover, independently placed single-writer Registry runtime,
+bounded existing-Gateway typed methods with scoped actors, robust
+backup/restore/unknown-result testing and live negative E2E. P6
+manual outcome, P7 Board and P8 manual batch must be implemented
+before the complete functional user journey can be accepted.
+Checkpoint/witness hardening remains a separate gate. The authoritative
+cross-repository milestone ordering is the
+[single container roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue);
+its stale completion references require an eventual *container*
+repository edit, which this single *approvals* PR cannot perform.
+
 ## Proposed future typed operation (NOT implemented)
 
 **Tentative name:** `github.get_post_merge_registry_evidence` (READ only).

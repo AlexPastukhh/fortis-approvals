@@ -267,6 +267,64 @@ a separately reviewed Registry target/catalog/image is introduced.
 It is **not** imported into either currently deployed Gateway/Repo
 service, so it cannot publish a live queue or write to Production.
 
+## Functional P5 offline source composition and execution-order clarification (2026-11-23)
+
+**Status: source candidate after owner-merged PR #224 (v2 READ), #225
+(local schema 3), #226 (schema 3 suffix cursor). None is a Registry
+runtime launch, authenticated collector admission or `FUNCTIONAL_V1_GO`.**
+`FunctionalV1CandidateJournal` now also owns
+`OfflineSourceRangeComposition` in the **same explicitly
+`noDeploymentPaths` module**. This opt-in source class composes the
+existing exact initial/suffix planner from fixed host-supplied
+GitHub/Core/journal, baseline, policy and component-binding readers
+and stores its *computed* plan through the schema-3 CAS writer.
+The caller cannot submit arbitrary plan/desired DTOs, change the
+issuer or choose a database path during an operation. Inputs are
+bounded to original local operation UUID, expected revision, selected
+main SHA and evidence-reference UUIDs, all rechecked by P5 source
+planning.
+
+The wrapper derives a deterministic per-operation **local** evidence
+reference from `instanceId + operationId`. This is not an authenticated
+collector identity, original owner receipt, signed capture or trusted
+clock; source dependencies remain untrusted until a separately accepted
+runtime composition. The local-head snapshot is rechecked after
+planning, before the SQLite CAS (which rechecks again transactionally).
+On a COMMIT/readback ambiguity, the **top-level result is
+`UNKNOWN_OUTCOME`**, requiring a separate exact original
+`operation(operation_id)` lookup. Calling `compose_and_append` again
+after the revision changes is stale and not an automatic retry.
+`candidate_page` remains `LOCAL_DESIRED_CANDIDATE_PAGE`, never an
+authoritative empty live queue. All output flags continue to be false:
+`evidenceVerified`, `admissionAllowed`, `deploymentAllowed`,
+`writeEnabled`. There is no `REPORTED_COMPLETE`, `verifiedInstalled`
+or `DEPLOYED` admission here.
+
+**Proposed execution-order clarification for the existing single roadmap**
+(subject to owner review, not a second authoritative roadmap):
+functional P5 pilot must first join *original authenticated*
+collector/owner acceptance, private Registry single-writer deployment
+and backup/recovery, exact Gateway actor grants and forward-only
+enrollment in an independently authorized non-Production E2E. Build
+P6 owner report, P7 Board and P8 manual batch after the restricted P5
+pilot, then run **complete P5–P8 user-journey E2E before final
+`FUNCTIONAL_V1_GO`**. This resolves the prior shorthand that placed
+full-functional E2E before P6/P7/P8. `HARDENED_REGISTRY_GO` and its
+independent checkpoint/witness are later, not hidden P5 prerequisites.
+There is no grant or deployment approval implied by this source PR.
+
+**Cross-repository roadmap synchronization needed:** the actual *single*
+roadmap is in `fortis-container/docs/BACKLOG-IMPROVEMENTS.md`, a
+different Git repository. It still describes the completed #46 source
+cut as next and lists Approvals milestones only through #223; its
+P5–P8 E2E ordering and older D6/v2 references should be reconciled
+with this accepted source status. A GitHub PR to `fortis-approvals`
+cannot modify `fortis-container` and must not silently create an
+alternate canonical roadmap. The above is the **explicit next
+implementation acceptance contract** in this PR, while the original
+central roadmap edit remains an independent repository action and
+will not be performed by bypassing the PR workflow.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
