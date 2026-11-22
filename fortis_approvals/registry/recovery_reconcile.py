@@ -136,3 +136,72 @@ def reconcile_inactive(*,store,owner,backup_directory=None,backup_id=None):
             'protectedCheckpointVerified':False,'enrollmentVerified':False,
             'backupRestorable':False,'restoreAllowed':False,
             'admissionAllowed':False,'deploymentAllowed':False}
+
+
+def observe_inactive_registry_startup(*, store, owner_checkpoint_reader,
+                                     witness_checkpoint_reader):
+    """Read-only startup *candidate*, never proof of owner/witness authority.
+
+    The Registry principal reads ONLY its own existing v2 DB. Owner and witness
+    values arrive through separate read-only callbacks; this method cannot
+    establish their transport integrity or independent monotonicity. An exact
+    match remains INACTIVE even at genesis. Missing/changed/rolled-back inputs
+    must never turn into an empty queue or an auto-enrollment.
+    """
+    from .checkpoint_cas import _cp
+    from .state_journal_v2 import RegistryStateJournalV2
+    _need(type(store) is RegistryStateJournalV2
+          and callable(owner_checkpoint_reader)
+          and callable(witness_checkpoint_reader),
+          'REGISTRY_RUNTIME_READERS_REQUIRED')
+
+    def external(reader):
+        try:
+            value=reader()
+        except Exception:
+            raise Denied('REGISTRY_RUNTIME_EXTERNAL_READ_UNAVAILABLE') from None
+        return _cp(value,store.initial)
+
+    def local():
+        with store._read_only_db() as db:
+            cp,cursor,operations,active,_=store._checked(db)
+            return {'checkpoint':cp,'candidateCursor':cursor,
+                    'operationCount':len(operations),
+                    'activeCandidateCount':len(active)}
+
+    # Reject a missing, corrupt or mismatched Registry DB *before* touching
+    # the independent owner/witness READ channels.
+    local_before=local()
+    owner_before=external(owner_checkpoint_reader)
+    witness_before=external(witness_checkpoint_reader)
+    _need(owner_before==local_before['checkpoint'],
+          'REGISTRY_RUNTIME_OWNER_CHECKPOINT_MISMATCH')
+    _need(witness_before==owner_before,
+          'REGISTRY_RUNTIME_WITNESS_CHECKPOINT_MISMATCH')
+
+    local_after=local()
+    owner_after=external(owner_checkpoint_reader)
+    witness_after=external(witness_checkpoint_reader)
+    if (owner_after!=owner_before or witness_after!=witness_before
+            or local_after!=local_before):
+        raise Stale('REGISTRY_RUNTIME_CHANGED_DURING_PREFLIGHT')
+
+    observation={'instanceId':store.instance_id,
+                 'scopeDigest':store.initial['scopeDigest'],
+                 'repository':store.scope['repository'],
+                 **local_before,
+                 'ownerCheckpointClaim':owner_before,
+                 'witnessCheckpointClaim':witness_before}
+    return {'result':'REGISTRY_RUNTIME_STARTUP_SOURCE_CANDIDATE',
+            'status':'INACTIVE_UNVERIFIED',
+            'observation':observation,
+            'observationDigest':_hash(observation),
+            'protectedCheckpointVerified':False,
+            'independentWitnessVerified':False,
+            'hostIsolationVerified':False,
+            'ownerAcceptanceVerified':False,
+            'liveReadAllowed':False,
+            'writeAllowed':False,
+            'runtimeActivationAllowed':False,
+            'admissionAllowed':False,
+            'deploymentAllowed':False}

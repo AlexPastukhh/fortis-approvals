@@ -53,6 +53,36 @@ input has real build-target Release Impact even though the new Registry
 Current work and host/recovery gates remain solely in the
 [central P5 roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
 
+## Inactive Registry startup readback (source only, P5 next cut)
+
+`RegistryStateJournalV2._read_only_db()` now opens an **existing** fixed-scope
+SQLite v2 database with `mode=ro`, `PRAGMA query_only=ON`, a deferred READ
+transaction, the shared exact schema/scope validator and complete local
+event/record/supersession replay checks. It does not initialize a missing
+database, migrate schemas, append a record, or call `BEGIN IMMEDIATE`.
+
+`recovery_reconcile.observe_inactive_registry_startup` composes only that
+Registry-side reader and **two externally supplied READ callbacks** for
+the owner checkpoint and independent witness claims. It binds exact
+instance/scope/revision/eventDigest, rejects missing, malformed, divergent,
+corrupt, or changing inputs and reads all three observations twice. It does
+**not** open an owner ledger from the Registry principal, call a checkpoint
+CAS, trust caller-provided paths or invoke a collector. It always returns
+`INACTIVE_UNVERIFIED` with all live READ, WRITE, admission, activation,
+host-isolation, owner-acceptance and protected-witness flags **false**.
+Matching fixture claims (including genesis) are **not** proof that two storage
+domains cannot be rolled back together.
+
+This is an inactive *source integration seam*, **not** a deployable
+Registry service, protected witness transport or launch readiness. No
+socket bind/listener, container or owner image, registered Gateway
+adapter/grant/policy, WebAuthn ceremony, installation or enrollment exists
+from this change. Actual separate UID/GID, encrypted volumes, protected
+witness and independently verified owner acceptance remain required by the
+[central P5 runtime runbook](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/RELEASE-REGISTRY-P5-OWNER-RUNTIME-RUNBOOK.md).
+The authoritative outstanding work sequence remains **only** in the
+[central CD Queue roadmap](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#fortis-release-planning--cd-queue).
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into
