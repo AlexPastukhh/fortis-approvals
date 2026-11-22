@@ -99,6 +99,12 @@ tests=(
   test_release_emergency_promote_source.py
   test_analysis_review.py
   test_extensions.py
+  test_declarative_read.py
+  test_openapi_intake.py
+  test_source_generator.py
+  test_source_workspace.py
+  test_source_onboarding.py
+  test_source_strategy.py
   test_mirror_signing.py
   test_extensions_http.py
   test_extensions_tooling.py

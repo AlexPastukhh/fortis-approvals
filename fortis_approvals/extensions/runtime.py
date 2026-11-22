@@ -324,6 +324,10 @@ class ExtensionRuntime:
                       all(type(x) is str and TARGET.fullmatch(x) for x in targets) and len(set(targets)) == len(targets), 'INTEGRATION_TARGETS_INVALID')
                 check(type(principals) is list and principals and all(type(x) is str for x in principals) and set(principals) <= set(actors) and
                       len(set(principals)) == len(principals), 'INTEGRATION_ACTOR_INVALID')
+                # Source-owned operations can restrict targets further than owner grants.
+                # Legacy handwritten operations leave allowed_targets empty.
+                check(not op.allowed_targets or set(targets) <= set(op.allowed_targets),
+                      'INTEGRATION_TARGET_OUTSIDE_DEFINITION')
                 if rule['policy'] != 'DENY':
                     check(op.ready, 'INTEGRATION_HANDLER_NOT_READY')
                     check(not op.credential or op.credential in credentials, 'INTEGRATION_CREDENTIAL_BINDING_MISSING')
