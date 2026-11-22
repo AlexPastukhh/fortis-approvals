@@ -445,6 +445,82 @@ No new Gateway operation, protected owner listener, live Registry
 WRITE, enrollment, Docker/Windows/Production action or unattended
 CD is installed by this change.
 
+## First executable private Registry candidate READ process (2026-11-23)
+
+**P5 implementation status: runnable in an isolated test subprocess,
+NOT installed/non-Production accepted, NOT a live Registry API.** The new
+`registry/local_candidate_read_service.py` implements a bounded Linux
+AF_UNIX foreground **candidate READ** process against an already existing,
+exact-schema SQLite **3** `FunctionalV1CandidateJournal`. This is the
+first process/transport composition for the functional-V1 storage path.
+It is separate from the unfinished *owner-side checkpoint* listener;
+no protected checkpoint/Witness/GO role is assumed or touched.
+
+**Startup/ownership.** A separately provisioned non-root Registry identity
+must own a private `0700` config directory with one exact `0600`
+canonical JSON config. Fields are *exactly* `schemaVersion=1`,
+`instanceId`, `scope`, `registryStatePath`, `socketPath`,
+`readerUid`, `readerGid`. A trusted supervisor may invoke
+`python3 -B -m fortis_approvals.registry.local_candidate_read_service
+--owner-config <owner-provisioned-file>`; no config, credential or
+path is accepted over the socket. The DB must **already exist**, be
+`0600` in an owner-private `0700` directory and replay its complete
+schema-3 event history on startup. Neither process startup nor read
+requests initialize/migrate a DB, create an enrollment, fetch source
+evidence or invoke any writer. Its separate socket directory must be
+owner-controlled `0710`, with a `0660` socket and fixed configured
+reader group; a preexisting/symlink socket is a STOP, **never unlinked
+or replaced automatically**. The listener has **no TCP/HTTP endpoint**
+or Docker socket dependency. Host provisioning remains owner-only.
+
+**Network protocol / identity.** A request is one canonical UTF-8 JSON
+line of at most 4096 bytes, then client write-half-close. Duplicate keys,
+additional bytes, multiple frames, noncanonical JSON, absent EOF,
+oversize requests or unknown fields abort without a response.
+Every request has only `schemaVersion=1`, `operation`,
+`instanceId`, `scopeDigest`, `requestId`, and exact `params`.
+The exact closed operation set is
+`candidate.capabilities` / `candidate.head` /
+`candidate.list_desired` (limit 1–100, revision-bound cursor) /
+`candidate.original_operation` (original UUID).
+The server reads **real kernel `SO_PEERCRED`** for each accepted
+connection and requires the host-configured reader UID/GID. Client
+actor/credential/path/scope override is not a valid field. It checks
+the private socket inode/modes and local head before and after every
+read; a concurrent write or socket replacement blocks output. It
+never returns a caller-supplied empty queue or `NOT_FOUND` for an
+unavailable/corrupt DB. Failed requests close with no success DTO.
+
+The only wire result is `SOURCE_ONLY_CANDIDATE_READ` with a bounded
+`data` holding the source journal's **explicitly local** result.
+`authenticatedCollectorAvailable=false`, `admissionAllowed=false`,
+`writeEnabled=false`, `deploymentAllowed=false`,
+`runtimeActivationAllowed=false`, `rollbackProtected=false`.
+`candidate.list_desired` is **NOT** `registry.list_records` and
+does not claim authoritative production queue or installed identity.
+`registry.ingest_merged`, `report_manual_complete`,
+`verify_actual`, `deploy`, any SQL and Gateway grants remain denied.
+
+**Acceptance evidence/remaining work.** Mandatory tests execute
+real filesystem AF_UNIX requests, multiple accepted connections
+and a **separate running Python process** against a previously written
+schema-3 journal. They reject forged actors/WRITE, wrong peer UID,
+malformed/pipelined/noncanonical frames, missing client EOF,
+world-readable config, loose socket ACL, existing socket replacement,
+missing SQLite and changed head during output. Same-UID test fixtures
+**do not prove distinct-principal isolation**; this process runs under
+the test runner's account and no privileged host is modified.
+Owner must separately choose a collision-free dedicated Registry UID,
+reader UID/GID, private encrypted volume/backup, accepted source image,
+effective socket grants and process namespaces, and verify **real
+cross-UID** EACCES/EPERM and denied write/mount access before pilot.
+The runtime still has no authenticated collector, protected owner
+enrollment, source admission, live typed Gateway `registry.*` READ
+binding, or admission WRITE. The existing Gateway READ DTO only permits
+SOURCE_ONLY/blocked results and must **not** be silently widened by
+this service. `FUNCTIONAL_V1_GO` and `HARDENED_REGISTRY_GO`
+are not granted. A source merge is not host installation.
+
 ## Closed candidate contract
 
 Separate module `fortis_approvals.registry.boundary` is not packaged into

@@ -150,6 +150,7 @@ tests=(
   test_registry_functional_v1_journal.py
   test_registry_source_composition.py
   test_registry_original_two_merges.py
+  test_registry_local_candidate_read_service.py
   test_registry_functional_v1_backup.py
   test_registry_recovery_snapshot.py
   test_registry_checkpoint_cas.py
