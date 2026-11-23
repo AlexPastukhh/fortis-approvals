@@ -1576,24 +1576,41 @@ no machine grant or Registry WRITE. Future E2–E5 remain separately gated in
 the **single** Registry roadmap, not here.
 
 ### E1.3b owner observation + two-volume admission source follow-up
+### E1.3b rollback-safe owner observation and protected two-volume admission (WIP)
 
-The source-only, one-shot `registry/owner_candidate_pidfd_observation.py`
-correlates a separately owner-selected Registry service PID (local to the
-Registry namespace after independent Docker inspect/top and host↔namespace
-PID reconciliation) with the kernel `SO_PEERPIDFD` of the **actual Unix socket**.
-It validates `/proc` process security and fixed socket modes and inode, but
-**never** treats output as an owner signature or automatically enrolls a
-Registry. The exact two Gateway READONLY volume destinations are
-`/run/r7-registry-reader` and `/run/fortis-registry-read` from fixed
-named volumes, NOT the private Registry SQLite volume. `github_pilot_helpers`
-now has source-only admission coverage of the exact pair, rejecting RW/bind,
-unknown source/destination and shared/host PID namespace. The installed
-Windows owner controller does not yet create this pair; no release is allowed.
+The owner-only `registry/owner_candidate_pidfd_observation.py` measures a
+**separately owner-selected** process from Docker inspect/top and a verified
+container-local PID, correlating its kernel pidfd with the actual Unix peer.
+This produces **no** owner acceptance, credential or release seal. An
+unexpected process/group/capability, wrong source/UID, stale socket or
+kernel mismatch is STOP. Owner correlation to exact accepted Docker image,
+source, namespace and container remains a required independent host gate.
 
-**Non-obvious Check/Apply blocker:** protected owner Gateway release creates a
-fresh random `releaseNonce` when constructing a new runtime. The owner-sealed
-Registry v2 profile pins that nonce before R7 can start. Implementing a
-protected **owner-chosen nonce** in the exact checked-image binding, and a
-preflight of unmodified sealed profile bytes at both Check and Apply, requires
-separate security review. Never replace nonce matching with a wildcard or
-auto-rotate a seal using Registry-provided values. E1.3b remains STOP.
+Two fixed mount DESTINATIONS are admitted into Gateway: readonly
+`/run/r7-registry-reader` and readonly `/run/fortis-registry-read`.
+The Registry-only socket source volume is fixed `fortis-registry-read`; the
+**immutable profile SOURCE volume** is exact
+`fortis-r7-registry-reader-<releaseNonce-without-dashes>` where the owner
+release nonce is lowercase canonical v4. This per-release source volume
+prevents overwriting an older Gateway's owner profile during future
+Check/Apply/Return; the Registry private SQLite volume is never shared.
+`github_pilot_helpers.admit()` rejects partial/RW/host/unknown mounts,
+nonce–profile mismatch, shared/host PID and new privileged capabilities.
+
+**Unmerged source-only Windows owner Check/Apply:** an explicit manual
+`-EnableRegistryMount -RegistryReleaseNonce` path now binds nonce, source
+image, configuration, read-only profile digest and both volume identities to
+one protected checked-image record. It independently runs a source-image
+preflight against the owner-sealed profile and live kernel socket peer before
+old Gateway state can be stopped; `Admit` repeats checks for previous source
+and new candidate. Ordinary `-Auto` remains Registry-disabled, while a
+Registry-configured provider without its reviewed mount is STOP. The old
+merged controller installed on Windows is not claimed updated. No Registry
+process is enrolled or activated merely by Python source acceptance; owner
+must validate true profile/source provenance and use the existing
+UC-GW-005 acceptance/rollback gates. Source code remains unmerged.
+
+**No host GO:** there is no accepted real owner profile, protected Windows
+SelfTest, actual Docker image build, independent Repo EACCES, private SQLite
+backup/restore, live E1.4 route or passkey. E1.4–E5 remain gated by the
+single E0–E5 roadmap, not this source addendum.

@@ -86,17 +86,34 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   re-provisions the seal and uses the existing guarded release procedure.
   Keep separate PID namespaces; do NOT use `--pid=host`, `--pid=container:*`,
   process-identity fallbacks, or new capabilities.
-- **Two separately owner-provisioned Registry volumes are necessary:** the
-  Gateway needs a fixed readonly activation-profile volume at
-  `/run/r7-registry-reader` **and a distinct readonly view** of the live Unix
-  socket directory at `/run/fortis-registry-read`. The Registry service owns
-  the only writable socket bind; its private schema-3 SQLite volume is never
-  attached to Gateway or Repo. E1.3b source admission adds only a strictly
-  paired, fixed-name, readonly volume check in `github_pilot_helpers.admit()`:
-  `fortis-r7-registry-reader` and `fortis-registry-read`. The owner Windows
-  Check/Apply controller **does not activate these two volumes yet**. This
-  still needs an exact protected owner design, independent socket writer
-  provenance and an explicit owner GO. Ordinary releases must remain unchanged.
+- **Two separate Registry volumes, with rollback-safe profile versioning:**
+  the Gateway's mount DESTINATIONS are always `/run/r7-registry-reader`
+  (owner seal, read-only) and `/run/fortis-registry-read` (Unix socket
+  directory, read-only in Gateway; writable ONLY by the separately reviewed
+  Registry process). The socket source volume name is fixed:
+  `fortis-registry-read`. Each immutable Gateway owner-profile SOURCE volume
+  is **unique for that release**:
+  `fortis-r7-registry-reader-<32 lowercase UUIDv4 hex digits>`, where the
+  digits are the exact protected owner-selected `releaseNonce` without
+  dashes. **Never rewrite or reuse an earlier release's sealed profile**:
+  source Gateway admission and protected Return/Backup/Promote must still
+  have the previous nonce/image/source/profile digest for readback and
+  recovery. Only exact readonly Docker `type=volume` mounts are accepted,
+  not arbitrary bind/paths; SQLite is never mounted into Gateway/Repo.
+- **The unmerged E1.3b Windows owner controller SOURCE** adds explicit
+  `-EnableRegistryMount -RegistryReleaseNonce <canonical UUIDv4>` to manual
+  owner `Check -Build` and `Apply -CheckedImageRecord` only; these options
+  require exact source SHA, owner-confirmed quiescence, original protected
+  release and image binding. **`-Auto` cannot activate Registry.** The owner
+  first independently builds/reviews the source image and calculates the
+  exact installed R7 Python/static source digest, starts/inspects the
+  non-Production Registry listener, then seals the exact new profile for that
+  nonce **before** running protected `Check`. `Check` rebuilds from its
+  pinned accepted source and verifies the seal matches the actual image.
+  `Apply` must reuse the same checked-image ID, SHA, config, nonce, volume,
+  immutable profile SHA256 and live process/socket identity, or **STOP
+  before stopping old Gateway**. This manual source path has not yet passed
+  Windows PowerShell 5.1 SelfTest nor owner Go; no deployment is authorized.
 - **Owner-side read-only process observation (source-only tool):** after the
   Registry pilot is separately approved and launched, the owner first
   confirms exact Docker container/image/namespace/source and service command
@@ -118,21 +135,21 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   `ownerAcceptanceVerified=false`, `profileSealed=false`,
   `releaseAdmitted=false` and cannot auto-create or authorize the v2 profile.
   Neither a same-UID test nor this tool alone proves the owner attestation.
-- **`releaseNonce` requires an owner-reviewed Check/Apply design.** The
-  current Windows controller creates a **fresh random release nonce** when
-  preparing the runtime; the v2 Registry activation profile demands the
-  *same* pre-sealed nonce at startup. Merely allowing two volumes is
-  insufficient. A future protected Check/Apply source-cut must enforce an
-  explicit owner-chosen nonce, exact checked-image binding, repeatable
-  unchanged profile digest, fail-closed owner re-seal on Registry restart,
-  and no new default `-Auto` activation. Until those gates pass, **STOP**.
-- **The existing installed Gateway release controller does NOT automatically
-  accept this new Registry mount.** Source `github_pilot_helpers.admit()`
-  requires an empty `PidMode` and an exact mount allowlist; existing
-  `Manage-Integrations.ps1` has no authorized Registry mount entry. Owner
-  must independently approve the precise added **readonly Registry volume**
-  and versioned protected Check/Apply/Backup/Promote source prior to building
-  or releasing this image. A source/test PASS is not installation or GO.
+- **Nonce and release controller acceptance:** the merged/main Windows
+  controller still uses a fresh random nonce for normal non-Registry
+  releases and has **no installed Registry activation**. Unmerged E1.3b
+  source instead uses the *owner-chosen*, pinned canonical v4 nonce **only**
+  with `-EnableRegistryMount`; stores this nonce and profile digest in the
+  protected checked-image record; and creates a candidate with that exact
+  nonce and two readonly mounts. Its owner preflight verifies the actual
+  live kernel pidfd against the reviewed source-image digest via
+  `reviewed_registry_reader_mount_digest()` in an isolated, non-networked,
+  non-privileged Python process (no image pull, no credentials/host grants).
+  `Admit` rechecks the old/source and new/candidate profile digest and peer
+  against the protected recorded nonce/source on existing Check/Apply/Return
+  boundaries. Registry provider and activation mount must be both present
+  or both absent. Manual host readiness, Windows SelfTest and rollback
+  proof are **separate gates**, not consequences of source tests.
 - **Trusted process pin origin:** after starting an isolated owner-accepted
   Registry listener, an independently vetted owner-side Linux kernel
   observation must identify its exact process, current pidfs inode and boot

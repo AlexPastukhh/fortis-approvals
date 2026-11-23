@@ -98,7 +98,7 @@ def _process(pid, registry_uid, registry_gid, reader_gid):
             # Only the Registry's original primary group is allowed. Even
             # an unexpected root/owner supplementary group makes a host
             # process observation inadmissible, irrespective of CapDrop.
-            or groups != [registry_gid] or any(caps)
+            or groups not in ([], [registry_gid]) or any(caps)
             or nop!=1 or sec!=2 or tracer!=0):
         _stop('PROCESS_ISOLATION_DENIED')
     return {'startTicks':start,'pid':pid,'uid':registry_uid,
