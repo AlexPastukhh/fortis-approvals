@@ -64,6 +64,7 @@ buildUnits:
       - fortis_approvals/registry/state_journal_v2.py
       - fortis_approvals/registry/functional_v1_journal.py
       - fortis_approvals/registry/local_candidate_read_service.py
+      - fortis_approvals/registry/owner_candidate_pidfd_observation.py
       - fortis_approvals/integrations/__init__.py
       - fortis_approvals/integrations/registry/__init__.py
       - fortis_approvals/integrations/registry/owner_pinned_pidfd.py

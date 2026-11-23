@@ -929,6 +929,23 @@ def admit(container, expected, *, pilot):
     if machine_volume:
         require(pilot, 'PILOT_MACHINE_POWERSHELL_REQUIRES_PROTECTED_RELEASE')
         desired.add(('volume', machine_volume, '/run/fortis-machine-powershell', False))
+    # E1.3b source-review admission ONLY: these are TWO fixed volumes,
+    # never one combined volume or a generic source/destination override.
+    # The Registry reader seal and AF_UNIX directory have separate ownership,
+    # access, and lifecycles. The existing owner controller does not yet
+    # produce this expectation or mount either volume: no host activation.
+    reg_profile = expected.get('registryReaderVolume', '')
+    reg_socket = expected.get('registrySocketVolume', '')
+    require(type(reg_profile) is str and reg_profile in
+            ('', 'fortis-r7-registry-reader') and
+            type(reg_socket) is str and reg_socket in
+            ('', 'fortis-registry-read') and
+            bool(reg_profile) == bool(reg_socket),
+            'PILOT_REGISTRY_VOLUME_PAIR_DENIED')
+    if reg_profile:
+        require(pilot, 'PILOT_REGISTRY_REQUIRES_PROTECTED_RELEASE')
+        desired.add(('volume', reg_profile, '/run/r7-registry-reader', False))
+        desired.add(('volume', reg_socket, '/run/fortis-registry-read', False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')

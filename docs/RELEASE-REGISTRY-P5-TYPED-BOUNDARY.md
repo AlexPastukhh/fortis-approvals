@@ -1574,3 +1574,26 @@ explicitly review the added immutable Registry mount allowlist under
 UC-GW-005. Until that, `E1.3b HOST_NOT_ACCEPTED`, `E1.4 NOT_LIVE` and
 no machine grant or Registry WRITE. Future E2–E5 remain separately gated in
 the **single** Registry roadmap, not here.
+
+### E1.3b owner observation + two-volume admission source follow-up
+
+The source-only, one-shot `registry/owner_candidate_pidfd_observation.py`
+correlates a separately owner-selected Registry service PID (local to the
+Registry namespace after independent Docker inspect/top and host↔namespace
+PID reconciliation) with the kernel `SO_PEERPIDFD` of the **actual Unix socket**.
+It validates `/proc` process security and fixed socket modes and inode, but
+**never** treats output as an owner signature or automatically enrolls a
+Registry. The exact two Gateway READONLY volume destinations are
+`/run/r7-registry-reader` and `/run/fortis-registry-read` from fixed
+named volumes, NOT the private Registry SQLite volume. `github_pilot_helpers`
+now has source-only admission coverage of the exact pair, rejecting RW/bind,
+unknown source/destination and shared/host PID namespace. The installed
+Windows owner controller does not yet create this pair; no release is allowed.
+
+**Non-obvious Check/Apply blocker:** protected owner Gateway release creates a
+fresh random `releaseNonce` when constructing a new runtime. The owner-sealed
+Registry v2 profile pins that nonce before R7 can start. Implementing a
+protected **owner-chosen nonce** in the exact checked-image binding, and a
+preflight of unmodified sealed profile bytes at both Check and Apply, requires
+separate security review. Never replace nonce matching with a wildcard or
+auto-rotate a seal using Registry-provided values. E1.3b remains STOP.

@@ -117,6 +117,28 @@ class RegistryTrustedMountTests(unittest.TestCase):
                     registry_boot_id=_boot_id(), reader_uid=os.geteuid()+11,
                     reader_gid=os.getegid()+12,socket_device=55,socket_inode=66)
 
+    def test_reviewed_registry_mount_digest_fails_closed_without_peer_and_source(self):
+        from hashlib import sha256
+        if os.geteuid() == 0:
+            self.skipTest('Root cannot load Registry owner profile')
+        with patch.object(mount, '_check_owner_readonly_mount',return_value=None), \
+             patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_identity',return_value=None), \
+             patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_socket',return_value=(55,66)):
+            with self.assertRaisesRegex(Denied,'MOUNT_PEER_UNAVAILABLE'):
+                mount.reviewed_registry_reader_mount_digest(
+                    root=self.root,expected_release_nonce=self.nonce,
+                    expected_source_digest=self.source)
+            with self.assertRaisesRegex(Denied,'MOUNT_PROFILE_DENIED'):
+                mount.reviewed_registry_reader_mount_digest(
+                    root=self.root,expected_release_nonce=str(uuid.uuid4()),
+                    expected_source_digest=self.source)
+        with self.assertRaisesRegex(Denied,'MOUNT_NOT_ENABLED'):
+            mount.reviewed_registry_reader_mount_digest(
+                root=self.root/'absent', expected_release_nonce=self.nonce,
+                expected_source_digest=self.source)
+
     def test_exact_mountinfo_parser_requires_single_ro_mount_point(self):
         path=os.fsencode(self.root)
         row=lambda x,opts: b'24 3 8:1 / '+x+b' '+opts+b' - ext4 /dev/data rw\n'

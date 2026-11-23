@@ -86,6 +86,46 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   re-provisions the seal and uses the existing guarded release procedure.
   Keep separate PID namespaces; do NOT use `--pid=host`, `--pid=container:*`,
   process-identity fallbacks, or new capabilities.
+- **Two separately owner-provisioned Registry volumes are necessary:** the
+  Gateway needs a fixed readonly activation-profile volume at
+  `/run/r7-registry-reader` **and a distinct readonly view** of the live Unix
+  socket directory at `/run/fortis-registry-read`. The Registry service owns
+  the only writable socket bind; its private schema-3 SQLite volume is never
+  attached to Gateway or Repo. E1.3b source admission adds only a strictly
+  paired, fixed-name, readonly volume check in `github_pilot_helpers.admit()`:
+  `fortis-r7-registry-reader` and `fortis-registry-read`. The owner Windows
+  Check/Apply controller **does not activate these two volumes yet**. This
+  still needs an exact protected owner design, independent socket writer
+  provenance and an explicit owner GO. Ordinary releases must remain unchanged.
+- **Owner-side read-only process observation (source-only tool):** after the
+  Registry pilot is separately approved and launched, the owner first
+  confirms exact Docker container/image/namespace/source and service command
+  via **independent Docker inspect/top**. Docker Engine host PID is **not**
+  necessarily the numeric PID visible **inside the Registry container**;
+  the owner must independently map/inspect `/proc` in that selected container
+  before supplying its *container-local* Python listener PID, without asking
+  the Registry listener to assert its own PID. The reviewed candidate image
+  includes `fortis_approvals.registry.owner_candidate_pidfd_observation` as
+  an **owner-invoked, one-shot** diagnostic: requires exact selected PID,
+  real Registry UID/GID and reader GID, validates live process pidfd,
+  `/proc` security/command, the 02710/0660 socket endpoint and its actual
+  kernel `SO_PEERPIDFD` connection; checks stable PID start ticks, boot ID,
+  process inode and socket inode. It reads no SQLite, sends no READ request,
+  and creates no credentials/volumes/processes; its connection may be counted
+  or rejected by the Registry listener. **Owner must review its invocation
+  and compare its raw result against Docker Engine's independent container
+  image/UID/namespace/mount readback.** The result intentionally reports
+  `ownerAcceptanceVerified=false`, `profileSealed=false`,
+  `releaseAdmitted=false` and cannot auto-create or authorize the v2 profile.
+  Neither a same-UID test nor this tool alone proves the owner attestation.
+- **`releaseNonce` requires an owner-reviewed Check/Apply design.** The
+  current Windows controller creates a **fresh random release nonce** when
+  preparing the runtime; the v2 Registry activation profile demands the
+  *same* pre-sealed nonce at startup. Merely allowing two volumes is
+  insufficient. A future protected Check/Apply source-cut must enforce an
+  explicit owner-chosen nonce, exact checked-image binding, repeatable
+  unchanged profile digest, fail-closed owner re-seal on Registry restart,
+  and no new default `-Auto` activation. Until those gates pass, **STOP**.
 - **The existing installed Gateway release controller does NOT automatically
   accept this new Registry mount.** Source `github_pilot_helpers.admit()`
   requires an empty `PidMode` and an exact mount allowlist; existing

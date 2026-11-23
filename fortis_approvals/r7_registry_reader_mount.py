@@ -5,8 +5,10 @@ owner creates a mount at a *fixed* trusted path and pins process/socket IDs.
 Only owner-reviewed source/image and host can make the mount usable; caller
 requests, Repo params and runtime environment have no path override.
 """
+import hashlib
 import os
 from pathlib import Path
+import socket
 import stat
 import uuid
 
@@ -149,3 +151,56 @@ def load_owner_registry_reader(*, expected_release_nonce,
     except (OSError, ValueError, TypeError, UnicodeError,
             OverflowError, RecursionError):
         _stop('PROFILE_UNAVAILABLE')
+
+
+def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
+                                          expected_source_digest, root=MOUNT):
+    """Check owner-sealed profile and live pinned socket WITHOUT Registry READ.
+
+    For the existing protected owner Check/Apply controller to call only after
+    it has been independently extended to accept TWO exact readonly volumes,
+    an owner-chosen reviewed nonce and a source/image binding. This function
+    does not create, seal, install or authorize any mount/process/grant.
+    """
+    reader = load_owner_registry_reader(
+        expected_release_nonce=expected_release_nonce,
+        expected_source_digest=expected_source_digest, root=root)
+    if reader is None:
+        _stop('NOT_ENABLED')
+    initial = reader._check_socket()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            sock.connect(str(reader._path))
+            peer = reader._peer(sock)
+            if reader._peer(sock) != peer:
+                _stop('PEER_CHANGED')
+    except Denied:
+        raise
+    except (OSError, TimeoutError):
+        _stop('PEER_UNAVAILABLE')
+    reader._check_identity()
+    if reader._check_socket() != initial:
+        _stop('SOCKET_CHANGED')
+    _check_owner_readonly_mount(root)
+    try:
+        path = root / _FILE
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            row = os.fstat(fd)
+            if (not stat.S_ISREG(row.st_mode) or row.st_nlink != 1
+                    or row.st_uid != os.geteuid()
+                    or stat.S_IMODE(row.st_mode) != 0o600
+                    or not 1 <= row.st_size <= _MAX_BYTES):
+                _stop('FILE_DENIED')
+            raw = os.read(fd, _MAX_BYTES+1)
+            if len(raw) != row.st_size:
+                _stop('FILE_CHANGED')
+        finally:
+            os.close(fd)
+    except Denied:
+        raise
+    except OSError:
+        _stop('FILE_UNAVAILABLE')
+    _check_owner_readonly_mount(root)
+    return hashlib.sha256(raw).hexdigest()
