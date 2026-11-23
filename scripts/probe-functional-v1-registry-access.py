@@ -21,15 +21,19 @@ import sys
 import uuid
 
 from fortis_approvals.core import Denied, canonical, loads_strict
+from fortis_approvals.integrations.registry.owner_pinned_pidfd import (
+    owner_pinned_peer, _boot_id,
+)
 from fortis_approvals.registry.state_journal import _hash, _hex, _need, _uuid
 
 _PROFILE_FIELDS={
     'schemaVersion','format','ownerUid','registryUid','registryGid',
-    'readerUid','readerGid','repoUid','repoGid','serverPid',
+    'readerUid','readerGid','repoUid','repoGid',
+    'serverPidfdInode','kernelBootId',
     'socketDev','socketInode','instanceId','scopeDigest',
     'registryStatePath','socketPath',
 }
-_FORMAT='functional-v1-host-access-profile-v1'
+_FORMAT='functional-v1-host-access-profile-v2'
 _RESULT='SOURCE_ONLY_CROSS_UID_ACCESS_OBSERVATION'
 _MAX_CONFIG=4096
 _MAX_REPLY=12289
@@ -49,13 +53,13 @@ def _path(value, *, socket_name=False):
 def _profile(value, expected_digest):
     _need(type(value) is dict and set(value)==_PROFILE_FIELDS
           and type(value['schemaVersion']) is int
-          and value['schemaVersion']==1 and value['format']==_FORMAT
+          and value['schemaVersion']==2 and value['format']==_FORMAT
           and _hex(expected_digest,64) and _hash(value)==expected_digest
           and _uuid(value['instanceId'])
           and _hex(value['scopeDigest'],64),
           'REGISTRY_V1_ACCESS_PROFILE_INVALID')
     for key in ('ownerUid','registryUid','registryGid','readerUid',
-                'readerGid','repoUid','repoGid','serverPid','socketDev',
+                'readerGid','repoUid','repoGid','socketDev',
                 'socketInode'):
         _need(type(value[key]) is int and 0<value[key]<2**63,
               'REGISTRY_V1_ACCESS_PROFILE_INVALID')
@@ -66,7 +70,10 @@ def _profile(value, expected_digest):
           and all(value[k]<2**31 for k in (
           'ownerUid','registryUid','readerUid','repoUid',
           'registryGid','readerGid','repoGid'))
-          and value['serverPid']>1,
+          and type(value['serverPidfdInode']) is int
+          and 0<value['serverPidfdInode']<2**64
+          and _uuid(value['kernelBootId'])
+          and value['kernelBootId']==_boot_id(),
           'REGISTRY_V1_ACCESS_PROFILE_IDENTITY_CONFLICT')
     db=_path(value['registryStatePath'])
     sock=_path(value['socketPath'],socket_name=True)
@@ -208,11 +215,16 @@ def _reader_socket(profile):
         with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
             client.settimeout(_TIMEOUT)
             client.connect(profile['socketPath'])
-            peer=struct.unpack('3i',client.getsockopt(
-                socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
-            _need(peer==(profile['serverPid'],profile['registryUid'],
-                         profile['registryGid']),
-                  'REGISTRY_V1_ACCESS_SERVER_PRINCIPAL_MISMATCH')
+            # Owner profile pins an independently approved kernel process,
+            # not the service's self-reported PID or uid/gid alone.
+            try:
+                peer=owner_pinned_peer(
+                    client, expected_uid=profile['registryUid'],
+                    expected_gid=profile['registryGid'],
+                    expected_pidfd_inode=profile['serverPidfdInode'],
+                    expected_boot_id=profile['kernelBootId'])
+            except Denied:
+                raise Denied('REGISTRY_V1_ACCESS_SERVER_PRINCIPAL_MISMATCH') from None
             client.sendall(wire)
             client.shutdown(socket.SHUT_WR)
             while True:
@@ -262,7 +274,8 @@ def _reader_socket(profile):
           and 0<=head['localCheckpoint']['revision']<2**63,
           'REGISTRY_V1_ACCESS_RESPONSE_STATE_DENIED')
     return {
-        'serverPid':peer[0],'serverUid':peer[1],'serverGid':peer[2],
+        'serverPidfdInode':peer[2], 'kernelBootId':profile['kernelBootId'],
+        'serverUid':peer[0],'serverGid':peer[1],
         'socketDev':before[0],'socketInode':before[1],
         'localRevisionCandidate':head['localCheckpoint']['revision'],
         'stateAuthority':'LOCAL_EVENT_CHAIN_ONLY',
@@ -302,7 +315,7 @@ def observe(role,profile,expected_digest):
               socket_evidence['socketDev'],socket_evidence['socketInode']),
               'REGISTRY_V1_ACCESS_SOCKET_CHANGED')
     evidence={
-        'schemaVersion':1,'format':'functional-v1-host-access-observation-v1',
+        'schemaVersion':2,'format':'functional-v1-host-access-observation-v2',
         'role':role,'profileDigest':expected_digest,
         'instanceId':profile['instanceId'],
         'scopeDigest':profile['scopeDigest'],

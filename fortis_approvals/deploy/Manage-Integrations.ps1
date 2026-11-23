@@ -8,7 +8,7 @@ param(
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
+    [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableRegistryMount, [string]$RegistryReleaseNonce='', [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
     [string]$CiControlRepositories='', [string]$CdReadRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -532,6 +532,21 @@ function Read-GatewayNetworkBoundary {
     }
     Write-Host 'FORTIS_GATEWAY_NETWORK_BOUNDARY_PASS'
     return $Networks
+}
+function Read-RegistryProvider {
+    param($Config)
+    if($null -eq $Config){throw 'RELEASE_REGISTRY_CONFIG_INVALID'}
+    $Field=$Config.PSObject.Properties['providers']
+    if($null -eq $Field -or $null -eq $Field.Value -or
+       $Field.Value -isnot [pscustomobject]){
+        throw 'RELEASE_REGISTRY_CONFIG_INVALID'
+    }
+    $Property=$Field.Value.PSObject.Properties['registry']
+    if($null -eq $Property){return $null}
+    if($Property.Value -isnot [pscustomobject]){
+        throw 'RELEASE_REGISTRY_CONFIG_INVALID'
+    }
+    return $Property.Value
 }
 function Read-ObservatoryProvider {
     param($Config)
@@ -1108,7 +1123,7 @@ function Parse-PreservedUncertainRequests {
         throw 'RELEASE_UNCERTAIN_SCOPE_INVALID'
     }
     foreach($Id in $Ids){
-        if($Id -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'){
+        if($Id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){
             throw 'RELEASE_UNCERTAIN_SCOPE_INVALID'
         }
         Write-Output $Id
@@ -1316,6 +1331,79 @@ print('FORTIS_MACHINE_POWERSHELL_MOUNT_SHA256=' + reviewed_machine_mount_digest(
     return [string]$Matches[1]
 }
 
+# E1.3b Registry is an explicit owner Check/Apply exception, NOT -Auto.
+# The reader activation volume is immutable per nonce so a new source image
+# never requires rewriting the still-live Gateway's previous profile. Both
+# mount destinations remain fixed, read-only and separately provisioned.
+function Read-RegistryMountBinding {
+    param($Record)
+    if($null -eq $Record){throw 'RELEASE_REGISTRY_RECORD_INVALID'}
+    $Values=@{}
+    foreach($Name in @('registryReaderVolume','registrySocketVolume',
+                        'registryReleaseNonce','registryProfileDigest')){
+        if($Record -is [Collections.IDictionary]){
+            if($Record.Contains($Name)){$Value=$Record[$Name]}
+            else {$Value=''}
+        } else {
+            $Prop=$Record.PSObject.Properties[$Name]
+            if($null -eq $Prop){$Value=''}
+            else {$Value=$Prop.Value}
+        }
+        if($Value -isnot [string]){throw 'RELEASE_REGISTRY_RECORD_INVALID'}
+        $Values[$Name]=[string]$Value
+    }
+    $Volume=$Values['registryReaderVolume'];$Socket=$Values['registrySocketVolume']
+    $Nonce=$Values['registryReleaseNonce'];$Digest=$Values['registryProfileDigest']
+    if(-not $Volume -and -not $Socket -and -not $Nonce -and -not $Digest){
+        return [ordered]@{readerVolume='';socketVolume='';releaseNonce='';profileDigest=''}
+    }
+    if($Nonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+       $Volume -cne ('fortis-r7-registry-reader-'+$Nonce.Replace('-','')) -or
+       $Socket -cne 'fortis-registry-read' -or
+       $Digest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_REGISTRY_RECORD_INVALID'
+    }
+    return [ordered]@{readerVolume=$Volume;socketVolume=$Socket
+        releaseNonce=$Nonce;profileDigest=$Digest}
+}
+
+function Image-RegistryMount-Preflight {
+    param([string]$ImageId,[string]$ReleaseNonce,[string]$ReaderVolume)
+    # Never provision source, identity, nonce, or volume here; a protected
+    # operator independently seals the exact source/boot/process pins first.
+    if($ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       $ReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+       $ReaderVolume -cne ('fortis-r7-registry-reader-'+$ReleaseNonce.Replace('-',''))){
+        throw 'RELEASE_REGISTRY_PREFLIGHT_ARGUMENTS_INVALID'
+    }
+    Assert-Volume $ReaderVolume
+    Assert-Volume 'fortis-registry-read'
+    Assert-OnlyWriter $ReaderVolume
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import reviewed_registry_reader_mount_digest
+nonce=sys.stdin.buffer.read(128).decode('ascii')
+print('FORTIS_REGISTRY_READER_MOUNT_SHA256=' + reviewed_registry_reader_mount_digest(
+    expected_release_nonce=nonce, expected_source_digest=_installed_policy_source_digest()))
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-owner-preflight>','exec'))"
+    $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL',
+        '--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','128m',
+        '--mount',('type=volume,source='+$ReaderVolume+',target=/run/r7-registry-reader,readonly'),
+        '--mount','type=volume,source=fortis-registry-read,target=/run/fortis-registry-read,readonly',
+        '--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
+    $Result=Private-Process $Args $ReleaseNonce
+    if($Result -cnotmatch '^FORTIS_REGISTRY_READER_MOUNT_SHA256=([0-9a-f]{64})$'){
+        throw 'RELEASE_REGISTRY_PREFLIGHT_FAILED'
+    }
+    return [string]$Matches[1]
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -1418,6 +1506,11 @@ function Checked-Image-Binding {
         machinePowerShellVolume=$script:MachinePowerShellVolume
         machinePowerShellDigest=$script:MachinePowerShellDigest
         enableMachinePowerShell=[bool]$EnableMachinePowerShell
+        registryReaderVolume=$script:RegistryReaderVolume
+        registrySocketVolume=$script:RegistrySocketVolume
+        registryReleaseNonce=$script:RegistryReleaseNonce
+        registryProfileDigest=$script:RegistryProfileDigest
+        enableRegistryMount=[bool]$EnableRegistryMount
         emergencyRescueImage=$EmergencyRescueImage
         emergencyRescueArchiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
         acceptUnverifiedRestore=[bool]$AcceptUnverifiedRestore
@@ -1625,6 +1718,14 @@ function Admit {
         vaultVolume=$P.vaultVolume;ownerShell=(Read-OwnerShellFlag $P);status=$C.State.Status;requireHealthy=(-not $AllowUnhealthy)
         publisherActivationVolume=(Read-PublisherActivationVolume $P)
         machinePowerShellVolume=(Read-MachinePowerShellVolume $P)}
+    $RegistryProtected=Read-RegistryMountBinding $P
+    if($RegistryProtected.readerVolume -and
+       $P.releaseNonce -cne $RegistryProtected.releaseNonce){
+        throw 'RELEASE_REGISTRY_RUNTIME_NONCE_MISMATCH'
+    }
+    $Expected.registryReaderVolume=$RegistryProtected.readerVolume
+    $Expected.registrySocketVolume=$RegistryProtected.socketVolume
+    $Expected.registryReleaseNonce=$RegistryProtected.releaseNonce
     $Networks=Read-GatewayNetworks $P
     if($null -ne $Networks){$Expected.gatewayNetworks=$Networks}
     if($AllowPendingIngress){
@@ -1662,6 +1763,16 @@ function Admit {
         $Pinned=Read-MachinePowerShellDigest $P
         $Observed=Image-MachinePowerShell-Preflight -ImageId $MountImage
         if($Observed -cne $Pinned){throw 'RELEASE_MACHINE_POWERSHELL_CONTENT_CHANGED'}
+    }
+    if($RegistryProtected.readerVolume){
+        # At each existing source/candidate/rollback admission boundary,
+        # recheck the exact read-only profile bytes and kernel live peer.
+        $Observed=Image-RegistryMount-Preflight -ImageId $MountImage `
+            -ReleaseNonce $RegistryProtected.releaseNonce `
+            -ReaderVolume $RegistryProtected.readerVolume
+        if($Observed -cne $RegistryProtected.profileDigest){
+            throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'
+        }
     }
 }
 function Admit-Source {
@@ -2091,6 +2202,38 @@ if($Action -eq 'SelfTest'){
     try{$null=Read-PublisherActivationDigest ('{"publisherActivationVolume":"fortis-r7-publisher-activation"}'|ConvertFrom-Json)}
     catch{if($_.Exception.Message -cne 'RELEASE_PUBLISHER_DIGEST_RECORD_MISSING'){throw};$PublisherRejected=$true}
     if(-not $PublisherRejected){throw 'RELEASE_PUBLISHER_RECORD_SELFTEST_FAILED'}
+    # No host effect: validate exact Registry nonce-derived reader volume,
+    # pair, digest and flag forwarding inside the existing SelfTest action.
+    $RegistryOld='{"schema":1}'|ConvertFrom-Json
+    $RegistryNonce='11111111-1111-4111-8111-111111111111'
+    $RegistryVolume='fortis-r7-registry-reader-'+$RegistryNonce.Replace('-','')
+    $RegistryGood=('{"registryReaderVolume":"'+$RegistryVolume+'","registrySocketVolume":"fortis-registry-read","registryReleaseNonce":"'+$RegistryNonce+'","registryProfileDigest":"'+('a'*64)+'"}')|ConvertFrom-Json
+    $RegistryOldValues=Read-RegistryMountBinding $RegistryOld
+    $RegistryGoodValues=Read-RegistryMountBinding $RegistryGood
+    if($RegistryOldValues.readerVolume -cne '' -or
+       $RegistryGoodValues.readerVolume -cne $RegistryVolume -or
+       $RegistryGoodValues.socketVolume -cne 'fortis-registry-read' -or
+       $RegistryGoodValues.releaseNonce -cne $RegistryNonce -or
+       $RegistryGoodValues.profileDigest -cne ('a'*64)){
+        throw 'RELEASE_REGISTRY_RECORD_SELFTEST_FAILED'
+    }
+    foreach($Bad in @(
+        '{"registryReaderVolume":"fortis-r7-registry-reader"}',
+        ('{"registryReaderVolume":"'+$RegistryVolume+'","registrySocketVolume":"fortis-registry-read","registryReleaseNonce":"22222222-2222-4222-8222-222222222222","registryProfileDigest":"'+('a'*64)+'"}'),
+        ('{"registryReaderVolume":"'+$RegistryVolume+'","registrySocketVolume":"fortis-registry-read","registryReleaseNonce":"'+$RegistryNonce+'","registryProfileDigest":"NOT_HASH"}'),
+        '{"registryReaderVolume":"/tmp/owner","registrySocketVolume":"fortis-registry-read"}'
+    )){
+        $Rejected=$false
+        try{$null=Read-RegistryMountBinding (ConvertFrom-Json -InputObject $Bad)}
+        catch{if($_.Exception.Message -cne 'RELEASE_REGISTRY_RECORD_INVALID'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_REGISTRY_RECORD_SELFTEST_FAILED'}
+    }
+    $RegistryForwarded=@(Forward-NativeParameters @{EnableRegistryMount=([switch]$true);RegistryReleaseNonce=$RegistryNonce})
+    if($RegistryForwarded -cnotcontains '-EnableRegistryMount' -or
+       $RegistryForwarded -cnotcontains '-RegistryReleaseNonce' -or
+       $RegistryForwarded -cnotcontains $RegistryNonce){
+        throw 'RELEASE_REGISTRY_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
     $MachineOld='{"schema":1}'|ConvertFrom-Json
     $MachineGood=('{"machinePowerShellVolume":"fortis-r7-machine-powershell","machinePowerShellDigest":"'+('a'*64)+'"}')|ConvertFrom-Json
     $MachineBad='{"machinePowerShellVolume":"../../owner"}'|ConvertFrom-Json
@@ -2160,7 +2303,8 @@ if($Auto){
         $CiControlRepositories -or $CdReadRepositories -or
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
-        $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount -or $EnableMachinePowerShell){
+        $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount -or $EnableMachinePowerShell -or
+        $EnableRegistryMount -or $RegistryReleaseNonce){
         throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
     }
     if($Action -cin @('Check','Apply')){
@@ -2411,6 +2555,19 @@ if($EnableMachinePowerShell -and ($Auto -or $Action -cnotin @('Check','Apply') -
     ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))) {
     throw 'RELEASE_MACHINE_POWERSHELL_REQUIRES_EXACT_OWNER_CHECKED_IMAGE'
 }
+# Unlike default -Auto, Registry activation requires an explicit owner
+# nonce, an exact owner source/image and a durable Check -> Apply binding.
+if($EnableRegistryMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
+    $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
+    -not $ConfirmWorkerQuiescent -or
+    $RegistryReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))){
+    throw 'RELEASE_REGISTRY_REQUIRES_OWNER_CHECKED_IMAGE_AND_NONCE'
+}
+if(-not $EnableRegistryMount -and $RegistryReleaseNonce){
+    throw 'RELEASE_REGISTRY_NONCE_WITHOUT_EXPLICIT_ACTIVATION'
+}
 if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
     @($CiControlRepositories.Split(',')|Select-Object -Unique).Count -ne @($CiControlRepositories.Split(',')).Count)){
     throw 'RELEASE_CI_CONTROL_REPOSITORIES_INVALID'
@@ -2445,7 +2602,7 @@ if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Prom
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $EnableRegistryMount -or $RegistryReleaseNonce -or $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
 $script:ActionCoreNetworks=$null
 if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
     Step 'GATEWAY_NETWORK_PREFLIGHT_READ_ONLY'
@@ -2561,6 +2718,29 @@ if($AllowUncertainGrowth){
 $script:PublisherActivationVolume=Read-PublisherActivationVolume $SourceForOwnerShell.runtime
 $PreviousPublisherDigest=Read-PublisherActivationDigest $SourceForOwnerShell.runtime
 if($EnablePublisherMount){$script:PublisherActivationVolume='fortis-r7-publisher-activation'}
+$RegistryPrior=Read-RegistryMountBinding $SourceForOwnerShell.runtime
+if($RegistryPrior.readerVolume -and -not $EnableRegistryMount){
+    # A routine release must not silently drop an owner-accepted Registry.
+    # Existing protected Return/Backup/Promote remain separate recovery paths.
+    throw 'RELEASE_REGISTRY_MOUNT_DOWNGRADE_REQUIRES_OWNER_REVIEW'
+}
+if($RegistryPrior.readerVolume -and $EnableRegistryMount -and
+   $RegistryPrior.releaseNonce -ceq $RegistryReleaseNonce){
+    # Reusing an old seal across a different Gateway release would destroy
+    # per-release rollback isolation even when images share source bytes.
+    throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'
+}
+$script:RegistryReleaseNonce='';$script:RegistryReaderVolume=''
+$script:RegistrySocketVolume='';$script:RegistryProfileDigest=''
+if($EnableRegistryMount){
+    $script:RegistryReleaseNonce=$RegistryReleaseNonce
+    $script:RegistryReaderVolume=('fortis-r7-registry-reader-'+$RegistryReleaseNonce.Replace('-',''))
+    $script:RegistrySocketVolume='fortis-registry-read'
+    Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'
+    $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
+        -ImageId $script:Image -ReleaseNonce $script:RegistryReleaseNonce `
+        -ReaderVolume $script:RegistryReaderVolume
+}
 $script:MachinePowerShellVolume=Read-MachinePowerShellVolume $SourceForOwnerShell.runtime
 $PreviousMachineDigest=Read-MachinePowerShellDigest $SourceForOwnerShell.runtime
 if($EnableMachinePowerShell){$script:MachinePowerShellVolume='fortis-r7-machine-powershell'}
@@ -2595,6 +2775,12 @@ if($OwnerShellEnabled){
 if($Auto){$ConfigText=$script:AutoConfigText}
 else {$ConfigText=Get-Content -LiteralPath $Config -Raw}
 $PublicConfig=ConvertFrom-Json -InputObject $ConfigText -ErrorAction Stop
+# A valid image-owned Registry provider must be paired with the pinned
+# owner reader. Never activate a hidden mount or a configured unbound API.
+$HasRegistry=[bool](Read-RegistryProvider $PublicConfig)
+if($HasRegistry -ne [bool]$EnableRegistryMount){
+    throw 'RELEASE_REGISTRY_PROVIDER_AND_OWNER_MOUNT_MISMATCH'
+}
 if((Read-ActionCoreProvider $PublicConfig) -and -not $EnableActionCoreNetwork){
     throw 'RELEASE_ACTION_CORE_NETWORK_REQUIRED'
 }
@@ -2694,7 +2880,10 @@ $ConfigObject=ConvertFrom-Json -InputObject $ConfigText
 $CompactConfig=ConvertTo-Json -InputObject $ConfigObject -Compress -Depth 20
 $ProbeText='[]';if($Probes){$ProbeText=Get-Content -LiteralPath $Probes -Raw}
 if($Auto){$ProbeText=$script:AutoProbeText}
-$Nonce=[Guid]::NewGuid().ToString('D')
+# The previously sealed, exact Registry nonce is protected by the Check
+# binding and copied unchanged into the actual Gateway runtime record.
+$Nonce=$(if($EnableRegistryMount){$RegistryReleaseNonce}
+         else{[Guid]::NewGuid().ToString('D')})
 $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$script:Image
     stateVolume=('fortis-github-pilot-state-'+$RunId);tokenVolume=$Source.runtime.tokenVolume
     owner=$Source.runtime.owner;repository=$Source.runtime.repository;filePrBranch=$Source.runtime.filePrBranch
@@ -2711,6 +2900,10 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     publisherActivationDigest=$script:PublisherActivationDigest
     machinePowerShellVolume=$script:MachinePowerShellVolume
     machinePowerShellDigest=$script:MachinePowerShellDigest
+    registryReaderVolume=$script:RegistryReaderVolume
+    registrySocketVolume=$script:RegistrySocketVolume
+    registryReleaseNonce=$script:RegistryReleaseNonce
+    registryProfileDigest=$script:RegistryProfileDigest
     ownerShell=$OwnerShellEnabled;runId=$RunId}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 if($EnableObservatoryNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
@@ -2814,6 +3007,12 @@ try {
     if($Runtime.machinePowerShellVolume){
         $Arguments+=@('--mount',('type=volume,source='+$Runtime.machinePowerShellVolume+
             ',target=/run/fortis-machine-powershell,readonly'))
+    }
+    if($Runtime.registryReaderVolume){
+        $Arguments+=@('--mount',('type=volume,source='+$Runtime.registryReaderVolume+
+            ',target=/run/r7-registry-reader,readonly'))
+        $Arguments+=@('--mount',('type=volume,source='+$Runtime.registrySocketVolume+
+            ',target=/run/fortis-registry-read,readonly'))
     }
     $Arguments+=@($script:Image)
     $script:R.runtime.pilotId=Docker-Text $Arguments

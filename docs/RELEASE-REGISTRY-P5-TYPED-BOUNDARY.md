@@ -1549,3 +1549,68 @@ is activated. The next separate source/host work must establish an
 owner-provisioned listener/process, authenticated owner acceptance,
 independent non-rollback witness and negative multi-principal E2E,
 without exposing `advance` by merely changing a flag.
+
+## E1.3b kernel peer process identity candidate (2026-11-23; SOURCE-ONLY)
+
+This addendum does not supersede historical numeric-PID `SO_PEERCRED`
+diagnostic source described above. Owner-reported FORTIS_M sandbox proved
+`SO_PEERCRED pid=0` between independent Docker PID namespaces while Linux
+`SO_PEERPIDFD` returned a matching process inode from both sides and
+signaled process exit. The new owner-fixed R7 profile **schema 2** selects
+only a kernel pidfd inode and boot UUID verified against a **separately
+owner-measured** Registry process, plus exact UID/GID, source/release nonce,
+instance/scope and Unix socket device/inode. Numeric registry PID is not a
+valid owner R7 profile v2. The existing Gateway candidate reader retains a
+numeric-PID constructor for old offline tests only; it cannot be enabled by
+this owner mount. The Registry listener separately checks a live kernel
+pidfd, reader UID/GID and 02710/0660 socket access; cross-namespace PID=0
+never grants access without those checks. Kernel 6.9+, 64-bit and explicit
+SO_PEERPIDFD support are required; no compatibility fallback is allowed.
+
+The source-only experiment and owner-reported test do **not** establish that
+an owner verified and sealed the service process identity, or that a source
+controller is installed. The current owner Check/Apply controller must still
+explicitly review the added immutable Registry mount allowlist under
+UC-GW-005. Until that, `E1.3b HOST_NOT_ACCEPTED`, `E1.4 NOT_LIVE` and
+no machine grant or Registry WRITE. Future E2–E5 remain separately gated in
+the **single** Registry roadmap, not here.
+
+### E1.3b owner observation + two-volume admission source follow-up
+### E1.3b rollback-safe owner observation and protected two-volume admission (WIP)
+
+The owner-only `registry/owner_candidate_pidfd_observation.py` measures a
+**separately owner-selected** process from Docker inspect/top and a verified
+container-local PID, correlating its kernel pidfd with the actual Unix peer.
+This produces **no** owner acceptance, credential or release seal. An
+unexpected process/group/capability, wrong source/UID, stale socket or
+kernel mismatch is STOP. Owner correlation to exact accepted Docker image,
+source, namespace and container remains a required independent host gate.
+
+Two fixed mount DESTINATIONS are admitted into Gateway: readonly
+`/run/r7-registry-reader` and readonly `/run/fortis-registry-read`.
+The Registry-only socket source volume is fixed `fortis-registry-read`; the
+**immutable profile SOURCE volume** is exact
+`fortis-r7-registry-reader-<releaseNonce-without-dashes>` where the owner
+release nonce is lowercase canonical v4. This per-release source volume
+prevents overwriting an older Gateway's owner profile during future
+Check/Apply/Return; the Registry private SQLite volume is never shared.
+`github_pilot_helpers.admit()` rejects partial/RW/host/unknown mounts,
+nonce–profile mismatch, shared/host PID and new privileged capabilities.
+
+**Unmerged source-only Windows owner Check/Apply:** an explicit manual
+`-EnableRegistryMount -RegistryReleaseNonce` path now binds nonce, source
+image, configuration, read-only profile digest and both volume identities to
+one protected checked-image record. It independently runs a source-image
+preflight against the owner-sealed profile and live kernel socket peer before
+old Gateway state can be stopped; `Admit` repeats checks for previous source
+and new candidate. Ordinary `-Auto` remains Registry-disabled, while a
+Registry-configured provider without its reviewed mount is STOP. The old
+merged controller installed on Windows is not claimed updated. No Registry
+process is enrolled or activated merely by Python source acceptance; owner
+must validate true profile/source provenance and use the existing
+UC-GW-005 acceptance/rollback gates. Source code remains unmerged.
+
+**No host GO:** there is no accepted real owner profile, protected Windows
+SelfTest, actual Docker image build, independent Repo EACCES, private SQLite
+backup/restore, live E1.4 route or passkey. E1.4–E5 remain gated by the
+single E0–E5 roadmap, not this source addendum.

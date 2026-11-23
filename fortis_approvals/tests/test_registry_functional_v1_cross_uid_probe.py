@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 from fortis_approvals.core import Denied, canonical, loads_strict
+from fortis_approvals.integrations.registry.owner_pinned_pidfd import _boot_id
 from fortis_approvals.registry.state_journal import _hash
 from fortis_approvals.tests import test_registry_local_candidate_read_service as fixture
 
@@ -37,17 +38,23 @@ class FunctionalV1CrossUidProbeTests(unittest.TestCase):
     suffix=fixture.LocalCandidateReadServiceTests.suffix
     setup_service=fixture.LocalCandidateReadServiceTests.setup_service
 
+    def self_pidfd_inode(self):
+        fd=os.pidfd_open(os.getpid())
+        try:return os.fstat(fd).st_ino
+        finally:os.close(fd)
+
     def profile(self):
         # Synthetic future host IDs. Tests do not impersonate these UIDs.
         uid=os.geteuid()
         return {
-            'schemaVersion':1,
+            'schemaVersion':2,
             'format':probe._FORMAT,
             'ownerUid':uid,
             'registryUid':uid+10,'registryGid':os.getegid()+10,
             'readerUid':uid+20,'readerGid':os.getegid()+20,
             'repoUid':uid+30,'repoGid':os.getegid()+30,
-            'serverPid':os.getpid(),
+            'serverPidfdInode':self.self_pidfd_inode(),
+            'kernelBootId':_boot_id(),
             'socketDev':1,'socketInode':2,
             'instanceId':self.instance,
             'scopeDigest':_hash(self.scope),
@@ -89,7 +96,8 @@ class FunctionalV1CrossUidProbeTests(unittest.TestCase):
             {'repoGid':value['readerGid']},
             {'ownerUid':value['registryUid']},
             {'schemaVersion':True},
-            {'serverPid':1},
+            {'serverPidfdInode':0},
+            {'kernelBootId':'00000000-0000-0000-0000-000000000000'},
             {'socketInode':0},
             {'runtimeActivationAllowed':True},
             {'socketPath':str(self.path.parent/'read.sock')},
@@ -177,7 +185,7 @@ class FunctionalV1CrossUidProbeTests(unittest.TestCase):
             answer=probe._reader_socket(local)
             self.assertEqual(answer['localRevisionCandidate'],1)
             self.assertEqual(answer['serverUid'],os.getuid())
-            self.assertEqual(answer['serverPid'],os.getpid())
+            self.assertEqual(answer['serverPidfdInode'],self.self_pidfd_inode())
             self.assertEqual(answer['stateAuthority'],
                              'LOCAL_EVENT_CHAIN_ONLY')
             with self.assertRaisesRegex(Denied,'IDENTITY_CONFLICT'):
@@ -217,7 +225,7 @@ class FunctionalV1CrossUidProbeTests(unittest.TestCase):
             local.update(
                 registryUid=os.getuid(),registryGid=os.getgid(),
                 readerGid=os.getgid(),readerUid=os.getuid(),
-                serverPid=os.getpid()+123,
+                serverPidfdInode=self.self_pidfd_inode()+123,
                 socketDev=info.st_dev,socketInode=info.st_ino,
                 socketPath=str(self.socketpath))
             with self.assertRaisesRegex(Denied,'SERVER_PRINCIPAL_MISMATCH'):
@@ -261,7 +269,8 @@ class FunctionalV1CrossUidProbeTests(unittest.TestCase):
                    'effectiveCapabilities':0}
         denials={'registryParentRead':'EACCES','registryDbRead':'EACCES',
                  'registryDbReadWrite':'EPERM'}
-        endpoint={'serverPid':value['serverPid'],
+        endpoint={'serverPidfdInode':value['serverPidfdInode'],
+                  'kernelBootId':value['kernelBootId'],
                   'serverUid':value['registryUid'],
                   'serverGid':value['registryGid'],
                   'socketDev':value['socketDev'],

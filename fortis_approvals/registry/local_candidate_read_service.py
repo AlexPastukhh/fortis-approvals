@@ -18,6 +18,7 @@ import struct
 import sys
 
 from ..core import Denied, Stale, canonical, loads_strict
+from ..integrations.registry.owner_pinned_pidfd import kernel_live_peer
 from .functional_v1_journal import FunctionalV1CandidateJournal
 from .state_journal import _hash, _need, _scope, _uuid, PLANNER
 
@@ -122,21 +123,23 @@ def _request(value, store):
     return op, params
 
 
-def _real_peer(connection):
-    _need(isinstance(connection, socket.socket)
-          and connection.family == socket.AF_UNIX
-          and (connection.type & 0xf) == socket.SOCK_STREAM
-          and hasattr(socket, 'SO_PEERCRED'),
-          'REGISTRY_PRIVATE_READ_UNIX_REQUIRED')
+def _real_peer(connection, *, reader_uid, reader_gid):
+    """Existing socket ACL + exact UID/GID, now require live kernel pidfd.
+
+    A legitimate Gateway in another PID namespace has SO_PEERCRED pid=0.
+    No caller-supplied process identifier or fallback to UID/GID alone is
+    accepted. Registry does not owner-pin the future Gateway process at
+    listener startup; its independent owner approval is still Core/Portal.
+    """
     try:
-        raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                    struct.calcsize('3i'))
-        pid, uid, gid = struct.unpack('3i', raw)
-    except (OSError, struct.error):
-        raise Denied('REGISTRY_PRIVATE_READ_PEER_UNAVAILABLE') from None
-    _need(pid > 1 and uid > 0 and gid > 0,
-          'REGISTRY_PRIVATE_READ_PEER_DENIED')
-    return pid, uid, gid
+        return kernel_live_peer(
+            connection, expected_uid=reader_uid, expected_gid=reader_gid)
+    except Denied as exc:
+        if str(exc) == 'REGISTRY_PIDFD_CREDENTIALS_DENIED':
+            # Preserve the accepted private Registry transport's exact
+            # unauthorized UID/GID error contract.
+            raise Denied('REGISTRY_PRIVATE_READ_PEER_DENIED') from None
+        raise
 
 
 class PrivateCandidateReadService:
@@ -234,8 +237,9 @@ class PrivateCandidateReadService:
         before = self._check_endpoint()
         _need(connection.getsockname() == str(self._path),
               'REGISTRY_PRIVATE_READ_WRONG_SOCKET')
-        peer = _real_peer(connection)
-        _need(peer[1:] == (self._uid, self._gid),
+        peer = _real_peer(connection, reader_uid=self._uid,
+                          reader_gid=self._gid)
+        _need(peer[1:3] == (self._uid, self._gid),
               'REGISTRY_PRIVATE_READ_PEER_DENIED')
         request = _canonical_frame(connection)
         op, params = _request(request, self._store)
@@ -259,7 +263,8 @@ class PrivateCandidateReadService:
         _need(self._head() == head,
               'REGISTRY_PRIVATE_READ_STATE_CHANGED')
         _need(self._check_endpoint() == before
-              and _real_peer(connection) == peer,
+              and _real_peer(connection, reader_uid=self._uid,
+                             reader_gid=self._gid) == peer,
               'REGISTRY_PRIVATE_READ_BINDING_CHANGED')
         envelope = {
             'schemaVersion': 1, 'result': 'SOURCE_ONLY_CANDIDATE_READ',

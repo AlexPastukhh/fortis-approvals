@@ -929,6 +929,29 @@ def admit(container, expected, *, pilot):
     if machine_volume:
         require(pilot, 'PILOT_MACHINE_POWERSHELL_REQUIRES_PROTECTED_RELEASE')
         desired.add(('volume', machine_volume, '/run/fortis-machine-powershell', False))
+    # E1.3b protected Registry source: two DISTINCT readonly mounts.
+    # The activation profile MUST be versioned by the exact owner release
+    # nonce. A mutable *shared* profile volume would break old-image rollback:
+    # the previously admitted Gateway's immutable nonce/source pin must stay
+    # available when a new Gateway release is checked. The AF_UNIX volume is
+    # stable across those releases, but never includes Registry SQLite.
+    reg_nonce = expected.get('registryReleaseNonce', '')
+    reg_profile = expected.get('registryReaderVolume', '')
+    reg_socket = expected.get('registrySocketVolume', '')
+    require(type(reg_nonce) is str and
+            (reg_nonce == '' or bool(re.fullmatch(
+                r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                reg_nonce))) and
+            type(reg_profile) is str and type(reg_socket) is str and
+            bool(reg_profile) == bool(reg_socket) == bool(reg_nonce) and
+            reg_socket in ('', 'fortis-registry-read') and
+            reg_profile == (('fortis-r7-registry-reader-' +
+                             reg_nonce.replace('-', '')) if reg_nonce else ''),
+            'PILOT_REGISTRY_VOLUME_PAIR_DENIED')
+    if reg_profile:
+        require(pilot, 'PILOT_REGISTRY_REQUIRES_PROTECTED_RELEASE')
+        desired.add(('volume', reg_profile, '/run/r7-registry-reader', False))
+        desired.add(('volume', reg_socket, '/run/fortis-registry-read', False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')

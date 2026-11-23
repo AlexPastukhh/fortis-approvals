@@ -30,13 +30,14 @@ class RegistryTrustedMountTests(unittest.TestCase):
         self.nonce = str(uuid.uuid4())
         self.source = 'a'*64
         self.profile = {
-            'schemaVersion': 1, 'enabled': True,
+            'schemaVersion': 2, 'enabled': True,
             'purpose': 'registry-candidate-read-v1',
             'releaseNonce': self.nonce, 'gatewaySourceDigest': self.source,
             'instanceId': str(uuid.uuid4()), 'scopeDigest': 'b'*64,
             'socketPath': '/run/fortis-registry-read/reader.sock',
             'registryUid': os.geteuid()+11, 'registryGid': os.getegid()+12,
-            'registryPid': 233, 'readerUid': os.geteuid(),
+            'registryPidfdInode': 233, 'registryKernelBootId': mount._boot_id(),
+            'readerUid': os.geteuid(),
             'readerGid': os.getegid(), 'socketDevice': 55,
             'socketInode': 66,
         }
@@ -69,9 +70,74 @@ class RegistryTrustedMountTests(unittest.TestCase):
         reader=self.load()
         self.assertIs(type(reader),GatewayRegistryUnixCandidateRead)
         self.assertEqual(str(reader._path),self.profile['socketPath'])
-        self.assertEqual(reader._registry,(233,os.geteuid()+11,os.getegid()+12))
+        self.assertEqual(reader._registry,(0,os.geteuid()+11,os.getegid()+12))
+        self.assertEqual(reader._owner_pidfd,(233,mount._boot_id()))
         self.assertEqual(reader._reader,(os.geteuid(),os.getegid()))
         self.assertEqual(reader._endpoint,(55,66))
+
+    def test_real_kernel_pidfd_owner_mode_rejects_wrong_process(self):
+        # One-UID source-only fixture: kernel pidfd is real but owner seal is
+        # synthetic. Cross-UID/cross-namespace admission is an owner host gate.
+        from fortis_approvals.integrations.registry.owner_pinned_pidfd import _boot_id
+        import socket
+        fd=os.pidfd_open(os.getpid())
+        try:
+            actual_inode=os.fstat(fd).st_ino
+        finally:
+            os.close(fd)
+        with patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_identity', return_value=None):
+            reader=GatewayRegistryUnixCandidateRead(
+                socket_path='/run/fortis-registry-read/reader.sock',
+                instance_id=self.profile['instanceId'],scope_digest='b'*64,
+                registry_uid=os.geteuid(), registry_gid=os.getegid(),
+                registry_pidfd_inode=actual_inode,
+                registry_boot_id=_boot_id(),
+                reader_uid=os.geteuid()+11,reader_gid=os.getegid()+12,
+                socket_device=55,socket_inode=66)
+        self.assertEqual(reader._owner_pidfd,(actual_inode,_boot_id()))
+        left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+        try:
+            self.assertEqual(reader._peer(left),
+                             (os.geteuid(),os.getegid(),actual_inode))
+            reader._owner_pidfd=(actual_inode+1,_boot_id())
+            with self.assertRaisesRegex(Denied,'REGISTRY_PIDFD_PROCESS_NOT_PINNED'):
+                reader._peer(left)
+        finally:
+            left.close();right.close()
+        # Owner-mode may NOT be silently combined with numeric PID fallback.
+        with patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_identity',return_value=None):
+            with self.assertRaisesRegex(Denied,'CONFIG_DENIED'):
+                GatewayRegistryUnixCandidateRead(
+                    socket_path='/run/fortis-registry-read/reader.sock',
+                    instance_id=self.profile['instanceId'],scope_digest='b'*64,
+                    registry_uid=os.geteuid(),registry_gid=os.getegid(),
+                    registry_pid=1,registry_pidfd_inode=actual_inode,
+                    registry_boot_id=_boot_id(), reader_uid=os.geteuid()+11,
+                    reader_gid=os.getegid()+12,socket_device=55,socket_inode=66)
+
+    def test_reviewed_registry_mount_digest_fails_closed_without_peer_and_source(self):
+        from hashlib import sha256
+        if os.geteuid() == 0:
+            self.skipTest('Root cannot load Registry owner profile')
+        with patch.object(mount, '_check_owner_readonly_mount',return_value=None), \
+             patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_identity',return_value=None), \
+             patch.object(GatewayRegistryUnixCandidateRead,
+                          '_check_socket',return_value=(55,66)):
+            with self.assertRaisesRegex(Denied,'MOUNT_PEER_UNAVAILABLE'):
+                mount.reviewed_registry_reader_mount_digest(
+                    root=self.root,expected_release_nonce=self.nonce,
+                    expected_source_digest=self.source)
+            with self.assertRaisesRegex(Denied,'MOUNT_PROFILE_DENIED'):
+                mount.reviewed_registry_reader_mount_digest(
+                    root=self.root,expected_release_nonce=str(uuid.uuid4()),
+                    expected_source_digest=self.source)
+        with self.assertRaisesRegex(Denied,'MOUNT_NOT_ENABLED'):
+            mount.reviewed_registry_reader_mount_digest(
+                root=self.root/'absent', expected_release_nonce=self.nonce,
+                expected_source_digest=self.source)
 
     def test_exact_mountinfo_parser_requires_single_ro_mount_point(self):
         path=os.fsencode(self.root)
@@ -107,6 +173,9 @@ class RegistryTrustedMountTests(unittest.TestCase):
         if os.geteuid()==0:self.skipTest('Root cannot load Registry mount')
         for change in (
             {'enabled':False}, {'schemaVersion':True},
+            {'schemaVersion':1}, {'registryPid':233},
+            {'registryPidfdInode':0},
+            {'registryKernelBootId':'00000000-0000-0000-0000-000000000000'},
             {'releaseNonce':str(uuid.uuid4())},
             {'gatewaySourceDigest':'z'*64},
             {'purpose':'registry-writer-v1'},
