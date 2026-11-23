@@ -66,6 +66,11 @@ class RegistryOwnerVolumeContractSourceTests(unittest.TestCase):
         self.assertIn('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_', launcher)
         self.assertIn('volume-nocopy', launcher)
         self.assertNotIn("'volume','create'", launcher)
+        catalog = (ROOT / 'release' / 'targets.yaml').read_text(encoding='utf-8')
+        self.assertIn('  - fortis_approvals/registry/owner_volume_contract.py', catalog)
+        dockerfile = (ROOT / 'fortis_approvals' / 'deploy' /
+                      'Dockerfile-Registry-Read-Candidate').read_text(encoding='utf-8')
+        self.assertNotIn('owner_volume_contract.py', dockerfile)
 
     def test_owner_provisioning_contract_is_explicitly_unapproved(self):
         body = RUNBOOK.read_text(encoding='utf-8')
