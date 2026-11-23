@@ -42,7 +42,7 @@ schema-3 SQLite/config core. The separately reviewed Windows
 `fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1` **source candidate**
 provides a narrow owner-only CLI to invoke this core. It is not a Docker
 volume creation/chown tool: **no approved owner volume/ownership provisioner
-is supplied**. Host setup remains UNKNOWN until UC-CONT-021/022/025,
+is supplied**. A [source-only private-volume plan and future provisioner contract](RELEASE-REGISTRY-OWNER-VOLUMES.md) now fixes candidate names, Linux ownership and fail-closed requirements, but **no executable host preparer or owner GO is granted by this document**. Host setup remains UNKNOWN until UC-CONT-021/022/025,
 independent real UID/GID mappings and actual owner host evidence are completed.
 Never run either bootstrap entrypoint directly in the existing Gateway or Repo
 containers.
