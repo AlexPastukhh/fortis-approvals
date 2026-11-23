@@ -127,7 +127,7 @@ class GatewayRegistryUnixCandidateRead:
               and not stat.S_ISLNK(folder.st_mode)
               and folder.st_uid == self._registry[1]
               and folder.st_gid == self._reader[1]
-              and stat.S_IMODE(folder.st_mode) == 0o710
+              and stat.S_IMODE(folder.st_mode) == 0o2710
               and stat.S_ISSOCK(row.st_mode) and row.st_nlink == 1
               and row.st_uid == self._registry[1]
               and row.st_gid == self._reader[1]

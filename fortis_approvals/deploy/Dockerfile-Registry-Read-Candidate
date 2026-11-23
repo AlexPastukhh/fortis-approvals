@@ -1,0 +1,30 @@
+# E1.3 SOURCE-ONLY. This image is NOT approved for build, host activation,
+# owner grant, CD, or Production; acceptance requires a separate owner GO.
+# Dedicated Registry READ process: no TLS/HTTP/API exposure, no SQLite WRITE.
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /opt/fortis
+ARG REGISTRY_UID
+ARG REGISTRY_GID
+RUN test -n "$REGISTRY_UID" && test -n "$REGISTRY_GID" && \
+    case "$REGISTRY_UID:$REGISTRY_GID" in *[!0-9:]* | :* | *:) exit 1;; esac && \
+    test "$REGISTRY_UID" -gt 1 && test "$REGISTRY_GID" -gt 1 && \
+    test "$REGISTRY_UID" -ne 10001 && test "$REGISTRY_GID" -ne 10001
+RUN mkdir -p /opt/fortis/fortis_approvals/registry \
+   /opt/fortis/fortis_approvals/integrations/registry
+COPY fortis_approvals/__init__.py fortis_approvals/core.py /opt/fortis/fortis_approvals/
+COPY fortis_approvals/registry/__init__.py fortis_approvals/registry/boundary.py \
+  fortis_approvals/registry/state_journal.py \
+  fortis_approvals/registry/state_journal_v2.py \
+  fortis_approvals/registry/functional_v1_journal.py \
+  fortis_approvals/registry/local_candidate_read_service.py \
+  /opt/fortis/fortis_approvals/registry/
+COPY fortis_approvals/integrations/__init__.py /opt/fortis/fortis_approvals/integrations/
+COPY fortis_approvals/integrations/registry/__init__.py \
+  fortis_approvals/integrations/registry/read_contract.py \
+  /opt/fortis/fortis_approvals/integrations/registry/
+# No default state, credentials, external network listener or Docker socket.
+# Owner must separately provision exact sealed config, schema-3 SQLite,
+# readonly volume and 2710 setgid Unix socket directory (real UID/GID/pins).
+USER ${REGISTRY_UID}:${REGISTRY_GID}
+CMD ["python", "-m", "fortis_approvals.registry.local_candidate_read_service", "--owner-config", "/run/fortis-registry-runtime/profile.json"]

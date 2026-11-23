@@ -179,7 +179,7 @@ def _socket_info(profile):
     except OSError:
         raise Denied('REGISTRY_V1_ACCESS_SOCKET_UNAVAILABLE') from None
     _need(stat.S_ISDIR(directory.st_mode)
-          and stat.S_IMODE(directory.st_mode)==0o710
+          and stat.S_IMODE(directory.st_mode)==0o2710
           and directory.st_uid==profile['registryUid']
           and directory.st_gid==profile['readerGid']
           and stat.S_ISSOCK(entry.st_mode) and entry.st_nlink==1

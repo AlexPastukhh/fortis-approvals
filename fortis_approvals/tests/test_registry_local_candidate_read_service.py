@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
         sock_temp = tempfile.TemporaryDirectory(prefix='fortis-reg-read-')
         self.addCleanup(sock_temp.cleanup)
         self.socketdir = Path(sock_temp.name)
-        self.socketdir.chmod(0o710)
+        self.socketdir.chmod(0o2710)
         self.socketpath = self.socketdir / 'registry-read.sock'
         self.reader_uid = os.geteuid() if reader_uid is None else reader_uid
         self.reader_gid = os.getegid() if reader_gid is None else reader_gid
@@ -130,7 +131,7 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
         self.assertIs(data['liveRegistryAvailable'],False)
         self.assertIs(data['authenticatedCollectorAvailable'],False)
         self.assertIs(data['writeEnabled'],False)
-        self.assertEqual(self.socketdir.stat().st_mode & 0o777,0o710)
+        self.assertEqual(self.socketdir.stat().st_mode & 0o7777,0o2710)
         self.assertEqual(self.state.checkpoint()['localCheckpoint']['revision'],0)
 
     def test_persisted_desired_head_and_original_uuid_over_unix(self):
@@ -248,12 +249,29 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
         self.assertEqual(self.socketpath.read_text(encoding='utf-8'),
                          'do not replace')
 
+    def test_setgid_directory_required_without_privileged_chgrp(self):
+        self.setup_service()
+        self.socketdir.chmod(0o710)
+        with self.assertRaisesRegex(Denied,'SOCKET_DIRECTORY_DENIED'):
+            self.service.bind()
+        self.assertFalse(self.socketpath.exists())
+        self.socketdir.chmod(0o2710)
+        listener=self.service.bind()
+        try:
+            mode=self.socketpath.lstat().st_mode
+            self.assertEqual(stat.S_IMODE(mode),0o660)
+            self.assertEqual(self.socketpath.lstat().st_gid,self.reader_gid)
+        finally:
+            listener.close()
+            self.socketpath.unlink()
+            self.service._endpoint=None
+
     def test_private_directory_required_and_missing_sqlite_fails(self):
         self.setup_service()
         self.socketdir.chmod(0o755)
         with self.assertRaisesRegex(Denied,'SOCKET_DIRECTORY_DENIED'):
             self.service.bind()
-        self.socketdir.chmod(0o710)
+        self.socketdir.chmod(0o2710)
         self.path.rename(self.path.with_name('removed.sqlite'))
         with self.assertRaises(Denied):
             server.PrivateCandidateReadService(
