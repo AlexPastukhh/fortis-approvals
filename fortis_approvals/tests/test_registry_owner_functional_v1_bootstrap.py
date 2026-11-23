@@ -67,6 +67,17 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         patcher = patch.object(boot, '_runtime_confinement', return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Source fixture identity must also be independent of the GitHub
+        # runner's supplementary groups. No live credential bypass is added:
+        # _load_spec() still enforces the exact UID/GID/groups contract.
+        for fn, result in (
+            ('getresuid', (self.uid,) * 3),
+            ('getresgid', (self.gid,) * 3),
+            ('getgroups', []),
+        ):
+            patcher = patch.object(boot.os, fn, return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.write_spec()
 
     def write_spec(self):
@@ -148,6 +159,23 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         self.spec_path.chmod(0o644)
         with self.assertRaisesRegex(Denied, 'FILE_INVALID'):
             self.run_action('Preview')
+
+    def test_spec_accepts_only_registry_primary_supplementary_group(self):
+        with patch.object(boot.os, 'getgroups', return_value=[self.gid]):
+            result = self.run_action('Preview')
+            self.assertEqual(result['result'],
+                             'SOURCE_ONLY_REGISTRY_BOOTSTRAP_PREVIEW')
+
+    def test_spec_rejects_unexpected_supplementary_groups(self):
+        with patch.object(boot.os, 'getgroups', return_value=[self.gid, 1234567]):
+            with self.assertRaisesRegex(Denied, 'IDENTITY_DENIED'):
+                self.run_action('Preview')
+
+    def test_spec_rejects_inconsistent_real_uid_tuple(self):
+        with patch.object(boot.os, 'getresuid',
+                          return_value=(self.uid, self.uid + 1, self.uid)):
+            with self.assertRaisesRegex(Denied, 'IDENTITY_DENIED'):
+                self.run_action('Preview')
 
     def test_verify_fails_closed_on_config_tamper(self):
         self.run_action('Provision', self.digest)
