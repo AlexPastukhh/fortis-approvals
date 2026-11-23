@@ -4,13 +4,13 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from fortis_approvals.registry.owner_volume_contract import (
+from scripts.registry_owner_volume_contract import (
     PrivateVolumeRoot, plan_private_volume_roots,
 )
 from fortis_approvals.registry import owner_functional_v1_bootstrap as boot
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / 'fortis_approvals' / 'registry' / 'owner_volume_contract.py'
+SOURCE = ROOT / 'scripts' / 'registry_owner_volume_contract.py'
 LAUNCHER = ROOT / 'fortis_approvals' / 'deploy' / 'Registry-Owner-Bootstrap.ps1'
 RUNBOOK = ROOT / 'docs' / 'RELEASE-REGISTRY-OWNER-VOLUMES.md'
 
@@ -67,10 +67,11 @@ class RegistryOwnerVolumeContractSourceTests(unittest.TestCase):
         self.assertIn('volume-nocopy', launcher)
         self.assertNotIn("'volume','create'", launcher)
         catalog = (ROOT / 'release' / 'targets.yaml').read_text(encoding='utf-8')
-        self.assertIn('  - fortis_approvals/registry/owner_volume_contract.py', catalog)
+        self.assertIn('  - scripts/**', catalog)
+        self.assertNotIn('  - scripts/registry_owner_volume_contract.py', catalog)
         dockerfile = (ROOT / 'fortis_approvals' / 'deploy' /
                       'Dockerfile-Registry-Read-Candidate').read_text(encoding='utf-8')
-        self.assertNotIn('owner_volume_contract.py', dockerfile)
+        self.assertNotIn('registry_owner_volume_contract.py', dockerfile)
 
     def test_owner_provisioning_contract_is_explicitly_unapproved(self):
         body = RUNBOOK.read_text(encoding='utf-8')

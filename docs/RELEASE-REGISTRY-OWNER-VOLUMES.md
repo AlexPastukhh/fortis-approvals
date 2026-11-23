@@ -13,7 +13,7 @@ UC-CONT-025** before each proposed host effect; UNCERTAIN is STOP, not retry.
 
 ## Pure source plan (zero Docker operations)
 
-`fortis_approvals.registry.owner_volume_contract.plan_private_volume_roots(owner_suffix)`
+`scripts.registry_owner_volume_contract.plan_private_volume_roots(owner_suffix)`
 validates an independently **owner-selected** 8–32 character lowercase hex
 suffix. It returns immutable expected roots, nothing else. It does not choose
 instance ID, scope, release nonce, base provenance, Linux UID map or host.
