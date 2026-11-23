@@ -149,6 +149,7 @@ tests=(
   test_registry_extension_provider_fit.py
   test_registry_owner_policy_crypto.py
   test_r7_registry_reader_mount.py
+  test_registry_owner_pinned_pidfd.py
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
   test_registry_functional_v1_journal.py

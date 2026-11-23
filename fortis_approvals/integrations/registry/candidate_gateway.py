@@ -13,6 +13,7 @@ import stat
 import struct
 
 from ...core import Denied, canonical, loads_strict
+from .owner_pinned_pidfd import owner_pinned_peer
 from .read_contract import (
     REPOSITORY, _CANDIDATE_FLAGS, _uuid, _hex,
     validate_gateway_read_query, validate_gateway_read_projection,
@@ -37,8 +38,9 @@ class GatewayRegistryUnixCandidateRead:
     """Reader-identity-pinned client of an *already running* private socket."""
 
     def __init__(self, *, socket_path, instance_id, scope_digest,
-                 registry_uid, registry_gid, registry_pid,
-                 reader_uid, reader_gid, socket_device, socket_inode):
+                 registry_uid, registry_gid, registry_pid=None,
+                 reader_uid, reader_gid, socket_device, socket_inode,
+                 registry_pidfd_inode=None, registry_boot_id=None):
         _need(type(socket_path) is str and socket_path.startswith('/')
               and len(os.fsencode(socket_path)) <= 103
               and not socket_path.endswith('/') and '//' not in socket_path
@@ -46,20 +48,33 @@ class GatewayRegistryUnixCandidateRead:
               and all(part not in ('', '.', '..') for part in
                       socket_path.split('/')[1:]),
               'REGISTRY_CANDIDATE_CONFIG_DENIED')
+        # Numeric PID is retained ONLY for legacy source-only offline
+        # diagnostic construction. The owner R7 trusted mount uses strictly
+        # boot-scoped pidfd process identity and cannot select this fallback.
+        legacy = (type(registry_pid) is int and 0 < registry_pid < 2**31
+                  and registry_pidfd_inode is None and registry_boot_id is None)
+        owner_pidfd = (registry_pid is None
+                       and type(registry_pidfd_inode) is int
+                       and 0 < registry_pidfd_inode < 2**64
+                       and _uuid(registry_boot_id))
         _need(_uuid(instance_id) and _hex(scope_digest, 64)
               and all(type(v) is int and 0 < v < 2**31
-                      for v in (registry_uid, registry_gid, registry_pid,
+                      for v in (registry_uid, registry_gid,
                                 reader_uid, reader_gid))
               and all(type(v) is int and v > 0
                       for v in (socket_device, socket_inode))
               and reader_uid != registry_uid and
               reader_gid != registry_gid
+              and (legacy or owner_pidfd)
               and hasattr(socket, 'SO_PEERCRED'),
               'REGISTRY_CANDIDATE_CONFIG_DENIED')
         self._path = Path(socket_path)
         self._instance = instance_id
         self._scope = scope_digest
-        self._registry = (registry_pid, registry_uid, registry_gid)
+        self._registry = (registry_pid if legacy else 0,
+                          registry_uid, registry_gid)
+        self._owner_pidfd = ((registry_pidfd_inode, registry_boot_id)
+                             if owner_pidfd else None)
         self._reader = (reader_uid, reader_gid)
         self._endpoint = (socket_device, socket_inode)
         # Host must grant the invoking Gateway reader identity before
@@ -137,6 +152,17 @@ class GatewayRegistryUnixCandidateRead:
         return self._endpoint
 
     def _peer(self, sock):
+        if self._owner_pidfd is not None:
+            # Owner R7 always pins the exact kernel process against the
+            # immutable release mount. PID 0 across namespaces is not a
+            # bypass: the process inode and current boot must match exactly.
+            return owner_pinned_peer(
+                sock, expected_uid=self._registry[1],
+                expected_gid=self._registry[2],
+                expected_pidfd_inode=self._owner_pidfd[0],
+                expected_boot_id=self._owner_pidfd[1])
+        # Legacy *offline diagnostic* constructor only. R7 owner mount v2
+        # never selects numeric PID; there is no fallback on pidfd errors.
         try:
             peer = struct.unpack('3i', sock.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED,

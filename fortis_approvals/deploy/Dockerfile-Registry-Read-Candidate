@@ -21,6 +21,7 @@ COPY fortis_approvals/registry/__init__.py fortis_approvals/registry/boundary.py
   /opt/fortis/fortis_approvals/registry/
 COPY fortis_approvals/integrations/__init__.py /opt/fortis/fortis_approvals/integrations/
 COPY fortis_approvals/integrations/registry/__init__.py \
+  fortis_approvals/integrations/registry/owner_pinned_pidfd.py \
   fortis_approvals/integrations/registry/read_contract.py \
   /opt/fortis/fortis_approvals/integrations/registry/
 # No default state, credentials, external network listener or Docker socket.

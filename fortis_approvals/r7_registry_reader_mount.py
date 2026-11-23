@@ -12,6 +12,7 @@ import uuid
 
 from .core import Denied, canonical, loads_strict
 from .integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
+from .integrations.registry.owner_pinned_pidfd import _boot_id
 
 MOUNT = Path('/run/r7-registry-reader')
 _FILE = 'profile.json'
@@ -19,7 +20,7 @@ _MAX_BYTES = 2048
 _FIELDS = frozenset({
     'schemaVersion', 'enabled', 'purpose', 'releaseNonce',
     'gatewaySourceDigest', 'instanceId', 'scopeDigest', 'socketPath',
-    'registryUid', 'registryGid', 'registryPid',
+    'registryUid', 'registryGid', 'registryPidfdInode', 'registryKernelBootId',
     'readerUid', 'readerGid', 'socketDevice', 'socketInode',
 })
 
@@ -110,7 +111,7 @@ def load_owner_registry_reader(*, expected_release_nonce,
         if (type(value) is not dict or set(value) != _FIELDS
                 or canonical(value).encode('utf-8') != raw
                 or type(value['schemaVersion']) is not int
-                or value['schemaVersion'] != 1
+                or value['schemaVersion'] != 2
                 or value['enabled'] is not True
                 or value['purpose'] != 'registry-candidate-read-v1'
                 or not _uuid(value['releaseNonce'])
@@ -118,7 +119,11 @@ def load_owner_registry_reader(*, expected_release_nonce,
                 or not _hex(value['gatewaySourceDigest'])
                 or value['gatewaySourceDigest'] != expected_source_digest
                 or not _uuid(value['instanceId'])
-                or not _hex(value['scopeDigest'])):
+                or not _hex(value['scopeDigest'])
+                or type(value['registryPidfdInode']) is not int
+                or not (0 < value['registryPidfdInode'] < 2**64)
+                or not _uuid(value['registryKernelBootId'])
+                or value['registryKernelBootId'] != _boot_id()):
             _stop('PROFILE_DENIED')
         # Reader validates exact real credentials and Linux pinned AF_UNIX
         # owner/permission/device/inode; a configured but absent listener STOP.
@@ -126,9 +131,10 @@ def load_owner_registry_reader(*, expected_release_nonce,
             socket_path=value['socketPath'],
             instance_id=value['instanceId'], scope_digest=value['scopeDigest'],
             registry_uid=value['registryUid'], registry_gid=value['registryGid'],
-            registry_pid=value['registryPid'], reader_uid=value['readerUid'],
-            reader_gid=value['readerGid'], socket_device=value['socketDevice'],
-            socket_inode=value['socketInode'])
+            registry_pidfd_inode=value['registryPidfdInode'],
+            registry_boot_id=value['registryKernelBootId'],
+            reader_uid=value['readerUid'], reader_gid=value['readerGid'],
+            socket_device=value['socketDevice'], socket_inode=value['socketInode'])
         reader._check_socket()
         # Verify our mounted identity and current source still match. This is
         # NOT a substitute for the independent owner-host mount/UID audit.

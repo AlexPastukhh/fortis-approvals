@@ -40,12 +40,14 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   reader UID, with root directory `0700`, **one** regular `profile.json`
   file `0600`, no symlinks and no unexpected entries. It is **not** selected
   from an environment variable, Repo params, an integration call, or AI.
-- Gateway profile is strict canonical JSON with fields `schemaVersion=1`,
+- Gateway profile is strict canonical JSON **schemaVersion=2** with fields,
   `enabled=true`, `purpose="registry-candidate-read-v1"`,
   `releaseNonce` (one owner-reviewed UUID matching the current release),
   `gatewaySourceDigest` (the exact installed R7 source manifest digest),
   `instanceId`, `scopeDigest`, `socketPath`, `registryUid`, `registryGid`,
-  `registryPid`, `readerUid`, `readerGid`, `socketDevice`, `socketInode`.
+  `registryPidfdInode`, `registryKernelBootId`, `readerUid`, `readerGid`,
+  `socketDevice`, `socketInode`. The legacy numeric `registryPid` field is
+  **not accepted** in the owner R7 mount v2.
   Owner re-derives and checks **all** pins against running processes and the
   exact mounted endpoint. Do not copy illustrative numbers or override a
   failed pin merely to make a pilot appear healthy.
@@ -66,20 +68,47 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   `chown` or `CAP_CHOWN`. Verify exactly the same socket `device:inode`
   and permissions from both process mount views; no symlink, stale socket,
   directory under Registry DB, or Repo-accessible bind is allowed.
-- **PID namespace acceptance is mandatory:** `SO_PEERCRED` in the Gateway
-  reader's namespace must return the exact pinned Registry PID/UID/GID,
-  including after restart/rebind. Separate Docker PID namespaces can yield
-  a PID that is not the host PID (or not representable at all). Record the
-  *observed peer identity in the Gateway namespace*. If it cannot be pinned
-  without broadening host privileges or weakening the check, **STOP** and
-  review topology; do not permit `pid=0`, compare to a fabricated PID, or
-  silently switch to shared PID/host namespaces.
+- **PID namespace acceptance is mandatory:** FORTIS_M owner's isolated
+  sandbox confirmed distinct Docker PID namespaces yield `SO_PEERCRED pid=0`
+  but support Linux `SO_PEERPIDFD` (optname `77`) with real kernel process
+  identity, verified by independently opened pidfds from both processes.
+  **Current v2 *source candidate* requires Linux 64-bit pidfs (kernel 6.9+),
+  the real peer UID/GID from `SO_PEERCRED`, a live kernel pidfd, and exact
+  pidfd inode + current `/proc/sys/kernel/random/boot_id` from the
+  immutable owner-sealed Gateway mount. `pid=0` is acceptable **only** when
+  the independent owner process pin and all other checks match**; it is not
+  a fallback to UID/GID alone or to claimed process values. The Registry
+  listener checks the Gateway's kernel UID/GID and live pidfd with its exact
+  socket ACL without relying on a numeric cross-namespace PID. A pidfd
+  obtained from the peer and compared to the peer's *own statement* is not
+  owner admission. After a process exit, Registry restart/rebind or kernel
+  reboot, stale boot/process/socket pins must STOP; the owner independently
+  re-provisions the seal and uses the existing guarded release procedure.
+  Keep separate PID namespaces; do NOT use `--pid=host`, `--pid=container:*`,
+  process-identity fallbacks, or new capabilities.
+- **The existing installed Gateway release controller does NOT automatically
+  accept this new Registry mount.** Source `github_pilot_helpers.admit()`
+  requires an empty `PidMode` and an exact mount allowlist; existing
+  `Manage-Integrations.ps1` has no authorized Registry mount entry. Owner
+  must independently approve the precise added **readonly Registry volume**
+  and versioned protected Check/Apply/Backup/Promote source prior to building
+  or releasing this image. A source/test PASS is not installation or GO.
+- **Trusted process pin origin:** after starting an isolated owner-accepted
+  Registry listener, an independently vetted owner-side Linux kernel
+  observation must identify its exact process, current pidfs inode and boot
+  UUID, correlate to reviewed Docker container/image UID/GID and socket
+  device/inode, then seal the exact v2 Gateway mount **read-only** before
+  Gateway startup. Do not source the pin from Registry JSON/response,
+  untrusted Repo data or process self-report. The way Windows operator
+  obtains this trusted kernel observation on Docker Desktop remains a
+  separately reviewed host step; do not invent host namespace access.
 
 ## Required independent evidence for accepting E1.3
 
 Owner must record: exact source/image digests; real distinct effective and
 mapped host UIDs/GIDs and supplementary groups; actual mount namespace,
-PID, `SO_PEERCRED`, socket mode/device/inode; OS-enforced Repo denial on both
+PID namespaces, live `SO_PEERPIDFD` and owner-pinned boot/inode,
+`SO_PEERCRED` UID/GID, socket mode/device/inode; OS-enforced Repo denial on both
 private socket and SQLite with `EACCES`/`EPERM` (**not** ENOENT or a mocked
 same-UID test); no Docker socket/host-admin/secrets; startup refuses
 unbound/wrong nonce/source digest/peer/replaced inode; restart readback of an
