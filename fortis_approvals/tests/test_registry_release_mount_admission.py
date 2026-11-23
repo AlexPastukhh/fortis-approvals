@@ -1,7 +1,7 @@
 """E1.3b SOURCE-ONLY: exact Gateway pilot admission of two Registry mounts.
 
-The owner Check/Apply script is deliberately NOT yet granted a Registry
-activation flag. This tests Python admission only, not host approval or GO.
+Owner Check/Apply uses an explicit opt-in. These tests cover source gates only,
+not PowerShell 5.1 or independent owner Docker/host acceptance.
 """
 from pathlib import Path
 import unittest
@@ -168,6 +168,46 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('target=/run/fortis-registry-read,readonly',create)
         self.assertNotIn("'--pid'",create)
         self.assertNotIn("'--privileged'",create)
+
+    def test_owner_preseal_digest_is_image_only_and_checked_again(self):
+        self.assertIn("'RegistrySourceDigest'", _PS.splitlines()[3])
+        digest=_PS.split('function Image-Registry-Source-Digest {',1)[1].split(
+            'function Image-RegistryMount-Preflight {',1)[0]
+        self.assertIn('_installed_policy_source_digest',digest)
+        for guard in ("'--pull=never'", "'--network','none'", "'--read-only'",
+                      "'--user','10001:10001'", "'--cap-drop','ALL'",
+                      "'no-new-privileges:true'"):
+            self.assertIn(guard,digest)
+        for forbidden in ('--mount','vault','--env-file','volume create'):
+            self.assertNotIn(forbidden,digest)
+        self.assertIn("$Action -eq 'RegistrySourceDigest'",_PS)
+        self.assertIn("throw 'RELEASE_REGISTRY_DIGEST_ARGUMENTS_INVALID'",_PS)
+        self.assertIn("imageId=$script:Image;gatewaySourceDigest=$Digest",_PS)
+        self.assertIn("$RegistryExpectedSourceDigest -cnotmatch '^[0-9a-f]{64}$'",_PS)
+        self.assertIn("$script:RegistryGatewaySourceDigest -cne $RegistryExpectedSourceDigest",_PS)
+        self.assertIn('registryGatewaySourceDigest=$script:RegistryGatewaySourceDigest',_PS)
+        self.assertIn("throw 'RELEASE_REGISTRY_SOURCE_DIGEST_MISMATCH'",_PS)
+        self.assertIn("$ImageInfo.Config.Labels.'org.opencontainers.image.revision' -cne $SourceSha",_PS)
+
+    def test_nonce_history_and_pre_stop_return_gate(self):
+        history=_PS.split('function Assert-Registry-Nonce-Fresh {',1)[1].split(
+            'function Image-Registry-Source-Digest {',1)[0]
+        self.assertIn('Assert-DirectoryAcl $ReleaseBase',history)
+        self.assertIn('Get-ChildItem -LiteralPath $ReleaseBase -Directory -Force',history)
+        self.assertIn("'fortis-extension-image-check-v1'",history)
+        self.assertIn("'fortis-extension-release-v1'",history)
+        self.assertIn('Read-Private $RecordPath',history)
+        self.assertIn('AllowedCheckRecord',history)
+        self.assertIn('RELEASE_REGISTRY_NONCE_REUSE_DENIED',history)
+        self.assertIn('RELEASE_REGISTRY_HISTORY_RECORD_INVALID',history)
+        self.assertIn('Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce',_PS)
+        rollback=_PS.split('function Return-Source {',1)[1].split(
+            'function Complete-ActionCoreNetwork {',1)[0]
+        pre=rollback.index('Admit $Original $script:R.source.runtime')
+        stop=rollback.index("Docker-Text @('stop','--timeout','20',$C.Id)")
+        self.assertLess(pre,stop)
+        self.assertLess(rollback.index('Assert-SourceUnchanged'),stop)
+        self.assertIn('Admit $Old $script:R.source.runtime',rollback[stop:])
 
     def test_protected_runtime_record_validator_rejects_bad_source(self):
         validator=_PS.split('function Read-RegistryMountBinding {',1)[1].split(

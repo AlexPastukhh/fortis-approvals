@@ -40,17 +40,15 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   reader UID, with root directory `0700`, **one** regular `profile.json`
   file `0600`, no symlinks and no unexpected entries. It is **not** selected
   from an environment variable, Repo params, an integration call, or AI.
-- Gateway profile is strict canonical JSON **schemaVersion=2** with fields,
-  `enabled=true`, `purpose="registry-candidate-read-v1"`,
-  `releaseNonce` (one owner-reviewed UUID matching the current release),
-  `gatewaySourceDigest` (the exact installed R7 source manifest digest),
-  `instanceId`, `scopeDigest`, `socketPath`, `registryUid`, `registryGid`,
-  `registryPidfdInode`, `registryKernelBootId`, `readerUid`, `readerGid`,
-  `socketDevice`, `socketInode`. The legacy numeric `registryPid` field is
-  **not accepted** in the owner R7 mount v2.
-  Owner re-derives and checks **all** pins against running processes and the
-  exact mounted endpoint. Do not copy illustrative numbers or override a
-  failed pin merely to make a pilot appear healthy.
+- Gateway reader profile is strict canonical JSON **schemaVersion=2** with
+  `enabled=true`, `purpose="registry-candidate-read-v1"`, `releaseNonce`,
+  `gatewaySourceDigest`, `instanceId`, `scopeDigest`, `socketPath`,
+  `registryUid`, `registryGid`, `registryPidfdInode`, `registryKernelBootId`,
+  `readerUid`, `readerGid`, `socketDevice`, `socketInode`. The Registry process
+  may be in a separate PID namespace: `SO_PEERCRED` **PID=0** is permissible
+  only when independent owner kernel pidfd/boot/UID/GID/socket pins match;
+  PID alone is not the identity. A synthetic inode or Registry-reported
+  identity is not independent proof. No shared PID namespace is required.
 - Registry source: `Dockerfile-Registry-Read-Candidate` executes only
   `fortis_approvals.registry.local_candidate_read_service --owner-config
   /run/fortis-registry-runtime/profile.json` as the separately selected
@@ -68,97 +66,64 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
   `chown` or `CAP_CHOWN`. Verify exactly the same socket `device:inode`
   and permissions from both process mount views; no symlink, stale socket,
   directory under Registry DB, or Repo-accessible bind is allowed.
-- **PID namespace acceptance is mandatory:** FORTIS_M owner's isolated
-  sandbox confirmed distinct Docker PID namespaces yield `SO_PEERCRED pid=0`
-  but support Linux `SO_PEERPIDFD` (optname `77`) with real kernel process
-  identity, verified by independently opened pidfds from both processes.
-  **Current v2 *source candidate* requires Linux 64-bit pidfs (kernel 6.9+),
-  the real peer UID/GID from `SO_PEERCRED`, a live kernel pidfd, and exact
-  pidfd inode + current `/proc/sys/kernel/random/boot_id` from the
-  immutable owner-sealed Gateway mount. `pid=0` is acceptable **only** when
-  the independent owner process pin and all other checks match**; it is not
-  a fallback to UID/GID alone or to claimed process values. The Registry
-  listener checks the Gateway's kernel UID/GID and live pidfd with its exact
-  socket ACL without relying on a numeric cross-namespace PID. A pidfd
-  obtained from the peer and compared to the peer's *own statement* is not
-  owner admission. After a process exit, Registry restart/rebind or kernel
-  reboot, stale boot/process/socket pins must STOP; the owner independently
-  re-provisions the seal and uses the existing guarded release procedure.
-  Keep separate PID namespaces; do NOT use `--pid=host`, `--pid=container:*`,
-  process-identity fallbacks, or new capabilities.
-- **Two separate Registry volumes, with rollback-safe profile versioning:**
-  the Gateway's mount DESTINATIONS are always `/run/r7-registry-reader`
-  (owner seal, read-only) and `/run/fortis-registry-read` (Unix socket
-  directory, read-only in Gateway; writable ONLY by the separately reviewed
-  Registry process). The socket source volume name is fixed:
-  `fortis-registry-read`. Each immutable Gateway owner-profile SOURCE volume
-  is **unique for that release**:
-  `fortis-r7-registry-reader-<32 lowercase UUIDv4 hex digits>`, where the
-  digits are the exact protected owner-selected `releaseNonce` without
-  dashes. **Never rewrite or reuse an earlier release's sealed profile**:
-  source Gateway admission and protected Return/Backup/Promote must still
-  have the previous nonce/image/source/profile digest for readback and
-  recovery. Only exact readonly Docker `type=volume` mounts are accepted,
-  not arbitrary bind/paths; SQLite is never mounted into Gateway/Repo.
-- **The unmerged E1.3b Windows owner controller SOURCE** adds explicit
-  `-EnableRegistryMount -RegistryReleaseNonce <canonical UUIDv4>` to manual
-  owner `Check -Build` and `Apply -CheckedImageRecord` only; these options
-  require exact source SHA, owner-confirmed quiescence, original protected
-  release and image binding. **`-Auto` cannot activate Registry.** The owner
-  first independently builds/reviews the source image and calculates the
-  exact installed R7 Python/static source digest, starts/inspects the
-  non-Production Registry listener, then seals the exact new profile for that
-  nonce **before** running protected `Check`. `Check` rebuilds from its
-  pinned accepted source and verifies the seal matches the actual image.
-  `Apply` must reuse the same checked-image ID, SHA, config, nonce, volume,
-  immutable profile SHA256 and live process/socket identity, or **STOP
-  before stopping old Gateway**. This manual source path has not yet passed
-  Windows PowerShell 5.1 SelfTest nor owner Go; no deployment is authorized.
-- **Owner-side read-only process observation (source-only tool):** after the
-  Registry pilot is separately approved and launched, the owner first
-  confirms exact Docker container/image/namespace/source and service command
-  via **independent Docker inspect/top**. Docker Engine host PID is **not**
-  necessarily the numeric PID visible **inside the Registry container**;
-  the owner must independently map/inspect `/proc` in that selected container
-  before supplying its *container-local* Python listener PID, without asking
-  the Registry listener to assert its own PID. The reviewed candidate image
-  includes `fortis_approvals.registry.owner_candidate_pidfd_observation` as
-  an **owner-invoked, one-shot** diagnostic: requires exact selected PID,
-  real Registry UID/GID and reader GID, validates live process pidfd,
-  `/proc` security/command, the 02710/0660 socket endpoint and its actual
-  kernel `SO_PEERPIDFD` connection; checks stable PID start ticks, boot ID,
-  process inode and socket inode. It reads no SQLite, sends no READ request,
-  and creates no credentials/volumes/processes; its connection may be counted
-  or rejected by the Registry listener. **Owner must review its invocation
-  and compare its raw result against Docker Engine's independent container
-  image/UID/namespace/mount readback.** The result intentionally reports
-  `ownerAcceptanceVerified=false`, `profileSealed=false`,
-  `releaseAdmitted=false` and cannot auto-create or authorize the v2 profile.
-  Neither a same-UID test nor this tool alone proves the owner attestation.
-- **Nonce and release controller acceptance:** the merged/main Windows
-  controller still uses a fresh random nonce for normal non-Registry
-  releases and has **no installed Registry activation**. Unmerged E1.3b
-  source instead uses the *owner-chosen*, pinned canonical v4 nonce **only**
-  with `-EnableRegistryMount`; stores this nonce and profile digest in the
-  protected checked-image record; and creates a candidate with that exact
-  nonce and two readonly mounts. Its owner preflight verifies the actual
-  live kernel pidfd against the reviewed source-image digest via
-  `reviewed_registry_reader_mount_digest()` in an isolated, non-networked,
-  non-privileged Python process (no image pull, no credentials/host grants).
-  `Admit` rechecks the old/source and new/candidate profile digest and peer
-  against the protected recorded nonce/source on existing Check/Apply/Return
-  boundaries. Registry provider and activation mount must be both present
-  or both absent. Manual host readiness, Windows SelfTest and rollback
-  proof are **separate gates**, not consequences of source tests.
-- **Trusted process pin origin:** after starting an isolated owner-accepted
-  Registry listener, an independently vetted owner-side Linux kernel
-  observation must identify its exact process, current pidfs inode and boot
-  UUID, correlate to reviewed Docker container/image UID/GID and socket
-  device/inode, then seal the exact v2 Gateway mount **read-only** before
-  Gateway startup. Do not source the pin from Registry JSON/response,
-  untrusted Repo data or process self-report. The way Windows operator
-  obtains this trusted kernel observation on Docker Desktop remains a
-  separately reviewed host step; do not invent host namespace access.
+- **PID namespace acceptance is mandatory:** use real kernel
+  `SO_PEERPIDFD` together with `SO_PEERCRED` UID/GID, the independently
+  owner-opened live pidfd inode and the pinned kernel boot ID; confirm process
+  liveness and same socket device/inode across mount views. Separate Docker PID
+  namespaces may yield `SO_PEERCRED pid=0`; this is **not** permission to omit
+  peer authentication or accept a self-reported Registry PID. Kernel rejection,
+  stale pidfd, changed boot, mapped UID/GID mismatch or socket replacement:
+  STOP. Do not broaden capabilities or switch to shared host PID namespace.
+
+## Owner pre-seal source digest and release/rollback order (E1.3b candidate)
+
+1. After **owner merge**, exact-SHA CI and guarded Windows source update,
+   review the clean Windows `main` and full 40-character `SourceSha`. The
+   source-only controller action `-Action RegistrySourceDigest -Build
+   -SourceSha <reviewed-main-sha>` builds a Gateway image using the existing
+   owner source/archive mechanism and performs **network-none, no-mount,
+   no-secret offline readback** of the actual installed Python/static manifest.
+   Review the returned `schema`, `sourceSha`, immutable `imageId` and
+   `gatewaySourceDigest`; the digest is **not** Git SHA, image ID or
+   `MODULARIZED-SOURCE-MANIFEST.sha256`. The build creates a local Docker image,
+   not a running service; do not issue this owner command without separate GO.
+2. Before sealing a new Registry profile, independently cross-check the owner
+   source SHA/image revision and this readback against the accepted source.
+   Seal exactly the returned `gatewaySourceDigest`, a fresh UUIDv4 release
+   nonce and all independently measured live Registry/reader/socket pins into
+   an owner-managed per-nonce profile volume. Do not let the Registry process,
+   Repo, AI or Gateway generate/rewrite the owner seal. Review actual UID/GID,
+   mount source/RO, writer inventory and owner volume persistence.
+3. The existing **manual** `Check -Build -EnableRegistryMount
+   -RegistryReleaseNonce <same-uuid> -RegistryExpectedSourceDigest <readback>
+   -SourceSha <reviewed-main-sha>` (with other required reviewed arguments)
+   rebuilds exact accepted source, recomputes the installed digest, checks the
+   sealed profile and live peer, then saves a protected binding to the **actual
+   Check image ID**, source SHA, nonce, both volumes and both digests. The
+   pre-seal build and protected Check build can have distinct image IDs;
+   their common source SHA and installed digest must match. `Apply` uses the
+   protected `CheckedImageRecord`, **without Build**, and repeats these checks
+   with the same reviewed expected digest and nonce; no implicit `-Auto`.
+4. Retain **all** prior image IDs, state volumes, profile volumes, nonces,
+   protected Check/attempt records, backup and original UUID scopes. The
+   controller checks every retained owner release/check record for nonce
+   reuse, not only the immediately previous release. Never delete the old
+   profile during the new release. Any unavailable/inconsistent history is
+   STOP, not proof of nonce freshness. Verify no unauthorized RW writer;
+   `Check` or CI does not prove persistent host retention.
+5. For `Return`, the existing protected original attempt is the only recovery
+   authority. Controller re-admits the old image, protected state and old
+   profile/live pidfd/boot/socket **before stopping** the current candidate,
+   then rechecks after stop. If old Registry peer/profile is stale or the
+   socket has been rebound, STOP; an owner must review recovery, not reseal
+   automatically or blindly replay `Apply`. Preserve the original UNCERTAIN
+   protected attempt. Follow UC-GW-006; missing previous image is not a
+   routine exemption (UC-GW-013 requires independent owner review).
+
+These are **source candidate instructions**, not passed Windows SelfTest or
+host evidence. The owner must still prove actual image/UID/GID provenance,
+mounts/RO and writers, Repo EACCES/EPERM, schema-3 SQLite backup/inactive
+restore, exact Check/Apply/Backup/Promote and host acceptance.
 
 ## Required independent evidence for accepting E1.3
 
