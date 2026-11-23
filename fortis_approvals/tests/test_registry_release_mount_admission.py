@@ -194,12 +194,22 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
             'function Image-Registry-Source-Digest {',1)[0]
         self.assertIn('Assert-DirectoryAcl $ReleaseBase',history)
         self.assertIn('Get-ChildItem -LiteralPath $ReleaseBase -Directory -Force',history)
-        self.assertIn("'fortis-extension-image-check-v1'",history)
-        self.assertIn("'fortis-extension-release-v1'",history)
         self.assertIn('Read-Private $RecordPath',history)
         self.assertIn('AllowedCheckRecord',history)
-        self.assertIn('RELEASE_REGISTRY_NONCE_REUSE_DENIED',history)
-        self.assertIn('RELEASE_REGISTRY_HISTORY_RECORD_INVALID',history)
+        self.assertIn('RELEASE_REGISTRY_HISTORY_RECORD_MISSING',history)
+        self.assertIn('RELEASE_REGISTRY_HISTORY_REPARSE_DENIED',history)
+        self.assertIn('Test-Path -LiteralPath $RecordPath -PathType Leaf',history)
+        self.assertIn('Assert-Registry-HistoryRecord -Record $Record',history)
+        self.assertNotIn("if(-not (Test-Path -LiteralPath $RecordPath)){continue}",history)
+        validator=_PS.split('function Assert-Registry-HistoryRecord {',1)[1].split(
+            'function Assert-Registry-Nonce-Fresh {',1)[0]
+        self.assertIn("RELEASE_REGISTRY_NONCE_REUSE_DENIED",validator)
+        self.assertIn("RELEASE_REGISTRY_HISTORY_RECORD_INVALID",validator)
+        self.assertIn("$Record.schema -ceq 'fortis-extension-image-check-v1'",validator)
+        self.assertIn("$Record.schema -ceq 'fortis-extension-release-v1'",validator)
+        self.assertIn("AllowOriginalCheck",validator)
+        self.assertIn("function Assert-Registry-HistoryRecord",_PS)
+        self.assertIn("RELEASE_REGISTRY_NONCE_HISTORY_SELFTEST_FAILED",_PS)
         self.assertIn('Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce',_PS)
         rollback=_PS.split('function Return-Source {',1)[1].split(
             'function Complete-ActionCoreNetwork {',1)[0]
