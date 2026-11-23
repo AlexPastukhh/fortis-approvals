@@ -109,8 +109,14 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
    controller checks every retained owner release/check record for nonce
    reuse, not only the immediately previous release. Never delete the old
    profile during the new release. Any unavailable/inconsistent history is
-   STOP, not proof of nonce freshness. Verify no unauthorized RW writer;
-   `Check` or CI does not prove persistent host retention.
+   STOP, not proof of nonce freshness. A missing `record.json` in a retained
+   protected image-check/release directory, malformed historical identity or
+   directory reparse point must STOP before Check/Apply; never delete the
+   directory or rewrite the protected original to make a nonce appear fresh.
+   The controller's PowerShell 5.1 SelfTest exercises malformed/reused nonce
+   cases without Docker effects, but does not prove real owner history.
+   Verify no unauthorized RW writer; `Check` or CI does not prove persistent
+   host retention.
 5. For `Return`, the existing protected original attempt is the only recovery
    authority. Controller re-admits the old image, protected state and old
    profile/live pidfd/boot/socket **before stopping** the current candidate,

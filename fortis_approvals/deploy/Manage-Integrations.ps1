@@ -1367,8 +1367,49 @@ function Read-RegistryMountBinding {
         releaseNonce=$Nonce;profileDigest=$Digest}
 }
 
-# Read the actual installed Python/static manifest from an exact immutable image.
-# No mount, vault, network, grant, Registry process or protected release record.
+# Offline validation of protected owner record identity; the only exception
+# is the original exact Check record for this Apply, never a release record.
+function Assert-Registry-HistoryRecord {
+    param($Record,[string]$Nonce,[bool]$AllowOriginalCheck=$false)
+    if($null -eq $Record -or
+       $Nonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){
+        throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+    }
+    # ConvertFrom-Json returns PSObjects and owner SelfTest uses StrictMode
+    # Latest; absent optional legacy nonce must not throw a property exception.
+    $SchemaField=$Record.PSObject.Properties['schema']
+    if($null -eq $SchemaField){throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'}
+    $Schema=$SchemaField.Value
+    $Seen=''
+    if($Schema -ceq 'fortis-extension-image-check-v1'){
+        $PhaseField=$Record.PSObject.Properties['phase']
+        $BindingField=$Record.PSObject.Properties['binding']
+        if($null -eq $PhaseField -or $PhaseField.Value -cne 'Ready' -or
+           $null -eq $BindingField -or $null -eq $BindingField.Value){
+            throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+        }
+        $NonceField=$BindingField.Value.PSObject.Properties['registryReleaseNonce']
+        if($null -ne $NonceField){$Seen=$NonceField.Value}
+    } elseif($Schema -ceq 'fortis-extension-release-v1'){
+        $RuntimeField=$Record.PSObject.Properties['runtime']
+        if($null -eq $RuntimeField -or $null -eq $RuntimeField.Value){
+            throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+        }
+        $NonceField=$RuntimeField.Value.PSObject.Properties['registryReleaseNonce']
+        if($null -ne $NonceField){$Seen=$NonceField.Value}
+    } else {
+        throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+    }
+    if($null -eq $Seen){$Seen=''}
+    if($Seen -isnot [string] -or ($Seen -cne '' -and
+       $Seen -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')){
+        throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+    }
+    if($Seen -ceq $Nonce -and -not ($AllowOriginalCheck -and
+       $Schema -ceq 'fortis-extension-image-check-v1')){
+        throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'
+    }
+}
 # Do not silently recycle a nonce from any retained owner release/check.
 # In Apply, the one original protected Check record may mention the nonce;
 # every OTHER historical owner record is a conflict. Missing/invalid private
@@ -1379,23 +1420,20 @@ function Assert-Registry-Nonce-Fresh {
     $Rows=@(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Force)
     if($Rows.Count -gt 4096){throw 'RELEASE_REGISTRY_HISTORY_TOO_LARGE'}
     foreach($Entry in $Rows){
+        # Owner records cannot be silently hidden by directory links, missing
+        # record files, or an unrecognized protected record structure.
+        if($Entry.Attributes -band [IO.FileAttributes]::ReparsePoint){
+            throw 'RELEASE_REGISTRY_HISTORY_REPARSE_DENIED'
+        }
         if($Entry.Name -cnotmatch '^(?:[0-9a-f]{32}|image-check-[0-9a-f]{32})$'){continue}
         $RecordPath=Join-Path $Entry.FullName 'record.json'
-        if(-not (Test-Path -LiteralPath $RecordPath)){continue}
-        $Record=Read-Private $RecordPath
-        $Seen=''
-        if($Record.schema -ceq 'fortis-extension-image-check-v1'){
-            $Seen=[string]$Record.binding.registryReleaseNonce
-            if($Seen -ceq $Nonce -and $AllowedCheckRecord -and
-               [IO.Path]::GetFullPath($RecordPath) -ceq [IO.Path]::GetFullPath($AllowedCheckRecord)){
-                continue
-            }
-        } elseif($Record.schema -ceq 'fortis-extension-release-v1'){
-            $Seen=[string]$Record.runtime.registryReleaseNonce
-        } else {
-            throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+        if(-not (Test-Path -LiteralPath $RecordPath -PathType Leaf)){
+            throw 'RELEASE_REGISTRY_HISTORY_RECORD_MISSING'
         }
-        if($Seen -ceq $Nonce){throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'}
+        $Record=Read-Private $RecordPath
+        $SameOriginalCheck=($AllowedCheckRecord -and
+            [IO.Path]::GetFullPath($RecordPath) -ceq [IO.Path]::GetFullPath($AllowedCheckRecord))
+        Assert-Registry-HistoryRecord -Record $Record -Nonce $Nonce -AllowOriginalCheck ([bool]$SameOriginalCheck)
     }
 }
 function Image-Registry-Source-Digest {
@@ -2299,6 +2337,24 @@ if($Action -eq 'SelfTest'){
        $RegistryForwarded -cnotcontains ('a'*64) -or
        $RegistryForwarded -cnotcontains $RegistryNonce){
         throw 'RELEASE_REGISTRY_FLAG_FORWARDING_SELFTEST_FAILED'
+    }
+    # Pure PowerShell 5.1 negative cases: exercise the real history validator,
+    # not a Python grep of controller source; no Docker or owner record effects.
+    $HistoryCheck=('{"schema":"fortis-extension-image-check-v1","phase":"Ready","binding":{"registryReleaseNonce":"'+$RegistryNonce+'"}}')|ConvertFrom-Json
+    $HistoryRelease=('{"schema":"fortis-extension-release-v1","runtime":{"registryReleaseNonce":"'+$RegistryNonce+'"}}')|ConvertFrom-Json
+    Assert-Registry-HistoryRecord -Record $HistoryCheck -Nonce $RegistryNonce -AllowOriginalCheck $true
+    Assert-Registry-HistoryRecord -Record ('{"schema":"fortis-extension-release-v1","runtime":{}}'|ConvertFrom-Json) -Nonce $RegistryNonce
+    foreach($Case in @(
+        @{record=$HistoryCheck;allow=$false;code='RELEASE_REGISTRY_NONCE_REUSE_DENIED'},
+        @{record=$HistoryRelease;allow=$true;code='RELEASE_REGISTRY_NONCE_REUSE_DENIED'},
+        @{record=('{"schema":"fortis-extension-image-check-v1","phase":"Ready"}'|ConvertFrom-Json);allow=$true;code='RELEASE_REGISTRY_HISTORY_RECORD_INVALID'},
+        @{record=('{"schema":"fortis-extension-image-check-v1","phase":"Ready","binding":{"registryReleaseNonce":"not-a-nonce"}}'|ConvertFrom-Json);allow=$true;code='RELEASE_REGISTRY_HISTORY_RECORD_INVALID'},
+        @{record=('{"schema":"fortis-unknown","runtime":{}}'|ConvertFrom-Json);allow=$false;code='RELEASE_REGISTRY_HISTORY_RECORD_INVALID'}
+    )){
+        $HistoryRejected=$false
+        try{Assert-Registry-HistoryRecord -Record $Case.record -Nonce $RegistryNonce -AllowOriginalCheck ([bool]$Case.allow)}
+        catch{if($_.Exception.Message -cne $Case.code){throw};$HistoryRejected=$true}
+        if(-not $HistoryRejected){throw 'RELEASE_REGISTRY_NONCE_HISTORY_SELFTEST_FAILED'}
     }
     $MachineOld='{"schema":1}'|ConvertFrom-Json
     $MachineGood=('{"machinePowerShellVolume":"fortis-r7-machine-powershell","machinePowerShellDigest":"'+('a'*64)+'"}')|ConvertFrom-Json
