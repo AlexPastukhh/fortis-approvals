@@ -155,6 +155,8 @@ tests=(
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
   test_registry_functional_v1_journal.py
+  test_registry_owner_functional_v1_bootstrap.py
+  test_registry_owner_windows_launcher_source.py
   test_registry_source_composition.py
   test_registry_original_two_merges.py
   test_registry_local_candidate_read_service.py
