@@ -57,7 +57,7 @@ class OwnerVolumeWindowsReadOnlySourceTests(unittest.TestCase):
                        "'^[0-9a-f]{8,32}$'", 'REGISTRY_VOLUME_NAME_ALREADY_RESERVED',
                        'EXISTING_CONTAINER_REGISTRY_MOUNT_CONFLICT',
                        'TARGET_VOLUME_ATTACHED',
-                       "@('ps','-aq','--no-trunc')", 
+                       "@('ps','-aq','--no-trunc')",
                        "@('volume','ls','--format','{{.Name}}')"):
             self.assertIn(marker,s)
         self.assertIn('scripts/**', CATALOG.read_text(encoding='utf-8'))
