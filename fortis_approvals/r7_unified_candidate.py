@@ -161,9 +161,16 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     if (machine_shell is not None and
             machine_shell.actor != grants[ingress_grant]):
         raise Denied('MACHINE_POWERSHELL_ACTOR_SCOPE_DENIED')
-    # E1 source-only composition. The normal server passes None; no read
-    # policy, machine principal, broker grant or Registry WRITE is created.
-    # A future owner-reviewed host must provide the already-bound reader.
+    # Registry source packaging alone does not activate it: the reviewed
+    # extension requires the host-owned Unix reader before any Core state.
+    from .extensions.runtime import ExtensionConfig
+    extension_registry = (type(extensions) is ExtensionConfig and
+                          'registry' in extensions.value['providers'])
+    if extension_registry and (registry_candidate_reader is None or
+                               extension_providers is not None):
+        # Registry is image-discovered only, not a test/user-selected
+        # provider object that could bypass the packaged executable.
+        raise Denied('R7_REGISTRY_EXTENSION_TRUSTED_BINDING_REQUIRED')
     if registry_candidate_reader is not None:
         from .integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
         if type(registry_candidate_reader) is not GatewayRegistryUnixCandidateRead:
@@ -240,7 +247,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         core,actor_operations=broker_actions,
         actor_read_operations=broker_reads,read_adapter=reader,
         read_adapters=({'registry':registry_candidate_reader}
-                       if registry_candidate_reader is not None else None))
+                       if registry_candidate_reader is not None
+                       and not extension_registry else None))
     native = None
     if github_pilot is not None:
         if github_pilot.native_worktree:
@@ -267,7 +275,15 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         from .extensions.runtime import ExtensionRuntime
         from .extensions.model import discover
         from .extensions.ingress import ExtensionIngress
-        runtime = ExtensionRuntime(extensions, providers=discover(tuple(extensions.value['providers'])) if extension_providers is None else extension_providers,
+        installed_providers = (discover(tuple(extensions.value['providers']))
+                               if extension_providers is None else extension_providers)
+        if extension_registry:
+            from .integrations.registry.extension import bind_reader
+            installed_providers = tuple(
+                bind_reader(provider, registry_candidate_reader)
+                if provider.name == 'registry' else provider
+                for provider in installed_providers)
+        runtime = ExtensionRuntime(extensions, providers=installed_providers,
             actors=actors, default_actor=grants[ingress_grant], vault=credential_vault).install(core, portal)
         ingress = ExtensionIngress(machine_base, runtime, delegate=ingress)
         portal._extension_runtime = runtime
