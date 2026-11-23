@@ -19,6 +19,7 @@ COPY fortis_approvals/registry/__init__.py fortis_approvals/registry/boundary.py
   fortis_approvals/registry/functional_v1_journal.py \
   fortis_approvals/registry/owner_candidate_pidfd_observation.py \
   fortis_approvals/registry/local_candidate_read_service.py \
+  fortis_approvals/registry/owner_functional_v1_bootstrap.py \
   /opt/fortis/fortis_approvals/registry/
 COPY fortis_approvals/integrations/__init__.py /opt/fortis/fortis_approvals/integrations/
 COPY fortis_approvals/integrations/registry/__init__.py \

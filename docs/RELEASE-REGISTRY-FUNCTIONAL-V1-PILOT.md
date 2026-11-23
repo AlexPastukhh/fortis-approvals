@@ -28,6 +28,50 @@ concerns **HARDENED_REGISTRY_GO**, not this limited, non-authoritative
    seed/restore are **separate owner-reviewed effects**; the listener refuses
    to initialize or migrate a missing DB. Never attach hardened schema-2.
 
+## Owner schema-3 bootstrap core (source-only; no Docker host provisioning)
+
+The separately packaged
+`fortis_approvals.registry.owner_functional_v1_bootstrap` provides three
+**independently invoked** actions in a reviewed, one-shot Registry image:
+`--action Preview`, `--action Provision --expected-spec-sha256 <sha256>`,
+and `--action Verify --expected-spec-sha256 <sha256>`.
+**Provision is a separate owner-approved host write**, not a consequence of
+Preview, source tests, PR merge or image build; the other two actions do not
+install a process, grant or Gateway mount. The Python entrypoint is only the
+schema-3 SQLite/config core. **No approved Windows Docker volume/ownership
+provisioner or launcher is supplied by this module.** Host setup remains
+UNKNOWN until UC-CONT-021/022/025 and the owner-reviewed Docker entrypoint are
+completed. Never run this source-only helper directly in the existing Gateway
+or Repo containers.
+
+Owner independently reviews an exact canonical JSON `spec.json` at
+`/run/fortis-registry-bootstrap/spec.json` (private `0700` directory,
+`0600` file, Registry UID/GID), with *exact* fields `schemaVersion=1`,
+`instanceId` (UUID), `scope` (the complete owner-provenanced P5 scope),
+`registryUid`, `registryGid`, `readerUid`, `readerGid`. A digest returned by
+Preview is **not** independent owner provenance; before Provision the owner
+must verify spec provenance, target host/mounts and exact SHA256. Registry UID
+must match the actual non-root Linux process; reader UID/GID must differ.
+The helper never chooses enrollment/instance/baseline/digest identities.
+
+The fixed intended paths are `/run/fortis-registry-state/registry.sqlite`,
+`/run/fortis-registry-runtime/profile.json` and
+`/run/fortis-registry-read/reader.sock`. Owner provisioning must first create
+**separate** state/config directories owned by Registry UID/GID at `0700`,
+and a socket directory owned by Registry UID and **reader GID** at `02710`.
+On Provision the helper requires an empty config directory, no existing
+SQLite, runtime config or socket, and uses `FunctionalV1CandidateJournal.initialize()`
+with non-overwriting `0600` SQLite creation, then creates one canonical `0600`
+Registry config. It does not bind a socket or launch the Registry service.
+On incomplete or ambiguous Provision it retains partial files for owner
+investigation: **STOP**, never automatically retry, delete or reinitialize.
+Verify checks exact config and schema-3 genesis via an inactive SQLite
+read-only transaction; it is **not** SQLite backup, inactive restore,
+independent identity attestation or host acceptance. Remaining owner steps
+are the independent SQLite backup/restore, runtime/socket ownership, live
+pidfd+boot+inode proof, true Repo `EACCES/EPERM`, sealed nonce/profile and
+manual UC-GW-005 release.
+
 ## Source/runtime wiring to inspect
 
 - Gateway source: `fortis_approvals/r7_unified_server.py` loads
