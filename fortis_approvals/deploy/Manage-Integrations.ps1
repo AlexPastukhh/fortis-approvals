@@ -1375,15 +1375,28 @@ function Assert-Registry-HistoryRecord {
        $Nonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){
         throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
     }
+    # ConvertFrom-Json returns PSObjects and owner SelfTest uses StrictMode
+    # Latest; absent optional legacy nonce must not throw a property exception.
+    $SchemaField=$Record.PSObject.Properties['schema']
+    if($null -eq $SchemaField){throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'}
+    $Schema=$SchemaField.Value
     $Seen=''
-    if($Record.schema -ceq 'fortis-extension-image-check-v1'){
-        if($Record.phase -cne 'Ready' -or $null -eq $Record.binding){
+    if($Schema -ceq 'fortis-extension-image-check-v1'){
+        $PhaseField=$Record.PSObject.Properties['phase']
+        $BindingField=$Record.PSObject.Properties['binding']
+        if($null -eq $PhaseField -or $PhaseField.Value -cne 'Ready' -or
+           $null -eq $BindingField -or $null -eq $BindingField.Value){
             throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
         }
-        $Seen=$Record.binding.registryReleaseNonce
-    } elseif($Record.schema -ceq 'fortis-extension-release-v1'){
-        if($null -eq $Record.runtime){throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'}
-        $Seen=$Record.runtime.registryReleaseNonce
+        $NonceField=$BindingField.Value.PSObject.Properties['registryReleaseNonce']
+        if($null -ne $NonceField){$Seen=$NonceField.Value}
+    } elseif($Schema -ceq 'fortis-extension-release-v1'){
+        $RuntimeField=$Record.PSObject.Properties['runtime']
+        if($null -eq $RuntimeField -or $null -eq $RuntimeField.Value){
+            throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+        }
+        $NonceField=$RuntimeField.Value.PSObject.Properties['registryReleaseNonce']
+        if($null -ne $NonceField){$Seen=$NonceField.Value}
     } else {
         throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
     }
@@ -1393,7 +1406,7 @@ function Assert-Registry-HistoryRecord {
         throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
     }
     if($Seen -ceq $Nonce -and -not ($AllowOriginalCheck -and
-       $Record.schema -ceq 'fortis-extension-image-check-v1')){
+       $Schema -ceq 'fortis-extension-image-check-v1')){
         throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'
     }
 }
