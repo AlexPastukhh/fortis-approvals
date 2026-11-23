@@ -60,6 +60,33 @@ that a volume is created or securely owned. `volume-nocopy` is required.
    `Preview`, schema-3 `Provision`, backup and listener activation each require
    their own later approval and prerequisites. No source PR or Plan is a GO.
 
+## Source-only Windows PowerShell 5.1 metadata preflight
+
+`[scripts/registry_owner_volume_preflight.ps1](../scripts/registry_owner_volume_preflight.ps1)`
+is a **new, uninstalled candidate**, separate from the existing
+`Registry-Owner-Bootstrap.ps1`. Its `-Action Plan` requires no Docker or Git;
+`-Action Inventory` performs **read-only** exact Windows clean-main SHA checks,
+current Docker context and immutable Registry image/source-revision pins,
+exact running Gateway/Repo container ID/image/user/health constraints, named
+volume-name collision checks and stopped/running container mount metadata
+scan. It prints only bounded output; neither raw `docker inspect` JSON nor
+private environment values are displayed. No volume creation, `docker run`,
+`docker exec`, `chown`, `Preview` or `Provision` is called.
+
+This script is a **metadata-first source candidate**, not independent runtime
+permission attestation and not an approved owner-run host operation. Its
+successful marker `E13B_OWNER_VOLUME_METADATA_READONLY_PASS` is followed by
+`E13B_USERNS_GROUPS_OWNERSHIP_WRITER_FENCE_UNKNOWN_STOP_BEFORE_CREATE`:
+not all in-flight Docker operations, rootless/userns translations, Linux
+supplementary group memberships, volume root UID/GID/mode, Docker-VM/Windows ACL,
+or future container writers can be inferred from Docker metadata. No Linux
+volume root inspector and no mutation-capable owner volume-preparer are part
+of this PR. A subsequent source task must independently review those gaps,
+then obtain a **separate owner GO** for any new helper's actual host effects.
+Before execution on Windows the script itself requires owner review, merge,
+guarded source update and exact SHA pins. Static Linux tests are not a
+PowerShell 5.1 runtime check.
+
 ## Required mutation semantics for a future reviewed owner-run helper
 
 - **Fail closed before first write:** exact context, immutable SHA/image,
