@@ -73,6 +73,12 @@ scan. It prints only bounded output; neither raw `docker inspect` JSON nor
 private environment values are displayed. No volume creation, `docker run`,
 `docker exec`, `chown`, `Preview` or `Provision` is called.
 
+The mount inventory explicitly tolerates Docker `bind`/`tmpfs` records
+without `Name` (as seen on Windows PS5.1 with `Set-StrictMode`), but fails
+closed if a `volume` lacks `Name` or if a `bind`/`volume` lacks `Source`.
+An unknown or missing `Type` is STOP; optional property absence must never
+silently override a volume name/source collision.
+
 This script is a **metadata-first source candidate**, not independent runtime
 permission attestation and not an approved owner-run host operation. Its
 successful marker `E13B_OWNER_VOLUME_METADATA_READONLY_PASS` is followed by
