@@ -145,7 +145,14 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
                    bind_host='0.0.0.0', github_pilot=None, analysis_review=None, extensions=None, release_nonce=None,
                    publisher_profile=None, publisher_grant=None,
-                   machine_shell=None):
+                   machine_shell=None, registry_candidate_reader=None):
+    # This trusted Python-only source composition never grants Registry via
+    # another route, even if a caller supplied a reader without the matching
+    # registered image-owned extension. Refuse before creating owner state.
+    extension_registry = (extensions is not None and
+                          'registry' in extensions.value['providers'])
+    if extension_registry != (registry_candidate_reader is not None):
+        raise RuntimeError('R7_REGISTRY_RELEASE_MOUNT_MISMATCH')
     # P1 requires exactly one owner-pinned project; no organization-wide fallback.
     if (type(project_key) is not str or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', project_key)):
@@ -179,6 +186,7 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         project_keys=(project_key,), github_pilot=github_pilot, analysis_review=analysis_review,
         extensions=extensions, publisher_profile=publisher_profile, publisher_grant=publisher_grant,
         machine_shell=machine_shell,github_transport=github_transport,
+        registry_candidate_reader=registry_candidate_reader,
         local_deny_source_opt_in=_owner_release_local_deny(
             extensions, release_nonce, grant, sonar_token),
         unified_policy_source_opt_in=unified)
@@ -265,6 +273,21 @@ def main():
     from .extensions.runtime import ExtensionConfig
     extensions = ExtensionConfig.from_environment(os.environ)
     release_nonce = os.environ.get('FORTIS_RELEASE_NONCE')
+    # Registry is bound solely from an owner-installed immutable fixed mount.
+    # The prior R7 candidate image does not package this new module; when no
+    # Registry is selected and no owner mount exists, do not import it. This
+    # preserves old Sonar-only image startup without weakening Registry STOP.
+    has_registry = (extensions is not None and
+                    'registry' in extensions.value['providers'])
+    registry_candidate_reader = None
+    reader_mount = Path('/run/r7-registry-reader')
+    if has_registry or reader_mount.exists() or reader_mount.is_symlink():
+        from .r7_registry_reader_mount import load_owner_registry_reader
+        registry_candidate_reader = load_owner_registry_reader(
+            expected_release_nonce=release_nonce,
+            expected_source_digest=_installed_policy_source_digest())
+    if has_registry != (registry_candidate_reader is not None):
+        raise RuntimeError('R7_REGISTRY_RELEASE_MOUNT_MISMATCH')
     region=os.environ.get('FORTIS_SONAR_REGION','eu')
     organizations=_organizations(os.environ.get('FORTIS_SONAR_ORGANIZATIONS',''))
     project_key=os.environ.get('FORTIS_SONAR_PROJECT_KEY','')
@@ -288,7 +311,8 @@ def main():
         project_key=project_key, github_pilot=github_pilot, analysis_review=analysis_review,
         extensions=extensions, release_nonce=release_nonce,
         publisher_profile=publisher_profile, publisher_grant=publisher_grant,
-        machine_shell=machine_shell)
+        machine_shell=machine_shell,
+        registry_candidate_reader=registry_candidate_reader)
     try:
         Thread(target=owner.serve_forever,daemon=True,
                name='r7-owner-portal').start()

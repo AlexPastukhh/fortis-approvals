@@ -49,7 +49,7 @@ def _private_socket_dir(path, gid):
         raise Denied('REGISTRY_PRIVATE_READ_SOCKET_DIRECTORY_UNAVAILABLE') from None
     _need(stat.S_ISDIR(row.st_mode) and not stat.S_ISLNK(row.st_mode)
           and row.st_uid == os.geteuid() and row.st_gid == gid
-          and stat.S_IMODE(row.st_mode) == 0o710,
+          and stat.S_IMODE(row.st_mode) == 0o2710,
           'REGISTRY_PRIVATE_READ_SOCKET_DIRECTORY_DENIED')
 
 
@@ -205,7 +205,12 @@ class PrivateCandidateReadService:
             s.bind(str(self._path))
             row = self._path.lstat()
             self._endpoint = (row.st_dev, row.st_ino)
-            os.chown(self._path, -1, self._gid)
+            # A non-root Registry must never need CAP_CHOWN or membership
+            # in the Gateway reader's group. Linux setgid parent directory
+            # (owner Registry UID, group reader GID, mode 2710) forces the
+            # fresh socket to inherit reader GID before listening.
+            _need(row.st_gid == self._gid,
+                  'REGISTRY_PRIVATE_READ_SOCKET_GROUP_NOT_INHERITED')
             os.chmod(self._path, 0o660)
             self._check_endpoint()
             s.listen(8)

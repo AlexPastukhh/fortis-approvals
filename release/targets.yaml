@@ -30,6 +30,7 @@ buildUnits:
       - fortis_approvals/r5_read_server.py
       - fortis_approvals/r7_unified_candidate.py
       - fortis_approvals/r7_unified_server.py
+      - fortis_approvals/r7_registry_reader_mount.py
       - fortis_approvals/a3_server.py
       - fortis_approvals/server.py
       - fortis_approvals/integrations/**
@@ -48,6 +49,24 @@ buildUnits:
       - fortis_approvals/static/**
       - fortis_approvals/deploy/github_pilot_helpers.py
       - fortis_approvals/deploy/image_offline_smoke.py
+  # E1.3 separate non-Production candidate image, not deployment approval.
+  - id: registry-candidate-reader-image
+    artifactType: docker-image
+    recipe: fortis_approvals/deploy/Dockerfile-Registry-Read-Candidate
+    inputs:
+      - fortis_approvals/deploy/Dockerfile-Registry-Read-Candidate
+      - .dockerignore
+      - fortis_approvals/__init__.py
+      - fortis_approvals/core.py
+      - fortis_approvals/registry/__init__.py
+      - fortis_approvals/registry/boundary.py
+      - fortis_approvals/registry/state_journal.py
+      - fortis_approvals/registry/state_journal_v2.py
+      - fortis_approvals/registry/functional_v1_journal.py
+      - fortis_approvals/registry/local_candidate_read_service.py
+      - fortis_approvals/integrations/__init__.py
+      - fortis_approvals/integrations/registry/__init__.py
+      - fortis_approvals/integrations/registry/read_contract.py
   # P3.4 source definition only; no publisher image is built or activated here.
   - id: publisher-runner-image
     artifactType: docker-image
@@ -86,6 +105,18 @@ targets:
       - protected-check-apply
       - live-readback
       - backup-promote
+  - id: fortis-registry-pilot
+    buildUnit: registry-candidate-reader-image
+    deployment:
+      kind: owner-controlled
+      procedure: docs/RELEASE-REGISTRY-FUNCTIONAL-V1-PILOT.md
+      environments: [non-production]
+    verification:
+      - source-ci
+      - pinned-image-source-review
+      - independent-real-uid-gid-peer-host-denial
+      - private-schema3-backup-restore
+      - owner-non-production-host-go
   - id: gateway-owner-controller
     inputs:
       - fortis_approvals/deploy/Manage-Integrations.ps1
@@ -121,13 +152,7 @@ noDeploymentPaths:
   - fortis_approvals/workflow/intents.py
   # Offline P5 separate Registry contract, not packaged into any current
   # runtime. A real Registry image/target needs a separately reviewed catalog.
-  - fortis_approvals/registry/__init__.py
-  - fortis_approvals/registry/boundary.py
-  - fortis_approvals/registry/state_journal.py
-  - fortis_approvals/registry/state_journal_v2.py
-  - fortis_approvals/registry/functional_v1_journal.py
   # Non-Production source-only private AF_UNIX candidate reader; no live image.
-  - fortis_approvals/registry/local_candidate_read_service.py
   - fortis_approvals/registry/recovery_snapshot.py
   - fortis_approvals/registry/checkpoint_cas.py
   - fortis_approvals/registry/recovery_reconcile.py
