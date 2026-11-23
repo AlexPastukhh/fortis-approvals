@@ -1,14 +1,14 @@
 # Windows PowerShell 5.1. Owner-only review controller; tokens never enter argv.
 [CmdletBinding()]
 param(
-    [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest')][string]$Action='Check',
+    [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest','RegistrySourceDigest')][string]$Action='Check',
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CheckedImageRecord='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [string]$EmergencyRescueImage='', [string]$EmergencyRescueArchiveSha256='',
     [switch]$AcceptUnverifiedRestore,
     [ValidateSet('github','sonarcloud')][string]$Service='',
     [switch]$Build, [switch]$Pull, [switch]$EnableDynamicGitHubRepositories, [switch]$EnableOwnerShell,
-    [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableRegistryMount, [string]$RegistryReleaseNonce='', [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
+    [switch]$EnablePublisherMount, [switch]$EnableMachinePowerShell, [switch]$EnableRegistryMount, [string]$RegistryReleaseNonce='', [string]$RegistryExpectedSourceDigest='', [switch]$EnableActionCoreNetwork, [switch]$EnableObservatoryNetwork, [switch]$AllowUncertainGrowth,
     [string]$CiControlRepositories='', [string]$CdReadRepositories='', [string]$PreserveUncertainRequests='',
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto
@@ -1367,6 +1367,60 @@ function Read-RegistryMountBinding {
         releaseNonce=$Nonce;profileDigest=$Digest}
 }
 
+# Read the actual installed Python/static manifest from an exact immutable image.
+# No mount, vault, network, grant, Registry process or protected release record.
+# Do not silently recycle a nonce from any retained owner release/check.
+# In Apply, the one original protected Check record may mention the nonce;
+# every OTHER historical owner record is a conflict. Missing/invalid private
+# record ACLs STOP instead of being interpreted as an empty history.
+function Assert-Registry-Nonce-Fresh {
+    param([string]$Nonce,[string]$AllowedCheckRecord='')
+    Assert-DirectoryAcl $ReleaseBase
+    $Rows=@(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Force)
+    if($Rows.Count -gt 4096){throw 'RELEASE_REGISTRY_HISTORY_TOO_LARGE'}
+    foreach($Entry in $Rows){
+        if($Entry.Name -cnotmatch '^(?:[0-9a-f]{32}|image-check-[0-9a-f]{32})$'){continue}
+        $RecordPath=Join-Path $Entry.FullName 'record.json'
+        if(-not (Test-Path -LiteralPath $RecordPath)){continue}
+        $Record=Read-Private $RecordPath
+        $Seen=''
+        if($Record.schema -ceq 'fortis-extension-image-check-v1'){
+            $Seen=[string]$Record.binding.registryReleaseNonce
+            if($Seen -ceq $Nonce -and $AllowedCheckRecord -and
+               [IO.Path]::GetFullPath($RecordPath) -ceq [IO.Path]::GetFullPath($AllowedCheckRecord)){
+                continue
+            }
+        } elseif($Record.schema -ceq 'fortis-extension-release-v1'){
+            $Seen=[string]$Record.runtime.registryReleaseNonce
+        } else {
+            throw 'RELEASE_REGISTRY_HISTORY_RECORD_INVALID'
+        }
+        if($Seen -ceq $Nonce){throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'}
+    }
+}
+function Image-Registry-Source-Digest {
+    param([string]$ImageId)
+    if($ImageId -cnotmatch '^sha256:[0-9a-f]{64}$'){
+        throw 'RELEASE_REGISTRY_SOURCE_IMAGE_INVALID'
+    }
+    $Code=@'
+import sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+print('FORTIS_REGISTRY_GATEWAY_SOURCE_SHA256=' + _installed_policy_source_digest())
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-source-digest>','exec'))"
+    $Args=@('run','--rm','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL',
+        '--security-opt','no-new-privileges:true','--pids-limit','32','--memory','128m',
+        '--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
+    $Result=Private-Process $Args ''
+    if($Result -cnotmatch '^FORTIS_REGISTRY_GATEWAY_SOURCE_SHA256=([0-9a-f]{64})$'){
+        throw 'RELEASE_REGISTRY_SOURCE_DIGEST_READBACK_FAILED'
+    }
+    return [string]$Matches[1]
+}
 function Image-RegistryMount-Preflight {
     param([string]$ImageId,[string]$ReleaseNonce,[string]$ReaderVolume)
     # Never provision source, identity, nonce, or volume here; a protected
@@ -1510,6 +1564,7 @@ function Checked-Image-Binding {
         registrySocketVolume=$script:RegistrySocketVolume
         registryReleaseNonce=$script:RegistryReleaseNonce
         registryProfileDigest=$script:RegistryProfileDigest
+        registryGatewaySourceDigest=$script:RegistryGatewaySourceDigest
         enableRegistryMount=[bool]$EnableRegistryMount
         emergencyRescueImage=$EmergencyRescueImage
         emergencyRescueArchiveSha256=$EmergencyRescueArchiveSha256.ToUpperInvariant()
@@ -1896,6 +1951,15 @@ function Return-Source {
     if($script:R.phase -ceq 'Complete' -or $script:R.activated){throw 'RELEASE_ACTIVE_RETURN_REQUIRES_REVIEW'}
     Assert-Release-Production
     $P=$script:R.runtime
+    # Fail BEFORE stopping a possibly healthy candidate if the original
+    # Gateway image/profile/peer/boot/socket or protected state is stale.
+    # Recheck after candidate stop as well; no automatic reseal or Apply.
+    $Original=Container $script:R.source.runtime.pilotId
+    Admit $Original $script:R.source.runtime
+    if($Original.State.Status -cnotin @('exited','running')){
+        throw 'RELEASE_SOURCE_STATE_UNKNOWN'
+    }
+    if($Original.State.Status -ceq 'exited'){Assert-SourceUnchanged}
     $Names=(Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n'
     if($Names -ccontains $P.pilotName){
         $C=Container $P.pilotName;Admit-ReturnCandidate $C $P
@@ -2228,9 +2292,11 @@ if($Action -eq 'SelfTest'){
         catch{if($_.Exception.Message -cne 'RELEASE_REGISTRY_RECORD_INVALID'){throw};$Rejected=$true}
         if(-not $Rejected){throw 'RELEASE_REGISTRY_RECORD_SELFTEST_FAILED'}
     }
-    $RegistryForwarded=@(Forward-NativeParameters @{EnableRegistryMount=([switch]$true);RegistryReleaseNonce=$RegistryNonce})
+    $RegistryForwarded=@(Forward-NativeParameters @{EnableRegistryMount=([switch]$true);RegistryReleaseNonce=$RegistryNonce;RegistryExpectedSourceDigest=('a'*64)})
     if($RegistryForwarded -cnotcontains '-EnableRegistryMount' -or
        $RegistryForwarded -cnotcontains '-RegistryReleaseNonce' -or
+       $RegistryForwarded -cnotcontains '-RegistryExpectedSourceDigest' -or
+       $RegistryForwarded -cnotcontains ('a'*64) -or
        $RegistryForwarded -cnotcontains $RegistryNonce){
         throw 'RELEASE_REGISTRY_FLAG_FORWARDING_SELFTEST_FAILED'
     }
@@ -2304,7 +2370,7 @@ if($Auto){
         $ConfirmWorkerQuiescent -or $EmergencyRescueImage -or
         $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
         $VaultVolume -cne 'fortis-review-secrets' -or $EnablePublisherMount -or $EnableMachinePowerShell -or
-        $EnableRegistryMount -or $RegistryReleaseNonce){
+        $EnableRegistryMount -or $RegistryReleaseNonce -or $RegistryExpectedSourceDigest){
         throw 'RELEASE_AUTO_MANUAL_ARGUMENTS_DENIED'
     }
     if($Action -cin @('Check','Apply')){
@@ -2561,11 +2627,12 @@ if($EnableRegistryMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
     $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $AttemptRecord -or $CurrentRecord -or
     -not $ConfirmWorkerQuiescent -or
     $RegistryReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+    $RegistryExpectedSourceDigest -cnotmatch '^[0-9a-f]{64}$' -or
     ($Action -eq 'Check' -and -not $Build) -or
     ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))){
     throw 'RELEASE_REGISTRY_REQUIRES_OWNER_CHECKED_IMAGE_AND_NONCE'
 }
-if(-not $EnableRegistryMount -and $RegistryReleaseNonce){
+if(-not $EnableRegistryMount -and ($RegistryReleaseNonce -or $RegistryExpectedSourceDigest)){
     throw 'RELEASE_REGISTRY_NONCE_WITHOUT_EXPLICIT_ACTIVATION'
 }
 if($CiControlRepositories -and ($CiControlRepositories -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(,[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,19}$' -or
@@ -2601,8 +2668,23 @@ if($PreserveClaimedJobs){
 if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Promote')){
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
-if($Build -and ($Action -cnotin @('Apply','Check') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
-if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $EnableRegistryMount -or $RegistryReleaseNonce -or $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+if($Build -and ($Action -cnotin @('Apply','Check','RegistrySourceDigest') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
+if($Action -cin @('Backup','Promote') -and ($Config -or $Image -or $SourceSha -or $CurrentRecord -or $AttemptRecord -or $Pull -or $Build -or $Rotate -or $Service -or $CredentialName -or $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $EnableRegistryMount -or $RegistryReleaseNonce -or $RegistryExpectedSourceDigest -or $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or $PreserveClaimedJobs -or $PreserveApprovedRequest -or $CheckedImageRecord -or $AllowUncertainGrowth)){throw 'PRIMARY_PROMOTION_ARGUMENTS_INVALID'}
+# First owner-controlled image build for pre-seal source readback.
+# It MUST NOT accept release arguments or silently activate Registry.
+if($Action -eq 'RegistrySourceDigest' -and (
+    -not $Build -or $Auto -or $Image -or $Config -or $CheckedImageRecord -or
+    $CurrentRecord -or $AttemptRecord -or $Pull -or $Rotate -or $Service -or $CredentialName -or
+    $Probes -or $EnableDynamicGitHubRepositories -or $EnableOwnerShell -or
+    $EnablePublisherMount -or $EnableMachinePowerShell -or $EnableRegistryMount -or
+    $RegistryReleaseNonce -or $RegistryExpectedSourceDigest -or
+    $EnableActionCoreNetwork -or $EnableObservatoryNetwork -or $AllowUncertainGrowth -or
+    $CiControlRepositories -or $CdReadRepositories -or $PreserveUncertainRequests -or
+    $PreserveClaimedJobs -or $PreserveApprovedRequest -or $ConfirmWorkerQuiescent -or
+    $EmergencyRescueImage -or $EmergencyRescueArchiveSha256 -or $AcceptUnverifiedRestore -or
+    $VaultVolume -cne 'fortis-review-secrets')){
+    throw 'RELEASE_REGISTRY_DIGEST_ARGUMENTS_INVALID'
+}
 $script:ActionCoreNetworks=$null
 if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
     Step 'GATEWAY_NETWORK_PREFLIGHT_READ_ONLY'
@@ -2681,6 +2763,14 @@ if(-not $script:Image){
 if($script:Image -cnotmatch '^sha256:[0-9a-f]{64}$'){throw 'RELEASE_IMAGE_ID_REQUIRED'}
 $ImageInfo=@(Docker-Json @('image','inspect',$script:Image))[0]
 if($SourceSha -and $ImageInfo.Config.Labels.'org.opencontainers.image.revision' -cne $SourceSha){throw 'RELEASE_IMAGE_REVISION_MISMATCH'}
+if($Action -eq 'RegistrySourceDigest'){
+    # Controller already proved clean Windows main, exact owner-reviewed SHA,
+    # and the exact built image revision. Readback runs strictly offline.
+    $Digest=Image-Registry-Source-Digest -ImageId $script:Image
+    [ordered]@{schema='fortis-registry-source-digest-v1';sourceSha=$SourceSha
+        imageId=$script:Image;gatewaySourceDigest=$Digest}|ConvertTo-Json -Compress
+    return
+}
 $LockPath=Join-Path $ReleaseBase 'controller.lock'
 if((Test-Path -LiteralPath $LockPath) -and ((Get-Item -LiteralPath $LockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'RELEASE_LOCK_REPARSE_POINT_DENIED'}
 try{$ControllerLock=[IO.File]::Open($LockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{throw 'RELEASE_CONTROLLER_ALREADY_RUNNING_OR_LOCK_UNAVAILABLE'}
@@ -2732,10 +2822,19 @@ if($RegistryPrior.readerVolume -and $EnableRegistryMount -and
 }
 $script:RegistryReleaseNonce='';$script:RegistryReaderVolume=''
 $script:RegistrySocketVolume='';$script:RegistryProfileDigest=''
+$script:RegistryGatewaySourceDigest=''
 if($EnableRegistryMount){
     $script:RegistryReleaseNonce=$RegistryReleaseNonce
     $script:RegistryReaderVolume=('fortis-r7-registry-reader-'+$RegistryReleaseNonce.Replace('-',''))
     $script:RegistrySocketVolume='fortis-registry-read'
+    Step 'REGISTRY_NONCE_HISTORY_PREFLIGHT'
+    $AllowedRegistryCheck=$(if($Action -eq 'Apply'){$CheckedImageRecord}else{''})
+    Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce -AllowedCheckRecord $AllowedRegistryCheck
+    Step 'REGISTRY_SOURCE_DIGEST_IMAGE_PREFLIGHT'
+    $script:RegistryGatewaySourceDigest=Image-Registry-Source-Digest -ImageId $script:Image
+    if($script:RegistryGatewaySourceDigest -cne $RegistryExpectedSourceDigest){
+        throw 'RELEASE_REGISTRY_SOURCE_DIGEST_MISMATCH'
+    }
     Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'
     $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
         -ImageId $script:Image -ReleaseNonce $script:RegistryReleaseNonce `
