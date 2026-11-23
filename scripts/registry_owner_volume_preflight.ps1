@@ -124,8 +124,34 @@ foreach ($id in $ids) {
     if ($c.Id -cne $id) { throw 'STOP: CONTAINER_SCAN_ID_CHANGED' }
     foreach ($mount in @($c.Mounts)) {
         if ($null -eq $mount) { continue }
-        $name=[string]$mount.Name
-        $source=[string]$mount.Source
+        # Docker bind/tmpfs mounts may omit Name; strict PowerShell 5.1
+        # property access would throw before the collision check. Reject
+        # incomplete named-volume data instead of silently ignoring it.
+        $typeProperty=$mount.PSObject.Properties['Type']
+        if ($null -eq $typeProperty -or [string]::IsNullOrWhiteSpace([string]$typeProperty.Value)) {
+            throw 'STOP: MOUNT_TYPE_MISSING'
+        }
+        $type=[string]$typeProperty.Value
+        if (@('volume','bind','tmpfs') -cnotcontains $type) {
+            throw 'STOP: MOUNT_TYPE_UNSUPPORTED'
+        }
+        $nameProperty=$mount.PSObject.Properties['Name']
+        $sourceProperty=$mount.PSObject.Properties['Source']
+        $name=''
+        $source=''
+        if ($null -ne $nameProperty -and $null -ne $nameProperty.Value) {
+            $name=[string]$nameProperty.Value
+        }
+        if ($null -ne $sourceProperty -and $null -ne $sourceProperty.Value) {
+            $source=[string]$sourceProperty.Value
+        }
+        if ($type -ceq 'volume' -and [string]::IsNullOrWhiteSpace($name)) {
+            throw 'STOP: VOLUME_MOUNT_NAME_MISSING'
+        }
+        if (($type -ceq 'volume' -or $type -ceq 'bind') -and
+            [string]::IsNullOrWhiteSpace($source)) {
+            throw 'STOP: MOUNT_SOURCE_MISSING'
+        }
         if (($targets -ccontains $name) -or
             $name -match '^fortis-registry-(state-e13b-|config-e13b-|read$)' -or
             $source -match 'fortis-registry-(state-e13b-|config-e13b-|read($|[/\\]))') {

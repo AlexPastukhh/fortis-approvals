@@ -65,6 +65,28 @@ class OwnerVolumeWindowsReadOnlySourceTests(unittest.TestCase):
                          (ROOT / 'fortis_approvals' / 'deploy' /
                           'Dockerfile-Registry-Read-Candidate').read_text())
 
+    def test_bind_mount_without_name_is_supported_but_named_volume_is_strict(self):
+        # The owner-reported PS5.1 StrictMode failure was a Docker bind mount
+        # without a Name property. Runtime PS5.1 execution is still owner-only.
+        s=self.code
+        start=s.index('    foreach ($mount in @($c.Mounts)) {')
+        end=s.index('\n    }\n}', start)
+        block=s[start:end]
+        self.assertNotIn('$mount.Name', block)
+        self.assertNotIn('$mount.Source', block)
+        self.assertIn("$mount.PSObject.Properties['Type']", block)
+        self.assertIn("$mount.PSObject.Properties['Name']", block)
+        self.assertIn("$mount.PSObject.Properties['Source']", block)
+        self.assertIn("@('volume','bind','tmpfs') -cnotcontains $type", block)
+        self.assertIn("$name=''", block)
+        self.assertIn("$source=''", block)
+        self.assertIn("$type -ceq 'volume'", block)
+        self.assertIn('STOP: VOLUME_MOUNT_NAME_MISSING', block)
+        self.assertIn('STOP: MOUNT_SOURCE_MISSING', block)
+        self.assertIn('STOP: MOUNT_TYPE_MISSING', block)
+        self.assertIn('STOP: MOUNT_TYPE_UNSUPPORTED', block)
+        self.assertIn('STOP: EXISTING_CONTAINER_REGISTRY_MOUNT_CONFLICT', block)
+
     def test_plan_never_leaks_docker_or_git_metadata(self):
         s=self.code
         plan=s.split("if ($Action -ceq 'Plan') {",1)[1].split('\n}',1)[0]
