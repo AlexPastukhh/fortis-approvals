@@ -147,6 +147,7 @@ tests=(
   test_registry_gateway_read.py
   test_registry_gateway_unix_candidate.py
   test_registry_extension_provider_fit.py
+  test_registry_owner_policy_crypto.py
   test_registry_state_journal.py
   test_registry_state_journal_v2.py
   test_registry_functional_v1_journal.py
