@@ -38,11 +38,14 @@ and `--action Verify --expected-spec-sha256 <sha256>`.
 **Provision is a separate owner-approved host write**, not a consequence of
 Preview, source tests, PR merge or image build; the other two actions do not
 install a process, grant or Gateway mount. The Python entrypoint is only the
-schema-3 SQLite/config core. **No approved Windows Docker volume/ownership
-provisioner or launcher is supplied by this module.** Host setup remains
-UNKNOWN until UC-CONT-021/022/025 and the owner-reviewed Docker entrypoint are
-completed. Never run this source-only helper directly in the existing Gateway
-or Repo containers.
+schema-3 SQLite/config core. The separately reviewed Windows
+`fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1` **source candidate**
+provides a narrow owner-only CLI to invoke this core. It is not a Docker
+volume creation/chown tool: **no approved owner volume/ownership provisioner
+is supplied**. Host setup remains UNKNOWN until UC-CONT-021/022/025,
+independent real UID/GID mappings and actual owner host evidence are completed.
+Never run either bootstrap entrypoint directly in the existing Gateway or Repo
+containers.
 
 Owner independently reviews an exact canonical JSON `spec.json` at
 `/run/fortis-registry-bootstrap/spec.json` (private `0700` directory,
@@ -71,6 +74,53 @@ independent identity attestation or host acceptance. Remaining owner steps
 are the independent SQLite backup/restore, runtime/socket ownership, live
 pidfd+boot+inode proof, true Repo `EACCES/EPERM`, sealed nonce/profile and
 manual UC-GW-005 release.
+
+## Windows owner bootstrap launcher (source candidate; manual per action)
+
+`Registry-Owner-Bootstrap.ps1` supports **`-Action Plan`** (no Docker or Git
+calls), and individually invoked **`Preview`**, **`Provision`** and **`Verify`**
+on Windows PowerShell 5.1. None is an authorization to execute the next action.
+`Preview` and `Verify` are isolated ephemeral Docker runs with **read-only
+existing** state/config/socket mounts; `Provision` is a distinct, owner-GO-only
+one-shot with `-ConfirmProvision`, where only state/config volumes are RW.
+An unknown/partial Provision result is **STOP, no retry and no cleanup**.
+These actions are not implemented by the Registry listener itself.
+
+Before any Docker action the script requires the clean Windows
+`%USERPROFILE%\Repos\fortis-approvals` **main**, exact 40-hex owner-reviewed
+`-SourceSha`, the exact local Linux/AMD64 image ID with `Config.User=20002:20002`,
+owner-reviewed full 64-hex `-ExpectedSpecSha256`, and three exact **existing**
+`local` Docker volumes. State/config names must be
+`fortis-registry-state-e13b-<owner suffix>` and
+`fortis-registry-config-e13b-<owner suffix>`; socket name is fixed
+`fortis-registry-read`. No attached running or stopped container is permitted
+on any of the three volumes during these inactive bootstrap actions. Source
+SHA and image ID are separately pinned inputs: a matching local image UID
+**does not independently attest the image's source provenance**. The owner must
+review the exact build provenance before any run. The old image ID
+`sha256:597152e7160930682a98f676f093243a5b18ebf70c3724bdbae98de21bb1402b`
+pre-dates the accepted Python bootstrap module and must **not** be reused.
+
+The owner supplies an independently verified, canonical single-line ASCII
+`spec.json` with `instanceId`, complete scope and exact Registry/reader IDs.
+The script verifies its byte SHA256 **before** Docker; it is passed by stdin
+(not argv or an uncontrolled Windows bind mount) and written as `0600` within
+an ephemeral private tmpfs owned by Registry UID `20002`. The isolated image
+then invokes the existing `owner_functional_v1_bootstrap.run()` contract.
+It has network disabled, read-only root, all capabilities dropped, NNP,
+seccomp, memory/PID limits and no Docker socket. It never creates volumes,
+changes ownership, prepares a listener, seals a Gateway profile, changes
+running containers or requests grants. The owner must **separately prepare**
+correct `0700` private volume roots and `02710` socket directory with real
+mapped identities *before* Preview/Provision; no such method is implicitly
+approved by this source addition. `Verify` checks inactive genesis and owner
+config; it is not the independent SQLite backup/inactive restore or live
+Registry/Gateway/Repo denial gate. No `Provision` is authorized by this PR.
+
+Owner Windows PowerShell 5.1 `-Action Plan` is an additional manual source
+check; Linux static/unit checks cannot prove PowerShell runtime, Docker mount
+semantics or host security. Source merge requires owner Mirror import and
+separate image-only build before any host action.
 
 ## Source/runtime wiring to inspect
 

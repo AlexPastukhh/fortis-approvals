@@ -1,5 +1,6 @@
 """Offline bootstrap-core tests: no Docker or host acceptance implied."""
 import hashlib
+import io
 import os
 from pathlib import Path
 import stat
@@ -58,6 +59,25 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         patcher = patch.object(boot, '_directories', side_effect=check_local_dirs)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These are source-state fixture tests, not a Docker/host isolation
+        # acceptance test. GitHub Actions runners do not have to drop caps,
+        # enforce NNP or run in the same seccomp profile as the Registry.
+        # Mock ONLY for this fixture class. Dedicated tests below exercise
+        # the real fail-closed _runtime_confinement implementation.
+        patcher = patch.object(boot, '_runtime_confinement', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Source fixture identity must also be independent of the GitHub
+        # runner's supplementary groups. No live credential bypass is added:
+        # _load_spec() still enforces the exact UID/GID/groups contract.
+        for fn, result in (
+            ('getresuid', (self.uid,) * 3),
+            ('getresgid', (self.gid,) * 3),
+            ('getgroups', []),
+        ):
+            patcher = patch.object(boot.os, fn, return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.write_spec()
 
     def write_spec(self):
@@ -140,6 +160,23 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied, 'FILE_INVALID'):
             self.run_action('Preview')
 
+    def test_spec_accepts_only_registry_primary_supplementary_group(self):
+        with patch.object(boot.os, 'getgroups', return_value=[self.gid]):
+            result = self.run_action('Preview')
+            self.assertEqual(result['result'],
+                             'SOURCE_ONLY_REGISTRY_BOOTSTRAP_PREVIEW')
+
+    def test_spec_rejects_unexpected_supplementary_groups(self):
+        with patch.object(boot.os, 'getgroups', return_value=[self.gid, 1234567]):
+            with self.assertRaisesRegex(Denied, 'IDENTITY_DENIED'):
+                self.run_action('Preview')
+
+    def test_spec_rejects_inconsistent_real_uid_tuple(self):
+        with patch.object(boot.os, 'getresuid',
+                          return_value=(self.uid, self.uid + 1, self.uid)):
+            with self.assertRaisesRegex(Denied, 'IDENTITY_DENIED'):
+                self.run_action('Preview')
+
     def test_verify_fails_closed_on_config_tamper(self):
         self.run_action('Provision', self.digest)
         self.config_path.write_bytes(b'{}')
@@ -160,6 +197,58 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied, 'DIRECTORY_INVALID'):
             self.run_action('Provision', self.digest)
         self.assertFalse(self.state_path.exists())
+
+
+class OwnerBootstrapRuntimeConfinementTests(unittest.TestCase):
+    """Test the REAL guard, independently from runner OS security profile."""
+
+    @staticmethod
+    def _status(**overrides):
+        fields = {
+            'CapInh': '0000000000000000',
+            'CapPrm': '0000000000000000',
+            'CapEff': '0000000000000000',
+            'CapBnd': '0000000000000000',
+            'CapAmb': '0000000000000000',
+            'NoNewPrivs': '1',
+            'Seccomp': '2',
+            'TracerPid': '0',
+        }
+        fields.update(overrides)
+        return ''.join(k + ':\t' + str(v) + '\n' for k,v in fields.items())
+
+    def _check(self, status):
+        with patch('builtins.open', return_value=io.StringIO(status)) as mocked:
+            boot._runtime_confinement()
+            mocked.assert_called_once_with('/proc/self/status', encoding='ascii')
+
+    def test_canonical_safe_process_accepts(self):
+        self._check(self._status())
+
+    def test_real_guard_rejects_nonzero_capabilities(self):
+        for field in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(Denied, 'PROCESS_UNSAFE'):
+                    self._check(self._status(**{field: '0000000000000001'}))
+
+    def test_real_guard_rejects_no_nnp_no_seccomp_or_tracer(self):
+        for item in ({'NoNewPrivs': '0'}, {'Seccomp': '0'},
+                     {'Seccomp': '1'}, {'TracerPid': '12'}):
+            with self.subTest(item=item):
+                with self.assertRaisesRegex(Denied, 'PROCESS_UNSAFE'):
+                    self._check(self._status(**item))
+
+    def test_real_guard_rejects_missing_duplicate_and_malformed_status(self):
+        safe = self._status()
+        cases = (
+            safe.replace('CapAmb:\t0000000000000000\n', ''),
+            safe + 'CapEff:\t0000000000000000\n',
+            safe.replace('CapEff:\t0000000000000000', 'CapEff:\tnohex'),
+        )
+        for value in cases:
+            with self.subTest(case=value[-36:]):
+                with self.assertRaises(Denied):
+                    self._check(value)
 
 
 if __name__ == '__main__':

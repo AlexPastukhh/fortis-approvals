@@ -126,6 +126,7 @@ targets:
       - fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1
       - fortis_approvals/deploy/Primary-Gateway.ps1
       - fortis_approvals/deploy/Provider-Credentials.ps1
+      - fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1
     deployment:
       kind: windows-source
       procedure: docs/PRIMARY-GATEWAY-OPERATIONS.md
