@@ -808,7 +808,7 @@ function syncProviderFilter(){
 function visibleProviderRows(inventory,provider,query){
  const search=query.trim().toLowerCase();
  return inventory.operations.filter(row=>(!provider||row.provider===provider)&&[
-  row.provider,row.operation,row.actor,row.target,row.configuredPolicy,row.effectivePolicy
+  row.provider,row.operation,row.actor,row.target,row.currentPolicy??row.configuredPolicy,row.effectivePolicy
  ].some(value=>String(value??'').toLowerCase().includes(search)));
 }
 function resetProviderSelections(){
@@ -831,7 +831,7 @@ function resetProviderSelections(){
  return true;
 }
 function inventoryPolicyText(row){
- const value=row.currentPolicy&&row.scope==='actor'?row.currentPolicy:row.configuredPolicy;
+ const value=row.currentPolicy??row.configuredPolicy;
  if(value==='CONDITIONAL')return 'CONDITIONAL · дополнительные условия';
  if(value==='ASK')return 'ASK · согласование владельца';
  if(value==='DENY')return 'DENY · запрещено';
