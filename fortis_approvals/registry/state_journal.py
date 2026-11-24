@@ -96,7 +96,8 @@ def _request(actor,operation_id,evidence_id,evidence_digest,expected_revision):
             'expectedRevision':expected_revision}
 
 
-def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None):
+def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
+          allow_cutover_gap=False):
     """Structural invariant checks, not a substitute for trusted collector.
 
     Explicit suffix parameters are derived from Registry's previous local
@@ -121,7 +122,16 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None):
         expected_fields=SCOPE_FIELDS|{'selectedMainSha','collectorCheckpoint','lineageDigest',
               'componentObservationDigest','rangeClassification','mergeAudit','recordCandidates',
               'sourceDependencyRequirements'}
-        if start_sha is not None:expected_fields|={'startCursorSha','registryCursorCheckpoint'}
+        if start_sha is not None:
+            expected_fields |= {'startCursorSha','registryCursorCheckpoint'}
+        if 'cutoverGap' in o:
+            gap = o['cutoverGap']
+            _need(allow_cutover_gap and start_sha is None
+                  and type(gap) is dict and set(gap) == {'disposition', 'merges'}
+                  and gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP'
+                  and type(gap['merges']) is list and len(gap['merges']) == 2,
+                  'REGISTRY_STATE_CUTOVER_GAP')
+            expected_fields.add('cutoverGap')
         _need(set(o)==expected_fields
               and _hex(o['selectedMainSha'],40)
               and (start_sha is None or (
@@ -141,6 +151,20 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None):
               'REGISTRY_STATE_EMPTY_OR_INVALID_RANGE')
         cursor=start_sha if start_sha is not None else scope['baselineSha']
         seen={cursor};eids=set();numbers=set();owners=set();rev=0
+        if 'cutoverGap' in o:
+            for merge in gap['merges']:
+                _need(type(merge) is dict and set(merge) == {'number', 'mergeSha', 'headSha', 'impact'}
+                      and type(merge['number']) is int and merge['number'] > 0
+                      and merge['number'] not in numbers
+                      and _hex(merge['mergeSha'], 40) and merge['mergeSha'] not in seen
+                      and _hex(merge['headSha'], 40)
+                      and type(merge['impact']) is dict and bool(merge['impact'])
+                      and all(_name(target) and _names(actions, empty=False)
+                              and set(actions) <= ACTIONS for target, actions in merge['impact'].items()),
+                      'REGISTRY_STATE_CUTOVER_GAP')
+                cursor = merge['mergeSha']
+                seen.add(cursor)
+                numbers.add(merge['number'])
         for m in audit:
             p=m['collectorCheckpoint']
             _need(set(m)=={'mergeSha','baseSha','headSha','number','treeSha','evidenceId','evidenceDigest',

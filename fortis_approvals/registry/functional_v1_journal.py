@@ -47,6 +47,8 @@ class FunctionalV1CandidateJournal(RegistryStateJournalV2):
     admission in an owner-reviewed functional runtime.
     """
 
+    _allow_cutover_gap = True
+
     def __init__(self, path, *, instance_id, scope, plan_reader):
         self.path = Path(path)
         self.instance_id = instance_id
@@ -113,6 +115,8 @@ class FunctionalV1CandidateJournal(RegistryStateJournalV2):
         )
         receipt['schemaVersion'] = 3
         receipt['integrityModel'] = 'LOCAL_EVENT_CHAIN_ONLY'
+        if 'cutoverGap' in plan['observation']:
+            receipt['cutoverGap'] = plan['observation']['cutoverGap']
         # No external anchor or authenticated original collector.
         return receipt
 
@@ -154,6 +158,7 @@ class FunctionalV1CandidateJournal(RegistryStateJournalV2):
             evidence, req, self.scope,
             start_sha=cursor if expected_revision else None,
             previous_checkpoint=head if expected_revision else None,
+            allow_cutover_gap=self._allow_cutover_gap,
         )
         if previous_collector is not None:
             cp = observation['collectorCheckpoint']

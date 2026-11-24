@@ -126,6 +126,42 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertFalse(page['deploymentVerified'])
         self.assertFalse(page['writeEnabled'])
 
+    def test_cutover_gap_is_retained_only_with_first_real_ingestion(self):
+        plan = self.current['plan']
+        observation = plan['observation']
+        gap = {'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'merges': [
+            {'number': 253, 'headSha': '1'*40, 'mergeSha': '2'*40,
+             'impact': {'gateway-owner-controller': ['windows-update']}},
+            {'number': 254, 'headSha': '3'*40, 'mergeSha': '4'*40,
+             'impact': {'fortis-registry-pilot': ['image-rebuild']}},
+        ]}
+        genesis = self.state.checkpoint()
+        observation['cutoverGap'] = gap
+        plan['observationDigest'] = local._hash(observation)
+        with self.assertRaisesRegex(Denied, 'RANGE_INVALID'):
+            self.append()
+        self.assertEqual(self.state.checkpoint(), genesis)
+        observation['mergeAudit'][0]['baseSha'] = gap['merges'][-1]['mergeSha']
+        plan['observationDigest'] = local._hash(observation)
+        first = self.accept()
+        self.assertEqual(first['cutoverGap'], gap)
+        self.assertEqual(first['previousCheckpoint'], genesis['localCheckpoint'])
+        self.assertEqual(first['startCursorSha'], self.scope['baselineSha'])
+        self.assertEqual(len(first['recordIds']), 1)
+
+        self.state = local.FunctionalV1CandidateJournal(
+            self.path, instance_id=self.instance, scope=self.scope, plan_reader=self.read)
+        self.assertEqual(self.state.append_range(**self.operations[0][0])['receipt'], first)
+        self.suffix()
+        suffix = self.current['plan']
+        suffix['observation']['cutoverGap'] = gap
+        suffix['observationDigest'] = local._hash(suffix['observation'])
+        with self.assertRaisesRegex(Denied, 'CUTOVER_GAP'):
+            self.append()
+        self.suffix()
+        self.assertNotIn('cutoverGap', self.accept())
+        self.assertEqual(self.count('operations'), 2)
+
     def test_suffix_supersession_and_persistent_history(self):
         first=self.accept()
         self.suffix()

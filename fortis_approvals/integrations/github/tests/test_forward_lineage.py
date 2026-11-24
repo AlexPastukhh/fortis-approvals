@@ -43,6 +43,31 @@ class ForwardLineageTests(unittest.TestCase):
         for key,value in r.items():
             if key.endswith(('Verified','Allowed')):self.assertIs(value,False)
 
+    def test_cutover_prefix_requires_the_exact_two_merge_parents_and_catalog(self):
+        self.initialize_baseline()
+        git, repository = self.fixture.git, self.fixture.validator.source
+        first = self.fixture.selected
+        tree = git.text(['rev-parse', first + '^{tree}'], cwd=repository)
+        head = git.text(['commit-tree', tree, '-p', first, '-m', 'recovery'], cwd=repository)
+        second = git.text(['commit-tree', tree, '-p', first, '-p', head, '-m', 'merge'], cwd=repository)
+        gap = {'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'merges': [
+            {**f._CUTOVER_253, 'headSha': self.fixture.source_head, 'mergeSha': first},
+            {'number': 254, 'headSha': head, 'mergeSha': second,
+             'impact': f._CUTOVER_RECOVERY_IMPACT},
+        ]}
+        with patch.object(f, '_CUTOVER_BASELINE', self.baseline['baselineSha']), \
+             patch.object(f, '_CUTOVER_253', gap['merges'][0]):
+            self.assertEqual(f.verify_cutover_commits(gap, self.baseline, git, repository), second)
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_CATALOG'):
+                f.verify_cutover_commits(gap, {**self.baseline, 'catalogSha256': '0'*64}, git, repository)
+            wrong = copy.deepcopy(gap)
+            wrong['merges'][1]['mergeSha'] = head
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_LINEAGE'):
+                f.verify_cutover_commits(wrong, self.baseline, git, repository)
+            wrong['merges'].append(gap['merges'][1])
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.verify_cutover_commits(wrong, self.baseline, git, repository)
+
     def test_pending_anchor_and_missing_evidence(self):
         self.initialize_baseline();pending=self.retain()
         with self.assertRaisesRegex(Denied,'P5_SNAPSHOT_ANCHOR_MISMATCH'):self.observe()

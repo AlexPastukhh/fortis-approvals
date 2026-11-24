@@ -232,6 +232,49 @@ Only this entire result, not individual source/CI/Preview markers, advances
 bootstrap/restore. Runtime start, real peer/Repo denial, nonce seal, existing
 UC-GW-005 and live Owner Portal remain a later integration stage.
 
+
+### Recover the paused pilot after Approvals #253
+
+Only the original pilot is eligible. Its bootstrap scope, instance,
+enrollment, baseline, validator revision, backup and original sealed
+configuration remain the historical record. Approvals #253 affects the
+Windows controller. The recovery PR affects the Gateway and Registry images,
+and the catalog's conservative GitHub source glob flags the Publisher image
+for separate delivery. Both merges precede the first capture. Their disposition is
+`OWNER_REVIEWED_PRE_CAPTURE_GAP`, with exact merge and head SHA and declared
+impact. No pre-merge artifact, Core decision, Desired or installed status
+is attributed to either merge.
+
+1. Use the typed Gateway to confirm both merged PR identities, exact-head CI,
+   and that GitHub main is the recovery merge. Keep Approvals main at that
+   merge until the next open PR is captured. Update the clean Windows clone
+   via the existing Mirror flow and run PS5.1 SelfTest. Build the two pinned
+   images from this one source SHA. Use `RegistrySourceDigest -Build` once for
+   Gateway and save its JSON readback privately. Use the existing Registry
+   image build with its candidate Dockerfile and immutable source label.
+2. From accepted Windows main, run
+   `python -B scripts/registry_owner_cutover_recovery.py --session-dir <original-pilot-bootstrap> --backup-dir <original-backup-root> --gateway-readback <private-json> --registry-image-id <full-image-id> --pull-request <recovery-PR-number> --pull-request-head <exact-PR-head>`.
+   Review the two merge identities, scope, backing files and exact image
+   pins in the owner's session. Confirm only the creation of
+   `functional-cutover-recovery.json`. It retains all original bindings and
+   reads the existing private planner key locally without output.
+3. With a single Registry writer and the verified genesis checkpoint, switch
+   the pilot listener to the new exact image on its existing volumes. Retain
+   the previous container, image, profile and backup. Keep Repo isolated.
+   Verify the existing scope/checkpoint and the new live peer and socket
+   identities. Seal a fresh nonce-specific read profile from the recovered
+   config and the original key. Run protected prebuilt Check, separately
+   approved Apply of that checked image, live readback, Backup and Promote.
+   Use the protected original attempt for Gateway Return. A previous reader
+   profile does not authorize a newly rebound socket.
+4. The first subsequent pre-merge capture verifies the pinned two-merge
+   first-parent chain and byte-identical catalog. The first authenticated
+   owner ASK ingestion keeps that exact gap in its journal entry and
+   receipt alongside the genuine next merge. The cursor changes only with
+   that transaction. Later capture and ingest use the normal live cursor and
+   ordinary per-merge evidence. Unexpected main, catalog or checkpoint
+   state stops the procedure.
+
 ## Source/runtime wiring to inspect
 
 - Gateway source: `fortis_approvals/r7_unified_server.py` loads

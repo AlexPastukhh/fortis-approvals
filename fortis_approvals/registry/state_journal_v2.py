@@ -170,6 +170,8 @@ class RegistryStateJournalV2(RegistryStateJournal):
                 'rangeClassification':o['rangeClassification'],
                 'evidenceVerified':False,'admissionAllowed':False,'deploymentAllowed':False}
 
+    _allow_cutover_gap = False
+
     def _checked(self,db):
         _need(db.execute('PRAGMA quick_check').fetchall()==[('ok',)]
               and db.execute('PRAGMA foreign_key_check').fetchone() is None,
@@ -202,7 +204,12 @@ class RegistryStateJournalV2(RegistryStateJournal):
                       and ed==req['evidenceDigest'] and prev_hash==prev['eventDigest'],
                       'REGISTRY_STATE_CORRUPT')
                 o=_plan(ev,req,self.scope,start_sha=cursor if rev>1 else None,
-                        previous_checkpoint=prev if rev>1 else None)
+                        previous_checkpoint=prev if rev>1 else None,
+                        allow_cutover_gap=self._allow_cutover_gap)
+                if 'cutoverGap' in o:
+                    gap = o['cutoverGap']['merges']
+                    used_merges.update(m['mergeSha'] for m in gap)
+                    used_numbers.update(m['number'] for m in gap)
                 cp=o['collectorCheckpoint']
                 _need(previous_collector is None or
                       (cp['instanceId']==previous_collector['instanceId']
