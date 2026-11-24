@@ -147,6 +147,12 @@ _CUTOVER_257 = {
     'mergeSha': '0818f43f7bc2358b654a38cf66bb1fee739216ab',
     'impact': _CUTOVER_HANDOVER_IMPACT,
 }
+_CUTOVER_258 = {
+    'number': 258,
+    'headSha': 'c3fdca57407389629aa5e13e49dece9f280d769e',
+    'mergeSha': '5e380a2deee59ec8bc0ade1e8dd2a156f9e44181',
+    'impact': _CUTOVER_HANDOVER_IMPACT,
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
 
 
@@ -159,11 +165,13 @@ def cutover_start(gap, baseline_sha):
     impact = _CUTOVER_RECOVERY_IMPACT
     if gap['disposition'] == _POST_255_GAP:
         prefix = [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255]
-        if len(merges) in (5, 6):
+        if len(merges) in (5, 6, 7):
             prefix.append(_CUTOVER_256)
             impact = _CUTOVER_HANDOVER_IMPACT
-        if len(merges) == 6:
+        if len(merges) in (6, 7):
             prefix.append(_CUTOVER_257)
+        if len(merges) == 7:
+            prefix.append(_CUTOVER_258)
     else:
         _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'P5_CUTOVER_GAP_SCOPE')
         prefix = [_CUTOVER_253]
