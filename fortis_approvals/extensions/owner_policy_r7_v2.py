@@ -222,7 +222,7 @@ class RegistryAuthorityPredecessor:
     unchanged. Stored authority SHA is still the decisive comparison.
     No caller or DB supplies a historical scope/baseline.
     """
-    def __init__(self, core, scope, choices, *, previous_functional_digest=None):
+    def __init__(self, core, scope, choices, *, previous_functional_digests=()):
         from copy import deepcopy
         from ..integrations.github.gateway.review_attestation import ACTOR, SERVICE, BUNDLE_OPERATION
         from ..integrations.registry.read_contract import PLANNER_ACTOR
@@ -265,18 +265,21 @@ class RegistryAuthorityPredecessor:
                for name in ('readGrants','writeGrants') for ops in self._scope[name].values()):
             raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
 
-        self._functional_predecessor = None
-        if previous_functional_digest is not None:
-            if (type(previous_functional_digest) is not str
-                    or not re.fullmatch('[0-9a-f]{64}', previous_functional_digest)
-                    or previous_functional_digest == scope['registryFunctional']):
-                raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
-            previous_functional_scope = deepcopy(scope)
-            previous_functional_scope['registryFunctional'] = previous_functional_digest
-            # The functional predecessor already admitted Registry. Keep the
-            # same coordinates, ceilings and other scope bytes. Its stored
-            # authority hash must still match exactly in the policy engine.
-            self._functional_predecessor = (previous_functional_scope, dict(core.policies))
+        if (type(previous_functional_digests) is not tuple
+                or len(previous_functional_digests)>2
+                or any(type(digest) is not str or not re.fullmatch('[0-9a-f]{64}',digest)
+                       or digest==scope['registryFunctional'] for digest in previous_functional_digests)
+                or len(set(previous_functional_digests))!=len(previous_functional_digests)):
+            raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+        # The immediate predecessor and older functional epochs can both
+        # include Registry. Keep the same baseline and every other scope
+        # field. The policy engine matches each stored hash independently.
+        self._functional_predecessors = []
+        for digest in previous_functional_digests:
+            previous_scope = deepcopy(scope)
+            previous_scope['registryFunctional'] = digest
+            self._functional_predecessors.append((previous_scope, dict(core.policies)))
+        if self._functional_predecessors:
             self.choices = dict(choices)
 
     def variants(self):
@@ -286,7 +289,6 @@ class RegistryAuthorityPredecessor:
         if old is not None:
             scopes.append(old)
         variants = [(deepcopy(scope), dict(self._baseline)) for scope in scopes]
-        if self._functional_predecessor is not None:
-            scope, baseline = self._functional_predecessor
-            variants.append((deepcopy(scope), dict(baseline)))
+        variants.extend((deepcopy(scope),dict(baseline))
+                        for scope,baseline in self._functional_predecessors)
         return variants

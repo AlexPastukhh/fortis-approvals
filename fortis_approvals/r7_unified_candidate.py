@@ -334,7 +334,7 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                 raise Denied('R7_REGISTRY_REVIEWED_AUTHORITY_UPGRADE_REQUIRED')
             predecessor=RegistryAuthorityPredecessor(
                 core,scope_binding,choices,
-                previous_functional_digest=functional.reviewed_authority_predecessor_digest())
+                previous_functional_digests=functional.reviewed_authority_predecessor_digests())
         core.install_policy_authority(
             choices, scope_binding=scope_binding,
             reviewed_previous_scope=reviewed_mirror_v1_previous_scope(
