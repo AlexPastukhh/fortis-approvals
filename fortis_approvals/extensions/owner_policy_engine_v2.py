@@ -98,13 +98,18 @@ class PolicyAdmission:
     coordinates, global fallback and callbacks cannot be converted into grants.
     """
 
-    def __init__(self, core, choices, *, scope_binding=None):
+    def __init__(self, core, choices, *, scope_binding=None, historical_baseline=None):
         if type(choices) is not dict or not choices:
             raise Denied("OWNER_POLICY_ADMISSION_REQUIRED")
+        live = dict(core.policies)
+        baseline_rows = live if historical_baseline is None else historical_baseline
+        if (type(baseline_rows) is not dict or
+                any(k not in live or live[k] != v for k,v in baseline_rows.items())):
+            raise Denied("OWNER_POLICY_HISTORICAL_BASELINE_INVALID")
         accepted = {}
         for key, permitted in choices.items():
             coord = _coordinate(key)
-            baseline = core.policies.get(coord)
+            baseline = baseline_rows.get(coord)
             if (not (type(baseline) is str and baseline in POLICIES or callable(baseline))
                     or type(permitted) not in (set, frozenset, tuple)
                     or not set(permitted) <= POLICIES
@@ -118,7 +123,8 @@ class PolicyAdmission:
         self.scope_binding = scope_binding
         # Bind ALL literal/conditional coordinates, including exceptions,
         # rather than just editable rows. Authority drift stops startup.
-        self.baseline = MappingProxyType(dict(core.policies))
+        self.baseline = MappingProxyType(dict(baseline_rows))
+        self.live_baseline = MappingProxyType(live)
         self.sha = digest({
             "baseline":[[[*k],v if type(v) is str else "CONDITIONAL"]
                          for k,v in sorted(self.baseline.items(),key=lambda item:repr(item[0]))],
@@ -174,7 +180,8 @@ class UnifiedPolicyCore(IncidentCore):
 
     def install_policy_authority(self, choices, *, scope_binding=None,
                                  reviewed_upgrade_from=None,
-                                 reviewed_previous_scope=None):
+                                 reviewed_previous_scope=None,
+                                 reviewed_registry_predecessor=None):
         if self.authority is not None:
             raise Denied("OWNER_POLICY_ALREADY_INSTALLED")
         authority = PolicyAdmission(self,choices,scope_binding=scope_binding)
@@ -183,6 +190,15 @@ class UnifiedPolicyCore(IncidentCore):
         if reviewed_previous_scope is not None and reviewed_upgrade_from is None:
             raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
         self._reviewed_previous_scope = reviewed_previous_scope
+        self._reviewed_registry_predecessor = None
+        if reviewed_registry_predecessor is not None:
+            # Only the trusted composition may authorize this exact additive
+            # Registry transition; derive the old scope/baseline in source.
+            from .owner_policy_r7_v2 import RegistryAuthorityPredecessor
+            if (type(reviewed_registry_predecessor) is not RegistryAuthorityPredecessor
+                    or reviewed_upgrade_from is None):
+                raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
+            self._reviewed_registry_predecessor = reviewed_registry_predecessor
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             names = _names(db)
@@ -271,8 +287,16 @@ class UnifiedPolicyCore(IncidentCore):
         previous_scope = getattr(self, '_reviewed_previous_scope', None)
         if previous_scope is not None and previous_scope != authority.scope_binding:
             scopes.append(previous_scope)
-        for scope in scopes:
-            candidate = PolicyAdmission(self,choices,scope_binding=scope)
+        variants = [(scope, None) for scope in scopes]
+        predecessor = getattr(self, '_reviewed_registry_predecessor', None)
+        if predecessor is not None:
+            variants.extend(predecessor.variants())
+        for scope, baseline in variants:
+            # An older epoch cannot reference an operation that did not exist.
+            if baseline is not None and not set(choices) <= set(baseline):
+                continue
+            candidate = PolicyAdmission(self,choices,scope_binding=scope,
+                                        historical_baseline=baseline)
             if candidate.sha == expected:
                 return candidate
         raise Denied("OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED")
@@ -281,7 +305,7 @@ class UnifiedPolicyCore(IncidentCore):
         authority = authority or self.authority
         if authority is None:
             raise Denied("OWNER_POLICY_AUTHORITY_NOT_INSTALLED")
-        if self.policies != authority.baseline:
+        if self.policies != authority.live_baseline:
             raise Denied("OWNER_POLICY_AUTHORITY_DRIFT")
         names = _names(db)
         if not _V2 <= names or names - _ALLOWED_TABLES:

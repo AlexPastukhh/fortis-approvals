@@ -22,7 +22,9 @@ class EmergencyMountAdmissionSourceTests(unittest.TestCase):
         start = PS.index("if($Action -eq 'Check'){",
                          PS.index("if($Report.status -cne 'READY')"))
         check = PS[start:PS.index("if(Test-Path -LiteralPath $AttemptPointer)", start)]
-        build = check.index("if($Build){")
+        # Both built and owner-pinned prebuilt images must pass the same
+        # unconditional previous-image/rescue gate before Check reports READY.
+        build = check.index("if($Build -or $script:RegistryPrebuiltCheck){")
         preflight = check.index("Assert-Previous-Image-Retained $Source", build)
         save = check.index("Save-Checked-Image $Source $Report $CheckReceipt", build)
         done = check.index("$Report|ConvertTo-Json -Depth 12;return", build)

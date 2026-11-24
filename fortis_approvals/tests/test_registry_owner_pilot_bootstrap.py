@@ -50,6 +50,35 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(len(component_bindings._resolved(records['binding.json'],catalog)),4)
         self.assertEqual(pilot.raw(records['spec.json']),pilot.raw(pilot.compose(p,1700000000)['spec.json']))
 
+    def test_final_boundary_and_backup_receipt_bind_live_config(self):
+        from fortis_approvals.integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
+        p=proposal()
+        p.update(mode='FUNCTIONAL_V1_CUTOVER_BOUNDARY',cutover={
+            'releaseNonce':str(uuid.uuid4()),'validatorRevision':'b'*40,
+            'registryImageId':'sha256:'+'c'*64,'gatewayImageId':'sha256:'+'d'*64,
+            'gatewaySourceDigest':'e'*64})
+        records=pilot.compose(p,1700000000)
+        spec=records['spec.json'];scope_digest=pilot.sha(pilot.raw(spec['scope']))
+        decision=records['pilot-acceptance.json']
+        self.assertEqual(decision['decision'],'OWNER_FUNCTIONAL_V1_BOUNDARY_APPROVED')
+        self.assertFalse(decision['enrollmentAccepted'])
+        receipt={'result':'PILOT_SCHEMA3_GENESIS_BACKUP_RESTORE_PASS',
+            'instanceId':spec['instanceId'],'scopeDigest':scope_digest,
+            'specSha256':pilot.sha(pilot.raw(spec)),'sourceSha':p['baselineSha'],
+            'backupId':str(uuid.uuid4()),'fileDigests':{k:'f'*64 for k in ('sqlite','manifest','config')},
+            **{k:False for k in ('hostAccepted','enrollmentAccepted','admissionAllowed','registryServiceStarted','rollbackProtected')}}
+        config={'schemaVersion':2,'collectorInstanceId':str(uuid.uuid4()),
+            'baseline':records['baseline.json'],'binding':records['binding.json'],
+            'policyReference':records['policy-reference.json'],'validatorRevision':'b'*40,
+            'boundaryDecision':decision,'bootstrapReceipt':receipt}
+        self.assertEqual(FunctionalRegistryConfiguration(config,b'k'*32,scope_digest=scope_digest).value,config)
+        bad=copy.deepcopy(config);bad['bootstrapReceipt']['sourceSha']='0'*40
+        with self.assertRaises(Denied):
+            FunctionalRegistryConfiguration(bad,b'k'*32,scope_digest=scope_digest)
+        bad=copy.deepcopy(config);bad['boundaryDecision']['enrollmentAccepted']=True
+        with self.assertRaises(Denied):
+            FunctionalRegistryConfiguration(bad,b'k'*32,scope_digest=scope_digest)
+
     def test_bad_mapping_and_policy_fail_before_go(self):
         p=proposal();p['mapping']['components'][0]['requires']=['owner-component-0']
         with self.assertRaisesRegex(RuntimeError,'MAPPING_CYCLE'):pilot.compose(p,1700000000)

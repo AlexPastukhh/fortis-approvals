@@ -17,6 +17,7 @@ Only invoke against an explicitly approved non-Production Registry pilot.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import select
 import socket
@@ -51,7 +52,7 @@ def _read(path, limit):
         _stop('PROC_UNAVAILABLE')
 
 
-def _process(pid, registry_uid, registry_gid, reader_gid):
+def _process(pid, registry_uid, registry_gid, reader_gid, planner_key_digest=None):
     root=Path('/proc')/str(pid)
     raw=_read(root/'stat',8192).decode('ascii')
     prefix=str(pid)+' ('
@@ -69,10 +70,13 @@ def _process(pid, registry_uid, registry_gid, reader_gid):
         _stop('STAT_INVALID')
     raw_cmd=_read(root/'cmdline',512)
     argv=raw_cmd.rstrip(b'\0').split(b'\0')
-    if (len(argv)!=5 or Path(os.fsdecode(argv[0])).name not in
-        ('python','python3','python3.11') or
-        argv[1:] != [b'-m',_MODULE.encode('ascii'),b'--owner-config',
-                     os.fsencode(_CONFIG)]):
+    expected=[b'-m',_MODULE.encode('ascii'),b'--owner-config',os.fsencode(_CONFIG)]
+    if planner_key_digest is not None:
+        if type(planner_key_digest) is not str or not re.fullmatch('[0-9a-f]{64}',planner_key_digest):
+            _stop('PLANNER_DIGEST_DENIED')
+        expected += [b'--functional-planner-key-digest',planner_key_digest.encode('ascii')]
+    if (len(argv)!=len(expected)+1 or Path(os.fsdecode(argv[0])).name not in
+        ('python','python3','python3.11') or argv[1:] != expected):
         _stop('COMMAND_MISMATCH')
     status=_read(root/'status',16384).decode('ascii')
     fields={}
@@ -127,7 +131,7 @@ def _socket_stat(registry_uid,reader_gid):
     return (row.st_dev,row.st_ino)
 
 
-def observe(*,pid,registry_uid,registry_gid,reader_gid):
+def observe(*,pid,registry_uid,registry_gid,reader_gid,planner_key_digest=None):
     """Check one owner-selected process, never find/assign its own identity."""
     if (type(pid) is not int or not 0<pid<2**31 or
         any(type(v) is not int or not 0<v<2**31 for v in
@@ -139,7 +143,8 @@ def observe(*,pid,registry_uid,registry_gid,reader_gid):
         _stop('CALLER_OR_ARGUMENTS_DENIED')
     _require_pidfs()
     boot=_boot_id()
-    prior=_process(pid,registry_uid,registry_gid,reader_gid)
+    extra=() if planner_key_digest is None else (planner_key_digest,)
+    prior=_process(pid,registry_uid,registry_gid,reader_gid,*extra)
     socket_pair=_socket_stat(registry_uid,reader_gid)
     fd=None
     try:
@@ -158,7 +163,7 @@ def observe(*,pid,registry_uid,registry_gid,reader_gid):
             if peer[0]!=pid or peer[3]!=inode or peer[4]!=boot:
                 _stop('LISTENER_PROCESS_MISMATCH')
         if (_boot_id()!=boot or
-                _process(pid,registry_uid,registry_gid,reader_gid)!=prior or
+                _process(pid,registry_uid,registry_gid,reader_gid,*extra)!=prior or
                 _socket_stat(registry_uid,reader_gid)!=socket_pair or
                 poller.poll(0)):
             _stop('OBSERVATION_STALE')
@@ -190,10 +195,12 @@ def main(argv=None):
     parser.add_argument('--registry-uid',type=int,required=True)
     parser.add_argument('--registry-gid',type=int,required=True)
     parser.add_argument('--reader-gid',type=int,required=True)
+    parser.add_argument('--functional-planner-key-digest')
     opts=parser.parse_args(argv)
     try:
         output=observe(pid=opts.selected_pid,registry_uid=opts.registry_uid,
-                       registry_gid=opts.registry_gid,reader_gid=opts.reader_gid)
+                       registry_gid=opts.registry_gid,reader_gid=opts.reader_gid,
+                       planner_key_digest=opts.functional_planner_key_digest)
     except Denied as exc:
         print('REGISTRY_PIDFD_OBSERVATION_STOP: '+str(exc),file=sys.stderr)
         return 1

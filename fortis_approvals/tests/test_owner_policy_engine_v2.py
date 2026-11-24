@@ -269,6 +269,71 @@ class UnifiedPolicyTests(unittest.TestCase):
         with self.assertRaises(Denied):
             reopened.policy_version
 
+    def test_registry_first_activation_preserves_exact_old_authority_and_epochs(self):
+        from copy import deepcopy
+        from fortis_approvals.extensions.owner_policy_r7_v2 import (
+            RegistryAuthorityPredecessor, _MIRROR_V1_CAPACITY_SOURCE_BEFORE,
+            _MIRROR_V1_CAPACITY_SOURCE_AFTER)
+        from fortis_approvals.integrations.github.gateway.review_attestation import ACTOR as REVIEW, SERVICE, BUNDLE_OPERATION
+        from fortis_approvals.integrations.registry.read_contract import PLANNER_ACTOR
+        path=self.root/'registry-cutover.sqlite'
+        old_scope={'extensions':{'definitions':{'mirror':{'source':_MIRROR_V1_CAPACITY_SOURCE_BEFORE,
+            'operations':[]}},'credentials':{'mirror':{}}},'readGrants':{},'writeGrants':{}}
+        old=UnifiedPolicyCore(path,**self.kwargs())
+        old.install_policy_authority(self.choices,scope_binding=old_scope)
+        editor=OwnerPolicyEditor(old,self.owner,source_digest=SOURCE,credential_generation=lambda:CREDS)
+        candidate=dict(actor=ACTOR,provider='synthetic',operation='set_ask',
+            scope='exact',target='record',expectedPolicy='ASK',desiredPolicy='DENY',
+            expectedRevision=0,expectedPolicyVersion=old.policy_version,reasonCode='OWNER_POLICY_CHANGE')
+        begin=editor.begin(self.owner._session,self.owner._csrf,candidate)
+        editor.finish(self.owner._session,self.owner._csrf,begin['ceremonyId'],
+            {'syntheticTestOnlyUv':True},begin['change'])
+        mirror_scope=deepcopy(old_scope)
+        mirror_scope['extensions']['definitions']['mirror']['source']=_MIRROR_V1_CAPACITY_SOURCE_AFTER
+        intermediate=UnifiedPolicyCore(path,**self.kwargs())
+        intermediate.install_policy_authority(self.choices,scope_binding=mirror_scope,
+            reviewed_previous_scope=old_scope,reviewed_upgrade_from=self.choices)
+        with intermediate._db() as db:
+            events=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')]
+            rules=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')]
+        new_scope=deepcopy(mirror_scope);new_scope['registryFunctional']='a'*64
+        read_ops=('candidate_head','candidate_list_desired','candidate_original_operation')
+        new_scope['extensions']['definitions']['registry']={'source':'b'*64,
+            'operations':[[op,'1','read',True,None,None] for op in read_ops]}
+        new_scope['extensions']['credentials']['registry']={}
+        added={(ACTOR,'registry',op,'fortis-approvals'):'DENY' for op in read_ops}
+        def ask(*args):return 'ASK'
+        policies={**self.policy,**added,
+            (REVIEW,SERVICE,BUNDLE_OPERATION,'fortis-approvals'):ask,
+            (PLANNER_ACTOR,'registry','ingest_merged','fortis-approvals'):ask}
+        kwargs={**self.kwargs(),'policies':policies,
+            'adapters':{'synthetic':self.adapter,'registry':self.adapter,SERVICE:self.adapter},
+            'authenticator':Authenticator({'machine':ACTOR,'review':REVIEW,'planner':PLANNER_ACTOR})}
+        choices={**self.choices,**{k:{'DENY','ASK','ALLOW'} for k in added}}
+        new=UnifiedPolicyCore(path,**kwargs)
+        with self.assertRaises(Denied):
+            new.install_policy_authority(choices,scope_binding=new_scope)
+        pred=RegistryAuthorityPredecessor(new,new_scope,choices)
+        new.install_policy_authority(choices,scope_binding=new_scope,
+            reviewed_registry_predecessor=pred,reviewed_upgrade_from=pred.choices)
+        with new._db() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')],events)
+            self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')],rules)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0],2)
+        self.assertEqual(new._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),'DENY')
+        self.assertEqual(new._policy(REVIEW,dict(service=SERVICE,operation=BUNDLE_OPERATION,target='fortis-approvals')),'ASK')
+        restarted=UnifiedPolicyCore(path,**kwargs)
+        pred=RegistryAuthorityPredecessor(restarted,new_scope,choices)
+        restarted.install_policy_authority(choices,scope_binding=new_scope,
+            reviewed_registry_predecessor=pred,reviewed_upgrade_from=pred.choices)
+        self.assertEqual(restarted.policy_version,new.policy_version)
+        drifted=deepcopy(new_scope);drifted['region']='different'
+        broken=UnifiedPolicyCore(path,**kwargs)
+        pred=RegistryAuthorityPredecessor(broken,drifted,choices)
+        with self.assertRaises(Denied):
+            broken.install_policy_authority(choices,scope_binding=drifted,
+                reviewed_registry_predecessor=pred,reviewed_upgrade_from=pred.choices)
+
     def test_two_reviewed_migrations_preserve_all_uv_events_and_receipts(self):
         from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
         import sqlite3

@@ -137,7 +137,7 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
 
     def test_preflight_no_docker_pull_network_secret_or_implicit_seal(self):
         part=_PS.split('function Image-RegistryMount-Preflight {',1)[1].split(
-            'function Get-SourceRecord {',1)[0]
+            'function Initialize-StagedRegistryCollector {',1)[0]
         self.assertIn("'run','--rm','-i','--pull=never','--network','none','--read-only'",part)
         self.assertIn("'--user','10001:10001','--cap-drop','ALL'",part)
         self.assertIn('reviewed_registry_reader_mount_digest',part)
@@ -151,6 +151,22 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('$Result=Private-Process $Args $ReleaseNonce',part)
         self.assertNotIn("'--cap-add'",part)
         self.assertNotIn("volume','create'",part)
+
+    def test_registry_prebuilt_check_and_staged_clone_initialization(self):
+        self.assertIn('$script:RegistryPrebuiltCheck=',_PS)
+        self.assertIn("if($CheckedImageRecord -or $script:RegistryPrebuiltCheck)",_PS)
+        self.assertIn('if($Build -or $script:RegistryPrebuiltCheck){',_PS)
+        part=_PS.split('function Initialize-StagedRegistryCollector {',1)[1].split(
+            'function Get-SourceRecord {',1)[0]
+        self.assertIn('prepare_staged_functional_state',part)
+        self.assertIn('Assert-OnlyWriter $Runtime.stateVolume',part)
+        self.assertIn('target=/state,volume-nocopy',part)
+        self.assertIn('target=/run/r7-registry-reader,readonly',part)
+        self.assertNotIn("'--cap-add'",part)
+        clone=_PS.split("Step 'CLONE_STATE'",1)[1].split("Step 'CREATE_STAGED'",1)[0]
+        self.assertIn('Initialize-StagedRegistryCollector $Runtime',clone)
+        self.assertIn('RELEASE_STATE_CLONE_MISMATCH',clone)
+        self.assertIn('Assert-SourceUnchanged',clone)
 
     def test_accepted_source_and_new_candidate_exact_recheck(self):
         admission=_PS.split('function Admit {',1)[1].split('function Admit-Source {',1)[0]

@@ -88,6 +88,20 @@ class OrphanedClaimStateTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT state,error,result FROM jobs WHERE id=?',
                                         (IDENT,)).fetchone(),('CLAIMED',None,None))
 
+    def test_collector_state_clones_with_existing_worker_history(self):
+        from fortis_approvals.integrations.github.gateway.functional_review_runtime import initialize_functional_state
+        import uuid
+        initialize_functional_state(self.source/'private',str(uuid.uuid4()))
+        before=self.inspect()
+        self.assertGreater(before['summary']['registryCollector']['entries'],0)
+        copied=H.clone_state(self.source,self.target,**self.kw,**self.good)
+        self.assertEqual(copied,before)
+        self.assertEqual(H.inspect_state(self.target,**self.kw,**self.good),before)
+        directory=self.source/'private/registry-functional-v1'
+        (directory/'capture.sqlite-wal').write_bytes(b'pending')
+        with self.assertRaises(RuntimeError):
+            self.inspect()
+
     def test_no_implicit_claimed_allowlist_and_bad_scope_denied(self):
         with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
             self.inspect(preserve_uncertain_ids=[])

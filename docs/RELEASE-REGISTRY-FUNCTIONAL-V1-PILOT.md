@@ -158,6 +158,37 @@ accepted, STOP for separately reviewed migration/re-enrollment with retained
 history. Never rewrite genesis/digests or claim an authoritative enrollment
 from this pilot file.
 
+### Functional V1 final cutover
+
+For the live Functional V1 planner, supply `--cutover-plan` with the owner-selected
+`releaseNonce` (UUIDv4), exact `registryImageId`, `gatewayImageId`,
+`gatewaySourceDigest` from RegistrySourceDigest, and `validatorRevision`
+(the reviewed Container commit). Build both runtime images from the accepted
+Windows main first. Keep remote main unchanged until cutover acceptance or
+STOP and prove forward coverage; never silently reset the baseline. The
+`GO CUTOVER BOUNDARY PREVIEW` confirmation selects the conditional permanent
+accounting boundary, not evidence of successful live activation. The existing
+old Registry image is used only for the reviewed genesis/bootstrap helpers.
+
+After successful backup/restore this mode additionally writes the bound
+schema-2 `functional.json` and an exclusive private 32-byte `planner.key`.
+Do not print, upload or pass the key as an argument. The legacy scope-only
+mode cannot start Functional V1 writes. The owner must still start and inspect
+the exact Registry runtime, verify Repo access denial, seal the new reader
+profile, and complete the protected Gateway Check/Apply and live readback.
+First capture refuses an unaccounted main advance. The owner retains the real
+release acceptance separately from the conditional boundary decision.
+
+Registry Check may reuse the exact prebuilt Gateway image with
+`-Action Check -EnableRegistryMount -Image <sha256:id> -SourceSha <commit>`,
+the same reviewed nonce, expected source digest, configuration and preservation
+arguments. No second build is needed. Check binds the actual sealed profile and
+source receipt; Apply still requires its checked-image record. Apply initializes
+the collector only inside the exclusively cloned candidate state, or verifies
+retained collector pins on later releases. Source state remains unchanged.
+Existing policy authority and recorded decisions must match the exact recognized
+predecessor; unrecognized authority drift stops rather than rewriting history.
+
 One invocation, three bounded owner confirmations (no extra chat turns):
 
 1. `PILOT PREVIEW`: save canonical scope/spec/evidence locally and call the

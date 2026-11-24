@@ -311,7 +311,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         core._baseline_policy_version+=':registry-functional-'+functional.digest
     if unified_policy_source_opt_in is not None:
         from .extensions.owner_policy_r7_v2 import (
-            derive_admission, trusted_scope_binding, reviewed_mirror_v1_previous_scope)
+            derive_admission, trusted_scope_binding, reviewed_mirror_v1_previous_scope,
+            RegistryAuthorityPredecessor)
         from .extensions.owner_policy_editor_v2 import OwnerPolicyEditor
         core._composing = False
         scope_binding=trusted_scope_binding(organizations=organizations,
@@ -322,14 +323,23 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             scope_binding['registryFunctional']=functional.digest
         upgrade=unified_policy_source_opt_in.allow_label_policy_upgrade
         all_methods=unified_policy_source_opt_in.allow_all_method_policy_upgrade
-        core.install_policy_authority(
-            derive_admission(core,broker,native=native,extension_runtime=runtime,
+        choices=derive_admission(core,broker,native=native,extension_runtime=runtime,
                              allow_label_policy_upgrade=upgrade,
-                             allow_all_method_policy_upgrade=all_methods),
-            scope_binding=scope_binding,
+                             allow_all_method_policy_upgrade=all_methods)
+        predecessor=None
+        if functional is not None:
+            # First activation is an explicitly owner-reviewed all-methods
+            # release. Existing authority may not be silently recreated.
+            if not all_methods:
+                raise Denied('R7_REGISTRY_REVIEWED_AUTHORITY_UPGRADE_REQUIRED')
+            predecessor=RegistryAuthorityPredecessor(core,scope_binding,choices)
+        core.install_policy_authority(
+            choices, scope_binding=scope_binding,
             reviewed_previous_scope=reviewed_mirror_v1_previous_scope(
                 scope_binding, all_methods=all_methods),
-            reviewed_upgrade_from=(derive_admission(core,broker,native=native,
+            reviewed_registry_predecessor=predecessor,
+            reviewed_upgrade_from=(predecessor.choices if predecessor is not None else
+                derive_admission(core,broker,native=native,
                  extension_runtime=runtime,allow_label_policy_upgrade=all_methods)
                  if upgrade or all_methods else None))
         # New ASK transitions must use strong owner proof even where the

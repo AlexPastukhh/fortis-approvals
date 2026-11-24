@@ -212,3 +212,63 @@ def reviewed_mirror_v1_previous_scope(scope, *, all_methods):
     previous["extensions"]["definitions"]["mirror"]["source"] = (
         _MIRROR_V1_CAPACITY_SOURCE_BEFORE)
     return previous
+
+
+class RegistryAuthorityPredecessor:
+    """Finite source-derived predecessor of first owner-sealed Registry activation.
+
+    Only remove the exact new Registry READ and internal ASK coordinates;
+    all previous actors, providers, credentials, rules and ceilings stay
+    unchanged. Stored authority SHA is still the decisive comparison.
+    No caller or DB supplies a historical scope/baseline.
+    """
+    def __init__(self, core, scope, choices):
+        from copy import deepcopy
+        from ..integrations.github.gateway.review_attestation import ACTOR, SERVICE, BUNDLE_OPERATION
+        from ..integrations.registry.read_contract import PLANNER_ACTOR
+        self._scope=deepcopy(scope)
+        self._baseline=dict(core.policies)
+        new_asks={(ACTOR,SERVICE,BUNDLE_OPERATION,'fortis-approvals'),
+                  (PLANNER_ACTOR,'registry','ingest_merged','fortis-approvals')}
+        read_ops={'candidate_head','candidate_list_desired','candidate_original_operation'}
+        definitions=self._scope['extensions']['definitions']
+        credentials=self._scope['extensions']['credentials']
+        registry=definitions.get('registry')
+        if (type(self._scope.get('registryFunctional')) is not str
+                or not re.fullmatch('[0-9a-f]{64}',self._scope['registryFunctional'])
+                or registry is None or credentials.get('registry')!={}
+                or {row[0] for row in registry['operations']}!=read_ops
+                or any(row[2]!='read' or row[3] is not True or row[4:]!=[None,None]
+                       for row in registry['operations'])
+                or not new_asks <= set(self._baseline)):
+            raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+        removed=set()
+        for k,v in self._baseline.items():
+            if k in new_asks:
+                if not callable(v) or k in choices:
+                    raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+                removed.add(k)
+            elif k[1]=='registry':
+                if len(k)!=4 or k[2] not in read_ops or k[3]!='fortis-approvals' or v not in POLICIES:
+                    raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+                removed.add(k)
+            elif k[0] in (ACTOR,PLANNER_ACTOR) or k[1]==SERVICE:
+                raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+        if not removed-new_asks:
+            raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+        self._baseline={k:v for k,v in self._baseline.items() if k not in removed}
+        self.choices={k:v for k,v in choices.items() if k in self._baseline}
+        self._scope.pop('registryFunctional')
+        definitions.pop('registry'); credentials.pop('registry')
+        # Registry is an extension, not an additional broker machine grant.
+        if any(any(op[0] in ('registry',SERVICE) for op in ops)
+               for name in ('readGrants','writeGrants') for ops in self._scope[name].values()):
+            raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+
+    def variants(self):
+        from copy import deepcopy
+        scopes=[self._scope]
+        old=reviewed_mirror_v1_previous_scope(self._scope,all_methods=True)
+        if old is not None:
+            scopes.append(old)
+        return [(deepcopy(scope),dict(self._baseline)) for scope in scopes]
