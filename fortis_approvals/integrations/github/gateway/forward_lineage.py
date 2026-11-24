@@ -141,6 +141,12 @@ _CUTOVER_HANDOVER_IMPACT = {
     **_CUTOVER_RECOVERY_IMPACT,
     'gateway-owner-controller': ['windows-update'],
 }
+_CUTOVER_257 = {
+    'number': 257,
+    'headSha': 'e5fdc1736cd5493975126550302cc44f1fc5cac3',
+    'mergeSha': '0818f43f7bc2358b654a38cf66bb1fee739216ab',
+    'impact': _CUTOVER_HANDOVER_IMPACT,
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
 
 
@@ -153,9 +159,11 @@ def cutover_start(gap, baseline_sha):
     impact = _CUTOVER_RECOVERY_IMPACT
     if gap['disposition'] == _POST_255_GAP:
         prefix = [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255]
-        if len(merges) == 5:
+        if len(merges) in (5, 6):
             prefix.append(_CUTOVER_256)
             impact = _CUTOVER_HANDOVER_IMPACT
+        if len(merges) == 6:
+            prefix.append(_CUTOVER_257)
     else:
         _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'P5_CUTOVER_GAP_SCOPE')
         prefix = [_CUTOVER_253]
