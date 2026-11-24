@@ -16,7 +16,7 @@
 <p class="small">Очередь заявок обновляется каждые 5 секунд, даже когда открыта вкладка PowerShell.</p>
 <details id="registry-functional-panel" hidden>
  <summary>Registry — контролируемый Functional V1</summary>
- <p class="small">Локальные кандидаты. Ни один шаг не выполняет merge или deployment. Подтверждения — в обычной очереди заявок.</p>
+ <p class="small">Создайте review для открытого PR и подтвердите его ключом в очереди заявок. Когда исходная заявка получит статус EXECUTED, выполните merge в GitHub и сохраните evidence. Ingest создаёт локального кандидата.</p>
  <div class="provider-controls">
   <label>Номер PR <input id="registry-pr-number" type="number" min="1" max="1000000"></label>
   <label>Точный HEAD SHA <input id="registry-pr-head" maxlength="40" autocomplete="off"></label>
