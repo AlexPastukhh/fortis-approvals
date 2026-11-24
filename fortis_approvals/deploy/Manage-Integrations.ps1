@@ -2314,7 +2314,7 @@ function Assert-RegistryReturnSelfTest {
         releaseNonce='e43f890f-fe66-4139-b397-4bb20be82e80'
         registryProfileDigest='c11871b078930e70878f8d0b8199b90ead38626b403ee858606ba71c19cb6fa3'
         registryReaderVolume='fortis-r7-registry-reader-e43f890ffe664139b3974bb20be82e80'
-        preserveApprovedRequest='retained';tokenVolume='original-token'
+        preserveApprovedRequest='retained';tokenVolume='original-token';extensionsConfig='{}'
     }
     $Source=@{runtime=$Original;hash=('c'*64)}
     $Nonce='44444444-4444-4444-8444-444444444444'
@@ -2360,7 +2360,13 @@ function Assert-RegistryReturnSelfTest {
             @{schema='fortis-extension-release-v1';phase='Complete';activated=$true;configurationDigest=('c'*64)}
         }
         function Get-FileHash { param($LiteralPath,$Algorithm) @{Hash=('c'*64)} }
-        function Image-CLI { param($Arguments,$InputText) @{status='READY';configurationDigest=('a'*64)} }
+        function Image-CLI {
+            param($Arguments,$InputText)
+            if($Arguments.Count -ne 1 -or $Arguments[0] -cne 'check' -or $InputText -cne '{}'){
+                throw 'TEST_REGISTRY_RETURN_CONFIGURATION_INPUT_CHANGED'
+            }
+            @{status='READY';configurationDigest=('a'*64)}
+        }
         function Running-CLI { param($Id,$Arguments) @{active=$true;configurationDigest=$LiveDigest} }
         $Source.path='synthetic'
         $LiveDigest='c'*64
