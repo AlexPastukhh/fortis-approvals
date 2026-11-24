@@ -1,0 +1,27 @@
+name: Registry owner volume Windows source
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-source-fixtures:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: PowerShell 5.1 parser and no-Docker fixtures
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = @(& scripts/test-registry-owner-volume-controller.ps1)
+          if (@($result | Where-Object { $_ -ceq 'E13B_WINDOWS_VOLUME_CONTROLLER_FIXTURES_PASS' }).Count -ne 1) {
+            throw 'WINDOWS_VOLUME_FIXTURE_PASS_MARKER_REQUIRED'
+          }
+          $result
