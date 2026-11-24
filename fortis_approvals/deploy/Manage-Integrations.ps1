@@ -2475,6 +2475,8 @@ function Assert-RegistryReturnSelfTest {
         registryProfileDigest='8104901c4a42b0616cabc8e7ccdb6a0d4580e918dfad1177ceaaece306be21ea'
         registryReleaseNonce='92836269-9f83-47c4-aa0c-c352249f5fa8'
         releaseNonce='92836269-9f83-47c4-aa0c-c352249f5fa8'
+        registryReaderVolume='fortis-r7-registry-reader-928362699f8347c4aa0cc352249f5fa8'
+        preserveApprovedRequest=''
     }
     $PromotedSource=@{runtime=$Promoted;hash=('c'*64)}
     $WarmReserve=Registry-ReturnRuntime $PromotedSource ('b'*64) $Nonce ('d'*64)
