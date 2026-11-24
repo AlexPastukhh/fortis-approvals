@@ -284,8 +284,20 @@ function Promote-Primary {
             if($OldImageInfo.Id -cne $Prior.runtime.image){
                 throw 'PRIMARY_PREVIOUS_IMAGE_CHANGED'
             }
-            # Ordinary releases retain the exact old image and admit normally.
-            Admit $Prev $Prior.runtime -AllowUnhealthy
+            if(Test-Registry259ReturnSource $Prior.runtime){
+                $Applied=Read-Private $Source.path
+                $AppliedOrigin=$Applied.source
+                if($Applied.schema -cne 'fortis-extension-release-v1' -or
+                   $Applied.phase -cne 'Complete' -or $Applied.activated -ne $true -or
+                   $AppliedOrigin.path -cne $Prior.sourceRecord -or $AppliedOrigin.hash -cne $Prior.sourceHash -or
+                   -not (Same-Json $AppliedOrigin.runtime $Prior.runtime) -or -not $Applied.registryReturn){
+                    throw 'PRIMARY_PREVIOUS_REGISTRY_HANDOVER_UNBOUND'
+                }
+                Assert-RegistryReturnInputs $AppliedOrigin $Applied.registryReturn $Prev
+                Admit $Prev $Prior.runtime -AllowUnhealthy -RegistryReturnSource
+            } else {
+                Admit $Prev $Prior.runtime -AllowUnhealthy
+            }
         } else {
             # UC-GW-013: only the exact already-accepted Complete Apply may
             # finish promotion. Verify historical backup and rescue BEFORE

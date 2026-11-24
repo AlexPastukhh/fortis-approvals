@@ -153,7 +153,20 @@ _CUTOVER_258 = {
     'mergeSha': '5e380a2deee59ec8bc0ade1e8dd2a156f9e44181',
     'impact': _CUTOVER_HANDOVER_IMPACT,
 }
+_CUTOVER_259 = {
+    'number': 259,
+    'headSha': '9b3c566bb20a2a0e3666b1522cc395f4aaf55e0a',
+    'mergeSha': '07d8357b45bbb140a907532b664f4560a29c744f',
+    'impact': _CUTOVER_HANDOVER_IMPACT,
+}
+_CUTOVER_260 = {
+    'number': 260,
+    'headSha': 'a6248f5a0dd6d71e056cbb05cde93ecc0256d29f',
+    'mergeSha': 'ec8190b66b80f5676106d1362180bbbf142a6523',
+    'impact': {'fortis-gateway': ['image-rebuild']},
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
+_POST_260_GAP_SIZE = 9
 
 
 def cutover_start(gap, baseline_sha):
@@ -165,13 +178,15 @@ def cutover_start(gap, baseline_sha):
     impact = _CUTOVER_RECOVERY_IMPACT
     if gap['disposition'] == _POST_255_GAP:
         prefix = [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255]
-        if len(merges) in (5, 6, 7):
+        if len(merges) in (5, 6, 7, _POST_260_GAP_SIZE):
             prefix.append(_CUTOVER_256)
             impact = _CUTOVER_HANDOVER_IMPACT
-        if len(merges) in (6, 7):
+        if len(merges) in (6, 7, _POST_260_GAP_SIZE):
             prefix.append(_CUTOVER_257)
-        if len(merges) == 7:
+        if len(merges) in (7, _POST_260_GAP_SIZE):
             prefix.append(_CUTOVER_258)
+        if len(merges) == _POST_260_GAP_SIZE:
+            prefix.extend((_CUTOVER_259, _CUTOVER_260))
     else:
         _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'P5_CUTOVER_GAP_SCOPE')
         prefix = [_CUTOVER_253]

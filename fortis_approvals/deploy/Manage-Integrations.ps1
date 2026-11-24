@@ -2324,15 +2324,29 @@ function Assert-RegistryReturnConfiguration {
     }
 }
 
+function Test-Registry259ReturnSource {
+    param($Runtime)
+    $Run='756d0f76a6954840a08d904d695ce592'
+    return ($Runtime.runId -ceq $Run -and $Runtime.pilotName -ceq 'fortis-gateway' -and
+        $Runtime.originalPilotName -ceq ('fortis-github-pilot-'+$Run) -and
+        $Runtime.restartPolicy -ceq 'unless-stopped' -and
+        $Runtime.pilotId -ceq '30595e061ef9e650bd66aaed8c72c5bef3cb714ffa40f1f775c2abeb77d2853e' -and
+        $Runtime.image -ceq 'sha256:ecf412817a0595e66aea867c0f6744a7313b0b33a81f14bfcf590e735f9cf72e' -and
+        $Runtime.registryProfileDigest -ceq '8104901c4a42b0616cabc8e7ccdb6a0d4580e918dfad1177ceaaece306be21ea' -and
+        $Runtime.registryReleaseNonce -ceq '92836269-9f83-47c4-aa0c-c352249f5fa8')
+}
+
 function Registry-ReturnRuntime {
     param($Source, [string]$Id, [string]$Nonce, [string]$ProfileDigest)
     $Original=$Source.runtime
+    $Legacy=($Original.runId -ceq 'f280e82c893f4195927e5db70a3ed53d' -and
+        $Original.pilotName -ceq ('fortis-github-pilot-'+$Original.runId) -and
+        $Original.image -ceq 'sha256:22de6d321559c70d3e7c788dc1e77a77cde7dea078cdd7c67cbe59aa93930963' -and
+        $Original.registryProfileDigest -ceq 'c11871b078930e70878f8d0b8199b90ead38626b403ee858606ba71c19cb6fa3' -and
+        $Original.registryReleaseNonce -ceq 'e43f890f-fe66-4139-b397-4bb20be82e80')
+    $Primary259=Test-Registry259ReturnSource $Original
     if($Source.hash -cnotmatch '^[0-9a-fA-F]{64}$' -or
-       $Original.runId -cne 'f280e82c893f4195927e5db70a3ed53d' -or
-       $Original.pilotName -cne ('fortis-github-pilot-'+$Original.runId) -or
-       $Original.image -cne 'sha256:22de6d321559c70d3e7c788dc1e77a77cde7dea078cdd7c67cbe59aa93930963' -or
-       $Original.registryProfileDigest -cne 'c11871b078930e70878f8d0b8199b90ead38626b403ee858606ba71c19cb6fa3' -or
-       $Original.registryReleaseNonce -cne 'e43f890f-fe66-4139-b397-4bb20be82e80' -or
+       (-not $Legacy -and -not $Primary259) -or ($Primary259 -and $script:RegistryCrash) -or
        $Original.stateVolume -cne ('fortis-github-pilot-state-'+$Original.runId) -or
        $Original.pilotId -cnotmatch '^[0-9a-f]{64}$' -or
        $Id -cnotmatch '^[0-9a-f]{64}$' -or $Id -ceq $Original.pilotId -or
@@ -2341,6 +2355,10 @@ function Registry-ReturnRuntime {
         throw 'RELEASE_REGISTRY_RETURN_SCOPE_DENIED'
     }
     $Runtime=ConvertTo-Json -InputObject $Original -Depth 25 -Compress | ConvertFrom-Json
+    if($Primary259){
+        $Runtime.PSObject.Properties.Remove('originalPilotName')
+        $Runtime.PSObject.Properties.Remove('restartPolicy')
+    }
     $Runtime.runId=$Nonce.Replace('-','')
     $Runtime.pilotId=$Id
     $Runtime.pilotName='fortis-github-pilot-'+$Runtime.runId
@@ -2372,7 +2390,11 @@ print(reviewed_registry_return_profile(**json.load(sys.stdin)))
         source_nonce=$Retained.releaseNonce
         source_profile_digest=$Retained.profileDigest
         return_nonce=$Nonce
-        source_digest='ece8ada947e53301fa3cc6d9bd6b645bbc02c6b122de851e7780a07bd3b66b61'
+        source_digest=$(if(Test-Registry259ReturnSource $Original){
+            'fe607625bd79e2ad45fbb7065e2fef2da45d077af6ce8c085325aac988e4ab57'
+        } else {
+            'ece8ada947e53301fa3cc6d9bd6b645bbc02c6b122de851e7780a07bd3b66b61'
+        })
     }
     if($script:RegistryCrash){
         if((Get-FileHash -LiteralPath $script:RegistryCrash.checkRecord -Algorithm SHA256).Hash -cne $script:RegistryCrash.checkHash){
@@ -2442,6 +2464,32 @@ function Assert-RegistryReturnSelfTest {
        $Reserve.registryReaderVolume -cne 'fortis-r7-registry-reader-44444444444444448444444444444444' -or
        $Reserve.preserveApprovedRequest -or $Original.preserveApprovedRequest -cne 'retained'){
         throw 'RELEASE_REGISTRY_RETURN_RUNTIME_SELFTEST_FAILED'
+    }
+    $PromotedRun='756d0f76a6954840a08d904d695ce592'
+    $Promoted=[pscustomobject]@{
+        runId=$PromotedRun;pilotName='fortis-gateway'
+        originalPilotName=('fortis-github-pilot-'+$PromotedRun);restartPolicy='unless-stopped'
+        pilotId='30595e061ef9e650bd66aaed8c72c5bef3cb714ffa40f1f775c2abeb77d2853e'
+        image='sha256:ecf412817a0595e66aea867c0f6744a7313b0b33a81f14bfcf590e735f9cf72e'
+        stateVolume=('fortis-github-pilot-state-'+$PromotedRun)
+        registryProfileDigest='8104901c4a42b0616cabc8e7ccdb6a0d4580e918dfad1177ceaaece306be21ea'
+        registryReleaseNonce='92836269-9f83-47c4-aa0c-c352249f5fa8'
+        releaseNonce='92836269-9f83-47c4-aa0c-c352249f5fa8'
+    }
+    $PromotedSource=@{runtime=$Promoted;hash=('c'*64)}
+    $WarmReserve=Registry-ReturnRuntime $PromotedSource ('b'*64) $Nonce ('d'*64)
+    if($WarmReserve.pilotName -cne $Reserve.pilotName -or
+       $WarmReserve.stateVolume -cne $Promoted.stateVolume -or $WarmReserve.image -cne $Promoted.image -or
+       $WarmReserve.PSObject.Properties['originalPilotName'] -or
+       $WarmReserve.PSObject.Properties['restartPolicy'] -or $Promoted.restartPolicy -cne 'unless-stopped'){
+        throw 'RELEASE_REGISTRY_PROMOTED_RETURN_RUNTIME_SELFTEST_FAILED'
+    }
+    $Promoted.pilotId='a'*64
+    try {
+        $null=Registry-ReturnRuntime $PromotedSource ('b'*64) $Nonce ('d'*64)
+        throw 'RELEASE_REGISTRY_PROMOTED_RETURN_IDENTITY_SELFTEST_FAILED'
+    } catch {
+        if($_.Exception.Message -cne 'RELEASE_REGISTRY_RETURN_SCOPE_DENIED'){throw}
     }
     foreach($Wrong in @($Original.releaseNonce,'invalid')){
         try {
