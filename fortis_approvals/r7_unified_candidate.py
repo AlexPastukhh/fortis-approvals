@@ -332,7 +332,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             # release. Existing authority may not be silently recreated.
             if not all_methods:
                 raise Denied('R7_REGISTRY_REVIEWED_AUTHORITY_UPGRADE_REQUIRED')
-            predecessor=RegistryAuthorityPredecessor(core,scope_binding,choices)
+            predecessor=RegistryAuthorityPredecessor(
+                core,scope_binding,choices,
+                previous_functional_digest=functional.reviewed_authority_predecessor_digest())
         core.install_policy_authority(
             choices, scope_binding=scope_binding,
             reviewed_previous_scope=reviewed_mirror_v1_previous_scope(

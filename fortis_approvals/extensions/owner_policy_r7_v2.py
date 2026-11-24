@@ -215,14 +215,14 @@ def reviewed_mirror_v1_previous_scope(scope, *, all_methods):
 
 
 class RegistryAuthorityPredecessor:
-    """Finite source-derived predecessor of first owner-sealed Registry activation.
+    """Finite source-derived predecessors of owner-sealed Registry activation.
 
     Only remove the exact new Registry READ and internal ASK coordinates;
     all previous actors, providers, credentials, rules and ceilings stay
     unchanged. Stored authority SHA is still the decisive comparison.
     No caller or DB supplies a historical scope/baseline.
     """
-    def __init__(self, core, scope, choices):
+    def __init__(self, core, scope, choices, *, previous_functional_digest=None):
         from copy import deepcopy
         from ..integrations.github.gateway.review_attestation import ACTOR, SERVICE, BUNDLE_OPERATION
         from ..integrations.registry.read_contract import PLANNER_ACTOR
@@ -265,10 +265,28 @@ class RegistryAuthorityPredecessor:
                for name in ('readGrants','writeGrants') for ops in self._scope[name].values()):
             raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
 
+        self._functional_predecessor = None
+        if previous_functional_digest is not None:
+            if (type(previous_functional_digest) is not str
+                    or not re.fullmatch('[0-9a-f]{64}', previous_functional_digest)
+                    or previous_functional_digest == scope['registryFunctional']):
+                raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
+            previous_functional_scope = deepcopy(scope)
+            previous_functional_scope['registryFunctional'] = previous_functional_digest
+            # The functional predecessor already admitted Registry. Keep the
+            # same coordinates, ceilings and other scope bytes. Its stored
+            # authority hash must still match exactly in the policy engine.
+            self._functional_predecessor = (previous_functional_scope, dict(core.policies))
+            self.choices = dict(choices)
+
     def variants(self):
         from copy import deepcopy
         scopes=[self._scope]
         old=reviewed_mirror_v1_previous_scope(self._scope,all_methods=True)
         if old is not None:
             scopes.append(old)
-        return [(deepcopy(scope),dict(self._baseline)) for scope in scopes]
+        variants = [(deepcopy(scope), dict(self._baseline)) for scope in scopes]
+        if self._functional_predecessor is not None:
+            scope, baseline = self._functional_predecessor
+            variants.append((deepcopy(scope), dict(baseline)))
+        return variants
