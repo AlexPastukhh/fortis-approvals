@@ -25,3 +25,9 @@ jobs:
             throw 'WINDOWS_VOLUME_FIXTURE_PASS_MARKER_REQUIRED'
           }
           $result
+      - name: Owner pilot bootstrap Python source fixtures (no Docker)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B -m unittest -q fortis_approvals.tests.test_registry_owner_pilot_bootstrap.ScopeTests
+          if ($LASTEXITCODE -ne 0) { throw 'PILOT_BOOTSTRAP_WINDOWS_SOURCE_FIXTURES_FAILED' }
