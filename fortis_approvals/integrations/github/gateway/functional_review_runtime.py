@@ -495,14 +495,31 @@ class FunctionalRegistryPlanner:
 
 
 _CUTOVER_254_CONFIG_SHA256 = '581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b'
+_CUTOVER_259_CONFIG_SHA256 = '41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5b409cf6f337bb4'
 
 
 def _reviewed_functional_predecessor_digest(value):
-    """Reconstruct the retained #254 config from the reviewed successor."""
-    from .forward_lineage import _POST_255_GAP
+    """Reconstruct the exact retained functional authority for this successor."""
+    from .forward_lineage import _POST_255_GAP, _POST_260_GAP_SIZE
     recovery = value.get('cutoverRecovery')
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
         return None
+
+    merges = recovery['gap']['merges']
+    if len(merges) == _POST_260_GAP_SIZE:
+        previous = {**value, 'cutoverRecovery': {
+            'gap': {'disposition': _POST_255_GAP, 'merges': merges[:-2]},
+            'release': {
+                'releaseNonce': '92836269-9f83-47c4-aa0c-c352249f5fa8',
+                'validatorRevision': value['validatorRevision'],
+                'registryImageId': 'sha256:32794e660626d4d173861d019261d202aabf5fdcbf092ecd489715d711b73ada',
+                'gatewayImageId': 'sha256:ecf412817a0595e66aea867c0f6744a7313b0b33a81f14bfcf590e735f9cf72e',
+                'gatewaySourceDigest': 'fe607625bd79e2ad45fbb7065e2fef2da45d077af6ce8c085325aac988e4ab57',
+            },
+        }}
+        digest = _hash(previous)
+        _need(digest == _CUTOVER_259_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+        return digest
 
     previous = {**value, 'cutoverRecovery': {
         'gap': {

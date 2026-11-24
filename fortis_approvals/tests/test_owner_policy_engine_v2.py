@@ -399,6 +399,31 @@ class UnifiedPolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
                 runtime._reviewed_functional_predecessor_digest(successor)
 
+    def test_post_260_predecessor_uses_exact_259_policy_scope(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        from fortis_approvals.integrations.github.gateway import functional_review_runtime as runtime
+        from fortis_approvals.integrations.github.gateway import forward_lineage as lineage
+        prefix=[getattr(lineage, f'_CUTOVER_{number}') for number in range(253,260)]
+        prior={'validatorRevision':'f'*40,'bootstrapReceipt':{'scopeDigest':'a'*64},
+               'cutoverRecovery':{
+                   'gap': {'disposition':lineage._POST_255_GAP, 'merges':prefix},
+                   'release':{'releaseNonce':'92836269-9f83-47c4-aa0c-c352249f5fa8',
+                       'validatorRevision':'f'*40,
+                       'registryImageId':'sha256:32794e660626d4d173861d019261d202aabf5fdcbf092ecd489715d711b73ada',
+                       'gatewayImageId':'sha256:ecf412817a0595e66aea867c0f6744a7313b0b33a81f14bfcf590e735f9cf72e',
+                       'gatewaySourceDigest':'fe607625bd79e2ad45fbb7065e2fef2da45d077af6ce8c085325aac988e4ab57'},
+               }}
+        successor=deepcopy(prior)
+        successor['cutoverRecovery']['gap']['merges'] += [lineage._CUTOVER_260, {'number':261}]
+        successor['cutoverRecovery']['release']={'releaseNonce':str(uuid.uuid4())}
+        pin=runtime._hash(prior)
+        with patch.object(runtime,'_CUTOVER_259_CONFIG_SHA256',pin):
+            self.assertEqual(runtime._reviewed_functional_predecessor_digest(successor),pin)
+            successor['bootstrapReceipt']['scopeDigest']='b'*64
+            with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                runtime._reviewed_functional_predecessor_digest(successor)
+
     def test_two_reviewed_migrations_preserve_all_uv_events_and_receipts(self):
         from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
         import sqlite3
