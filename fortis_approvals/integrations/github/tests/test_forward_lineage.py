@@ -77,16 +77,16 @@ class ForwardLineageTests(unittest.TestCase):
         rows = [{'number': 253, 'headSha': self.fixture.source_head, 'mergeSha': first,
                  'impact': f._CUTOVER_253['impact']}]
         parent = first
-        for number in (254, 255, 256, 257, 258, 259, 260, 261, 262):
+        for number in range(254, 265):
             head = git.text(['commit-tree', tree, '-p', parent, '-m', f'PR {number}'],
                             cwd=repository)
             merge = git.text(['commit-tree', tree, '-p', parent, '-p', head, '-m', f'Merge {number}'],
                              cwd=repository)
             impact = f._CUTOVER_255['impact'] if number == 255 else f._CUTOVER_RECOVERY_IMPACT
-            if number in (257, 258, 259, 261, 262):
+            if number in (257, 258, 259, 261, 262, 264):
                 impact = f._CUTOVER_HANDOVER_IMPACT
-            if number == 260:
-                impact = f._CUTOVER_260['impact']
+            if number in (260, 263):
+                impact = {'fortis-gateway': ['image-rebuild']}
             rows.append({'number': number, 'headSha': head, 'mergeSha': merge, 'impact': impact})
             parent = merge
         gap = {'disposition': f._POST_255_GAP, 'merges': rows}
@@ -94,7 +94,8 @@ class ForwardLineageTests(unittest.TestCase):
                             _CUTOVER_253=rows[0], _CUTOVER_254=rows[1],
                             _CUTOVER_255=rows[2], _CUTOVER_256=rows[3], _CUTOVER_257=rows[4],
                             _CUTOVER_258=rows[5], _CUTOVER_259=rows[6],
-                            _CUTOVER_260=rows[7], _CUTOVER_261=rows[8]):
+                            _CUTOVER_260=rows[7], _CUTOVER_261=rows[8],
+                            _CUTOVER_262=rows[9], _CUTOVER_263=rows[10]):
             legacy_gap={**gap, 'merges':rows[:4]}
             self.assertEqual(f.verify_cutover_commits(legacy_gap,self.baseline,git,repository),
                              rows[3]['mergeSha'])
@@ -106,9 +107,12 @@ class ForwardLineageTests(unittest.TestCase):
             through_259={**gap, 'merges':rows[:7]}
             self.assertEqual(f.verify_cutover_commits(through_259,self.baseline,git,repository),rows[6]['mergeSha'])
             self.assertEqual(f.verify_cutover_commits(gap, self.baseline, git, repository), parent)
-            through_261={**gap,'merges':rows[:-1]}
+            through_261={**gap,'merges':rows[:9]}
             self.assertEqual(f.verify_cutover_commits(through_261,self.baseline,git,repository),rows[8]['mergeSha'])
-            for invalid in (rows[:8], rows[:7] + rows[8:], [*rows[:8], rows[7], rows[9]]):
+            through_262={**gap,'merges':rows[:10]}
+            self.assertEqual(f.verify_cutover_commits(through_262,self.baseline,git,repository),rows[9]['mergeSha'])
+            for invalid in (rows[:8], rows[:11], rows[:10] + rows[11:],
+                            [*rows[:10], {**rows[10], 'headSha': rows[9]['headSha']}, rows[11]]):
                 with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                     f.cutover_start({**gap, 'merges':invalid}, self.baseline['baselineSha'])
             changed_260=copy.deepcopy(gap)
