@@ -119,16 +119,38 @@ _CUTOVER_RECOVERY_IMPACT = {
 }
 
 
+_CUTOVER_254 = {
+    'number': 254,
+    'headSha': 'ff9a3cc98bed143a5a995a36b0ebd3451be9e59d',
+    'mergeSha': '2da06ac16d6afcf523502bf48d286fec16f4001f',
+    'impact': _CUTOVER_RECOVERY_IMPACT,
+}
+_CUTOVER_255 = {
+    'number': 255,
+    'headSha': 'd148f1d5adccd6f964d55da86f9976af9b668d37',
+    'mergeSha': '200aed98f162b975420438ef9b8b452e0ef1bd0c',
+    'impact': {'fortis-gateway': ['image-rebuild']},
+}
+_POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
+
+
 def cutover_start(gap, baseline_sha):
-    """Validate the owner-sealed two-merge interval before checking Git."""
+    """Validate the owner-sealed interval before checking its Git objects."""
     _need(baseline_sha == _CUTOVER_BASELINE and type(gap) is dict
-          and set(gap) == {'disposition', 'merges'}
-          and gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP'
-          and type(gap['merges']) is list and len(gap['merges']) == 2
-          and gap['merges'][0] == _CUTOVER_253, 'P5_CUTOVER_GAP_SCOPE')
-    recovery = gap['merges'][1]
+          and set(gap) == {'disposition', 'merges'} and type(gap['merges']) is list,
+          'P5_CUTOVER_GAP_SCOPE')
+    merges = gap['merges']
+    if gap['disposition'] == _POST_255_GAP:
+        _need(len(merges) == 4 and merges[:3] == [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255],
+              'P5_CUTOVER_GAP_SCOPE')
+        last_number = 255
+    else:
+        _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP'
+              and len(merges) == 2 and merges[0] == _CUTOVER_253, 'P5_CUTOVER_GAP_SCOPE')
+        last_number = 253
+    recovery = merges[-1]
     _need(type(recovery) is dict and set(recovery) == set(_CUTOVER_253)
-          and type(recovery['number']) is int and recovery['number'] > 253
+          and type(recovery['number']) is int and recovery['number'] > last_number
           and _hex(recovery['headSha'], 40) and _hex(recovery['mergeSha'], 40)
           and recovery['impact'] == _CUTOVER_RECOVERY_IMPACT,
           'P5_CUTOVER_GAP_SCOPE')
