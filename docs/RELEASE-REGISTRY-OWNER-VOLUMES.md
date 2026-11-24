@@ -1,14 +1,13 @@
 # Registry Functional V1 — owner private-volume provisioning contract (E1.3b)
 
-**Status: SOURCE-ONLY CANDIDATE / NO HOST GO / NOT A PROVISIONER.**
+**Status: SOURCE-ONLY EXECUTABLE CANDIDATE / NO HOST GO / NOT HOST ACCEPTED.**
 This specifies the **next** separately reviewed owner-controlled host action. It
 is not permission to create a Docker volume, chown, mount or start any container.
 The **only normative E0–E5 progress table** stays in
 [`fortis-container/docs/BACKLOG-IMPROVEMENTS.md`](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
 The accepted [Registry Functional V1 pilot](RELEASE-REGISTRY-FUNCTIONAL-V1-PILOT.md)
 and [bootstrap launcher](../fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1)
-require **preexisting** volumes. This document does not change that launcher or
-publish an operational volume-creation tool. Use **UC-CONT-021, UC-CONT-022,
+require **preexisting** volumes. The new separate candidate below does not change that launcher or grant host authority. Use **UC-CONT-021, UC-CONT-022,
 UC-CONT-025** before each proposed host effect; UNCERTAIN is STOP, not retry.
 
 ## Pure source plan (zero Docker operations)
@@ -63,7 +62,7 @@ that a volume is created or securely owned. `volume-nocopy` is required.
 ## Source-only Windows PowerShell 5.1 metadata preflight
 
 `[scripts/registry_owner_volume_preflight.ps1](../scripts/registry_owner_volume_preflight.ps1)`
-is a **new, uninstalled candidate**, separate from the existing
+is a separate read-only preflight, not a volume preparer, independent of the existing
 `Registry-Owner-Bootstrap.ps1`. Its `-Action Plan` requires no Docker or Git;
 `-Action Inventory` performs **read-only** exact Windows clean-main SHA checks,
 current Docker context and immutable Registry image/source-revision pins,
@@ -79,16 +78,12 @@ closed if a `volume` lacks `Name` or if a `bind`/`volume` lacks `Source`.
 An unknown or missing `Type` is STOP; optional property absence must never
 silently override a volume name/source collision.
 
-This script is a **metadata-first source candidate**, not independent runtime
-permission attestation and not an approved owner-run host operation. Its
+This script is **metadata-only**, not independent runtime permission attestation or authorization for host writes. Its
 successful marker `E13B_OWNER_VOLUME_METADATA_READONLY_PASS` is followed by
 `E13B_USERNS_GROUPS_OWNERSHIP_WRITER_FENCE_UNKNOWN_STOP_BEFORE_CREATE`:
 not all in-flight Docker operations, rootless/userns translations, Linux
 supplementary group memberships, volume root UID/GID/mode, Docker-VM/Windows ACL,
-or future container writers can be inferred from Docker metadata. No Linux
-volume root inspector and no mutation-capable owner volume-preparer are part
-of this PR. A subsequent source task must independently review those gaps,
-then obtain a **separate owner GO** for any new helper's actual host effects.
+or future container writers can be inferred from Docker metadata. These limits remain even after the owner-reported Windows metadata PASS. The executable source candidates below are not proof that those gaps have been closed.
 Before execution on Windows the script itself requires owner review, merge,
 guarded source update and exact SHA pins. Static Linux tests are not a
 PowerShell 5.1 runtime check.
@@ -128,14 +123,115 @@ PowerShell 5.1 runtime check.
   this operation. Rollback/retention is a separate owner-approved incident
   procedure with an exact resource manifest.
 
-## Acceptance boundary and next implementation step
+## Separate executable source candidate: controller, preparer and inspector
 
-Until an independently reviewed executable owner-helper, host mapping evidence,
-owner GO and **actual readback** all exist, record `VOLUME_PROVISIONER_DESIGN_ONLY`
-/ `VOLUMES_NOT_CREATED` / `HOST_NOT_ACCEPTED`. Next source task should
-implement and validate the bounded owner-run preparer and independently read-only
-inspector against this contract, with Windows PowerShell 5.1 syntax/runtime
-checks and source CI; **do not** insert volume creation into the existing
-`Registry-Owner-Bootstrap.ps1` or treat its `Plan` as authorization. The source
-planner contains no host operations and is not packaged into the existing
-Registry image; that image's already-built runtime ID remains unchanged.
+- `scripts/registry_owner_volume_controller.ps1`: Windows PowerShell 5.1
+  entrypoint; default `Plan` does not call Git or Docker. `Prepare` and
+  `Inspect` are separate owner-only host-effect phases, each requiring its
+  own explicit scoped confirmation (`-ConfirmHostEffects`) and independently
+  reviewed owner record. It revalidates clean exact Windows `main`, the
+  pinned Registry image **and its historical build-source SHA**, exact
+  Gateway/Repo IDs/images/health, and the Docker Desktop Linux named-pipe
+  context. No automatic import, build, pull, retry, restart or cleanup.
+- `scripts/registry_owner_volume_prepare_roots.py`: fixed Linux roots only;
+  all three mounts must be fresh empty local-volume roots (default `0:0`
+  `0755`, no aliases or nested mounts) **before the first ownership change**.
+  Open directory FDs with no symlink traversal. Check the actual VM uid/gid
+  maps, real/effective/saved identities, supplementary groups, seccomp,
+  no-new-privileges, root filesystem and mount flags; recheck a fresh root
+  immediately before applying `fchown` then `fchmod`, `fsync` and `fstat`.
+  UID `0`, primary GID `10001`, exact capability mask `0x9`: `CAP_CHOWN`
+  and `CAP_FOWNER` only; GID `10001` permits setting the socket-root setgid
+  bit without `CAP_FSETID`. No `CAP_DAC_OVERRIDE`, recursive operations,
+  arbitrary path, file creation, compensating mutation or cleanup.
+- `scripts/registry_owner_volume_inspect_roots.py`: separate read-only code
+  and separate non-root container, `20002:20002`, **all capabilities zero**,
+  exactly three RO named-volume mounts with `volume-nocopy`. Independently
+  opens the roots, checks emptiness, exact owner/mode and device/inode,
+  actual mount RO flags and confinement. The controller compares the
+  independently measured device/inode with the preparer receipt; it does
+  not treat a preparer PASS as independent verification.
+
+Both helper payloads are exact SHA256-pinned source bytes passed as a bounded
+base64 argument to the **existing, independently reviewed/pinned** Registry
+Python image. The expression for decoding/executing the reviewed payload is
+fixed; no shell, user-supplied code path or free-form Docker arguments.
+Neither helper is copied into the Registry image or existing Windows owner
+controller deployment target. No rebuild follows from this source change.
+
+`Prepare` repeats the corrected metadata Inventory before the first host
+write. Its expected `...UNKNOWN_STOP_BEFORE_CREATE` means Inventory cannot
+prove the external prerequisites; it is **not** treated as authorization.
+Only a separately reviewed external owner evidence record and separate GO can
+admit the candidate. The controller creates only the three exact names with
+local driver and a new owner operation UUID label, refuses existing names,
+checks identity/options/attachments and distinct mountpoints. It uses
+`docker container create` (not immediate start), inspects the exact actual
+container configuration, mount names/source/targets/RW and nocopy, namespace,
+limits, caps, image/payload and labels **before** starting by exact container
+ID. Inherent Docker-generated system mounts are not owner-added volume
+mounts; neither payload accesses them except read-only `/proc` evidence.
+There is no host bind, Docker socket, host network/PID/IPC or other host
+resource mount. The owner must independently exclude concurrent Engine
+writers; the metadata snapshots and operation labels are **not an atomic
+Docker writer fence**.
+
+`Inspect` is a later, separately approved action because creating and starting
+a read-only diagnostic container still changes Docker metadata. It validates
+the retained exited-success preparer and exact payload, volume labels and
+attachments, creates a distinct zero-capability helper, checks its RO mounts
+before start, and validates its independently measured receipt. Both phases
+check Gateway/Repo before/after. The `json-file` log policy is bounded; owner
+must retain the logs/receipts, including any partial result. The helper
+containers remain stopped/retained, including after success. Before any
+bootstrap, separately approve exact-ID cleanup of **only** the two known
+successful stopped helper containers (no volume removal); verify no remaining
+attachments. Cleanup is not implemented here. No `--rm` or automatic retry.
+
+### Independent owner record (not generated or approved by source CI)
+
+Before either host-effect phase, the owner must independently establish and
+review the mapped Linux-VM identities (including effective supplementary
+reader/Repo groups and required non-conflicting active principals), actual
+exclusive owner change window/absence of other writers and stale attachments,
+and upstream provenance for the exact existing Registry image. If any of
+these is unknown, **STOP**; do not invent evidence records/digests. The
+controller requires a bounded JSON record, separately pinned by SHA256,
+with exact fields:
+
+- `schemaVersion` = 1; `decision` = `Prepare` or `Inspect` (distinct record
+  per phase); `operationId` = same independently selected unique lowercase
+  UUID for the two phases; `ownerSuffix` = reviewed suffix.
+- `sourceSha`, `registryImageId`, `imageSourceSha`, `gatewayContainerId`,
+  `gatewayImageId`, `repoContainerId`, `repoImageId`, `context` =
+  `desktop-linux`, `dockerEndpoint` = `npipe:////./pipe/dockerDesktopLinuxEngine`.
+- `hostIdentityEvidenceSha256`, `exclusiveWriterFenceEvidenceSha256`,
+  `imageProvenanceEvidenceSha256`, `preparePayloadSha256`,
+  `inspectPayloadSha256`: full lowercase digests of actual independently
+  reviewed evidence/payload files. The controller also reads and checks the
+  referenced evidence file bytes using `-HostIdentityEvidencePath`,
+  `-ExclusiveWriterFenceEvidencePath`, `-ImageProvenanceEvidencePath`.
+  These files stay in the owner's reviewed private evidence area (no tokens,
+  private keys, protected state or raw sensitive logs). A hash verifies
+  byte identity only; the script cannot verify the truth of the evidence or
+  owner authority. Review and current exclusive window must be independently
+  established before each GO, not inferred from a JSON field.
+
+Do not run `Prepare` or `Inspect` from this document. Owner review and exact
+source/image verification, PowerShell 5.1 fixture CI, independent actual host
+evidence and a separate explicit GO must precede either effect. Expected
+successful phase markers are `E13B_VOLUME_PREPARE_OWNER_READBACK_PASS_INSPECT_REQUIRED`
+then `E13B_VOLUME_INSPECT_OWNER_READBACK_PASS`. Both are **not** bootstrap GO,
+backup/restore, actual reader peer authorization or E1.3b host acceptance.
+
+## Acceptance boundary
+
+The source candidate now contains an executable bounded preparer and
+independent read-only inspector; **HOST_NOT_ACCEPTED / VOLUMES_NOT_CREATED**
+remains until real separately approved owner actions and independent readback.
+Python offline tests simulate mutations rather than calling them; real Windows
+PowerShell 5.1 CI parses the scripts and tests no-Docker configuration/receipt
+fixtures. These checks are not live Docker runtime evidence. The already-built
+Registry image remains unchanged. Preview, schema-3 Provision, backup and
+independent restore, actual peer/Repo-denial proof, owner nonce seal and manual
+UC-GW-005 remain separate later gates. E1.4–E5 stay blocked.
