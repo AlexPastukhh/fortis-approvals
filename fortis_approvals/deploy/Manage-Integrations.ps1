@@ -2780,6 +2780,7 @@ if($Action -eq 'SelfTest'){
     Assert-OptionalActionCoreSelfTest
     Assert-Emergency-Promote-BindingSelfTest
     Assert-RegistryReturnSelfTest
+    Assert-PrimaryReturnedRegistrySourceSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
