@@ -131,7 +131,7 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('registryReaderVolume=$script:RegistryReaderVolume',prepare)
         self.assertIn('registrySocketVolume=$script:RegistrySocketVolume',prepare)
         self.assertIn('registryProfileDigest=$script:RegistryProfileDigest',prepare)
-        self.assertIn('registryReleaseNonce=$script:RegistryReleaseNonce',prepare)
+        self.assertIn('registryReleaseNonce=$script:RegistryBoundReleaseNonce',prepare)
         self.assertIn('Checked-Image-Binding $Source $Report',_PS)
         self.assertIn('Assert-Checked-Image-Binding $Record.binding $Expected',_PS)
 
@@ -204,6 +204,13 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('registryGatewaySourceDigest=$script:RegistryGatewaySourceDigest',_PS)
         self.assertIn("throw 'RELEASE_REGISTRY_SOURCE_DIGEST_MISMATCH'",_PS)
         self.assertIn("$ImageInfo.Config.Labels.'org.opencontainers.image.revision' -cne $SourceSha",_PS)
+
+    def test_nonce_binding_never_overwrites_script_parameter(self):
+        self.assertNotIn('$script:RegistryReleaseNonce', _PS)
+        self.assertIn('Initialize-RegistryReleaseBinding -Enabled ([bool]$EnableRegistryMount) -RequestedNonce $RegistryReleaseNonce', _PS)
+        self.assertIn('FORTIS_REGISTRY_NONCE_SCOPE_SELFTEST_PASS', _PS)
+        helper = _PS.split('function Initialize-RegistryReleaseBinding {', 1)[1].split('function Assert-Registry-HistoryRecord {', 1)[0]
+        self.assertIn('$script:RegistryBoundReleaseNonce=$RequestedNonce', helper)
 
     def test_nonce_history_and_pre_stop_return_gate(self):
         history=_PS.split('function Assert-Registry-Nonce-Fresh {',1)[1].split(
