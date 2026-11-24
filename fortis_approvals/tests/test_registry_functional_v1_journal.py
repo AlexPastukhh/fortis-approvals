@@ -166,10 +166,10 @@ class FunctionalV1JournalTests(unittest.TestCase):
         plan = self.current['plan']
         observation = plan['observation']
         rows = [
-            {'number': 253 + index, 'headSha': str(2 * index + 1) * 40,
-             'mergeSha': str(2 * index + 2) * 40,
+            {'number': 253 + index, 'headSha': f'{2 * index + 1:040x}',
+             'mergeSha': f'{2 * index + 2:040x}',
              'impact': {'fortis-gateway': ['image-rebuild']}}
-            for index in range(4)
+            for index in range(5)
         ]
         gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:3]}
         observation['cutoverGap'] = gap

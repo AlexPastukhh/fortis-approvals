@@ -494,6 +494,34 @@ class FunctionalRegistryPlanner:
         return self.writer.lookup(self._params(row['request']),row['preview']['evidence'])
 
 
+_CUTOVER_254_CONFIG_SHA256 = '581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b'
+
+
+def _reviewed_functional_predecessor_digest(value):
+    """Reconstruct the retained #254 config from the reviewed successor."""
+    from .forward_lineage import _POST_255_GAP
+    recovery = value.get('cutoverRecovery')
+    if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
+        return None
+
+    previous = {**value, 'cutoverRecovery': {
+        'gap': {
+            'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP',
+            'merges': recovery['gap']['merges'][:2],
+        },
+        'release': {
+            'releaseNonce': 'e43f890f-fe66-4139-b397-4bb20be82e80',
+            'validatorRevision': value['validatorRevision'],
+            'registryImageId': 'sha256:6d41a635d71392a2397df7f470a1b0b0a8a779943a0c21e0185faf9885589060',
+            'gatewayImageId': 'sha256:22de6d321559c70d3e7c788dc1e77a77cde7dea078cdd7c67cbe59aa93930963',
+            'gatewaySourceDigest': 'ece8ada947e53301fa3cc6d9bd6b645bbc02c6b122de851e7780a07bd3b66b61',
+        },
+    }}
+    digest = _hash(previous)
+    _need(digest == _CUTOVER_254_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+    return digest
+
+
 class FunctionalRegistryConfiguration:
     """Owner-sealed configuration for the explicit local-candidate mode.
 
@@ -580,6 +608,9 @@ class FunctionalRegistryConfiguration:
     @property
     def value(self):
         return loads_strict(self._raw)
+
+    def reviewed_authority_predecessor_digest(self):
+        return _reviewed_functional_predecessor_digest(self.value)
 
     def install(self, *, core, portal, reader, native, root):
         from ....workflow.adapters import NativeGitHubAdapter

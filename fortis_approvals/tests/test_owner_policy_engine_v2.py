@@ -334,6 +334,71 @@ class UnifiedPolicyTests(unittest.TestCase):
             broken.install_policy_authority(choices,scope_binding=drifted,
                 reviewed_registry_predecessor=pred,reviewed_upgrade_from=pred.choices)
 
+        # The next owner-sealed functional release changes only the verified
+        # config binding. It must preserve decisions from every prior epoch.
+        previous_editor=OwnerPolicyEditor(new,self.owner,source_digest=SOURCE,
+                                         credential_generation=lambda:CREDS)
+        transition={**candidate, 'expectedPolicy':'DENY', 'desiredPolicy':'ASK',
+                    'expectedRevision':1, 'expectedPolicyVersion':new.policy_version}
+        begin=previous_editor.begin(self.owner._session,self.owner._csrf,transition)
+        previous_editor.finish(self.owner._session,self.owner._csrf,begin['ceremonyId'],
+                               {'syntheticTestOnlyUv':True},begin['change'])
+        with new._db() as db:
+            events=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')]
+            rules=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')]
+        next_scope={**new_scope, 'registryFunctional':'c'*64}
+        successor=UnifiedPolicyCore(path,**kwargs)
+        unreviewed=RegistryAuthorityPredecessor(successor,next_scope,choices)
+        with self.assertRaisesRegex(Denied,'AUTHORITY_UPGRADE_REVIEW_REQUIRED'):
+            successor.install_policy_authority(choices,scope_binding=next_scope,
+                reviewed_registry_predecessor=unreviewed,reviewed_upgrade_from=unreviewed.choices)
+
+        wrong_scope={**next_scope,'region':'unreviewed'}
+        wrong=RegistryAuthorityPredecessor(successor,wrong_scope,choices,
+                                          previous_functional_digest=new_scope['registryFunctional'])
+        with self.assertRaisesRegex(Denied,'AUTHORITY_UPGRADE_REVIEW_REQUIRED'):
+            successor.install_policy_authority(choices,scope_binding=wrong_scope,
+                reviewed_registry_predecessor=wrong,reviewed_upgrade_from=wrong.choices)
+
+        for _ in range(2):
+            successor=UnifiedPolicyCore(path,**kwargs)
+            verified=RegistryAuthorityPredecessor(successor,next_scope,choices,
+                                                 previous_functional_digest=new_scope['registryFunctional'])
+            successor.install_policy_authority(choices,scope_binding=next_scope,
+                reviewed_registry_predecessor=verified,reviewed_upgrade_from=verified.choices)
+            with successor._db() as db:
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')],events)
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')],rules)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0],3)
+            self.assertEqual(successor._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),'ASK')
+
+    def test_functional_predecessor_rejects_drift_outside_release(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        from fortis_approvals.integrations.github.gateway import functional_review_runtime as runtime
+        from fortis_approvals.integrations.github.gateway import forward_lineage as lineage
+        prior={'validatorRevision':'f'*40,'bootstrapReceipt':{'scopeDigest':'a'*64},
+               'cutoverRecovery':{
+                   'gap': {'disposition':'OWNER_REVIEWED_PRE_CAPTURE_GAP',
+                           'merges':[lineage._CUTOVER_253,lineage._CUTOVER_254]},
+                   'release':{'releaseNonce':'e43f890f-fe66-4139-b397-4bb20be82e80',
+                       'validatorRevision':'f'*40,
+                       'registryImageId':'sha256:6d41a635d71392a2397df7f470a1b0b0a8a779943a0c21e0185faf9885589060',
+                       'gatewayImageId':'sha256:22de6d321559c70d3e7c788dc1e77a77cde7dea078cdd7c67cbe59aa93930963',
+                       'gatewaySourceDigest':'ece8ada947e53301fa3cc6d9bd6b645bbc02c6b122de851e7780a07bd3b66b61'},
+               }}
+        successor=deepcopy(prior)
+        successor['cutoverRecovery']['gap']['disposition']=lineage._POST_255_GAP
+        successor['cutoverRecovery']['gap']['merges'] += [lineage._CUTOVER_255, {'number':256}]
+        successor['cutoverRecovery']['release']={'releaseNonce':str(uuid.uuid4())}
+        pin=runtime._hash(prior)
+        self.assertIsNone(runtime._reviewed_functional_predecessor_digest(prior))
+        with patch.object(runtime,'_CUTOVER_254_CONFIG_SHA256',pin):
+            self.assertEqual(runtime._reviewed_functional_predecessor_digest(successor),pin)
+            successor['bootstrapReceipt']['scopeDigest']='b'*64
+            with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                runtime._reviewed_functional_predecessor_digest(successor)
+
     def test_two_reviewed_migrations_preserve_all_uv_events_and_receipts(self):
         from fortis_approvals.deploy.github_pilot_helpers import _local_policy_receipt
         import sqlite3

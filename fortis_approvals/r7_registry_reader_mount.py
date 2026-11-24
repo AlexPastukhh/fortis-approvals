@@ -82,6 +82,17 @@ def load_owner_registry_reader(*, expected_release_nonce,
     server.main() must call this with the fixed default root. All guards run
     before returning a transport; no automatic grant or WRITE is created.
     """
+    result = _load_sealed_registry_reader(
+        root, expected_release_nonce, expected_source_digest)
+    if result is None:
+        return None
+    reader, _, _ = result
+    reader._check_socket()
+    return reader
+
+
+def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest):
+    """Validate a sealed profile and material without using its socket."""
     if not isinstance(root, Path) or not root.is_absolute():
         _stop('PATH_DENIED')
     if not root.exists() and not root.is_symlink():
@@ -141,7 +152,6 @@ def load_owner_registry_reader(*, expected_release_nonce,
             registry_boot_id=value['registryKernelBootId'],
             reader_uid=value['readerUid'], reader_gid=value['readerGid'],
             socket_device=value['socketDevice'], socket_inode=value['socketInode'])
-        reader._check_socket()
         if functional:
             from .integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
             from .integrations.registry.read_contract import private_planner_key
@@ -171,7 +181,7 @@ def load_owner_registry_reader(*, expected_release_nonce,
                 ):
             _stop('DIRECTORY_CHANGED')
         _check_owner_readonly_mount(root)
-        return reader
+        return reader, value, hashlib.sha256(raw).hexdigest()
     except Denied:
         raise
     except (OSError, ValueError, TypeError, UnicodeError,
@@ -188,11 +198,19 @@ def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
     an owner-chosen reviewed nonce and a source/image binding. This function
     does not create, seal, install or authorize any mount/process/grant.
     """
-    reader = load_owner_registry_reader(
-        expected_release_nonce=expected_release_nonce,
-        expected_source_digest=expected_source_digest, root=root)
-    if reader is None:
+    result = _load_sealed_registry_reader(
+        root, expected_release_nonce, expected_source_digest)
+    if result is None:
         _stop('NOT_ENABLED')
+    reader, _, digest = result
+    _check_live_peer(reader)
+    checked = _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest)
+    if checked is None or checked[2] != digest:
+        _stop('PROFILE_CHANGED')
+    return digest
+
+
+def _check_live_peer(reader):
     initial = reader._check_socket()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -208,25 +226,36 @@ def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
     reader._check_identity()
     if reader._check_socket() != initial:
         _stop('SOCKET_CHANGED')
-    _check_owner_readonly_mount(root)
-    try:
-        path = root / _FILE
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            row = os.fstat(fd)
-            if (not stat.S_ISREG(row.st_mode) or row.st_nlink != 1
-                    or row.st_uid != os.geteuid()
-                    or stat.S_IMODE(row.st_mode) != 0o600
-                    or not 1 <= row.st_size <= _MAX_BYTES):
-                _stop('FILE_DENIED')
-            raw = os.read(fd, _MAX_BYTES+1)
-            if len(raw) != row.st_size:
-                _stop('FILE_CHANGED')
-        finally:
-            os.close(fd)
-    except Denied:
-        raise
-    except OSError:
-        _stop('FILE_UNAVAILABLE')
-    _check_owner_readonly_mount(root)
-    return hashlib.sha256(raw).hexdigest()
+
+
+# This path is mounted only by the owner recovery preflight. Server startup
+# still uses MOUNT and validates the live peer normally.
+RETAINED_MOUNT = Path('/run/r7-registry-reader-retained')
+
+
+def reviewed_registry_return_profile(*, source_nonce, source_profile_digest,
+                                     return_nonce, source_digest,
+                                     retained_root=RETAINED_MOUNT, return_root=MOUNT):
+    """Review a new seal against exactly one retained functional release."""
+    if retained_root == return_root or source_nonce == return_nonce:
+        _stop('RETURN_PROFILE_DENIED')
+    retained = _load_sealed_registry_reader(retained_root, source_nonce, source_digest)
+    replacement = _load_sealed_registry_reader(return_root, return_nonce, source_digest)
+    if retained is None or replacement is None:
+        _stop('RETURN_PROFILE_DENIED')
+    _, old, old_digest = retained
+    reader, new, new_digest = replacement
+    # Stable identity, source, scope, config bytes and planner key must be
+    # unchanged. Only nonce and live process/socket identity may differ.
+    peer = {'releaseNonce', 'registryPidfdInode', 'socketDevice', 'socketInode'}
+    if (old_digest != source_profile_digest or old['schemaVersion'] != 3
+            or {k: v for k, v in old.items() if k not in peer}
+            != {k: v for k, v in new.items() if k not in peer}):
+        _stop('RETURN_PROFILE_DENIED')
+    _check_live_peer(reader)
+    # Re-read both sealed projections after exercising the actual peer.
+    checked_old = _load_sealed_registry_reader(retained_root, source_nonce, source_digest)
+    checked_new = _load_sealed_registry_reader(return_root, return_nonce, source_digest)
+    if checked_old is None or checked_new is None or checked_old[2] != old_digest or checked_new[2] != new_digest:
+        _stop('RETURN_PROFILE_CHANGED')
+    return new_digest

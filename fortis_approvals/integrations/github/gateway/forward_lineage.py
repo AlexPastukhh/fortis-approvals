@@ -131,6 +131,16 @@ _CUTOVER_255 = {
     'mergeSha': '200aed98f162b975420438ef9b8b452e0ef1bd0c',
     'impact': {'fortis-gateway': ['image-rebuild']},
 }
+_CUTOVER_256 = {
+    'number': 256,
+    'headSha': '19861c98964458f3e27019f0b78516d04596217a',
+    'mergeSha': '0db8443f16955d9169c73c488c6346ee8daf380b',
+    'impact': _CUTOVER_RECOVERY_IMPACT,
+}
+_CUTOVER_HANDOVER_IMPACT = {
+    **_CUTOVER_RECOVERY_IMPACT,
+    'gateway-owner-controller': ['windows-update'],
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
 
 
@@ -140,19 +150,21 @@ def cutover_start(gap, baseline_sha):
           and set(gap) == {'disposition', 'merges'} and type(gap['merges']) is list,
           'P5_CUTOVER_GAP_SCOPE')
     merges = gap['merges']
+    impact = _CUTOVER_RECOVERY_IMPACT
     if gap['disposition'] == _POST_255_GAP:
-        _need(len(merges) == 4 and merges[:3] == [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255],
-              'P5_CUTOVER_GAP_SCOPE')
-        last_number = 255
+        prefix = [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255]
+        if len(merges) == 5:
+            prefix.append(_CUTOVER_256)
+            impact = _CUTOVER_HANDOVER_IMPACT
     else:
-        _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP'
-              and len(merges) == 2 and merges[0] == _CUTOVER_253, 'P5_CUTOVER_GAP_SCOPE')
-        last_number = 253
+        _need(gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'P5_CUTOVER_GAP_SCOPE')
+        prefix = [_CUTOVER_253]
+    _need(merges[:-1] == prefix, 'P5_CUTOVER_GAP_SCOPE')
     recovery = merges[-1]
     _need(type(recovery) is dict and set(recovery) == set(_CUTOVER_253)
-          and type(recovery['number']) is int and recovery['number'] > last_number
+          and type(recovery['number']) is int and recovery['number'] > prefix[-1]['number']
           and _hex(recovery['headSha'], 40) and _hex(recovery['mergeSha'], 40)
-          and recovery['impact'] == _CUTOVER_RECOVERY_IMPACT,
+          and recovery['impact'] == impact,
           'P5_CUTOVER_GAP_SCOPE')
     return recovery['mergeSha']
 

@@ -297,6 +297,40 @@ Operational status and remaining steps are in the
 Use the existing protected Check, Apply, Backup and Promote sequence after
 the owner reviews and activates the new binding.
 
+### Protected Gateway handover after the Registry peer changes
+
+The retained #254 Gateway cannot cold-start with its original dead socket
+peer. Use the #254 image, its unchanged functional config and planner key,
+and a new nonce-specific seal for the new live Registry peer. Keep the old
+Gateway and reader volume. The reserve must be a never-started, owner-created
+container with the original source state volume, unchanged command, security,
+network, published ports and runtime environment except nonce. Use
+`fortis-github-pilot-<reserve nonce without hyphens>` for its name and
+`io.fortis.review-update=<reserve nonce without hyphens>` for its label.
+Only the Registry reader volume changes. Stop on drift in the source record,
+image, input scopes, secret mounts, peer or source-state receipt.
+
+Prepare the new release configuration with `--post-256`, the exact merged
+head and two source-pinned images. The original #256 config is retained.
+Before Check, verify the final Registry seal and the protected candidate on
+an isolated clone with no ingress and a closed release gate. Owner reviews
+the exact current uncertainty/claim scope and confirms an empty APPROVED
+scope. Use manual prebuilt `Check` and its exact `Apply` with both
+`-RegistryReturnContainerId` and `-RegistryReturnNonce`, in addition to
+the ordinary Registry options. Keep the existing exclusive host window and
+worker quiescence through activation. Apply explicitly confirms
+`APPLY REGISTRY HANDOVER`.
+
+For a failure before candidate activation, the controller's protected
+attempt can return to the reserve using the retained source volume after
+rechecking both the seal and the exact source receipt. It will stop before
+changing the reserve if the candidate has an activation marker. If Return
+is interrupted, use the original protected attempt; its
+`ReturningRegistrySource` phase blocks resuming the new candidate.
+After candidate activation, use the ordinary protected Backup and Promote
+flow. The normative status lives in the
+[Fortis Release Planning backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
+
 ## Source/runtime wiring to inspect
 
 - Gateway source: `fortis_approvals/r7_unified_server.py` loads
