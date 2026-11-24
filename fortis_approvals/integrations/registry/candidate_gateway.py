@@ -11,12 +11,14 @@ from pathlib import Path
 import socket
 import stat
 import struct
+import uuid
 
 from ...core import Denied, canonical, loads_strict
 from .owner_pinned_pidfd import owner_pinned_peer
 from .read_contract import (
     REPOSITORY, _CANDIDATE_FLAGS, _uuid, _hex,
     validate_gateway_read_query, validate_gateway_read_projection,
+    PLANNER_OPERATION, PLANNER_FRAME_LIMIT, planner_frame, planner_params,
 )
 
 _WIRE_OP = {
@@ -173,21 +175,15 @@ class GatewayRegistryUnixCandidateRead:
               'REGISTRY_CANDIDATE_SERVER_IDENTITY_DENIED')
         return peer
 
-    def _socket_read(self, operation, params, request_id):
+    def _exchange(self, wire_request, *, limit, timeout):
         self._check_identity()
         endpoint = self._check_socket()
-        wire_request = {
-            'schemaVersion': 1, 'operation': _WIRE_OP[operation],
-            'instanceId': self._instance, 'scopeDigest': self._scope,
-            'requestId': request_id, 'params': params,
-        }
         raw = canonical(wire_request).encode('utf-8') + b'\n'
-        _need(len(raw) <= _MAX_REQUEST + 1,
-              'REGISTRY_CANDIDATE_REQUEST_TOO_LARGE')
+        _need(len(raw) <= limit + 1, 'REGISTRY_CANDIDATE_REQUEST_TOO_LARGE')
         reply = bytearray()
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(_TIMEOUT)
+                sock.settimeout(timeout)
                 sock.connect(str(self._path))
                 peer = self._peer(sock)
                 sock.sendall(raw)
@@ -208,6 +204,15 @@ class GatewayRegistryUnixCandidateRead:
               and 2 <= len(reply) <= _MAX_REPLY
               and reply[-1:] == b'\n' and reply.count(b'\n') == 1,
               'REGISTRY_CANDIDATE_RESPONSE_DENIED')
+        return reply
+
+    def _socket_read(self, operation, params, request_id):
+        wire_request = {
+            'schemaVersion': 1, 'operation': _WIRE_OP[operation],
+            'instanceId': self._instance, 'scopeDigest': self._scope,
+            'requestId': request_id, 'params': params,
+        }
+        reply = self._exchange(wire_request, limit=_MAX_REQUEST, timeout=_TIMEOUT)
         try:
             envelope = loads_strict(bytes(reply[:-1]))
             _need(type(envelope) is dict
@@ -305,3 +310,79 @@ class GatewayRegistryUnixCandidateRead:
         data = self._socket_read(operation, native_params,
                                  request['requestId'])
         return self._project(operation, data, params)
+
+
+class PinnedRegistryCursor:
+    """Exact live candidate READ peer, not a caller-supplied checkpoint DTO."""
+    def __init__(self, reader, scope):
+        _need(type(reader) is GatewayRegistryUnixCandidateRead
+              and reader._owner_pidfd is not None
+              and hashlib.sha256(canonical(scope).encode()).hexdigest() == reader._scope,
+              'REGISTRY_PLANNER_CURSOR_BINDING')
+        self.reader = reader
+        self.scope = loads_strict(canonical(scope))
+
+    def checkpoint(self):
+        data = self.reader.read({'service':'registry', 'operation':'candidate_head',
+            'target':'fortis-approvals', 'params':{'repository':REPOSITORY},
+            'requestId':str(uuid.uuid4())})
+        return data['data']
+
+
+class GatewayRegistryUnixPlanner:
+    """Internal-only transport; no public route, grant or automatic retry."""
+    def __init__(self, reader, key):
+        _need(type(reader) is GatewayRegistryUnixCandidateRead
+              and reader._owner_pidfd is not None
+              and type(key) is bytes and len(key) == 32,
+              'REGISTRY_PLANNER_BINDING_DENIED')
+        self.reader, self._key = reader, key
+
+    def _receipt(self, result, params, evidence):
+        _need(type(result) is dict and set(result) == {
+            'result','receipt','integrityModel','evidenceVerified','admissionAllowed','deploymentAllowed'}
+              and result['result']=='LOCAL_DESIRED_CANDIDATE_COMMITTED'
+              and result['integrityModel']=='LOCAL_EVENT_CHAIN_ONLY'
+              and all(result[k] is False for k in ('evidenceVerified','admissionAllowed','deploymentAllowed')),
+              'REGISTRY_PLANNER_ACK_UNKNOWN')
+        r = result['receipt']; o=evidence['plan']['observation']
+        _need(type(r) is dict and r.get('evidenceId') == params['evidenceId']
+              and r.get('evidenceDigest') == hashlib.sha256(canonical(evidence).encode()).hexdigest()
+              and r.get('previousCheckpoint',{}).get('revision') == params['expectedRevision']
+              and r.get('checkpoint',{}).get('revision') == params['expectedRevision']+1
+              and r.get('candidateCursor') == o['selectedMainSha']
+              and r.get('recordIds') == sorted(row['recordId'] for row in o['recordCandidates'])
+              and r.get('actor') == 'release-registry-planner-v1',
+              'REGISTRY_PLANNER_RECEIPT_MISMATCH')
+        # Reuse the exact candidate receipt/instance/scope projection contract.
+        self.reader._project('candidate_original_operation', result,
+            {'repository':REPOSITORY,'operationId':params['operationId']})
+        return result
+
+    def ingest(self, params, evidence):
+        frame = planner_frame(self._key, instance_id=self.reader._instance,
+            scope_digest=self.reader._scope, params=params, evidence=evidence)
+        reply = self.reader._exchange(frame, limit=PLANNER_FRAME_LIMIT, timeout=15.0)
+        try:
+            value=loads_strict(bytes(reply[:-1]))
+            _need(canonical(value).encode()==bytes(reply[:-1])
+                  and type(value) is dict and set(value)=={
+                      'schemaVersion','operation','instanceId','scopeDigest','requestId','data'}
+                  and type(value['schemaVersion']) is int and value['schemaVersion']==1
+                  and value['operation']==PLANNER_OPERATION
+                  and value['instanceId']==self.reader._instance
+                  and value['scopeDigest']==self.reader._scope
+                  and value['requestId']==params['operationId'], 'REGISTRY_PLANNER_ACK_UNKNOWN')
+            return self._receipt(value['data'],params,evidence)
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise Denied('REGISTRY_PLANNER_ACK_UNKNOWN') from None
+
+    def lookup(self, params, evidence):
+        planner_params(params)
+        result=self.reader._socket_read('candidate_original_operation',
+            {'operationId':params['operationId']}, str(uuid.uuid4()))
+        if result == {'result':'LOCAL_CANDIDATE_OPERATION_NOT_FOUND',
+                'integrityModel':'LOCAL_EVENT_CHAIN_ONLY','evidenceVerified':False,
+                'admissionAllowed':False}:
+            return None
+        return self._receipt(result,params,evidence)

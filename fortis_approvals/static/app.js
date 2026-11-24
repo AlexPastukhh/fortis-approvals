@@ -48,12 +48,13 @@ function signedOut(message){
  if($('policy-review-button'))clearPolicyReview('Сессия владельца завершена.');
  policyPreviewRow=null;providerInventory=null;policyReviewCapabilities=null;
  resetLocalDenyPanel();resetUnifiedPolicyPanel();
+ resetRegistryFunctional();
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
  const result=await api('/v1/login/finish',{ceremonyId:begin.ceremonyId,response});csrf=result.csrf;
  $('signin').hidden=true;$('registration').hidden=true;$('workspace').hidden=false;status('Вход подтверждён');
- pendingIds=null;await refresh();}
+ pendingIds=null;await refresh();await loadRegistryFunctional();}
 function notifyOnNewPending(rows){
  const next=new Set(rows.map(r=>r.requestId));
  if(pendingIds!==null){
@@ -1077,4 +1078,65 @@ $('refresh').onclick=action(async()=>{await refresh();if(tab==='providers')await
 $('notifications').onclick=action(allowNotifications);
 setInterval(()=>{if(csrf)refresh();},pollingIntervalMs);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&csrf)refresh();});
-api('/v1/owner/session').then(async data=>{csrf=data.csrf;$('signin').hidden=true;$('workspace').hidden=false;await refresh();}).catch(()=>{});
+let registryCapability=null,registryBusy=false;
+function resetRegistryFunctional(){
+ registryCapability=null;
+ $('registry-functional-panel').hidden=true;
+ for(const name of ['pr-number','pr-head','review-id','evidence-id','evidence-digest','revision','ingest-id'])
+  $('registry-'+name).value='';
+ $('registry-functional-result').textContent='';
+}
+async function loadRegistryFunctional(){
+ const session=csrf;
+ if(!session)return;
+ try{
+  const value=await api('/v1/owner/registry/capabilities');
+  if(csrf!==session)return;
+  if(value.configured!==true||value.admissionAllowed!==false||value.deploymentAllowed!==false){
+   resetRegistryFunctional();return;
+  }
+  registryCapability=value;
+  $('registry-revision').value=String(value.localRevision);
+  $('registry-functional-panel').hidden=false;
+ }catch(error){
+  // Unsupported legacy portal or temporarily unavailable Registry. Do not
+  // break the main approval queue or imply successful Registry activation.
+  if(csrf===session){registryCapability=null;$('registry-functional-panel').hidden=true;}
+ }
+}
+function registryId(id){
+ const field=$(id);
+ if(!field.value)field.value=crypto.randomUUID();
+ return field.value;
+}
+async function registryAction(kind){
+ if(registryBusy||!registryCapability||!csrf)return;
+ const session=csrf;
+ registryBusy=true;
+ const buttons=['registry-review','registry-retain','registry-ingest','registry-refresh'].map($);
+ for(const button of buttons)button.disabled=true;
+ try{
+  let body;
+  if(kind==='review')body={requestId:registryId('registry-review-id'),
+   number:Number($('registry-pr-number').value),headSha:$('registry-pr-head').value};
+  else if(kind==='retain')body={requestId:$('registry-review-id').value};
+  else body={repository:registryCapability.repository,operationId:registryId('registry-ingest-id'),
+   evidenceId:$('registry-evidence-id').value,evidenceDigest:$('registry-evidence-digest').value,
+   expectedRevision:Number($('registry-revision').value)};
+  const result=await api('/v1/owner/registry/'+kind,body,true);
+  if(csrf!==session)return;
+  $('registry-functional-result').textContent=JSON.stringify(result,null,2);
+  if(kind==='retain'){
+   $('registry-evidence-id').value=result.evidenceId;
+   $('registry-evidence-digest').value=result.evidenceDigest;
+  }
+  await refresh();
+ }catch(error){
+  if(csrf===session)$('registry-functional-result').textContent=
+   'Остановлено: '+error.message+'. Сохраните UUID и проверьте исходную заявку; не создавайте новый UUID при неизвестном результате.';
+ }finally{registryBusy=false;for(const button of buttons)button.disabled=false;}
+}
+for(const kind of ['review','retain','ingest'])
+ $('registry-'+kind).onclick=action(()=>registryAction(kind));
+$('registry-refresh').onclick=action(loadRegistryFunctional);
+api('/v1/owner/session').then(async data=>{csrf=data.csrf;$('signin').hidden=true;$('workspace').hidden=false;await refresh();await loadRegistryFunctional();}).catch(()=>{});

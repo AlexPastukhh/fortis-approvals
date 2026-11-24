@@ -7,11 +7,18 @@ import copy
 from datetime import datetime, timezone
 from pathlib import Path
 import time
+import os
+import socket
+import threading
+import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
 
-from fortis_approvals.core import Authenticator, Denied, canonical
+from fortis_approvals.core import Authenticator, Denied, Stale, canonical
+from fortis_approvals.integrations.registry import candidate_gateway as wire, read_contract as contract, extension
+from fortis_approvals.registry import local_candidate_read_service as server
+from fortis_approvals.extensions.runtime import ExtensionRuntime, ExtensionConfig
 from fortis_approvals.incidents import IncidentCore, IncidentOwnerPortal
 from fortis_approvals.integrations.github.gateway import functional_review_runtime as rt
 from fortis_approvals.integrations.github.gateway import collector_snapshot as cs
@@ -25,7 +32,7 @@ class SessionVerifier(TestVerifier, owner_input.TestOwnerVerifier):
     pass
 from fortis_approvals.workflow.common import secure_dir
 from fortis_approvals.registry import functional_v1_journal as journal
-from fortis_approvals.registry import state_journal as state
+from fortis_approvals.registry import state_journal as state, state_journal_v2 as state_v2
 from fortis_approvals.integrations.github.gateway import admission_plan, forward_lineage, component_bindings
 import hashlib
 
@@ -48,7 +55,9 @@ class FunctionalReviewRuntimeTests(unittest.TestCase):
             instance_id=self.cid,anchor_reader=self.collector_pin.read)
         self.verifier=SessionVerifier()
         self.core=IncidentCore(root/'core.sqlite',adapters={},policies={},
-            authenticator=Authenticator({'fixture-internal-only':rt.ACTOR}),owner_verifier=self.verifier)
+            authenticator=Authenticator({'fixture-internal-only':rt.ACTOR,
+                'fixture-planner-internal':contract.PLANNER_ACTOR,'fixture-repo':'repo'}),
+            owner_verifier=self.verifier)
         self.portal=IncidentOwnerPortal(self.core,self.verifier)
         self.service=rt.FunctionalReviewRuntime(core=self.core,provider=self.fixture.adapter,
             capture=self.fixture.store,capture_pin=self.capture_pin,collector=self.collector,
@@ -97,9 +106,11 @@ class FunctionalReviewRuntimeTests(unittest.TestCase):
             self.assertEqual(self.service.retain_merge(request_id=self.rid),receipt)
             self.assertEqual(self.prepare()['state'],'EXECUTED')
         self.assertEqual(self.capture_pin.read()['revision'],1)
-        # Continue the newly orchestrated original evidence into the existing
-        # exact source planner and schema-3 SQLite, never supply a plan DTO.
-        for module in (state, journal, admission_plan, forward_lineage, component_bindings):
+        # Exact original Git/Core/collector -> actual typed Core ASK -> real
+        # AF_UNIX request -> isolated journal API -> existing extension READ.
+        # Same UID fixture mocks only Gateway process isolation; Registry
+        # still reads the actual kernel peer. No host acceptance is claimed.
+        for module in (state,state_v2,journal,admission_plan,forward_lineage,component_bindings,wire,contract):
             self.enterContext(patch.object(module,'REPOSITORY',self.fixture.api.head_repo))
         baseline={'schemaVersion':1,'repository':self.fixture.api.head_repo,
             'enrollmentId':self.ref['enrollmentId'],'baselineSha':self.ref['baselineSha'],
@@ -114,22 +125,111 @@ class FunctionalReviewRuntimeTests(unittest.TestCase):
         scope={**{k:baseline[k] for k in ('repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')},
                'baselineDigest':rt._hash(baseline),'policyReferenceDigest':self.pin}
         instance=str(uuid.uuid4());db=secure_dir(self.fixture.root/'registry-runtime')/'registry.sqlite'
-        journal.FunctionalV1CandidateJournal.initialize(db,instance_id=instance,scope=scope,plan_reader=lambda _:None)
-        comp=journal.OfflineSourceRangeComposition(path=db,instance_id=instance,scope=scope,
-            adapter=self.fixture.adapter,journal=self.collector,validator=self.fixture.validator,
-            baseline_reader=lambda:baseline,expected_baseline_digest=scope['baselineDigest'],
-            policy_reader=self.reader,expected_policy_digest=self.pin,binding_reader=lambda:mapping,
-            expected_collector_checkpoint=receipt['checkpoint'])
+        store=journal.FunctionalV1CandidateJournal.initialize(db,instance_id=instance,scope=scope,plan_reader=lambda _:None)
+        temp=tempfile.TemporaryDirectory(prefix='fortis-fv1-socket-');self.addCleanup(temp.cleanup)
+        folder=Path(temp.name);folder.chmod(0o2710);path=folder/'reader.sock'
+        key=os.urandom(32)
+        uid,gid=os.geteuid(),os.getegid()
+        service=server.PrivateCandidateReadService(store=store,socket_path=str(path),
+            reader_uid=uid,reader_gid=gid,planner_key=key)
+        listener=service.bind();listener.settimeout(.1)
+        stop=threading.Event();failures=[]
+        def serve():
+            while not stop.is_set():
+                try: conn,_=listener.accept()
+                except socket.timeout: continue
+                except OSError: break
+                with conn:
+                    try: service.handle(conn)
+                    except (Denied, Stale):pass
+                    except Exception as exc:failures.append(exc)
+        thread=threading.Thread(target=serve,daemon=True);thread.start()
+        def cleanup():
+            stop.set();listener.close();thread.join(3)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(failures,[])
+        self.addCleanup(cleanup)
+        self.enterContext(patch.object(wire.GatewayRegistryUnixCandidateRead,'_check_identity',return_value=None))
+        self.enterContext(patch.object(wire.GatewayRegistryUnixCandidateRead,'_peer',return_value=(0,uid,gid)))
+        row=path.lstat()
+        reader=wire.GatewayRegistryUnixCandidateRead(socket_path=str(path),instance_id=instance,
+            scope_digest=rt._hash(scope),registry_uid=uid,registry_gid=gid+100,
+            registry_pidfd_inode=1,registry_boot_id=str(uuid.uuid4()),
+            reader_uid=uid+100,reader_gid=gid,socket_device=row.st_dev,socket_inode=row.st_ino)
+        config=ExtensionConfig({'schemaVersion':1,'providers':{'registry':{
+            'credentials':{},'operations':{name:{'policy':'ALLOW','targets':['fortis-approvals']}
+                for name in ('candidate_head','candidate_list_desired','candidate_original_operation')}}}})
+        runtime=ExtensionRuntime(config,providers=(extension.bind_reader(extension.PROVIDER,reader),),
+            actors=('repo',),default_actor='repo').install(self.core,self.portal)
+        writer=wire.GatewayRegistryUnixPlanner(reader,key)
+        planner=rt.FunctionalRegistryPlanner(review=self.service,writer=writer,baseline=baseline,binding=mapping)
+        planner.install(self.portal)
         operation=str(uuid.uuid4())
-        result=comp.compose_and_append(operation_id=operation,expected_revision=0,
-            selected_main_sha=receipt['selectedMainSha'],evidence_ids=[receipt['evidenceId']])
-        self.assertEqual(result['storage']['result'],'LOCAL_DESIRED_CANDIDATE_COMMITTED')
-        page=comp.candidate_page(limit=10)
+        params={'repository':scope['repository'],'operationId':operation,
+                'evidenceId':receipt['evidenceId'],'evidenceDigest':receipt['evidenceDigest'],
+                'expectedRevision':0}
+        call=owner_input.OwnerPortalInputTests.call.__get__(self)
+        self.assertEqual(call('/v1/owner/registry/ingest',canonical(params).encode(),cookie='')[0],403)
+        self.assertEqual(call('/v1/owner/registry/ingest',canonical(params).encode())[1]['state'],'PENDING')
+        pending=self.core._read(operation)
+        evidence=pending['preview']['evidence']
+        self.assertEqual(store.checkpoint()['localCheckpoint']['revision'],0)
+        self.assertTrue(self.portal._owner_view(pending)['requiresStrongProof'])
+        with self.assertRaises(Denied):
+            runtime.call('fixture-repo',{'requestId':str(uuid.uuid4()),'service':'registry',
+                'operation':'ingest_merged','target':'fortis-approvals','params':params,'reason':'Denied'})
+        with self.assertRaises(Denied):
+            wire.GatewayRegistryUnixPlanner(reader,b'X'*32).ingest(params,evidence)
+        with self.assertRaises(Denied):
+            writer.ingest({**params,'evidenceDigest':'f'*64},evidence)
+        self.assertEqual(store.checkpoint()['localCheckpoint']['revision'],0)
+        # Simulate a lost ACK after the actual SQLite commit. Core's existing
+        # UNCERTAIN reconciliation reads the original UUID without re-dispatch.
+        real=writer.ingest
+        def lose_ack(*args):
+            real(*args)
+            raise Denied('TEST_ACK_LOST')
+        with patch.object(writer,'ingest',side_effect=lose_ack) as effect:
+            unknown=self.core.owner_decide(operation,'approve',{'requestId':operation,
+                'fingerprint':pending['fingerprint'],'decision':'approve'})
+        self.assertEqual(effect.call_count,1)
+        self.assertEqual(unknown['state'],'UNCERTAIN')
+        with patch.object(writer,'ingest',side_effect=AssertionError('no second WRITE')):
+            executed=self.core.reconcile(operation)
+        self.assertEqual(executed['state'],'EXECUTED')
+        self.assertEqual(executed['result']['result'],'LOCAL_DESIRED_CANDIDATE_COMMITTED')
+        planner.require_consumed(receipt)
+        # Same exact operation replay reads Core, not another Registry mutation.
+        self.assertEqual(planner.submit(params)['state'],'EXECUTED')
+        rid=str(uuid.uuid4())
+        self.assertEqual(runtime.call('fixture-repo',{'requestId':rid,'service':'registry',
+            'operation':'candidate_list_desired','target':'fortis-approvals',
+            'params':{'repository':scope['repository'],'limit':10,'cursor':None},
+            'reason':'Read current local candidate page'})['state'],'EXECUTED')
+        page=runtime.result('fixture-repo',rid)['data']['data']
         self.assertEqual(page['localRevision'],1)
         self.assertEqual(len(page['records']),1)
         self.assertIsNone(page['records'][0]['actual'])
-        self.assertEqual(comp.operation(operation_id=operation),result['storage'])
-        self.assertFalse(result['admissionAllowed'])
+        self.assertFalse(page['admissionAllowed'])
+        self.assertEqual(failures,[])
+
+    def test_owner_state_initialization_is_exclusive_and_restart_reads_original_pins(self):
+        root=secure_dir(self.fixture.root/'owner-state')
+        instance=str(uuid.uuid4())
+        result=rt.initialize_functional_state(root,instance)
+        self.assertEqual(result['collectorInstanceId'],instance)
+        self.assertFalse(result['enrollmentAccepted'])
+        directory=root/'registry-functional-v1'
+        capture=rt.ReviewCaptureStore(directory/'capture.sqlite')
+        pin=rt.LocalPin(directory/'capture.json')
+        self.assertEqual(capture.checkpoint(expected=pin.read())['revision'],0)
+        cp=rt.LocalPin(directory/'collector.json',instance_id=instance)
+        collector=cs.CollectorSnapshotStore(directory/'collector.sqlite',instance_id=instance,anchor_reader=cp.read)
+        self.assertEqual(collector.anchored_batch([])['checkpoint'],cs.genesis(instance))
+        for name in ('source.git','validator.git'):
+            self.assertEqual((directory/name).stat().st_mode&0o777,0o700)
+        with self.assertRaises(FileExistsError):rt.initialize_functional_state(root,instance)
+        self.assertEqual(collector.anchored_batch([])['checkpoint'],cs.genesis(instance))
 
     def test_reject_and_pin_drift_do_not_retain(self):
         self.runtime();self.prepare();self.assertEqual(self.approve('reject')['state'],'REJECTED')

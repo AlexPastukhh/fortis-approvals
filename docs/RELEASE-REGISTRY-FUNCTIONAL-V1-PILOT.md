@@ -328,3 +328,40 @@ checkpoint/witness, unattended CD, or `FUNCTIONAL_V1_GO` is implied.
 source tests or merging this file.** After E1.3 the single normative roadmap
 must be re-checked for E1.4–E5 and corrected if real host observations change
 prerequisites.
+
+### Functional local-candidate source integration
+
+The existing owner Portal now has an opt-in Registry panel. Under a separately
+reviewed v3 reader mount, the owner can create an exact-head review ASK, merge
+in GitHub after original WebAuthn approval, retain the original merge evidence,
+and create one `registry.ingest_merged` ASK. The internal planner computes the
+plan from that evidence and the pinned baseline/binding/policy using the existing
+native GitHub backend and exact shared validator revision. It sends a bounded,
+canonical authenticated request over the same private AF_UNIX endpoint. The
+separate Registry process alone owns the schema-3 SQLite write; the existing
+extension READ methods remain candidate-only. No Repo/publisher grant, GitHub
+credential in Registry, deployment, or generic SQL/evidence input is added.
+
+The local planner capability uses a separate owner-provisioned 32-byte random
+key on the two private configuration mounts (never in source, logs or Repo).
+HMAC binds the exact instance, scope, operation UUID, original evidence
+reference and derived plan. It is not an independent owner signature or
+anti-rollback witness. The current READ-only command/profile remains supported;
+the writer needs the explicit owner-reviewed `--functional-planner-key-digest`
+launch option and an exact read-only runtime config mount. Gateway profile v3
+adds the SHA256 of the canonical `functional.json` and private `planner.key`;
+the existing reviewed mount digest covers these pins. Collector journals and
+private bare object stores require a separate, exclusive owner initialization
+(`python -m fortis_approvals.integrations.github.gateway.functional_review_runtime
+--initialize-collector-instance UUID` in the reviewed Gateway image). Startup
+never creates or resets these stores. An interrupted pin advance is STOP;
+Registry lost ACK reconciles the same original UUID through Core, not another
+ingest. Process/mount/source and any existing policy-authority transition
+remain subject to the actual protected owner Check/Apply procedure.
+
+Source-only tests exercise real local Unix/SQLite and the original Core ASK
+pipeline with a synthetic provider/test verifier. They do not prove cross-UID
+host isolation, authentic GitHub merges, actual passkeys, or enrollment
+acceptance. Select the final baseline only at the reviewed cutover; the
+earlier pilot-only acceptance record is not an accepted Functional V1
+enrollment. All candidate admission/deployment/rollback claims remain false.

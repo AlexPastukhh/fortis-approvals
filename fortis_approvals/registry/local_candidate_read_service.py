@@ -2,9 +2,9 @@
 
 This is a runnable, non-deployed source cut for the FIRST functional runtime.
 The host, not a request, must select the immutable config, SQLite path,
-listener directory, reader UID/GID and process identity. The process never
-initializes/migrates the DB, invokes GitHub/Core, accepts a write, or claims
-owner/collector admission. A same-UID test is NOT cross-principal host proof.
+listener directory, reader UID/GID and process identity. The default process is READ-only. Explicit owner key opt-in adds a private
+planner CAS operation; never initializes/migrates the DB, invokes GitHub/Core,
+or claims owner/collector admission. A same-UID test is NOT cross-principal host proof.
 
 Do not package/deploy or grant this endpoint until a separate owner-approved
 non-Production host/provenance review. This is NOT registry.list_records.
@@ -16,9 +16,12 @@ import socket
 import stat
 import struct
 import sys
+import time
 
-from ..core import Denied, Stale, canonical, loads_strict
+from ..core import Conflict, Denied, Stale, canonical, loads_strict
 from ..integrations.registry.owner_pinned_pidfd import kernel_live_peer
+from ..integrations.registry.read_contract import (PLANNER_OPERATION, PLANNER_FRAME_LIMIT,
+    verify_planner_frame, private_planner_key)
 from .functional_v1_journal import FunctionalV1CandidateJournal
 from .state_journal import _hash, _need, _scope, _uuid, PLANNER
 
@@ -54,14 +57,18 @@ def _private_socket_dir(path, gid):
           'REGISTRY_PRIVATE_READ_SOCKET_DIRECTORY_DENIED')
 
 
-def _canonical_frame(connection):
+def _canonical_frame(connection, limit=_MAX_FRAME):
     previous = connection.gettimeout()
     try:
+        deadline = time.monotonic() + _TIMEOUT
         connection.settimeout(_TIMEOUT)
         collected = bytearray()
         while True:
-            data = connection.recv(min(1024, _MAX_FRAME + 2 - len(collected)))
-            _need(bool(data) and len(collected) + len(data) <= _MAX_FRAME + 1,
+            remaining = deadline - time.monotonic()
+            _need(remaining > 0, 'REGISTRY_PRIVATE_READ_FRAME_TIMEOUT')
+            connection.settimeout(remaining)
+            data = connection.recv(min(4096, limit + 2 - len(collected)))
+            _need(bool(data) and len(collected) + len(data) <= limit + 1,
                   'REGISTRY_PRIVATE_READ_FRAME_DENIED')
             collected.extend(data)
             if b'\n' in data:
@@ -70,10 +77,13 @@ def _canonical_frame(connection):
                       'REGISTRY_PRIVATE_READ_FRAME_DENIED')
                 break
         # Client must half-close; no request pipelining or trailing junk.
+        remaining = deadline - time.monotonic()
+        _need(remaining > 0, 'REGISTRY_PRIVATE_READ_FRAME_TIMEOUT')
+        connection.settimeout(remaining)
         _need(connection.recv(1) == b'',
               'REGISTRY_PRIVATE_READ_TRAILING_REQUEST')
         raw = bytes(collected[:-1])
-        _need(0 < len(raw) <= _MAX_FRAME,
+        _need(0 < len(raw) <= limit,
               'REGISTRY_PRIVATE_READ_FRAME_DENIED')
         try:
             value = loads_strict(raw)
@@ -150,7 +160,7 @@ class PrivateCandidateReadService:
     reader peer identity is checked by Linux SO_PEERCRED, not JSON fields.
     """
 
-    def __init__(self, *, store, socket_path, reader_uid, reader_gid):
+    def __init__(self, *, store, socket_path, reader_uid, reader_gid, planner_key=None):
         _need(type(store) is FunctionalV1CandidateJournal
               and type(reader_uid) is int and 0 < reader_uid < 2**31
               and type(reader_gid) is int and 0 < reader_gid < 2**31
@@ -166,6 +176,9 @@ class PrivateCandidateReadService:
         self._path = path
         self._uid = reader_uid
         self._gid = reader_gid
+        _need(planner_key is None or type(planner_key) is bytes and len(planner_key) == 32,
+              'REGISTRY_PLANNER_KEY_DENIED')
+        self._planner_key = planner_key
         self._endpoint = None
         _private_socket_dir(path, self._gid)
         # Startup MUST read/replay existing schema 3; do not bootstrap.
@@ -241,7 +254,12 @@ class PrivateCandidateReadService:
                           reader_gid=self._gid)
         _need(peer[1:3] == (self._uid, self._gid),
               'REGISTRY_PRIVATE_READ_PEER_DENIED')
-        request = _canonical_frame(connection)
+        request = _canonical_frame(connection, PLANNER_FRAME_LIMIT if
+                                   self._planner_key is not None else _MAX_FRAME)
+        if type(request) is dict and request.get('operation') == PLANNER_OPERATION:
+            return self._ingest(connection, request, before, peer)
+        _need(len(canonical(request).encode('utf-8')) <= _MAX_FRAME,
+              'REGISTRY_PRIVATE_READ_FRAME_DENIED')
         op, params = _request(request, self._store)
         head = self._head()
         if op == 'candidate.capabilities':
@@ -289,6 +307,40 @@ class PrivateCandidateReadService:
         except (OSError, TimeoutError):
             raise Denied('REGISTRY_PRIVATE_READ_SEND_UNAVAILABLE') from None
 
+    def _ingest(self, connection, request, endpoint, peer):
+        # Same confined Registry process and SQLite, separate authenticated
+        # planner capability. A READ peer or forged actor field is insufficient.
+        _need(self._planner_key is not None, 'REGISTRY_PLANNER_WRITE_DISABLED')
+        params, evidence = verify_planner_frame(self._planner_key, request,
+            instance_id=self._store.instance_id, scope_digest=_hash(self._store.scope))
+        _need(self._check_endpoint() == endpoint
+              and _real_peer(connection, reader_uid=self._uid,
+                             reader_gid=self._gid) == peer,
+              'REGISTRY_PLANNER_PEER_CHANGED')
+        def original(reference):
+            _need(reference == params['evidenceId'], 'REGISTRY_PLANNER_EVIDENCE_ID_DENIED')
+            return evidence
+        writer = FunctionalV1CandidateJournal(self._store.path,
+            instance_id=self._store.instance_id, scope=self._store.scope, plan_reader=original)
+        result = writer.append_range(actor=PLANNER, operation_id=params['operationId'],
+            evidence_id=params['evidenceId'], evidence_digest=_hash(evidence),
+            expected_revision=params['expectedRevision'])
+        # If peer/endpoint changes after commit, no success ACK. Recover by UUID.
+        _need(self._check_endpoint() == endpoint
+              and _real_peer(connection, reader_uid=self._uid,
+                             reader_gid=self._gid) == peer,
+              'REGISTRY_PLANNER_PEER_CHANGED')
+        wire = canonical({'schemaVersion':1, 'operation':PLANNER_OPERATION,
+            'instanceId':self._store.instance_id, 'scopeDigest':_hash(self._store.scope),
+            'requestId':params['operationId'], 'data':result}).encode('utf-8')+b'\n'
+        _need(len(wire) <= _MAX_REPLY+1, 'REGISTRY_PLANNER_REPLY_LIMIT')
+        try:
+            connection.settimeout(_TIMEOUT)
+            connection.sendall(wire)
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            raise Denied('REGISTRY_PLANNER_ACK_UNKNOWN') from None
+
     def serve(self, *, max_connections=None):
         """Foreground Unix listener. Tests cap requests; host owns lifecycle."""
         _need(max_connections is None or
@@ -303,7 +355,7 @@ class PrivateCandidateReadService:
                     with connection:
                         try:
                             self.handle(connection)
-                        except (Denied, Stale, OSError):
+                        except (Conflict, Denied, Stale, OSError):
                             # No error payload that could be mistaken for a
                             # valid queue, negative receipt or owner decision.
                             pass
@@ -360,8 +412,25 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description='Inactive Registry candidate read-only private socket')
     parser.add_argument('--owner-config', required=True)
+    parser.add_argument('--functional-planner-key-digest')
     args = parser.parse_args(argv)
     cfg = _load_owner_config(args.owner_config)
+    planner_key=None
+    if args.functional_planner_key_digest is not None:
+        # Default image command remains READ-only. Owner must launch the exact
+        # functional profile with its own scoped GO, fixed RO configuration
+        # volume and matching private key digest.
+        config=Path('/run/fortis-registry-runtime/profile.json')
+        _need(args.owner_config==str(config) and
+              os.statvfs(config.parent).f_flag & os.ST_RDONLY,
+              'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
+        mountinfo=Path('/proc/self/mountinfo').read_bytes()
+        mounts=[line.split(b' - ',1)[0].split() for line in mountinfo.splitlines()]
+        matches=[f for f in mounts if len(f)>5 and f[4]==os.fsencode(config.parent)]
+        _need(len(matches)==1 and b'ro' in matches[0][5].split(b','),
+              'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
+        planner_key=private_planner_key(config.parent/'planner.key',
+                                       args.functional_planner_key_digest)
     def read_disabled(_):
         raise Denied('REGISTRY_PRIVATE_READ_WRITE_DISABLED')
     store = FunctionalV1CandidateJournal(
@@ -369,7 +438,7 @@ def main(argv=None):
         scope=cfg['scope'], plan_reader=read_disabled)
     service = PrivateCandidateReadService(
         store=store, socket_path=cfg['socketPath'],
-        reader_uid=cfg['readerUid'], reader_gid=cfg['readerGid'])
+        reader_uid=cfg['readerUid'], reader_gid=cfg['readerGid'],planner_key=planner_key)
     service.serve()
     return 0
 

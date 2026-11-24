@@ -286,3 +286,99 @@ def validate_gateway_read_projection(operation, data):
     _need(len(canonical(data).encode('utf-8')) <= 8192,
           'REGISTRY_GATEWAY_PROJECTION_DENIED')
     return data
+
+
+# Internal Functional V1 planner handoff. Never a public READ or Repo action.
+# HMAC authenticates the private Gateway/Registry pair in this limited local
+# trust model; it is not an independent owner signature or rollback witness.
+PLANNER_OPERATION = 'registry.ingest_merged'
+PLANNER_ACTOR = 'release-registry-planner-v1'
+PLANNER_FRAME_LIMIT = 262144
+
+
+def planner_params(params):
+    _need(type(params) is dict and set(params) == {
+        'repository', 'operationId', 'evidenceId', 'evidenceDigest', 'expectedRevision'}
+        and params['repository'] == REPOSITORY
+        and _uuid(params['operationId']) and _uuid(params['evidenceId'])
+        and _hex(params['evidenceDigest'], 64)
+        and type(params['expectedRevision']) is int
+        and 0 <= params['expectedRevision'] < 64,
+        'REGISTRY_PLANNER_PARAMS_DENIED')
+    return params
+
+
+def planner_mac(key, value):
+    import hmac
+    _need(type(key) is bytes and len(key) == 32, 'REGISTRY_PLANNER_KEY_DENIED')
+    return hmac.new(key, b'fortis-functional-v1-planner\0' +
+                    canonical(value).encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def planner_frame(key, *, instance_id, scope_digest, params, evidence):
+    """Create private authenticated transport, never accept a caller plan."""
+    planner_params(params)
+    _need(_uuid(instance_id) and _hex(scope_digest, 64), 'REGISTRY_PLANNER_SCOPE_DENIED')
+    body = {'schemaVersion': 1, 'operation': PLANNER_OPERATION,
+            'instanceId': instance_id, 'scopeDigest': scope_digest,
+            'requestId': params['operationId'], 'params': params, 'evidence': evidence}
+    frame = {**body, 'mac': planner_mac(key, body)}
+    _need(len(canonical(frame).encode('utf-8')) <= PLANNER_FRAME_LIMIT,
+          'REGISTRY_PLANNER_FRAME_LIMIT')
+    return frame
+
+
+def verify_planner_frame(key, frame, *, instance_id, scope_digest):
+    import hmac
+    _need(type(frame) is dict and set(frame) == {
+        'schemaVersion', 'operation', 'instanceId', 'scopeDigest',
+        'requestId', 'params', 'evidence', 'mac'}
+        and _hex(frame['mac'], 64), 'REGISTRY_PLANNER_FRAME_DENIED')
+    body = {k:v for k,v in frame.items() if k != 'mac'}
+    _need(hmac.compare_digest(frame['mac'], planner_mac(key, body)),
+          'REGISTRY_PLANNER_AUTHENTICATION_DENIED')
+    params = planner_params(body['params'])
+    _need(type(body['schemaVersion']) is int and body['schemaVersion'] == 1
+          and body['operation'] == PLANNER_OPERATION
+          and body['instanceId'] == instance_id
+          and body['scopeDigest'] == scope_digest
+          and body['requestId'] == params['operationId'],
+          'REGISTRY_PLANNER_SCOPE_DENIED')
+    evidence = body['evidence']
+    try:
+        audit = evidence['plan']['observation']['mergeAudit']
+        _need(type(audit) is list and len(audit) == 1
+              and audit[0]['evidenceId'] == params['evidenceId']
+              and audit[0]['evidenceDigest'] == params['evidenceDigest']
+              and evidence['evidenceId'] == params['evidenceId'],
+              'REGISTRY_PLANNER_ORIGINAL_EVIDENCE_DENIED')
+    except (KeyError, TypeError, IndexError):
+        raise Denied('REGISTRY_PLANNER_ORIGINAL_EVIDENCE_DENIED') from None
+    return params, evidence
+
+
+def private_planner_key(path, expected_digest=None):
+    """Read only an owner-provisioned exact 32-byte private key, never log it."""
+    import os
+    import stat
+    from pathlib import Path
+    path = Path(path)
+    _need(path.is_absolute() and path.parent.resolve() == path.parent,
+          'REGISTRY_PLANNER_KEY_PATH')
+    try:
+        parent = path.parent.lstat()
+        _need(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.geteuid()
+              and stat.S_IMODE(parent.st_mode) == 0o700, 'REGISTRY_PLANNER_KEY_PATH')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, 'rb') as stream:
+            row = os.fstat(stream.fileno())
+            _need(stat.S_ISREG(row.st_mode) and row.st_uid == os.geteuid()
+                  and stat.S_IMODE(row.st_mode) == 0o600 and row.st_nlink == 1
+                  and row.st_size == 32, 'REGISTRY_PLANNER_KEY_DENIED')
+            key = stream.read(33)
+        _need(len(key) == 32 and (expected_digest is None or
+              hashlib.sha256(key).hexdigest() == expected_digest),
+              'REGISTRY_PLANNER_KEY_DENIED')
+        return key
+    except OSError:
+        raise Denied('REGISTRY_PLANNER_KEY_UNAVAILABLE') from None

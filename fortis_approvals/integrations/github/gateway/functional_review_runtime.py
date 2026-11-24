@@ -10,9 +10,10 @@ import os
 from pathlib import Path
 import stat
 import threading
+from contextlib import contextmanager
 import uuid
 
-from ....core import Denied, canonical, loads_strict
+from ....core import Denied, Stale, canonical, loads_strict
 from ....incidents import IncidentCore
 from .adapter import GitHubAdapter
 from .collector_snapshot import CollectorSnapshotStore, REPOSITORY
@@ -117,6 +118,8 @@ class FunctionalReviewRuntime:
         self.capture_pin,self.collector_pin=capture_pin,collector_pin
         self.owner,self.policy_reader,self.policy_digest=owner,policy_reader,policy_digest
         self.lock=threading.RLock()
+        self.planner=None
+        self.native_backend=None
         self.policy=policy_reference(policy_reader,policy_digest)
         self.capture.checkpoint(expected=self.capture_pin.read())
         _need(self.collector.anchored_batch([])['checkpoint']==self.collector_pin.read(),
@@ -191,7 +194,9 @@ class FunctionalReviewRuntime:
                 _need(state not in ('PENDING','APPROVED','DISPATCHED','UNCERTAIN'),
                       'P5_RUNTIME_REVIEW_IN_FLIGHT')
                 if state=='EXECUTED':
-                    self.collector.receipt(str(uuid.uuid5(uuid.UUID(rid),'p5-functional-collector-v1')))
+                    retained=self.collector.receipt(str(uuid.uuid5(uuid.UUID(rid),'p5-functional-collector-v1')))
+                    if self.planner is not None:
+                        self.planner.require_consumed(retained)
             capture_id=str(uuid.uuid5(uuid.UUID(request_id),'p5-functional-capture-v1'))
             receipt=self.capture.operation(capture_id)
             if receipt is not None:
@@ -250,6 +255,8 @@ class FunctionalReviewRuntime:
                 _need(old['ownerRequestId']==request_id,'P5_RUNTIME_RETAIN_REPLAY_MISMATCH')
                 return old
             merge=self._main()
+            if self.native_backend is not None:
+                _refresh_private_objects(self.native_backend,self.validator,merge)
             result=self.collector.retain(evidence_id=eid,expected_revision=cp['revision'],
                 owner_request_id=request_id,selected_main_sha=merge,adapter=self.provider,
                 store=self.capture,core=self.core,checkpoint_reader=self.capture_pin.read,
@@ -263,3 +270,340 @@ class FunctionalReviewRuntime:
             _need(final['evidenceDigest']==result['evidenceDigest'] and final['ownerRequestId']==request_id,
                   'P5_RUNTIME_RETAIN_READBACK')
             return final
+
+
+class FunctionalRegistryPlanner:
+    """One exact retained merge -> reviewed Core ASK -> private Registry CAS.
+
+    Keep the reader's original Core extension adapter; no Repo WRITE grant.
+    The authenticated internal planner sends derived evidence, not client DTOs.
+    The existing local candidate receipt is never labeled installed/admitted.
+    """
+    service = 'registry'
+    operation = 'ingest_merged'
+
+    def __init__(self, *, review, writer, baseline, binding):
+        from ...registry.candidate_gateway import GatewayRegistryUnixPlanner, PinnedRegistryCursor
+        from ...registry.read_contract import PLANNER_ACTOR
+        from .forward_lineage import _baseline
+        from .component_bindings import _mapping
+        _need(type(review) is FunctionalReviewRuntime and
+              type(writer) is GatewayRegistryUnixPlanner and
+              review.core.auth.active(PLANNER_ACTOR), 'P5_PLANNER_COMPOSITION_REQUIRED')
+        self.review, self.writer, self.core = review, writer, review.core
+        self._baseline_raw = canonical(baseline)
+        self._binding_raw = canonical(binding)
+        self.baseline_digest = _hash(baseline)
+        ref = _baseline(self.baseline, self.baseline_digest)
+        _need(all(ref[k]==review.policy[k] for k in (
+            'repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
+            'P5_PLANNER_BASELINE_POLICY_MISMATCH')
+        _mapping(self.binding,ref)
+        scope = {k:ref[k] for k in (
+            'repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
+        scope.update(baselineDigest=self.baseline_digest,policyReferenceDigest=review.policy_digest)
+        self.cursor= PinnedRegistryCursor(writer.reader,scope)
+        self.actor=PLANNER_ACTOR
+        self.delegate=None
+
+    def baseline(self):
+        return loads_strict(self._baseline_raw)
+
+    def binding(self):
+        return loads_strict(self._binding_raw)
+
+    def install(self, portal):
+        _need(portal.core is self.core and portal.auth is self.core.owner_verifier
+              and getattr(portal,'_registry_review_runtime',None) is self.review
+              and getattr(portal,'_registry_planner_runtime',None) is None
+              and self.service in self.core.adapters
+              and not any(self.service in k and self.operation in k for k in self.core.policies),
+              'P5_PLANNER_ALREADY_BOUND')
+        from ....extensions.runtime import ExtensionAdapter
+        self.delegate=self.core.adapters[self.service]
+        _need(type(self.delegate) is ExtensionAdapter
+              and self.delegate.provider.api is self.writer.reader
+              and self.review.planner is None, 'P5_PLANNER_READER_BINDING')
+        self.review.planner=self
+        self.core.adapters[self.service]=self
+        self.core.policies[(self.actor,self.service,self.operation,PILOT)]=self.inner_policy
+        portal.strong_operations |= {(self.service,self.operation)}
+        portal._registry_planner_runtime=self
+
+    def require_consumed(self, retained):
+        # Serial functional pilot: don't accept another PR for review until
+        # the preceding merged source has an exact executed Registry receipt.
+        with self.core._db() as db:
+            rows=db.execute('SELECT id FROM requests WHERE actor=? AND state=?',
+                            (self.actor,'EXECUTED')).fetchall()
+        for (rid,) in rows:
+            row=self.core._read(rid)
+            params=self._params(row['request'])
+            if (params['evidenceId']==retained['evidenceId']
+                    and params['evidenceDigest']==retained['evidenceDigest']):
+                _need(self.receipt(rid)==row['result'], 'P5_PLANNER_PRIOR_RECEIPT_CHANGED')
+                return
+        raise Denied('P5_PLANNER_PRIOR_MERGE_NOT_INGESTED')
+
+    @contextmanager
+    def _prepare_lock(self):
+        # Core.prepare runs with the Core DB write reservation. Review
+        # submission holds the review lock before entering Core. Refuse
+        # contention rather than deadlock in inverted lock order.
+        if not self.review.lock.acquire(blocking=False):
+            raise Stale('P5_PLANNER_REVIEW_BUSY')
+        try:
+            yield
+        finally:
+            self.review.lock.release()
+
+    def _params(self, payload):
+        from ...registry.read_contract import planner_params
+        _need(payload['service']==self.service and payload['operation']==self.operation
+              and payload['target']==PILOT, 'P5_PLANNER_SCOPE_DENIED')
+        params=planner_params(payload['params'])
+        _need(payload['requestId']==params['operationId']
+              and payload['expectedVersion']==params['expectedRevision'],
+              'P5_PLANNER_OPERATION_ID_DENIED')
+        return params
+
+    def inner_policy(self, actor, payload):
+        if payload.get('operation')!=self.operation:
+            check=getattr(self.delegate,'inner_policy',None)
+            return check(actor,payload) if callable(check) else 'DENY'
+        # Unified owner policy may further deny, never convert this mandatory
+        # owner ASK to ALLOW. No public ingress registers this internal actor.
+        try:
+            self._params(payload)
+            return 'ASK' if actor==self.actor and self.core.auth.active(actor) else 'DENY'
+        except (Denied,KeyError,TypeError):
+            return 'DENY'
+
+    def submit(self, params):
+        from ...registry.read_contract import planner_params
+        params=planner_params(params)
+        payload={'requestId':params['operationId'],'service':self.service,
+            'operation':self.operation,'target':PILOT,'params':params,
+            'expectedVersion':params['expectedRevision'],
+            'reason':'Owner ASK for one retained merge into isolated Functional V1 Registry; no deployment'}
+        _need(self.core._policy(self.actor,payload)=='ASK','P5_PLANNER_ASK_REQUIRED')
+        row=self.core.submit(self.actor,payload)
+        return {'requestId':row['requestId'],'state':row['state'],
+                'deploymentAllowed':False,'admissionAllowed':False}
+
+    def prepare(self, payload):
+        if payload.get('operation')!=self.operation:
+            return self.delegate.prepare(payload)
+        from . import admission_plan
+        from ...registry.read_contract import PLANNER_FRAME_LIMIT
+        params=self._params(payload)
+        with self._prepare_lock():
+            self.review._policy()
+            head=self.cursor.checkpoint()
+            if head['localCheckpoint']['revision']!=params['expectedRevision']:
+                raise Stale('P5_PLANNER_REVISION_CHANGED')
+            cp=self.review.collector_pin.read()
+            original=self.review.collector.receipt(params['evidenceId'])
+            _need(original['evidenceDigest']==params['evidenceDigest']
+                  and original['policyReferenceDigest']==self.review.policy_digest
+                  and original['checkpoint']==cp,
+                  'P5_PLANNER_ORIGINAL_EVIDENCE_CHANGED')
+            decision=read_bound_owner_decision(self.core,original['ownerRequestId'],owner=self.review.owner)
+            _need(decision['result']=='OWNER_BUNDLE_DECISION_BOUND',
+                  'P5_PLANNER_ORIGINAL_OWNER_REQUIRED')
+            kwargs=dict(adapter=self.review.provider,journal=self.review.collector,
+                validator=self.review.validator,baseline_reader=self.baseline,
+                expected_baseline_digest=self.baseline_digest,policy_reader=self.review.policy_reader,
+                expected_policy_digest=self.review.policy_digest,binding_reader=self.binding,
+                selected_main_sha=original['selectedMainSha'],evidence_ids=[params['evidenceId']])
+            if params['expectedRevision']==0:
+                _need(head['candidateCursor']==self.baseline()['baselineSha'],
+                      'P5_PLANNER_GENESIS_CURSOR')
+                plan=admission_plan.observe_initial_plan(**kwargs)
+            else:
+                plan=admission_plan.observe_suffix_plan(cursor_reader=self.cursor.checkpoint,**kwargs)
+            evidence={'schemaVersion':1,'issuer':'release-registry-collector-v1',
+                'repository':REPOSITORY,'evidenceId':params['evidenceId'],'plan':plan}
+            _need(len(canonical(evidence).encode())<=PLANNER_FRAME_LIMIT-4096
+                  and self.cursor.checkpoint()==head
+                  and self.review.collector_pin.read()==cp
+                  and self.review.collector.receipt(params['evidenceId'])==original,
+                  'P5_PLANNER_PREVIEW_CHANGED')
+            return {'purpose':'FUNCTIONAL_V1_LOCAL_CANDIDATE_INGEST',
+                    'before':head,'collectorCheckpoint':cp,'evidence':evidence,
+                    'deploymentAllowed':False,'admissionAllowed':False}
+
+    def apply(self, payload):
+        if payload.get('operation')!=self.operation:
+            return self.delegate.apply(payload)
+        params=self._params(payload)
+        with self.review.lock:
+            row=self.core._read(payload['requestId'])
+            _need(row['request']==payload and row['actor']==self.actor
+                  and row['state']=='DISPATCHED' and row['decision']=='approve'
+                  and row['owner']==self.review.owner,'P5_PLANNER_CORE_DISPATCH_REQUIRED')
+            preview=row['preview']
+            # Core already recomputed the complete preview before dispatch.
+            # Recheck only mutable edges, never recompute or substitute a plan
+            # AFTER owner approval. The Registry independently checks CAS.
+            self.review._policy()
+            if (self.cursor.checkpoint()!=preview['before']
+                    or self.review.collector_pin.read()!=preview['collectorCheckpoint']
+                    or self.review._main()!=preview['evidence']['plan']['observation']['selectedMainSha']):
+                raise Stale('P5_PLANNER_DISPATCH_STALE')
+            return self.writer.ingest(params,preview['evidence'])
+
+    def confirm(self, request_id, result):
+        row=self.core._read(request_id)
+        if row['request'].get('operation')!=self.operation:
+            return self.delegate.confirm(request_id,result)
+        return self.receipt(request_id)==result and result is not None
+
+    def receipt(self, request_id):
+        row=self.core._read(request_id)
+        if row['request'].get('operation')!=self.operation:
+            return self.delegate.receipt(request_id)
+        _need(row['actor']==self.actor and row['decision']=='approve'
+              and row['owner']==self.review.owner, 'P5_PLANNER_CORE_RECEIPT_REQUIRED')
+        return self.writer.lookup(self._params(row['request']),row['preview']['evidence'])
+
+
+class FunctionalRegistryConfiguration:
+    """Owner-sealed configuration for the explicit local-candidate mode.
+
+    Not enrollment approval. No path, key or topology can be selected by an
+    HTTP caller. The release controller pins the outer immutable profile.
+    """
+    def __init__(self, value, key, *, scope_digest):
+        from .forward_lineage import _baseline
+        from .component_bindings import _mapping
+        _need(type(value) is dict and set(value)=={'schemaVersion','collectorInstanceId',
+              'baseline','binding','policyReference','validatorRevision'}
+              and type(value['schemaVersion']) is int and value['schemaVersion']==1
+              and _uuid(value['collectorInstanceId']) and _hex(value['validatorRevision'],40)
+              and type(key) is bytes and len(key)==32, 'P5_FUNCTIONAL_CONFIG_INVALID')
+        baseline=_baseline(lambda:value['baseline'],_hash(value['baseline']))
+        policy=policy_reference(lambda:value['policyReference'],_hash(value['policyReference']))
+        _mapping(lambda:value['binding'],baseline)
+        _need(all(baseline[k]==policy[k] for k in (
+            'repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
+            'P5_FUNCTIONAL_CONFIG_SCOPE')
+        scope={k:baseline[k] for k in (
+            'repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
+        scope.update(baselineDigest=_hash(baseline),policyReferenceDigest=_hash(policy))
+        _need(_hash(scope)==scope_digest,'P5_FUNCTIONAL_CONFIG_SCOPE')
+        self._raw=canonical(value)
+        self._key=key
+        self.digest=_hash(value)
+
+    @property
+    def value(self):
+        return loads_strict(self._raw)
+
+    def install(self, *, core, portal, reader, native, root):
+        from ....workflow.adapters import NativeGitHubAdapter
+        from ....workflow.git_backend import GitHubGitBackend
+        from ...registry.candidate_gateway import GatewayRegistryUnixPlanner
+        value=self.value
+        provider=native['adapter']
+        _need(type(provider) is NativeGitHubAdapter and
+              type(provider.backend) is GitHubGitBackend and provider.observation_core is core,
+              'P5_FUNCTIONAL_NATIVE_REQUIRED')
+        # Startup opens only the previously owner-provisioned private state.
+        state=Path(root)/'registry-functional-v1'
+        _private(state,directory=True)
+        capture=ReviewCaptureStore(state/'capture.sqlite')
+        capture_pin=LocalPin(state/'capture.json')
+        cid=value['collectorInstanceId']
+        collector_pin=LocalPin(state/'collector.json',instance_id=cid)
+        collector=CollectorSnapshotStore(state/'collector.sqlite',instance_id=cid,
+                                         anchor_reader=collector_pin.read)
+        validator=RetainedImpactValidator(validator_repository=state/'validator.git',
+            validator_revision=value['validatorRevision'],source_repository=state/'source.git',
+            state_root=state)
+        review=FunctionalReviewRuntime(core=core,provider=provider,capture=capture,
+            capture_pin=capture_pin,collector=collector,collector_pin=collector_pin,
+            validator=validator,owner=portal.auth.owner,
+            policy_reader=lambda:self.value['policyReference'],
+            policy_digest=_hash(value['policyReference']))
+        review.native_backend=provider.backend
+        review.install(portal)
+        planner=FunctionalRegistryPlanner(review=review,
+            writer=GatewayRegistryUnixPlanner(reader,self._key),
+            baseline=value['baseline'],binding=value['binding'])
+        planner.install(portal)
+
+
+def initialize_functional_state(root, collector_instance):
+    """Explicit owner-only fresh state initialization, never invoked on startup."""
+    from ....workflow.common import Git
+    from .collector_snapshot import genesis
+    _need(_uuid(collector_instance),'P5_FUNCTIONAL_COLLECTOR_ID')
+    parent=Path(root)
+    _need(parent.is_absolute() and parent.resolve()==parent,'P5_FUNCTIONAL_STATE_PATH')
+    _private(parent,directory=True)
+    state=parent/'registry-functional-v1'
+    state.mkdir(mode=0o700,exist_ok=False)
+    def put(name,value):
+        fd=os.open(state/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'wb') as stream:
+            stream.write(canonical(value).encode());stream.flush();os.fsync(stream.fileno())
+    capture=ReviewCaptureStore.initialize(state/'capture.sqlite')
+    put('capture.json',capture.checkpoint())
+    put('collector.json',genesis(collector_instance))
+    cp=LocalPin(state/'collector.json',instance_id=collector_instance)
+    CollectorSnapshotStore.initialize(state/'collector.sqlite',instance_id=collector_instance,
+                                     anchor_reader=cp.read)
+    git=Git(state/'git-initialize')
+    for name in ('source.git','validator.git'):
+        git.run(['init','--bare','--template=',state/name])
+        (state/name).chmod(0o700)
+    fd=os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    return {'result':'P5_FUNCTIONAL_LOCAL_COLLECTOR_GENESIS','collectorInstanceId':collector_instance,
+            'enrollmentAccepted':False,'admissionAllowed':False,'deploymentAllowed':False}
+
+
+def _refresh_private_objects(backend, validator, selected_main):
+    """Reuse Gateway's native authenticated fixed-repo Git backend, raw Git only."""
+    from ....workflow.git_backend import GitHubGitBackend
+    _need(type(backend) is GitHubGitBackend and backend.owner+'/'+PILOT==REPOSITORY,
+          'P5_FUNCTIONAL_GIT_BACKEND_REQUIRED')
+    with backend.lock:
+        for name,path,pin,exact in (
+            (PILOT,validator.source,selected_main,True),
+            ('fortis-container',validator.code,validator.revision,False),
+        ):
+            _private(path,directory=True)
+            git=backend.git
+            _need(git.text(['rev-parse','--is-bare-repository'],cwd=path)=='true'
+                  and not (path/'shallow').exists()
+                  and not (path/'objects/info/alternates').exists()
+                  and not git.text(['for-each-ref','refs/replace'],cwd=path),
+                  'P5_FUNCTIONAL_GIT_OBJECT_STORE')
+            ref='refs/heads/verified-main'
+            code,raw=git.run(['rev-parse','--verify',ref],cwd=path,ok=(0,128))
+            current=raw.decode('ascii').strip() if code==0 else None
+            def present():
+                if current is None:return False
+                if exact:return current==pin
+                return git.run(['--no-replace-objects','merge-base','--is-ancestor',pin,current],
+                               cwd=path,ok=(0,1,128))[0]==0
+            if not present():
+                with backend.credentials(name) as config:
+                    backend._fetch(name,path,'main',ref,config)
+                current=git.text(['rev-parse','--verify',ref],cwd=path)
+            _need(present() and git.text(['--no-replace-objects','cat-file','-t',pin],
+                                       cwd=path)=='commit','P5_FUNCTIONAL_GIT_PIN_MISMATCH')
+
+
+if __name__=='__main__':
+    # Owner may run this once in the reviewed Gateway image and exclusively
+    # attached private state volume. Never a default server/startup action.
+    import argparse
+    parser=argparse.ArgumentParser(description='Initialize fresh owner-scoped local collector journals only')
+    parser.add_argument('--initialize-collector-instance',required=True)
+    args=parser.parse_args()
+    _need(os.geteuid()==10001 and os.getegid()==10001,'P5_FUNCTIONAL_OWNER_RUNTIME_IDENTITY')
+    print(canonical(initialize_functional_state('/state/private',args.initialize_collector_instance)))

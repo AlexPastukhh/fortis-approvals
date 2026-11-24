@@ -94,7 +94,8 @@ def load_owner_registry_reader(*, expected_release_nonce,
             or stat.S_IMODE(meta.st_mode) != 0o700):
         _stop('DIRECTORY_DENIED')
     try:
-        if len(list(root.iterdir())) != 1 or not (root / _FILE).exists():
+        files={p.name for p in root.iterdir()}
+        if files not in ({_FILE},{_FILE,'functional.json','planner.key'}):
             _stop('FILES_DENIED')
         # Neither a process running as Gateway UID nor an untrusted Repo actor
         # can rewrite the owner-pinned mount while it is active.
@@ -110,12 +111,15 @@ def load_owner_registry_reader(*, expected_release_nonce,
         if len(raw) != info.st_size:
             _stop('FILE_CHANGED')
         value = loads_strict(raw)
-        if (type(value) is not dict or set(value) != _FIELDS
+        functional=(type(value) is dict and value.get('schemaVersion')==3)
+        fields=_FIELDS | {'functionalConfigSha256','plannerKeySha256'} if functional else _FIELDS
+        if (type(value) is not dict or set(value) != fields
                 or canonical(value).encode('utf-8') != raw
                 or type(value['schemaVersion']) is not int
-                or value['schemaVersion'] != 2
+                or value['schemaVersion'] not in (2,3)
+                or files!=({_FILE,'functional.json','planner.key'} if functional else {_FILE})
                 or value['enabled'] is not True
-                or value['purpose'] != 'registry-candidate-read-v1'
+                or value['purpose'] != ('registry-functional-local-candidate-v1' if functional else 'registry-candidate-read-v1')
                 or not _uuid(value['releaseNonce'])
                 or value['releaseNonce'] != expected_release_nonce
                 or not _hex(value['gatewaySourceDigest'])
@@ -138,6 +142,26 @@ def load_owner_registry_reader(*, expected_release_nonce,
             reader_uid=value['readerUid'], reader_gid=value['readerGid'],
             socket_device=value['socketDevice'], socket_inode=value['socketInode'])
         reader._check_socket()
+        if functional:
+            from .integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
+            from .integrations.registry.read_contract import private_planner_key
+            if not _hex(value['functionalConfigSha256']) or not _hex(value['plannerKeySha256']):
+                _stop('FUNCTIONAL_PIN_DENIED')
+            fd=os.open(root/'functional.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            with os.fdopen(fd,'rb') as stream:
+                info=os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                        or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1
+                        or not 0<info.st_size<=65536):
+                    _stop('FUNCTIONAL_FILE_DENIED')
+                raw_config=stream.read(65537)
+            parsed=loads_strict(raw_config)
+            if (len(raw_config)!=info.st_size or canonical(parsed).encode()!=raw_config
+                    or hashlib.sha256(raw_config).hexdigest()!=value['functionalConfigSha256']):
+                _stop('FUNCTIONAL_PIN_DENIED')
+            key=private_planner_key(root/'planner.key',value['plannerKeySha256'])
+            reader._functional_config=FunctionalRegistryConfiguration(parsed,key,
+                scope_digest=value['scopeDigest'])
         # Verify our mounted identity and current source still match. This is
         # NOT a substitute for the independent owner-host mount/UID audit.
         if (root.lstat().st_ino != meta.st_ino

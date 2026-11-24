@@ -406,8 +406,9 @@ class IncidentOwnerPortal(OwnerShellPortal):
         post_policy_review=(method=='POST' and path in (
             '/v1/owner/policy/review/begin','/v1/owner/policy/review/finish'))
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
+        get_registry=method=='GET' and path=='/v1/owner/registry/capabilities'
         post_registry=method=='POST' and path in (
-            '/v1/owner/registry/review','/v1/owner/registry/retain')
+            '/v1/owner/registry/review','/v1/owner/registry/retain','/v1/owner/registry/ingest')
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
             '/v1/owner/incidents/close/simple',
@@ -416,7 +417,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
         if not (get_inventory or post_policy_preview or get_policy_review_caps or
-                post_policy_review or get_unresolved or post_incident or post_registry):
+                post_policy_review or get_unresolved or post_incident or post_registry or get_registry):
             return super().__call__(env,start)
         try:
             if (env.get('HTTP_HOST') != self.host or env.get('QUERY_STRING') or
@@ -436,6 +437,15 @@ class IncidentOwnerPortal(OwnerShellPortal):
                         'kind':'OWNER_POLICY_DRAFT_REVIEW_ONLY','requiresStrongWebAuthn':True,
                         'canApply':False})
                 return self._reply(start,200,self._policy_review.capabilities())
+            if get_registry:
+                self.auth.session(token)
+                planner=getattr(self,'_registry_planner_runtime',None)
+                configured=planner is not None and not self.read_only_banner
+                result={'configured':configured,'deploymentAllowed':False,'admissionAllowed':False}
+                if configured:
+                    result['repository']=planner.baseline()['repository']
+                    result['localRevision']=planner.cursor.checkpoint()['localCheckpoint']['revision']
+                return self._reply(start,200,result)
             if get_unresolved:
                 self.auth.session(token)
                 rows=self.core.owner_unresolved()
@@ -455,6 +465,11 @@ class IncidentOwnerPortal(OwnerShellPortal):
                     result=runtime.prepare_review(request_id=body['requestId'],number=body['number'],expected_head_sha=body['headSha'])
                 elif path=='/v1/owner/registry/retain' and set(body)=={'requestId'}:
                     result=runtime.retain_merge(request_id=body['requestId'])
+                elif path=='/v1/owner/registry/ingest':
+                    planner=getattr(self,'_registry_planner_runtime',None)
+                    if planner is None:
+                        raise Denied('OWNER_REGISTRY_PLANNER_NOT_CONFIGURED')
+                    result=planner.submit(body)
                 else:
                     raise Denied('OWNER_REGISTRY_REVIEW_SCHEMA')
                 return self._reply(start,200,result)
