@@ -155,6 +155,37 @@ class RegistryTrustedMountTests(unittest.TestCase):
                     registry_boot_id=_boot_id(), reader_uid=os.geteuid()+11,
                     reader_gid=os.getegid()+12,socket_device=55,socket_inode=66)
 
+    def test_return_preflight_requires_same_sealed_material_and_live_replacement(self):
+        old = {**self.profile, 'schemaVersion': 3,
+               'functionalConfigSha256': 'd'*64, 'plannerKeySha256': 'e'*64}
+        nonce = str(uuid.uuid4())
+        new = {**old, 'releaseNonce': nonce, 'socketInode': 99, 'registryPidfdInode': 255}
+        live = object()
+        rows = {mount.RETAINED_MOUNT: (object(), old, '1'*64),
+                mount.MOUNT: (live, new, '2'*64)}
+        params = dict(source_nonce=self.nonce, source_profile_digest='1'*64,
+                      return_nonce=nonce, source_digest=self.source)
+        with patch.object(mount, '_load_sealed_registry_reader',
+                          side_effect=lambda root, *_: rows[root]), \
+             patch.object(mount, '_check_live_peer') as verify:
+            self.assertEqual(mount.reviewed_registry_return_profile(**params), '2'*64)
+            verify.assert_called_once_with(live)
+            verify.reset_mock()
+            for field in ('plannerKeySha256', 'functionalConfigSha256', 'scopeDigest',
+                          'instanceId', 'gatewaySourceDigest', 'registryKernelBootId'):
+                with self.subTest(field=field):
+                    deltas = {**new, field: 'changed'}
+                    rows[mount.MOUNT] = (live, deltas, '3'*64)
+                    with self.assertRaisesRegex(Denied, 'RETURN_PROFILE_DENIED'):
+                        mount.reviewed_registry_return_profile(**params)
+            verify.assert_not_called()
+            rows[mount.MOUNT] = (live, new, '2'*64)
+            with self.assertRaisesRegex(Denied, 'RETURN_PROFILE_DENIED'):
+                mount.reviewed_registry_return_profile(**{**params, 'source_profile_digest':'0'*64})
+            verify.side_effect = Denied('REGISTRY_PIDFD_PROCESS_NOT_PINNED')
+            with self.assertRaisesRegex(Denied, 'REGISTRY_PIDFD_PROCESS_NOT_PINNED'):
+                mount.reviewed_registry_return_profile(**params)
+
     def test_reviewed_registry_mount_digest_fails_closed_without_peer_and_source(self):
         from hashlib import sha256
         if os.geteuid() == 0:
