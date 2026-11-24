@@ -162,6 +162,7 @@ tests=(
   test_registry_owner_volume_root_helpers.py
   test_registry_owner_pilot_bootstrap.py
   test_registry_source_composition.py
+  test_registry_functional_review_runtime.py
   test_registry_original_two_merges.py
   test_registry_local_candidate_read_service.py
   test_registry_functional_v1_cross_uid_probe.py
