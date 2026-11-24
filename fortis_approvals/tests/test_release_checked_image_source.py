@@ -18,7 +18,7 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertIn("$Action -cne 'Apply' -or $Build -or $Pull", SCRIPT)
         self.assertIn("$Image -cnotmatch '^sha256:[0-9a-f]{64}$'", SCRIPT)
         self.assertIn("$SourceSha -cnotmatch '^[0-9a-f]{40}$'", SCRIPT)
-        self.assertIn("$ApprovedImageSource=($Build -or [bool]$CheckedImageRecord)", SCRIPT)
+        self.assertIn("$ApprovedImageSource=($Build -or [bool]$CheckedImageRecord -or $script:RegistryPrebuiltCheck)", SCRIPT)
         self.assertIn("$Action -cnotin @('Apply','Check') -or -not $ApprovedImageSource", SCRIPT)
 
     def test_bare_image_does_not_bypass_preservation_guards(self):
@@ -143,7 +143,7 @@ class CheckedImageSourceTests(unittest.TestCase):
 
     def test_no_second_build_on_checked_apply(self):
         build = SCRIPT.index("if($Build){\n    Step 'BUILD_IMAGE'")
-        pinned = SCRIPT.index("if($CheckedImageRecord){\n    # Pinned Apply")
+        pinned = SCRIPT.index("if($CheckedImageRecord -or $script:RegistryPrebuiltCheck){\n    # Pinned Apply")
         self.assertLess(build, pinned)
         self.assertIn("Docker-Json @('image','inspect',$script:Image)", SCRIPT)
         self.assertIn("RELEASE_IMAGE_REVISION_MISMATCH", SCRIPT)

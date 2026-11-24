@@ -206,7 +206,11 @@ class FunctionalReviewRuntime:
             else:
                 _need(cp['revision']==len(rows) and cp['revision']<128, 'P5_RUNTIME_UNRESOLVED_CAPTURE_OR_LIMIT')
                 pr=self.provider._release_impact_pr_evidence(PILOT,number,expected_head_sha)
-                _need(pr['baseSha']==self._main(),'P5_RUNTIME_PR_BASE_CHANGED')
+                current_main=self._main()
+                _need(pr['baseSha']==current_main,'P5_RUNTIME_PR_BASE_CHANGED')
+                if self.planner is not None:
+                    _need(self.planner.cursor.checkpoint()['candidateCursor']==current_main,
+                          'P5_RUNTIME_CUTOVER_OR_CURSOR_MAIN_CHANGED')
                 receipt=self.capture.capture_bundle(self.provider,operation_id=capture_id,
                     expected_revision=cp['revision'],number=number,expected_head_sha=expected_head_sha,
                     expected_base_sha=pr['baseSha'],expected_body_sha256=pr['bodySha256'],policy_bound=True)
@@ -477,9 +481,11 @@ class FunctionalRegistryConfiguration:
     def __init__(self, value, key, *, scope_digest):
         from .forward_lineage import _baseline
         from .component_bindings import _mapping
-        _need(type(value) is dict and set(value)=={'schemaVersion','collectorInstanceId',
-              'baseline','binding','policyReference','validatorRevision'}
-              and type(value['schemaVersion']) is int and value['schemaVersion']==1
+        fields={'schemaVersion','collectorInstanceId','baseline','binding','policyReference','validatorRevision'}
+        if type(value) is dict and value.get('schemaVersion')==2:
+            fields |= {'boundaryDecision','bootstrapReceipt'}
+        _need(type(value) is dict and set(value)==fields
+              and type(value['schemaVersion']) is int and value['schemaVersion'] in (1,2)
               and _uuid(value['collectorInstanceId']) and _hex(value['validatorRevision'],40)
               and type(key) is bytes and len(key)==32, 'P5_FUNCTIONAL_CONFIG_INVALID')
         baseline=_baseline(lambda:value['baseline'],_hash(value['baseline']))
@@ -492,6 +498,41 @@ class FunctionalRegistryConfiguration:
             'repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
         scope.update(baselineDigest=_hash(baseline),policyReferenceDigest=_hash(policy))
         _need(_hash(scope)==scope_digest,'P5_FUNCTIONAL_CONFIG_SCOPE')
+        if value['schemaVersion']==2:
+            decision=value['boundaryDecision'];receipt=value['bootstrapReceipt']
+            _need(type(decision) is dict and set(decision)=={'schemaVersion','decision',
+                'approvedAt','proposalDigest','enrollmentAccepted','admissionAllowed','activationRequired',
+                'instanceId','enrollmentId','baselineSha','catalogSha256','bindingDigest','cutover'}
+                and decision['schemaVersion']==1
+                and decision['decision']=='OWNER_FUNCTIONAL_V1_BOUNDARY_APPROVED'
+                and _uuid(decision['instanceId']) and _hex(decision['proposalDigest'],64)
+                and decision['activationRequired'] is True
+                and decision['enrollmentAccepted'] is False and decision['admissionAllowed'] is False
+                and _hash(decision)==baseline['acceptanceReceiptDigest']
+                and all(decision[k]==baseline[k] for k in ('enrollmentId','baselineSha','catalogSha256','bindingDigest'))
+                and decision['approvedAt']==policy['effectiveAt'],
+                'P5_FUNCTIONAL_BOUNDARY_DECISION_REQUIRED')
+            cutover=decision['cutover']
+            _need(type(cutover) is dict and set(cutover)=={
+                'releaseNonce','validatorRevision','registryImageId','gatewayImageId','gatewaySourceDigest'}
+                and _uuid(cutover['releaseNonce']) and uuid.UUID(cutover['releaseNonce']).version==4
+                and cutover['validatorRevision']==value['validatorRevision']
+                and _hex(cutover['gatewaySourceDigest'],64)
+                and all(type(cutover[k]) is str and cutover[k].startswith('sha256:') and
+                        _hex(cutover[k][7:],64) for k in ('registryImageId','gatewayImageId')),
+                'P5_FUNCTIONAL_CUTOVER_PLAN_INVALID')
+            _need(type(receipt) is dict and set(receipt)=={'result','instanceId','scopeDigest',
+                'specSha256','sourceSha','backupId','fileDigests','hostAccepted','enrollmentAccepted',
+                'admissionAllowed','registryServiceStarted','rollbackProtected'}
+                and receipt['result']=='PILOT_SCHEMA3_GENESIS_BACKUP_RESTORE_PASS'
+                and receipt['instanceId']==decision['instanceId'] and receipt['scopeDigest']==scope_digest
+                and receipt['sourceSha']==baseline['baselineSha'] and _uuid(receipt['backupId'])
+                and _hex(receipt['specSha256'],64)
+                and type(receipt['fileDigests']) is dict and set(receipt['fileDigests'])=={'sqlite','manifest','config'}
+                and all(_hex(v,64) for v in receipt['fileDigests'].values())
+                and all(receipt[k] is False for k in ('hostAccepted','enrollmentAccepted','admissionAllowed','registryServiceStarted','rollbackProtected')),
+                'P5_FUNCTIONAL_BOOTSTRAP_RECEIPT_REQUIRED')
+
         self._raw=canonical(value)
         self._key=key
         self.digest=_hash(value)
@@ -505,6 +546,8 @@ class FunctionalRegistryConfiguration:
         from ....workflow.git_backend import GitHubGitBackend
         from ...registry.candidate_gateway import GatewayRegistryUnixPlanner
         value=self.value
+        _need(value['schemaVersion']==2 and value['boundaryDecision']['instanceId']==reader._instance,
+              'P5_FUNCTIONAL_FINAL_CUTOVER_REQUIRED')
         provider=native['adapter']
         _need(type(provider) is NativeGitHubAdapter and
               type(provider.backend) is GitHubGitBackend and provider.observation_core is core,
@@ -562,6 +605,44 @@ def initialize_functional_state(root, collector_instance):
     try:os.fsync(fd)
     finally:os.close(fd)
     return {'result':'P5_FUNCTIONAL_LOCAL_COLLECTOR_GENESIS','collectorInstanceId':collector_instance,
+            'enrollmentAccepted':False,'admissionAllowed':False,'deploymentAllowed':False}
+
+
+def prepare_staged_functional_state(reader, root):
+    """Only UC-GW-005's exclusive, freshly cloned candidate state.
+
+    The exact owner-sealed reader profile decides whether initialization is
+    allowed. The old running state and previous release are never mounted RW.
+    For a later release retain the original journals, don't recreate genesis.
+    """
+    from ...registry.candidate_gateway import GatewayRegistryUnixCandidateRead
+    _need(type(reader) is GatewayRegistryUnixCandidateRead,'P5_FUNCTIONAL_READER_REQUIRED')
+    root=Path(root)
+    _private(root,directory=True)
+    state=root/'registry-functional-v1'
+    cfg=getattr(reader,'_functional_config',None)
+    if cfg is None:
+        _need(not state.exists() and not state.is_symlink(),'P5_FUNCTIONAL_DOWNGRADE_DENIED')
+        return {'result':'P5_FUNCTIONAL_STATE_NOT_SELECTED'}
+    _need(type(cfg) is FunctionalRegistryConfiguration and cfg.value['schemaVersion']==2
+          and cfg.value['boundaryDecision']['instanceId']==reader._instance,
+          'P5_FUNCTIONAL_FINAL_CUTOVER_REQUIRED')
+    cid=cfg.value['collectorInstanceId']
+    if not state.exists() and not state.is_symlink():
+        cutover=cfg.value['boundaryDecision']['cutover']
+        _need(getattr(reader,'_release_nonce',None)==cutover['releaseNonce']
+              and getattr(reader,'_gateway_source_digest',None)==cutover['gatewaySourceDigest'],
+              'P5_FUNCTIONAL_FIRST_CUTOVER_SEAL_MISMATCH')
+        return initialize_functional_state(root,cid)
+    _private(state,directory=True)
+    capture=ReviewCaptureStore(state/'capture.sqlite')
+    capture.checkpoint(expected=LocalPin(state/'capture.json').read())
+    pin=LocalPin(state/'collector.json',instance_id=cid)
+    collector=CollectorSnapshotStore(state/'collector.sqlite',instance_id=cid,anchor_reader=pin.read)
+    _need(collector.anchored_batch([])['checkpoint']==pin.read(),'P5_RUNTIME_COLLECTOR_PIN_MISMATCH')
+    for path in (state/'source.git',state/'validator.git'):
+        _private(path,directory=True)
+    return {'result':'P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED','collectorInstanceId':cid,
             'enrollmentAccepted':False,'admissionAllowed':False,'deploymentAllowed':False}
 
 

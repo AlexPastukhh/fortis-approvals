@@ -261,6 +261,123 @@ def _local_policy_receipt(db):
     return {'revision':revision,'sha256':sha,'schemaVersion':2,'legacy':legacy}
 
 
+REGISTRY_STATE_DIR = 'registry-functional-v1'
+_REGISTRY_FILES = {'capture.json','collector.json','capture.sqlite','collector.sqlite'}
+_REGISTRY_DIRS = {'git-initialize','git-initialize/home','git-initialize/empty-hooks'}
+_BARE_DIRS = {'objects','objects/info','objects/pack','refs','refs/heads','refs/tags'}
+_BARE_CONFIG = b'[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n'
+
+
+def registry_tree(root, *, uid, gid):
+    """Private, inactive Collector evidence + bounded fixed Git object caches.
+
+    No arbitrary walk of a user-selected path. Exclude credentials, hooks,
+    alternates, replacements, temp files, links and unknown journals. Compact
+    tree digest avoids thousands of object entries in Windows release records.
+    Actual journal chains/pins are checked by the installed Gateway on startup.
+    """
+    base = root / REGISTRY_STATE_DIR
+    if not base.exists() and not base.is_symlink():
+        return None
+    rows=[];total=0
+    required = {('',True), *((x,False) for x in _REGISTRY_FILES),
+                *((x,True) for x in _REGISTRY_DIRS),
+                ('git-initialize/empty.config',False)}
+    for repo in ('source.git','validator.git'):
+        required |= {(repo,True),(repo+'/HEAD',False),(repo+'/config',False)}
+        required |= {(repo+'/'+d,True) for d in _BARE_DIRS}
+
+    def allowed(name, directory):
+        if (name,directory) in required:
+            return True
+        repo,sep,rel=name.partition('/')
+        if not sep or repo not in ('source.git','validator.git'):
+            return False
+        if directory:
+            return re.fullmatch(r'objects/[0-9a-f]{2}',rel) is not None
+        return (rel in ('refs/heads/verified-main','packed-refs','objects/info/packs')
+                or re.fullmatch(r'objects/[0-9a-f]{2}/[0-9a-f]{38}',rel) is not None
+                or re.fullmatch(r'objects/pack/pack-[0-9a-f]{40}\.(pack|idx|rev)',rel) is not None)
+
+    def walk(path,name):
+        nonlocal total
+        info=path.lstat()
+        directory=stat.S_ISDIR(info.st_mode)
+        mode=stat.S_IMODE(info.st_mode)
+        require(info.st_uid==uid and info.st_gid==gid and allowed(name,directory)
+                and (directory and mode in (0o700,0o755) or
+                     stat.S_ISREG(info.st_mode) and info.st_nlink==1
+                     and mode in (0o400,0o444,0o600,0o644)),
+                'PILOT_REGISTRY_COLLECTOR_TREE_INVALID')
+        if name=='' or name in ('source.git','validator.git') or name in _REGISTRY_DIRS:
+            require(directory and mode==0o700,'PILOT_REGISTRY_COLLECTOR_PRIVATE_ROOT')
+        if name in _REGISTRY_FILES or name=='git-initialize/empty.config':
+            require(not directory and mode==0o600,'PILOT_REGISTRY_COLLECTOR_PRIVATE_FILE')
+        require(len(rows)<8192,'PILOT_REGISTRY_COLLECTOR_TREE_LIMIT')
+        if directory:
+            rows.append((name,mode,None,0))
+            for item in sorted(path.iterdir(),key=lambda x:x.name):
+                walk(item,name+'/'+item.name if name else item.name)
+        else:
+            total+=info.st_size
+            require(info.st_size<=268435456 and total<=536870912,
+                    'PILOT_REGISTRY_COLLECTOR_BYTES_LIMIT')
+            if name.endswith('/config'):
+                require(info.st_size==len(_BARE_CONFIG) and path.read_bytes()==_BARE_CONFIG,
+                        'PILOT_REGISTRY_COLLECTOR_GIT_CONFIG')
+            if name.endswith('/HEAD'):
+                require(info.st_size<=64 and path.read_bytes() in (
+                    b'ref: refs/heads/master\n',b'ref: refs/heads/main\n'),
+                    'PILOT_REGISTRY_COLLECTOR_GIT_HEAD')
+            if name=='git-initialize/empty.config':
+                require(info.st_size==0,'PILOT_REGISTRY_COLLECTOR_GIT_CONFIG')
+            if name in ('capture.json','collector.json'):
+                require(0<info.st_size<=1024,'PILOT_REGISTRY_COLLECTOR_PIN')
+            hasher=hashlib.sha256()
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+            with os.fdopen(fd,'rb') as stream:
+                opened=os.fstat(stream.fileno())
+                require((opened.st_dev,opened.st_ino,opened.st_size)==
+                        (info.st_dev,info.st_ino,info.st_size),
+                        'PILOT_REGISTRY_COLLECTOR_FILE_CHANGED')
+                while chunk:=stream.read(1048576):hasher.update(chunk)
+                require(os.fstat(stream.fileno()).st_size==info.st_size,
+                        'PILOT_REGISTRY_COLLECTOR_FILE_CHANGED')
+            rows.append((name,mode,hasher.hexdigest(),info.st_size))
+    walk(base,'')
+    require(required <= {(name,sha is None) for name,_,sha,_ in rows},
+            'PILOT_REGISTRY_COLLECTOR_TREE_INCOMPLETE')
+    return rows
+
+
+def registry_tree_receipt(rows):
+    return {'sha256':hashlib.sha256(_policy_json(rows).encode()).hexdigest(),
+            'entries':len(rows),'bytes':sum(r[3] for r in rows)}
+
+
+def clone_registry_tree(source,target,rows,*,uid,gid):
+    # Source writer is stopped by the protected controller. Do not copy
+    # through arbitrary links or overwrite a partial target.
+    import shutil
+    for name,mode,sha,size in rows:
+        src=source / REGISTRY_STATE_DIR / name
+        dst=target / REGISTRY_STATE_DIR / name
+        if sha is None:
+            dst.mkdir(mode=0o700)
+            os.chown(dst,uid,gid)
+            os.chmod(dst,mode)
+        else:
+            fd=os.open(dst,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+            inp=os.open(src,os.O_RDONLY|os.O_NOFOLLOW)
+            with os.fdopen(fd,'wb') as out, os.fdopen(inp,'rb') as stream:
+                shutil.copyfileobj(stream,out,length=1048576)
+                out.flush();os.fsync(out.fileno())
+            os.chown(dst,uid,gid);os.chmod(dst,mode)
+    require(registry_tree(target,uid=uid,gid=gid)==rows
+            and registry_tree(source,uid=uid,gid=gid)==rows,
+            'PILOT_REGISTRY_COLLECTOR_CLONE_MISMATCH')
+
+
 def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
                   preserve_uncertain_ids=None, require_exact_uncertain=False,
                   preserve_claimed_ids=None, require_exact_claimed=False,
@@ -288,9 +405,13 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
     info = root.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
             stat.S_IMODE(info.st_mode) == 0o700, 'PILOT_STATE_DIRECTORY_INVALID')
-    require({p.name for p in root.iterdir()} == files | ({'native-git'} if native else set()),
+    collector = registry_tree(root,uid=uid,gid=gid) if native else None
+    require({p.name for p in root.iterdir()} == files | ({'native-git'} if native else set()) |
+            ({REGISTRY_STATE_DIR} if collector is not None else set()),
             'PILOT_SOURCE_UNKNOWN_FILES_OR_JOURNAL')
     if native: files |= native_files(root, uid=uid, gid=gid)
+    if collector is not None:
+        databases += tuple(REGISTRY_STATE_DIR+'/'+n for n in ('capture.sqlite','collector.sqlite'))
     for name in files:
         info = (root / name).lstat()
         require(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_gid == gid and
@@ -406,6 +527,12 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
             'events': a.execute('SELECT COUNT(*) FROM events').fetchone()[0],
             'receipts': receipts.execute('SELECT COUNT(*) FROM receipts').fetchone()[0],
             'credentialsActive': active, 'credentialsTotal': o.execute('SELECT COUNT(*) FROM credentials').fetchone()[0]}
+        if collector is not None:
+            for name in ('capture.sqlite','collector.sqlite'):
+                check=connections[REGISTRY_STATE_DIR+'/'+name]
+                require(check.execute('PRAGMA user_version').fetchone()==(1,),
+                        'PILOT_REGISTRY_COLLECTOR_SCHEMA')
+            summary['registryCollector']=registry_tree_receipt(collector)
         local_policy = _local_policy_receipt(a)
         if local_policy is not None:
             summary['localPolicy'] = local_policy
@@ -568,6 +695,10 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
                            preserve_approved_ids=preserve_approved_ids,
                            require_exact_approved=require_exact_approved)
     files = set(before['sha256'])
+    collector=registry_tree(source/'private',uid=uid,gid=gid) if native else None
+    if collector is not None:
+        require(registry_tree_receipt(collector)==before['summary'].get('registryCollector'),
+                'PILOT_REGISTRY_COLLECTOR_SOURCE_CHANGED')
     private = target / 'private'
     private.mkdir(mode=0o700)
     if native:
@@ -585,6 +716,8 @@ def clone_state(source, target, *, uid=10001, gid=10001, github=False,
         (source / 'private' / VISUAL_MEDIA_DIR).is_dir() else ())
     for directory in ([private] + [private / name for name in native_dirs] if native else [private]):
         os.chmod(directory, 0o700); os.chown(directory, uid, gid)
+    if collector is not None:
+        clone_registry_tree(source/'private',private,collector,uid=uid,gid=gid)
     require(inspect_state(target, uid=uid, gid=gid, github=github, native=native,
                            preserve_uncertain_ids=preserve_uncertain_ids,
                            preserve_claimed_ids=preserve_claimed_ids,

@@ -1496,6 +1496,43 @@ print('FORTIS_REGISTRY_READER_MOUNT_SHA256=' + reviewed_registry_reader_mount_di
     return [string]$Matches[1]
 }
 
+function Initialize-StagedRegistryCollector {
+    param($Runtime)
+    if(-not $Runtime.registryReaderVolume){return}
+    Assert-Volume $Runtime.stateVolume
+    Assert-OnlyWriter $Runtime.stateVolume
+    Assert-Volume $Runtime.registryReaderVolume
+    Assert-OnlyWriter $Runtime.registryReaderVolume
+    $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import load_owner_registry_reader,reviewed_registry_reader_mount_digest
+from fortis_approvals.integrations.github.gateway.functional_review_runtime import prepare_staged_functional_state
+p=json.load(sys.stdin);source=_installed_policy_source_digest()
+digest=reviewed_registry_reader_mount_digest(expected_release_nonce=p['nonce'],expected_source_digest=source)
+if digest!=p['profileDigest']:raise RuntimeError('REGISTRY_STAGED_SEAL_CHANGED')
+reader=load_owner_registry_reader(expected_release_nonce=p['nonce'],expected_source_digest=source)
+print(json.dumps(prepare_staged_functional_state(reader,'/state/private'),sort_keys=True,separators=(',',':')))
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-staged-collector>','exec'))"
+    $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','64','--memory','256m',
+        '--mount',('type=volume,source='+$Runtime.stateVolume+',target=/state,volume-nocopy'),
+        '--mount',('type=volume,source='+$Runtime.registryReaderVolume+',target=/run/r7-registry-reader,readonly'),
+        '--mount','type=volume,source=fortis-registry-read,target=/run/fortis-registry-read,readonly',
+        '--entrypoint','python',$Runtime.image,'-I','-B','-c',$Wrapper)
+    $Payload=ConvertTo-Json -Compress -InputObject @{nonce=$Runtime.registryReleaseNonce;profileDigest=$Runtime.registryProfileDigest}
+    $Result=(Private-Process $Args $Payload)|ConvertFrom-Json
+    if($Result.result -cnotin @('P5_FUNCTIONAL_STATE_NOT_SELECTED',
+        'P5_FUNCTIONAL_LOCAL_COLLECTOR_GENESIS','P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED')){
+        throw 'RELEASE_REGISTRY_COLLECTOR_STAGED_PREPARE_FAILED'
+    }
+    Write-Host ('FORTIS_REGISTRY_STAGED_COLLECTOR='+$Result.result)
+}
+
 function Get-SourceRecord {
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
@@ -1626,7 +1663,7 @@ function Checked-Image-Binding {
 }
 function Save-Checked-Image {
     param($Source,$Report,$Receipt)
-    if(-not $Build -or $Action -cne 'Check'){throw 'RELEASE_CHECKED_IMAGE_BUILD_REQUIRED'}
+    if((-not $Build -and -not $script:RegistryPrebuiltCheck) -or $Action -cne 'Check'){throw 'RELEASE_CHECKED_IMAGE_BUILD_REQUIRED'}
     $Id=[Guid]::NewGuid().ToString('N')
     $Directory=Join-Path $ReleaseBase ('image-check-'+$Id)
     Protect-Directory $Directory
@@ -2622,7 +2659,12 @@ if($CheckedImageRecord -and ($Action -cne 'Apply' -or $Build -or $Pull -or $Curr
     $SourceSha -cnotmatch '^[0-9a-f]{40}$')){
     throw 'RELEASE_CHECKED_IMAGE_APPLY_ARGUMENTS_INVALID'
 }
-$ApprovedImageSource=($Build -or [bool]$CheckedImageRecord)
+# Exact image built by the owner RegistrySourceDigest action may be reused.
+# This is a manual Registry-only Check, never Auto or an unpinned tag.
+$script:RegistryPrebuiltCheck=([bool]$EnableRegistryMount -and $Action -ceq 'Check' -and
+    -not $Auto -and -not $Build -and -not $Pull -and
+    $Image -cmatch '^sha256:[0-9a-f]{64}$' -and $SourceSha -cmatch '^[0-9a-f]{40}$')
+$ApprovedImageSource=($Build -or [bool]$CheckedImageRecord -or $script:RegistryPrebuiltCheck)
 if($EnableActionCoreNetwork -and ($Auto -or $Action -cnotin @('Apply','Check') -or
     -not $ApprovedImageSource -or $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or
     $AttemptRecord -or $CurrentRecord)){
@@ -2684,7 +2726,7 @@ if($EnableRegistryMount -and ($Auto -or $Action -cnotin @('Check','Apply') -or
     -not $ConfirmWorkerQuiescent -or
     $RegistryReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
     $RegistryExpectedSourceDigest -cnotmatch '^[0-9a-f]{64}$' -or
-    ($Action -eq 'Check' -and -not $Build) -or
+    ($Action -eq 'Check' -and -not $Build -and -not $script:RegistryPrebuiltCheck) -or
     ($Action -eq 'Apply' -and (-not $CheckedImageRecord -or $Build)))){
     throw 'RELEASE_REGISTRY_REQUIRES_OWNER_CHECKED_IMAGE_AND_NONCE'
 }
@@ -2775,8 +2817,8 @@ if($Build){
         (Join-Path $Context 'fortis_approvals\deploy\Dockerfile-Gateway-Modularized-Candidate'),'-t',$Tag,$Context)
     $script:Image=@(Docker-Json @('image','inspect',$Tag))[0].Id
 }
-if($CheckedImageRecord){
-    # Pinned Apply cannot rely on a different Windows checkout than Check.
+if($CheckedImageRecord -or $script:RegistryPrebuiltCheck){
+    # Pinned Apply and prebuilt Registry Check require exact clean source.
     $Git=(Get-Command git.exe -CommandType Application).Source
     if((Private-Process @('-C',$SourceRoot,'status','--porcelain') '' $Git)){
         throw 'RELEASE_WINDOWS_SOURCE_DIRTY'
@@ -2957,7 +2999,7 @@ if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
 if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report}
 if($Action -eq 'Check'){
     $CheckReceipt=$null
-    if($Build -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
+    if($Build -or $script:RegistryPrebuiltCheck -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
         $Source=Get-SourceRecord
         if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
             -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
@@ -2974,7 +3016,7 @@ if($Action -eq 'Check'){
             $CheckReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
         }
     }
-    if($Build){
+    if($Build -or $script:RegistryPrebuiltCheck){
         # Check may report READY only if the exact old image is retained,
         # or the full owner-accepted UC-GW-013 rescue gate has passed.
         # Do not defer the missing-image error until Apply SOURCE_ADMISSION.
@@ -3142,6 +3184,11 @@ try {
         ('type=volume,source='+$Runtime.stateVolume+',target=/target')) -Root
     if(-not (Same-Json $Clone $script:R.sourceReceipt)){throw 'RELEASE_STATE_CLONE_MISMATCH'}
     Assert-SourceUnchanged
+    if($Runtime.registryReaderVolume){
+        Step 'PREPARE_STAGED_REGISTRY_COLLECTOR'
+        Initialize-StagedRegistryCollector $Runtime
+        Assert-SourceUnchanged
+    }
     Step 'CREATE_STAGED'
     $Arguments=@('create','--pull=never','--name',$Runtime.pilotName,'--label',('io.fortis.review-update='+$RunId),
         '--restart','no','--init','--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',

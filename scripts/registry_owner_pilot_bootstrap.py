@@ -88,8 +88,9 @@ def checked_mapping(mapping):
 def compose(proposal, approved_at):
     """Pure scope composition; approval is the caller's actual owner review.
 
-    Acceptance reference is explicitly pilot-only, NOT accepted live enrollment.
-    Do not use it as authority for E2 ingestion or production release.
+    The legacy pilot decision cannot be used for live composition.
+    Explicit final-cutover mode binds the owner-selected immutable accounting
+    boundary; activation/host acceptance is a later actual release result.
     """
     mapping = checked_mapping(proposal['mapping'])
     need(pin(proposal['baselineSha'], 40) and proposal['catalogSha256'] == CATALOG_SHA, 'PILOT_BASELINE')
@@ -102,6 +103,21 @@ def compose(proposal, approved_at):
                   'enrollmentAccepted': False, 'admissionAllowed': False}
     common = {'schemaVersion': 1, 'repository': REPOSITORY, 'enrollmentId': proposal['enrollmentId'], 'baselineSha': proposal['baselineSha']}
     binding = {**common, 'catalogSha256': CATALOG_SHA, **mapping}
+    if proposal.get('mode') == 'FUNCTIONAL_V1_CUTOVER_BOUNDARY':
+        cutover=proposal['cutover']
+        need(type(cutover) is dict and set(cutover)=={
+            'releaseNonce','validatorRevision','registryImageId','gatewayImageId','gatewaySourceDigest'}
+            and str(uuid.UUID(cutover['releaseNonce']))==cutover['releaseNonce']
+            and uuid.UUID(cutover['releaseNonce']).version==4
+            and pin(cutover['validatorRevision'],40)
+            and pin(cutover['gatewaySourceDigest'])
+            and all(re.fullmatch('sha256:[0-9a-f]{64}',cutover[k]) for k in ('registryImageId','gatewayImageId')),
+            'CUTOVER_PLAN_INVALID')
+        acceptance={**acceptance,'decision':'OWNER_FUNCTIONAL_V1_BOUNDARY_APPROVED',
+            'instanceId':proposal['instanceId'],'enrollmentId':proposal['enrollmentId'],
+            'baselineSha':proposal['baselineSha'],'catalogSha256':CATALOG_SHA,
+            'bindingDigest':sha(raw(binding)),'cutover':cutover,
+            'activationRequired':True}
     baseline = {**common, 'catalogSha256': CATALOG_SHA, 'bindingDigest': sha(raw(binding)), 'acceptanceReceiptDigest': sha(raw(acceptance))}
     reference = {**common, 'revision': 1, 'previousDigest': '0'*64,
                  'acceptanceReceiptDigest': sha(raw(acceptance)), 'effectiveAt': approved_at,
@@ -305,10 +321,25 @@ def execute(args):
             components.append({'id':component,'resources':resources,'requires':requires})
         mapping = checked_mapping({'bindings':bindings,'components':components})
     proposal = {'repository':REPOSITORY,'instanceId':str(uuid.uuid4()),'enrollmentId':str(uuid.uuid4()),'baselineSha':source,'catalogSha256':CATALOG_SHA,'mapping':mapping,'profile':policy(),'maxReviewToMergeSeconds':args.max_review_to_merge_seconds,'clockToleranceSeconds':args.clock_tolerance_seconds,'volumeOperationId':review['operationId'],'registryImageId':review['registryImageId'],'backupHelperSha256':sha(helper),'recoverySourceSha256':sha(recovery),'mode':'NON_PRODUCTION_PILOT_ONLY'}
+    cutover_path=getattr(args,'cutover_plan',None)
+    if cutover_path:
+        cutover=loads_strict(read(Path(cutover_path),16384))
+        proposal.update(mode='FUNCTIONAL_V1_CUTOVER_BOUNDARY',cutover=cutover)
+        # These two exact owner-built images are separate from the older,
+        # independently prepared volume helper/bootstrap image.
+        for k,uid in (('registryImageId','20002:20002'),('gatewayImageId','10001:10001')):
+            image=obj('image','inspect',cutover[k])
+            need(image['Id']==cutover[k] and image['Os']=='linux' and image['Architecture']=='amd64'
+                and image['Config']['User']==uid and image['Config']['Labels']['org.opencontainers.image.revision']==source,
+                'CUTOVER_IMAGE_PIN_CHANGED')
     print(json.dumps(proposal,indent=2));print('Owner-only backup destination:',backup_root)
-    print('Verify actual mapping, current remote main and policy/time values, encrypted private storage/ACLs; no production deployment or final enrollment.')
+    print('Verify actual mapping, exact remote main and policy/time values, encrypted private storage/ACLs.')
+    if cutover_path:
+        print('Freeze merges until successful owner Check/Apply and live acceptance. This GO binds the permanent accounting boundary, not installed actual or host acceptance.')
+    else:
+        print('Legacy scope-only mode cannot enable the Functional V1 planner.')
     compose(proposal,int(time.time()))  # reject invalid proposal before GO
-    owner_go('PILOT PREVIEW',review['operationId'])
+    owner_go('CUTOVER BOUNDARY PREVIEW' if cutover_path else 'PILOT PREVIEW',review['operationId'])
     preflight(review,source)
     records = compose(proposal,int(time.time()))
     session.mkdir()
@@ -352,11 +383,27 @@ def execute(args):
     put(session/'restore-receipt.json',raw(restored))
     final={'result':'PILOT_SCHEMA3_GENESIS_BACKUP_RESTORE_PASS','instanceId':records['spec.json']['instanceId'],'scopeDigest':sha(raw(records['spec.json']['scope'])),'specSha256':spec_sha,'sourceSha':source,'backupId':backup_id,'fileDigests':pins,'hostAccepted':False,'enrollmentAccepted':False,'admissionAllowed':False,'registryServiceStarted':False,'rollbackProtected':False}
     put(session/'final-receipt.json',raw(final));print(canonical(final))
+    if cutover_path:
+        config={'schemaVersion':2,'collectorInstanceId':str(uuid.uuid4()),
+            'baseline':records['baseline.json'],'binding':records['binding.json'],
+            'policyReference':records['policy-reference.json'],
+            'validatorRevision':cutover['validatorRevision'],
+            'boundaryDecision':records['pilot-acceptance.json'],'bootstrapReceipt':final}
+        put(session/'functional.json',raw(config))
+        # Generate once, private binary only; no value in stdout/argv/env.
+        put(session/'planner.key',os.urandom(32))
+        print(canonical({'result':'FUNCTIONAL_V1_CUTOVER_MATERIAL_RETAINED',
+            'functionalConfigSha256':sha(raw(config)),
+            'plannerKeySha256':sha(read(session/'planner.key',32)),
+            'releaseNonce':cutover['releaseNonce'],'enrollmentAccepted':False,
+            'hostAccepted':False}))
+
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source-sha',required=True);p.add_argument('--evidence-dir',required=True);p.add_argument('--backup-dir',required=True)
+    p.add_argument('--cutover-plan',help='Exact owner-built image IDs, source digest, release nonce and validator revision; omit only for legacy scope-only pilot.')
     p.add_argument('--mapping',help='Optional owner-reviewed JSON with bindings/components; otherwise enter actual mapping interactively.')
     p.add_argument('--max-review-to-merge-seconds',type=int,required=True);p.add_argument('--clock-tolerance-seconds',type=int,required=True)
     args=p.parse_args()

@@ -162,6 +162,8 @@ def load_owner_registry_reader(*, expected_release_nonce,
             key=private_planner_key(root/'planner.key',value['plannerKeySha256'])
             reader._functional_config=FunctionalRegistryConfiguration(parsed,key,
                 scope_digest=value['scopeDigest'])
+            reader._release_nonce=value['releaseNonce']
+            reader._gateway_source_digest=value['gatewaySourceDigest']
         # Verify our mounted identity and current source still match. This is
         # NOT a substitute for the independent owner-host mount/UID audit.
         if (root.lstat().st_ino != meta.st_ino
