@@ -118,14 +118,14 @@ def _derive(lineage, mapping, catalog, batch):
 
 def _observe_range_plan(*,adapter,journal,validator,baseline_reader,expected_baseline_digest,
                         selected_main_sha,evidence_ids,policy_reader,expected_policy_digest,
-                        binding_reader,cursor_reader=None):
+                        binding_reader,cursor_reader=None,cutover_gap=None):
     """Compose exact initial or suffix range, never a caller-supplied plan DTO."""
     mapping,lineage,catalog,baseline=_observe_component_pair(
         adapter=adapter,journal=journal,validator=validator,baseline_reader=baseline_reader,
         expected_baseline_digest=expected_baseline_digest,selected_main_sha=selected_main_sha,
         evidence_ids=evidence_ids,policy_reader=policy_reader,
         expected_policy_digest=expected_policy_digest,binding_reader=binding_reader,
-        cursor_reader=cursor_reader)
+        cursor_reader=cursor_reader,cutover_gap=cutover_gap)
     o=mapping['observation'];lo=lineage['observation']
     _need(o['lineageDigest']==_hash(lo)==lineage['observationDigest']
           and o['catalogProjectionSha256']==_hash(catalog)
@@ -152,6 +152,8 @@ def _observe_range_plan(*,adapter,journal,validator,baseline_reader,expected_bas
                  'collectorCheckpoint':lo['collectorCheckpoint'],'lineageDigest':lineage['observationDigest'],
                  'componentObservationDigest':mapping['observationDigest'],
                  **derived}
+    if cutover_gap is not None:
+        observation['cutoverGap'] = lo['cutoverGap']
     if cursor_reader is not None:
         observation.update(startCursorSha=lo['startCursorSha'],
                            registryCursorCheckpoint=lo['registryCursorCheckpoint'])

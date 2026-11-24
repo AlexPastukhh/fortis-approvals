@@ -209,8 +209,7 @@ class FunctionalReviewRuntime:
                 current_main=self._main()
                 _need(pr['baseSha']==current_main,'P5_RUNTIME_PR_BASE_CHANGED')
                 if self.planner is not None:
-                    _need(self.planner.cursor.checkpoint()['candidateCursor']==current_main,
-                          'P5_RUNTIME_CUTOVER_OR_CURSOR_MAIN_CHANGED')
+                    self.planner.check_capture_base(current_main)
                 receipt=self.capture.capture_bundle(self.provider,operation_id=capture_id,
                     expected_revision=cp['revision'],number=number,expected_head_sha=expected_head_sha,
                     expected_base_sha=pr['baseSha'],expected_body_sha256=pr['bodySha256'],policy_bound=True)
@@ -286,7 +285,7 @@ class FunctionalRegistryPlanner:
     service = 'registry'
     operation = 'ingest_merged'
 
-    def __init__(self, *, review, writer, baseline, binding):
+    def __init__(self, *, review, writer, baseline, binding, cutover_gap=None):
         from ...registry.candidate_gateway import GatewayRegistryUnixPlanner, PinnedRegistryCursor
         from ...registry.read_contract import PLANNER_ACTOR
         from .forward_lineage import _baseline
@@ -307,6 +306,7 @@ class FunctionalRegistryPlanner:
             'repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
         scope.update(baselineDigest=self.baseline_digest,policyReferenceDigest=review.policy_digest)
         self.cursor= PinnedRegistryCursor(writer.reader,scope)
+        self._cutover_gap = None if cutover_gap is None else canonical(cutover_gap)
         self.actor=PLANNER_ACTOR
         self.delegate=None
 
@@ -333,6 +333,27 @@ class FunctionalRegistryPlanner:
         self.core.policies[(self.actor,self.service,self.operation,PILOT)]=self.inner_policy
         portal.strong_operations |= {(self.service,self.operation)}
         portal._registry_planner_runtime=self
+
+    def check_capture_base(self, current_main):
+        from tempfile import TemporaryDirectory
+        from ....workflow.common import Git
+        from .forward_lineage import cutover_start, verify_cutover_commits
+
+        head = self.cursor.checkpoint()
+        if head['localCheckpoint']['revision'] == 0 and self._cutover_gap is not None:
+            gap = loads_strict(self._cutover_gap)
+            baseline = self.baseline()
+            _need(head['candidateCursor'] == baseline['baselineSha']
+                  and current_main == cutover_start(gap, baseline['baselineSha'])
+                  and self.review.native_backend is not None,
+                  'P5_RUNTIME_CUTOVER_OR_CURSOR_MAIN_CHANGED')
+            validator = self.review.validator
+            _refresh_private_objects(self.review.native_backend, validator, current_main)
+            with TemporaryDirectory(dir=validator.state, prefix='p5-cutover-') as folder:
+                verify_cutover_commits(gap, baseline, Git(Path(folder)/'git'), validator.source)
+        else:
+            _need(head['candidateCursor'] == current_main,
+                  'P5_RUNTIME_CUTOVER_OR_CURSOR_MAIN_CHANGED')
 
     def require_consumed(self, retained):
         # Serial functional pilot: don't accept another PR for review until
@@ -423,7 +444,8 @@ class FunctionalRegistryPlanner:
             if params['expectedRevision']==0:
                 _need(head['candidateCursor']==self.baseline()['baselineSha'],
                       'P5_PLANNER_GENESIS_CURSOR')
-                plan=admission_plan.observe_initial_plan(**kwargs)
+                gap = None if self._cutover_gap is None else loads_strict(self._cutover_gap)
+                plan=admission_plan.observe_initial_plan(cutover_gap=gap, **kwargs)
             else:
                 plan=admission_plan.observe_suffix_plan(cursor_reader=self.cursor.checkpoint,**kwargs)
             evidence={'schemaVersion':1,'issuer':'release-registry-collector-v1',
@@ -479,11 +501,13 @@ class FunctionalRegistryConfiguration:
     HTTP caller. The release controller pins the outer immutable profile.
     """
     def __init__(self, value, key, *, scope_digest):
-        from .forward_lineage import _baseline
+        from .forward_lineage import _baseline, cutover_start
         from .component_bindings import _mapping
         fields={'schemaVersion','collectorInstanceId','baseline','binding','policyReference','validatorRevision'}
         if type(value) is dict and value.get('schemaVersion')==2:
             fields |= {'boundaryDecision','bootstrapReceipt'}
+            if 'cutoverRecovery' in value:
+                fields.add('cutoverRecovery')
         _need(type(value) is dict and set(value)==fields
               and type(value['schemaVersion']) is int and value['schemaVersion'] in (1,2)
               and _uuid(value['collectorInstanceId']) and _hex(value['validatorRevision'],40)
@@ -533,6 +557,22 @@ class FunctionalRegistryConfiguration:
                 and all(receipt[k] is False for k in ('hostAccepted','enrollmentAccepted','admissionAllowed','registryServiceStarted','rollbackProtected')),
                 'P5_FUNCTIONAL_BOOTSTRAP_RECEIPT_REQUIRED')
 
+        if 'cutoverRecovery' in value:
+            recovery = value['cutoverRecovery']
+            _need(type(recovery) is dict and set(recovery) == {'gap', 'release'},
+                  'P5_CUTOVER_RECOVERY_CONFIG')
+            cutover_start(recovery['gap'], baseline['baselineSha'])
+            release = recovery['release']
+            _need(type(release) is dict and set(release) == set(cutover)
+                  and release['validatorRevision'] == value['validatorRevision']
+                  and _uuid(release['releaseNonce'])
+                  and uuid.UUID(release['releaseNonce']).version == 4
+                  and release['releaseNonce'] != cutover['releaseNonce']
+                  and _hex(release['gatewaySourceDigest'], 64)
+                  and all(type(release[k]) is str and release[k].startswith('sha256:')
+                          and _hex(release[k][7:], 64) and release[k] != cutover[k]
+                          for k in ('registryImageId', 'gatewayImageId')),
+                  'P5_CUTOVER_RECOVERY_RELEASE')
         self._raw=canonical(value)
         self._key=key
         self.digest=_hash(value)
@@ -573,7 +613,8 @@ class FunctionalRegistryConfiguration:
         review.install(portal)
         planner=FunctionalRegistryPlanner(review=review,
             writer=GatewayRegistryUnixPlanner(reader,self._key),
-            baseline=value['baseline'],binding=value['binding'])
+            baseline=value['baseline'],binding=value['binding'],
+            cutover_gap=value.get('cutoverRecovery', {}).get('gap'))
         planner.install(portal)
 
 
@@ -629,7 +670,9 @@ def prepare_staged_functional_state(reader, root):
           'P5_FUNCTIONAL_FINAL_CUTOVER_REQUIRED')
     cid=cfg.value['collectorInstanceId']
     if not state.exists() and not state.is_symlink():
-        cutover=cfg.value['boundaryDecision']['cutover']
+        value = cfg.value
+        cutover = (value['cutoverRecovery']['release'] if 'cutoverRecovery' in value
+                   else value['boundaryDecision']['cutover'])
         _need(getattr(reader,'_release_nonce',None)==cutover['releaseNonce']
               and getattr(reader,'_gateway_source_digest',None)==cutover['gatewaySourceDigest'],
               'P5_FUNCTIONAL_FIRST_CUTOVER_SEAL_MISMATCH')

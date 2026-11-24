@@ -103,10 +103,60 @@ def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
         raise Denied('P5_FORWARD_CURSOR_UNAVAILABLE') from None
 
 
+# Recovery is limited to the exact interval for this pilot.
+_CUTOVER_BASELINE = 'd27b2cab342521239d1ba7745c4ee4b8d70e66d9'
+_CUTOVER_253 = {
+    'number': 253,
+    'headSha': '8f29a4c754c40ccadf2e53550f7415dbfad048a0',
+    'mergeSha': '9bdb42b2cdaa0c24b942ff75d18111e59eebb51b',
+    'impact': {'gateway-owner-controller': ['windows-update']},
+}
+_CUTOVER_RECOVERY_IMPACT = {
+    'fortis-gateway': ['image-rebuild'],
+    'fortis-registry-pilot': ['image-rebuild'],
+    # Release Impact's conservative GitHub source glob also covers the publisher.
+    'release-label-publisher': ['image-rebuild'],
+}
+
+
+def cutover_start(gap, baseline_sha):
+    """Validate the owner-sealed two-merge interval before checking Git."""
+    _need(baseline_sha == _CUTOVER_BASELINE and type(gap) is dict
+          and set(gap) == {'disposition', 'merges'}
+          and gap['disposition'] == 'OWNER_REVIEWED_PRE_CAPTURE_GAP'
+          and type(gap['merges']) is list and len(gap['merges']) == 2
+          and gap['merges'][0] == _CUTOVER_253, 'P5_CUTOVER_GAP_SCOPE')
+    recovery = gap['merges'][1]
+    _need(type(recovery) is dict and set(recovery) == set(_CUTOVER_253)
+          and type(recovery['number']) is int and recovery['number'] > 253
+          and _hex(recovery['headSha'], 40) and _hex(recovery['mergeSha'], 40)
+          and recovery['impact'] == _CUTOVER_RECOVERY_IMPACT,
+          'P5_CUTOVER_GAP_SCOPE')
+    return recovery['mergeSha']
+
+
+def verify_cutover_commits(gap, baseline, git, repository):
+    start = cutover_start(gap, baseline['baselineSha'])
+    parent = baseline['baselineSha']
+    for row in gap['merges']:
+        node = _commit(git, repository, row['mergeSha'])
+        head = _commit(git, repository, row['headSha'])
+        _need(node['parents'] == [parent, row['headSha']]
+              and git.text(['--no-replace-objects', 'merge-base', parent, row['headSha']],
+                           cwd=repository) == parent
+              and node['treeSha'] == head['treeSha'], 'P5_CUTOVER_GAP_LINEAGE')
+        raw = git.run(['--no-replace-objects', 'cat-file', 'blob',
+                       row['mergeSha'] + ':release/targets.yaml'], cwd=repository)[1]
+        _need(0 < len(raw) <= 120_000 and hashlib.sha256(raw).hexdigest() ==
+              baseline['catalogSha256'], 'P5_CUTOVER_GAP_CATALOG')
+        parent = row['mergeSha']
+    return start
+
+
 def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
                             expected_baseline_digest, selected_main_sha, evidence_ids,
                             policy_reader=None, expected_policy_digest=None,
-                            cursor_reader=None):
+                            cursor_reader=None, cutover_gap=None):
     """Check every first-parent node from a pinned enrollment source to main.
 
     Earlier tip captures must already exist in the anchored journal. The
@@ -126,13 +176,16 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
         _need(all(policy_ref[k]==baseline[k] for k in
                   ('repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
               'P5_FORWARD_POLICY_BASELINE_MISMATCH')
+    _need(cutover_gap is None or (bound and cursor_reader is None),
+          'P5_CUTOVER_GAP_INITIAL_ONLY')
     if cursor_reader is not None:
         _need(bound and callable(cursor_reader),'P5_FORWARD_CURSOR_POLICY_REQUIRED')
         cursor_ref=_registry_cursor(cursor_reader,baseline,expected_baseline_digest,expected_policy_digest)
         start_sha=cursor_ref['candidateCursor']
     else:
         cursor_ref=None
-        start_sha=baseline['baselineSha']
+        start_sha=(baseline['baselineSha'] if cutover_gap is None else
+                   cutover_start(cutover_gap, baseline['baselineSha']))
     repo=adapter._repo(PILOT_REPOSITORY)
     _need(adapter.owner+'/'+repo==REPOSITORY,'P5_FORWARD_SCOPE_DENIED')
 
@@ -182,6 +235,8 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
     with tempfile.TemporaryDirectory(dir=validator.state,prefix='p5-forward-') as folder:
         git=Git(Path(folder)/'git')
         base_object=_commit(git,validator.source,baseline['baselineSha'])
+        if cutover_gap is not None:
+            verify_cutover_commits(cutover_gap, baseline, git, validator.source)
         start_object=base_object if origin==baseline['baselineSha'] else _commit(git,validator.source,origin)
         raw=git.run(['--no-replace-objects','cat-file','blob',baseline['baselineSha']+':release/targets.yaml'],
                     cwd=validator.source)[1]
@@ -239,6 +294,8 @@ def observe_forward_lineage(*, adapter, journal, validator, baseline_reader,
                  'baselineTreeSha':base_object['treeSha'],'selectedMainSha':selected_main_sha,
                  'catalogSha256':baseline['catalogSha256'],'collectorCheckpoint':checkpoint,
                  'merges':list(reversed(newest))}
+    if cutover_gap is not None:
+        observation['cutoverGap'] = cutover_gap
     if bound:
         observation['policyReferenceDigest']=expected_policy_digest
     if cursor_ref is not None:

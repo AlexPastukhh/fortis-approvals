@@ -351,6 +351,7 @@ class GatewayRegistryUnixPlanner:
               and r.get('previousCheckpoint',{}).get('revision') == params['expectedRevision']
               and r.get('checkpoint',{}).get('revision') == params['expectedRevision']+1
               and r.get('candidateCursor') == o['selectedMainSha']
+              and r.get('cutoverGap') == o.get('cutoverGap')
               and r.get('recordIds') == sorted(row['recordId'] for row in o['recordCandidates'])
               and r.get('actor') == 'release-registry-planner-v1',
               'REGISTRY_PLANNER_RECEIPT_MISMATCH')

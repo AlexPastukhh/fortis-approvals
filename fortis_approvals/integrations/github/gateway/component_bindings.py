@@ -152,7 +152,7 @@ def _resolved(ref,catalog):
 def _observe_component_pair(*,adapter,journal,validator,baseline_reader,
                                expected_baseline_digest,selected_main_sha,evidence_ids,
                                policy_reader,expected_policy_digest,binding_reader,
-                               cursor_reader=None):
+                               cursor_reader=None, cutover_gap=None):
     """Compose full pinned catalog mapping with strict policy-bound lineage."""
     _need(callable(policy_reader) and _hex(expected_policy_digest,64),
           'P5_COMPONENT_POLICY_REQUIRED')
@@ -165,7 +165,8 @@ def _observe_component_pair(*,adapter,journal,validator,baseline_reader,
     lineage=observe_forward_lineage(adapter=adapter,journal=journal,validator=validator,
         baseline_reader=baseline_reader,expected_baseline_digest=expected_baseline_digest,
         selected_main_sha=selected_main_sha,evidence_ids=evidence_ids,policy_reader=policy_reader,
-        expected_policy_digest=expected_policy_digest,cursor_reader=cursor_reader)
+        expected_policy_digest=expected_policy_digest,cursor_reader=cursor_reader,
+        cutover_gap=cutover_gap)
     o=lineage['observation']
     _need(o['baselineDigest']==expected_baseline_digest and o['selectedMainSha']==selected_main_sha
           and o['catalogSha256']==baseline['catalogSha256']
