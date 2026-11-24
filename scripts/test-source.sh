@@ -160,6 +160,7 @@ tests=(
   test_registry_owner_volume_contract_source.py
   test_registry_owner_volume_windows_readonly_source.py
   test_registry_owner_volume_root_helpers.py
+  test_registry_owner_pilot_bootstrap.py
   test_registry_source_composition.py
   test_registry_original_two_merges.py
   test_registry_local_candidate_read_service.py

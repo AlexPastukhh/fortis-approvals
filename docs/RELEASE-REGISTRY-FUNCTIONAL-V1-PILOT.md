@@ -41,8 +41,8 @@ install a process, grant or Gateway mount. The Python entrypoint is only the
 schema-3 SQLite/config core. The separately reviewed Windows
 `fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1` **source candidate**
 provides a narrow owner-only CLI to invoke this core. It is not a Docker
-volume creation/chown tool: **no approved owner volume/ownership provisioner
-is supplied**. A [source-only private-volume plan and future provisioner contract](RELEASE-REGISTRY-OWNER-VOLUMES.md) now fixes candidate names, Linux ownership and fail-closed requirements, but **no executable host preparer or owner GO is granted by this document**. Host setup remains UNKNOWN until UC-CONT-021/022/025,
+volume creation/chown tool. The separate owner volume controller is now
+source-merged; its actual operation remains separately GO-gated. A [source-only private-volume plan and future provisioner contract](RELEASE-REGISTRY-OWNER-VOLUMES.md) now fixes candidate names, Linux ownership and fail-closed requirements, but **no executable host preparer or owner GO is granted by this document**. Host setup remains UNKNOWN until UC-CONT-021/022/025,
 independent real UID/GID mappings and actual owner host evidence are completed.
 Never run either bootstrap entrypoint directly in the existing Gateway or Repo
 containers.
@@ -121,6 +121,85 @@ Owner Windows PowerShell 5.1 `-Action Plan` is an additional manual source
 check; Linux static/unit checks cannot prove PowerShell runtime, Docker mount
 semantics or host security. Source merge requires owner Mirror import and
 separate image-only build before any host action.
+
+## Consolidated owner pilot bootstrap (after independently verified volume roots)
+
+`python -B scripts/registry_owner_pilot_bootstrap.py` is the manual Windows
+owner entrypoint for the **already prepared/inspected/cleaned E1.3b pilot**.
+It is source-only and is not an installed controller, image input or new
+permission. See `--help` for the exact inputs; Python 3.11+ and the existing
+Windows PowerShell 5.1 are required (no third-party Python dependencies).
+The owner chooses an existing private, encrypted-at-rest backup directory,
+separate from the repo and evidence directory. Check actual ACLs, storage and
+key custody; a path, Windows file hash or this script does not attest them.
+No off-host/disaster-recovery claim is made.
+
+Use the **newly accepted exact clean Windows main SHA** independently checked
+against remote main through the established Gateway/Mirror workflow. The
+script automatically hashes the raw Git catalog, uses the existing exact P5
+CI policy profile, and stops on catalog drift. It is deliberately pinned to
+the current three-volume pilot's owner review and archived Prepare/Inspect
+receipts (operation `dfba6213-f83f-42ca-a136-d269289dcc09`); no other volume
+adoption or automatic recovery. The original source image SHA is independent
+of the newer owner script source SHA. Existing Registry image is reused.
+
+The owner supplies actual component/resource/dependency choices (interactive,
+or `--mapping` JSON with `bindings` and `components` as in the existing
+component-binding contract) and the review-to-merge/clock tolerance limits.
+The catalog includes production targets; mapping them does **not** deploy or
+grant them. UUIDs are fresh, canonical source/binding/policy/baseline/spec
+files and byte digests are computed automatically. The owner sees the full
+proposal and selects the exact **pilot scope**, not production enrollment.
+`pilot-acceptance.json` is an immutable scope decision made in this owner-run
+session, explicitly `enrollmentAccepted=false`, not WebAuthn or evidence of
+live enrollment. E2 must independently accept the same retained scope/decision
+and prove forward-only coverage from its exact baseline; if that cannot be
+accepted, STOP for separately reviewed migration/re-enrollment with retained
+history. Never rewrite genesis/digests or claim an authoritative enrollment
+from this pilot file.
+
+One invocation, three bounded owner confirmations (no extra chat turns):
+
+1. `PILOT PREVIEW`: save canonical scope/spec/evidence locally and call the
+   existing read-only launcher Preview. No Registry data write.
+2. `PILOT PROVISION`: recheck exact source/image/peer/volume metadata and
+   independent empty-root device/inode using the existing exact RO inspector
+   payload, then call the existing launcher with `-ConfirmProvision` once.
+3. `PILOT BACKUP RESTORE`: verify inactive genesis and config using a separate
+   zero-capability helper with **RO** state/config/socket mounts. Read only
+   exact private regular files and reject any WAL/SHM, extra entry or socket;
+   copy the inactive genesis DB into private tmpfs before opening SQLite.
+   SQLite's `mode=ro` on a RO WAL filesystem without SHM may fail, so do not
+   weaken the mount to RW to make Verify pass. Invoke the existing
+   `create_inactive_local_backup` on the staged private copy using exact
+   accepted `recovery_snapshot.py` bytes; capture DB/manifest/config and recheck
+   the original source bytes. Save files exclusively in the owner-selected
+   backup directory, hash/re-read them, then independently materialize these
+   retained bytes into a second isolated container with **no live mounts**,
+   invoke the existing `verify_inactive_local_backup` and check schema-3
+   genesis/checkpoint/config. No replacement of the original DB. This
+   independent inactive restore supersedes the standalone Verify invocation
+   for this exact genesis workflow; the original launcher remains unchanged.
+   The helper is genesis-only (2 MB DB bound), not a general live backup job.
+
+All Docker invocations use the reviewed existing image, no network, rootfs RO,
+non-root 20002:20002, no capabilities, NNP, bounded memory/PIDs, and no host
+binds, daemon socket, secrets or arbitrary code/path input. The exact source
+backup helper, recovery module and RO root inspector are executed without a
+new image build; the recovery module bytes are independently SHA256-pinned
+against the clean source. No effect occurs through Repo AI. Retain the
+private `pilot-bootstrap` session directory and backup files on failure;
+STOP on a missing/changed pin, native failure, timeout or uncertain state;
+no auto-retry, overwrite, volume removal, rollback or restart. The owner must
+maintain the exclusive Docker change window during every phase; the metadata
+checks are not an atomic lock. Native failure diagnostics are private.
+
+Expected final marker: `PILOT_SCHEMA3_GENESIS_BACKUP_RESTORE_PASS`, with exact
+instance/scope/spec/backup/file digests and explicit false host acceptance,
+enrollment, admission, listener start and adversarial rollback protection.
+Only this entire result, not individual source/CI/Preview markers, advances
+bootstrap/restore. Runtime start, real peer/Repo denial, nonce seal, existing
+UC-GW-005 and live Owner Portal remain a later integration stage.
 
 ## Source/runtime wiring to inspect
 
