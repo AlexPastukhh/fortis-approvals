@@ -1367,6 +1367,24 @@ function Read-RegistryMountBinding {
         releaseNonce=$Nonce;profileDigest=$Digest}
 }
 
+# The input RegistryReleaseNonce is a script parameter. Never use that
+# same script-scoped name for derived state: initialization would erase the
+# caller's nonce before history validation. Keep the derived binding separate.
+function Initialize-RegistryReleaseBinding {
+    param([bool]$Enabled,[string]$RequestedNonce)
+    $script:RegistryBoundReleaseNonce='';$script:RegistryReaderVolume=''
+    $script:RegistrySocketVolume='';$script:RegistryProfileDigest=''
+    $script:RegistryGatewaySourceDigest=''
+    if($Enabled){
+        if($RequestedNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){
+            throw 'RELEASE_REGISTRY_BINDING_NONCE_INVALID'
+        }
+        $script:RegistryBoundReleaseNonce=$RequestedNonce
+        $script:RegistryReaderVolume=('fortis-r7-registry-reader-'+$RequestedNonce.Replace('-',''))
+        $script:RegistrySocketVolume='fortis-registry-read'
+    }
+}
+
 # Offline validation of protected owner record identity; the only exception
 # is the original exact Check record for this Apply, never a release record.
 function Assert-Registry-HistoryRecord {
@@ -1637,7 +1655,7 @@ function Checked-Image-Binding {
         enableMachinePowerShell=[bool]$EnableMachinePowerShell
         registryReaderVolume=$script:RegistryReaderVolume
         registrySocketVolume=$script:RegistrySocketVolume
-        registryReleaseNonce=$script:RegistryReleaseNonce
+        registryReleaseNonce=$script:RegistryBoundReleaseNonce
         registryProfileDigest=$script:RegistryProfileDigest
         registryGatewaySourceDigest=$script:RegistryGatewaySourceDigest
         enableRegistryMount=[bool]$EnableRegistryMount
@@ -2377,6 +2395,24 @@ if($Action -eq 'SelfTest'){
     }
     # Pure PowerShell 5.1 negative cases: exercise the real history validator,
     # not a Python grep of controller source; no Docker or owner record effects.
+    $SavedRegistryInput=$RegistryReleaseNonce
+    try {
+        $RegistryReleaseNonce=$RegistryNonce
+        Initialize-RegistryReleaseBinding -Enabled $true -RequestedNonce $RegistryReleaseNonce
+        if($RegistryReleaseNonce -cne $RegistryNonce -or
+           $script:RegistryBoundReleaseNonce -cne $RegistryNonce -or
+           $script:RegistryReaderVolume -cne $RegistryVolume -or
+           $script:RegistrySocketVolume -cne 'fortis-registry-read'){
+            throw 'RELEASE_REGISTRY_NONCE_SCOPE_SELFTEST_FAILED'
+        }
+        Assert-Registry-HistoryRecord -Record ('{"schema":"fortis-extension-release-v1","runtime":{}}'|ConvertFrom-Json) -Nonce $RegistryReleaseNonce
+        Initialize-RegistryReleaseBinding -Enabled $false -RequestedNonce $RegistryReleaseNonce
+        if($RegistryReleaseNonce -cne $RegistryNonce -or $script:RegistryBoundReleaseNonce -cne '' -or
+           $script:RegistryReaderVolume -cne '' -or $script:RegistrySocketVolume -cne ''){
+            throw 'RELEASE_REGISTRY_NONCE_SCOPE_SELFTEST_FAILED'
+        }
+    } finally {$RegistryReleaseNonce=$SavedRegistryInput}
+    Write-Host 'FORTIS_REGISTRY_NONCE_SCOPE_SELFTEST_PASS'
     $HistoryCheck=('{"schema":"fortis-extension-image-check-v1","phase":"Ready","binding":{"registryReleaseNonce":"'+$RegistryNonce+'"}}')|ConvertFrom-Json
     $HistoryRelease=('{"schema":"fortis-extension-release-v1","runtime":{"registryReleaseNonce":"'+$RegistryNonce+'"}}')|ConvertFrom-Json
     Assert-Registry-HistoryRecord -Record $HistoryCheck -Nonce $RegistryNonce -AllowOriginalCheck $true
@@ -2918,13 +2954,8 @@ if($RegistryPrior.readerVolume -and $EnableRegistryMount -and
     # per-release rollback isolation even when images share source bytes.
     throw 'RELEASE_REGISTRY_NONCE_REUSE_DENIED'
 }
-$script:RegistryReleaseNonce='';$script:RegistryReaderVolume=''
-$script:RegistrySocketVolume='';$script:RegistryProfileDigest=''
-$script:RegistryGatewaySourceDigest=''
+Initialize-RegistryReleaseBinding -Enabled ([bool]$EnableRegistryMount) -RequestedNonce $RegistryReleaseNonce
 if($EnableRegistryMount){
-    $script:RegistryReleaseNonce=$RegistryReleaseNonce
-    $script:RegistryReaderVolume=('fortis-r7-registry-reader-'+$RegistryReleaseNonce.Replace('-',''))
-    $script:RegistrySocketVolume='fortis-registry-read'
     Step 'REGISTRY_NONCE_HISTORY_PREFLIGHT'
     $AllowedRegistryCheck=$(if($Action -eq 'Apply'){$CheckedImageRecord}else{''})
     Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce -AllowedCheckRecord $AllowedRegistryCheck
@@ -2935,7 +2966,7 @@ if($EnableRegistryMount){
     }
     Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'
     $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
-        -ImageId $script:Image -ReleaseNonce $script:RegistryReleaseNonce `
+        -ImageId $script:Image -ReleaseNonce $script:RegistryBoundReleaseNonce `
         -ReaderVolume $script:RegistryReaderVolume
 }
 $script:MachinePowerShellVolume=Read-MachinePowerShellVolume $SourceForOwnerShell.runtime
@@ -3099,7 +3130,7 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     machinePowerShellDigest=$script:MachinePowerShellDigest
     registryReaderVolume=$script:RegistryReaderVolume
     registrySocketVolume=$script:RegistrySocketVolume
-    registryReleaseNonce=$script:RegistryReleaseNonce
+    registryReleaseNonce=$script:RegistryBoundReleaseNonce
     registryProfileDigest=$script:RegistryProfileDigest
     ownerShell=$OwnerShellEnabled;runId=$RunId}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
