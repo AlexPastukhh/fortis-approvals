@@ -48,7 +48,14 @@ class ReleaseOptInSourceTests(unittest.TestCase):
         self.assertIn('preserveUncertainRequests=$script:PreserveUncertainRequests',script)
         self.assertIn('preserveUncertainIds=$Ids;requireExactUncertain=([bool]$Exact)',script)
         self.assertIn('Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact',script)
-        self.assertIn('$script:R.sourceReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact',script)
+        frozen=script.index('$FrozenReceipt=Receipt $Source.runtime.stateVolume '
+                            '-Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact '
+                            '-ExactApproved:$script:PreserveApprovedExact')
+        checked=script.index('if($script:RegistryReturn){Assert-Checked-Source-Receipt $FrozenReceipt}',frozen)
+        retained=script.index('$script:R.sourceReceipt=$FrozenReceipt',checked)
+        self.assertLess(frozen,checked)
+        self.assertLess(checked,retained)
+        self.assertLess(retained,script.index("Step 'CLONE_STATE'",retained))
         self.assertIn('Save\n    # Close the final race:',script)
         self.assertIn('preserveUncertainIds=@(Effective-Uncertain-Ids)',script)
         self.assertIn('function Effective-Uncertain-Ids {',script)
