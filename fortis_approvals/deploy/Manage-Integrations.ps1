@@ -2187,6 +2187,33 @@ function Resume-Target {
 
 # Exact owner-controlled return for this pilot handover. Loaded by
 # Manage-Integrations.ps1; all Docker effects use its existing release lock.
+function Read-RegistryReturnSourceDigest {
+    param($Source)
+    $Retained=Read-Private $Source.path
+    if((Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -cne $Source.hash -or
+       $Retained.schema -cne 'fortis-extension-release-v1' -or $Retained.phase -cne 'Complete' -or
+       $Retained.activated -ne $true -or $Retained.configurationDigest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_REGISTRY_RETURN_SOURCE_CONFIG_CHANGED'
+    }
+    return $Retained.configurationDigest
+}
+
+function Assert-RegistryReturnConfiguration {
+    param($Source,$CandidateReport)
+    $SourceDigest=Read-RegistryReturnSourceDigest $Source
+    # Compare both inputs under the candidate image. The digest also includes
+    # framework/provider code, so the retained source image has its own digest.
+    $SourceAsCandidate=Image-CLI @('check') ([string]$Source.runtime.extensionsConfig)
+    if($SourceAsCandidate.status -cne 'READY' -or
+       $SourceAsCandidate.configurationDigest -cne $CandidateReport.configurationDigest){
+        throw 'RELEASE_REGISTRY_RETURN_CONFIG_CHANGED'
+    }
+    $SourceGate=Running-CLI $Source.runtime.pilotId @('gate-status')
+    if($SourceGate.active -ne $true -or $SourceGate.configurationDigest -cne $SourceDigest){
+        throw 'RELEASE_REGISTRY_RETURN_SOURCE_CONFIG_CHANGED'
+    }
+}
+
 function Registry-ReturnRuntime {
     param($Source, [string]$Id, [string]$Nonce, [string]$ProfileDigest)
     $Original=$Source.runtime
@@ -2287,7 +2314,7 @@ function Assert-RegistryReturnSelfTest {
         releaseNonce='e43f890f-fe66-4139-b397-4bb20be82e80'
         registryProfileDigest='c11871b078930e70878f8d0b8199b90ead38626b403ee858606ba71c19cb6fa3'
         registryReaderVolume='fortis-r7-registry-reader-e43f890ffe664139b3974bb20be82e80'
-        preserveApprovedRequest='retained';tokenVolume='original-token'
+        preserveApprovedRequest='retained';tokenVolume='original-token';extensionsConfig='{}'
     }
     $Source=@{runtime=$Original;hash=('c'*64)}
     $Nonce='44444444-4444-4444-8444-444444444444'
@@ -2326,6 +2353,37 @@ function Assert-RegistryReturnSelfTest {
                 if($_.Exception.Message -cne 'TEST_ACTIVATED_CANDIDATE'){throw}
             }
         } finally {$script:R=$Saved}
+    }
+    & {
+        function Read-Private {
+            param($File)
+            @{schema='fortis-extension-release-v1';phase='Complete';activated=$true;configurationDigest=('c'*64)}
+        }
+        function Get-FileHash { param($LiteralPath,$Algorithm) @{Hash=('c'*64)} }
+        function Image-CLI {
+            param($Arguments,$InputText)
+            if($Arguments.Count -ne 1 -or $Arguments[0] -cne 'check' -or $InputText -cne '{}'){
+                throw 'TEST_REGISTRY_RETURN_CONFIGURATION_INPUT_CHANGED'
+            }
+            @{status='READY';configurationDigest=('a'*64)}
+        }
+        function Running-CLI { param($Id,$Arguments) @{active=$true;configurationDigest=$LiveDigest} }
+        $Source.path='synthetic'
+        $LiveDigest='c'*64
+        Assert-RegistryReturnConfiguration $Source @{configurationDigest=('a'*64)}
+        try {
+            Assert-RegistryReturnConfiguration $Source @{configurationDigest=('b'*64)}
+            throw 'RELEASE_REGISTRY_RETURN_CONFIG_SELFTEST_FAILED'
+        } catch {
+            if($_.Exception.Message -cne 'RELEASE_REGISTRY_RETURN_CONFIG_CHANGED'){throw}
+        }
+        $LiveDigest='a'*64
+        try {
+            Assert-RegistryReturnConfiguration $Source @{configurationDigest=('a'*64)}
+            throw 'RELEASE_REGISTRY_RETURN_SOURCE_DIGEST_SELFTEST_FAILED'
+        } catch {
+            if($_.Exception.Message -cne 'RELEASE_REGISTRY_RETURN_SOURCE_CONFIG_CHANGED'){throw}
+        }
     }
     Write-Host 'FORTIS_REGISTRY_RETURN_BINDING_SELFTEST_PASS'
 }
@@ -2399,6 +2457,7 @@ function Restore-RegistrySource {
         }
     }
     Assert-RegistryCandidateInactive $Target
+    $SourceDigest=Read-RegistryReturnSourceDigest $Source
     if($Original.State.Status -ceq 'running'){
         if($UsingReserve -or (Container $Original.Id).State.Status -cne 'running'){
             throw 'RELEASE_REGISTRY_RETURN_SOURCE_CHANGED'
@@ -2424,7 +2483,7 @@ function Restore-RegistrySource {
     Admit (Container $Reserve.pilotId) $Reserve
     Assert-OnlyWriter $Reserve.stateVolume $Reserve.pilotId
     $Gate=Running-CLI $Reserve.pilotId @('gate-status')
-    if($Gate.configurationDigest -cne $script:R.configurationDigest){
+    if($Gate.configurationDigest -cne $SourceDigest){
         throw 'RELEASE_REGISTRY_RETURN_CONFIG_CHANGED'
     }
     Assert-RegistryCandidateInactive $Target
@@ -3340,13 +3399,10 @@ if($Action -eq 'Apply'){
 if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
 if($RegistryReturnContainerId){
     Step 'REGISTRY_RETURN_PREFLIGHT'
-    $SourceForReturn=Read-Private $SourceForOwnerShell.path
-    if($SourceForReturn.phase -cne 'Complete' -or -not $SourceForReturn.activated -or
-       $SourceForReturn.configurationDigest -cne $Report.configurationDigest){
-        throw 'RELEASE_REGISTRY_RETURN_CONFIG_CHANGED'
-    }
+    $SourceForReturn=$SourceForOwnerShell
+    $null=Registry-ReturnRuntime $SourceForReturn $RegistryReturnContainerId $RegistryReturnNonce ('0'*64)
+    Assert-RegistryReturnConfiguration $SourceForReturn $Report
     Assert-Registry-Nonce-Fresh -Nonce $RegistryReturnNonce
-    $null=Registry-ReturnRuntime $SourceForOwnerShell $RegistryReturnContainerId $RegistryReturnNonce ('0'*64)
     $ReturnDigest=Get-RegistryReturnSeal $SourceForOwnerShell.runtime $RegistryReturnNonce
     $script:RegistryReturn=Registry-ReturnRuntime $SourceForOwnerShell $RegistryReturnContainerId $RegistryReturnNonce $ReturnDigest
     Admit-Source (Container $SourceForOwnerShell.runtime.pilotId) $SourceForOwnerShell
