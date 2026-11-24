@@ -498,17 +498,18 @@ _CUTOVER_254_CONFIG_SHA256 = '581381a958f9d2736810c657524582497eea71db13fa478971
 _CUTOVER_259_CONFIG_SHA256 = '41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5b409cf6f337bb4'
 
 
-def _reviewed_functional_predecessor_digest(value):
-    """Reconstruct the exact retained functional authority for this successor."""
-    from .forward_lineage import _POST_255_GAP, _POST_260_GAP_SIZE
+def _reviewed_functional_predecessor_digests(value):
+    """Reconstruct the exact retained functional policy epochs for this successor."""
+    from .forward_lineage import _POST_255_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE
     recovery = value.get('cutoverRecovery')
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
-        return None
+        return ()
 
     merges = recovery['gap']['merges']
-    if len(merges) == _POST_260_GAP_SIZE:
+    digests = []
+    if len(merges) in (_POST_260_GAP_SIZE,_POST_261_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
-            'gap': {'disposition': _POST_255_GAP, 'merges': merges[:-2]},
+            'gap': {'disposition': _POST_255_GAP, 'merges': merges[:7]},
             'release': {
                 'releaseNonce': '92836269-9f83-47c4-aa0c-c352249f5fa8',
                 'validatorRevision': value['validatorRevision'],
@@ -519,7 +520,7 @@ def _reviewed_functional_predecessor_digest(value):
         }}
         digest = _hash(previous)
         _need(digest == _CUTOVER_259_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
-        return digest
+        digests.append(digest)
 
     previous = {**value, 'cutoverRecovery': {
         'gap': {
@@ -536,7 +537,7 @@ def _reviewed_functional_predecessor_digest(value):
     }}
     digest = _hash(previous)
     _need(digest == _CUTOVER_254_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
-    return digest
+    return (*digests,digest)
 
 
 class FunctionalRegistryConfiguration:
@@ -626,8 +627,8 @@ class FunctionalRegistryConfiguration:
     def value(self):
         return loads_strict(self._raw)
 
-    def reviewed_authority_predecessor_digest(self):
-        return _reviewed_functional_predecessor_digest(self.value)
+    def reviewed_authority_predecessor_digests(self):
+        return _reviewed_functional_predecessor_digests(self.value)
 
     def install(self, *, core, portal, reader, native, root):
         from ....workflow.adapters import NativeGitHubAdapter

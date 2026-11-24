@@ -184,16 +184,16 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertEqual(len(receipt['recordIds']), 1)
         self.assertEqual(self.count('records'), 1)
 
-    def test_post_260_gap_keeps_the_recovery_merge_out_of_desired(self):
+    def test_post_261_gap_keeps_the_recovery_merge_out_of_desired(self):
         plan = self.current['plan']
         observation = plan['observation']
         rows = [
             {'number': 253 + index, 'headSha': f'{2 * index + 1:040x}',
              'mergeSha': f'{2 * index + 2:040x}',
              'impact': {'fortis-gateway': ['image-rebuild']}}
-            for index in range(9)
+            for index in range(10)
         ]
-        gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:-1]}
+        gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:8]}
         observation['cutoverGap'] = gap
         observation['mergeAudit'][0]['baseSha'] = rows[-1]['mergeSha']
         plan['observationDigest'] = local._hash(observation)
