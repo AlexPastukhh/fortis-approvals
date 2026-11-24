@@ -230,6 +230,120 @@ function Assert-Emergency-Promote-Rescue {
     return [string]$Binding.rescueImage
 }
 
+function Get-PrimaryRegistryHandover {
+    param($Applied,$Prior)
+    $Origin=$Applied.source
+    if($Applied.schema -cne 'fortis-extension-release-v1' -or $Applied.phase -cne 'Complete' -or
+       $Applied.activated -ne $true -or -not $Origin){
+        throw 'PRIMARY_PREVIOUS_REGISTRY_HANDOVER_UNBOUND'
+    }
+
+    if($Origin.path -ceq $Prior.sourceRecord){
+        if($Origin.hash -cne $Prior.sourceHash -or -not (Same-Json $Origin.runtime $Prior.runtime) -or
+           -not $Applied.registryReturn){
+            throw 'PRIMARY_PREVIOUS_REGISTRY_HANDOVER_UNBOUND'
+        }
+        return @{source=$Origin;reserve=$Applied.registryReturn;used=$false;configurationDigest=''}
+    }
+
+    # The protected Apply source may be the reserve activated by an earlier
+    # completed Return. Require both original owner records and the exact
+    # runtime carried into Apply. A different current pointer proves nothing.
+    $Run=$Origin.runtime.runId
+    if($Run -cnotmatch '^[0-9a-f]{32}$' -or
+       $Origin.path -cne (Join-Path $ReleaseBase ($Run+'\record.json')) -or
+       $Origin.hash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+       (Get-FileHash -LiteralPath $Origin.path -Algorithm SHA256).Hash -cne $Origin.hash){
+        throw 'PRIMARY_RETURNED_REGISTRY_SOURCE_UNBOUND'
+    }
+    $Returned=Read-Private $Origin.path
+    $AttemptPath=$Returned.registryReturnAttempt
+    if($Returned.schema -cne 'fortis-extension-release-v1' -or $Returned.phase -cne 'Complete' -or
+       $Returned.activated -ne $true -or $Returned.probesPassed -ne $true -or
+       $Returned.retainedSourceRecord -cne $Prior.sourceRecord -or
+       -not (Same-Json $Returned.runtime $Origin.runtime) -or
+       $Returned.configurationDigest -cnotmatch '^[0-9a-f]{64}$' -or -not $AttemptPath){
+        throw 'PRIMARY_RETURNED_REGISTRY_SOURCE_UNBOUND'
+    }
+    $Attempt=Read-Private $AttemptPath
+    $AttemptRun=$Attempt.runtime.runId
+    if($Attempt.schema -cne 'fortis-extension-release-v1' -or $Attempt.phase -cne 'Returned' -or
+       $Attempt.activated -ne $false -or -not $Attempt.sourceReceipt -or
+       $AttemptRun -cnotmatch '^[0-9a-f]{32}$' -or
+       $AttemptPath -cne (Join-Path $ReleaseBase ($AttemptRun+'\record.json')) -or
+       $Attempt.source.path -cne $Prior.sourceRecord -or $Attempt.source.hash -cne $Prior.sourceHash -or
+       -not (Same-Json $Attempt.source.runtime $Prior.runtime) -or
+       -not (Same-Json $Attempt.registryReturn $Returned.runtime) -or
+       (Read-RegistryReturnSourceDigest $Attempt.source) -cne $Returned.configurationDigest){
+        throw 'PRIMARY_RETURNED_REGISTRY_ATTEMPT_UNBOUND'
+    }
+    return @{source=$Attempt.source;reserve=$Attempt.registryReturn;used=$true;
+        configurationDigest=$Returned.configurationDigest}
+}
+
+function Assert-PrimaryReturnedRegistrySourceSelfTest {
+    & {
+        $ReleaseBase=Join-Path $env:TEMP 'fortis-primary-return-fixture'
+        $Prior=@{sourceRecord=(Join-Path $ReleaseBase ('a'*32+'\record.json'));sourceHash=('a'*64);
+            runtime=@{runId=('a'*32);pilotId=('1'*64)}}
+        $Origin=@{path=$Prior.sourceRecord;hash=$Prior.sourceHash;runtime=$Prior.runtime}
+        $Reserve=@{runId=('b'*32);pilotId=('2'*64)}
+        $AttemptPath=Join-Path $ReleaseBase ('c'*32+'\record.json')
+        $ReservePath=Join-Path $ReleaseBase ('b'*32+'\record.json')
+        $Returned=@{schema='fortis-extension-release-v1';phase='Complete';activated=$true;probesPassed=$true;
+            runtime=$Reserve;registryReturnAttempt=$AttemptPath;retainedSourceRecord=$Prior.sourceRecord;
+            configurationDigest=('d'*64)}
+        $Attempt=@{schema='fortis-extension-release-v1';phase='Returned';activated=$false;
+            runtime=@{runId=('c'*32)};source=$Origin;sourceReceipt=@{verified=$true};registryReturn=$Reserve}
+        $Applied=@{schema='fortis-extension-release-v1';phase='Complete';activated=$true;
+            source=$Origin;registryReturn=$Reserve}
+        function Get-FileHash { param($LiteralPath,$Algorithm)
+            if($LiteralPath -cne $ReservePath){throw 'TEST_UNEXPECTED_HASH_PATH'}
+            return @{Hash=('b'*64)}
+        }
+        function Read-Private { param($Path)
+            if($Path -ceq $ReservePath){return $Returned}
+            if($Path -ceq $AttemptPath){return $Attempt}
+            throw 'TEST_UNEXPECTED_RECORD_PATH'
+        }
+        function Read-RegistryReturnSourceDigest { param($Source)
+            if($Source.path -cne $Prior.sourceRecord){throw 'TEST_UNEXPECTED_ORIGINAL_SOURCE'}
+            return ('d'*64)
+        }
+        $Bound=Get-PrimaryRegistryHandover $Applied $Prior
+        if($Bound.used -or $Bound.reserve.pilotId -cne $Reserve.pilotId){
+            throw 'PRIMARY_DIRECT_REGISTRY_HANDOVER_SELFTEST_FAILED'
+        }
+        $Applied.source=@{path=$ReservePath;hash=('b'*64);runtime=$Reserve}
+        $Applied.Remove('registryReturn')
+        $Bound=Get-PrimaryRegistryHandover $Applied $Prior
+        if(-not $Bound.used -or $Bound.source.path -cne $Prior.sourceRecord -or
+           $Bound.reserve.pilotId -cne $Reserve.pilotId -or $Bound.configurationDigest -cne ('d'*64)){
+            throw 'PRIMARY_RETURNED_REGISTRY_HANDOVER_SELFTEST_FAILED'
+        }
+        foreach($Invalid in @('bad-hash','bad-probes','bad-phase','bad-reserve')){
+            $Applied.source.hash='b'*64
+            $Returned.probesPassed=$true
+            $Attempt.phase='Returned'
+            $Attempt.registryReturn=$Reserve
+            $Expected='PRIMARY_RETURNED_REGISTRY_SOURCE_UNBOUND'
+            switch($Invalid){
+                'bad-hash' {$Applied.source.hash='f'*64}
+                'bad-probes' {$Returned.probesPassed=$false}
+                'bad-phase' {$Attempt.phase='ReturningRegistrySource';$Expected='PRIMARY_RETURNED_REGISTRY_ATTEMPT_UNBOUND'}
+                'bad-reserve' {$Attempt.registryReturn=@{runId=('b'*32);pilotId=('3'*64)};$Expected='PRIMARY_RETURNED_REGISTRY_ATTEMPT_UNBOUND'}
+            }
+            try {
+                $null=Get-PrimaryRegistryHandover $Applied $Prior
+                throw 'PRIMARY_RETURNED_REGISTRY_NEGATIVE_SELFTEST_FAILED'
+            } catch {
+                if($_.Exception.Message -cne $Expected){throw}
+            }
+        }
+    }
+    Write-Host 'FORTIS_PRIMARY_RETURNED_REGISTRY_SOURCE_SELFTEST_PASS'
+}
+
 function Promote-Primary {
     if(-not (Test-Path -LiteralPath $Pointer)){throw 'PRIMARY_CURRENT_RELEASE_REQUIRED'}
     $Current=(Read-Private $Pointer).record
@@ -285,15 +399,19 @@ function Promote-Primary {
                 throw 'PRIMARY_PREVIOUS_IMAGE_CHANGED'
             }
             if((Test-Registry259ReturnSource $Prior.runtime) -or (Test-Registry262ReturnSource $Prior.runtime)){
-                $Applied=Read-Private $Source.path
-                $AppliedOrigin=$Applied.source
-                if($Applied.schema -cne 'fortis-extension-release-v1' -or
-                   $Applied.phase -cne 'Complete' -or $Applied.activated -ne $true -or
-                   $AppliedOrigin.path -cne $Prior.sourceRecord -or $AppliedOrigin.hash -cne $Prior.sourceHash -or
-                   -not (Same-Json $AppliedOrigin.runtime $Prior.runtime) -or -not $Applied.registryReturn){
-                    throw 'PRIMARY_PREVIOUS_REGISTRY_HANDOVER_UNBOUND'
+                $Handover=Get-PrimaryRegistryHandover (Read-Private $Source.path) $Prior
+                Assert-RegistryReturnInputs $Handover.source $Handover.reserve $Prev -AllowUsed:($Handover.used)
+                if($Handover.used){
+                    $ReturnedContainer=Container $Handover.reserve.pilotId
+                    if($ReturnedContainer.State.Status -cne 'exited' -or
+                       $ReturnedContainer.State.StartedAt -ceq '0001-01-01T00:00:00Z'){
+                        throw 'PRIMARY_RETURNED_REGISTRY_RESERVE_NOT_FROZEN'
+                    }
+                    $GateInput=ConvertTo-Json -Compress -InputObject @{
+                        nonce=$Handover.reserve.releaseNonce;configurationDigest=$Handover.configurationDigest}
+                    $Gate=Image-CLI @('gate-record-status') $GateInput -StateVolume $Handover.reserve.stateVolume
+                    if($Gate.active -ne $true){throw 'PRIMARY_RETURNED_REGISTRY_GATE_UNBOUND'}
                 }
-                Assert-RegistryReturnInputs $AppliedOrigin $Applied.registryReturn $Prev
                 Admit $Prev $Prior.runtime -AllowUnhealthy -RegistryReturnSource
             } else {
                 Admit $Prev $Prior.runtime -AllowUnhealthy
