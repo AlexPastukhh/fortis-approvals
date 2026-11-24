@@ -364,15 +364,19 @@ def clone_registry_tree(source,target,rows,*,uid,gid):
         dst=target / REGISTRY_STATE_DIR / name
         if sha is None:
             dst.mkdir(mode=0o700)
-            os.chown(dst,uid,gid)
+            # The clone helper has CHOWN and DAC_OVERRIDE, but chmod still
+            # requires ownership. Set the mode before transferring ownership.
             os.chmod(dst,mode)
+            os.chown(dst,uid,gid)
         else:
             fd=os.open(dst,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
             inp=os.open(src,os.O_RDONLY|os.O_NOFOLLOW)
             with os.fdopen(fd,'wb') as out, os.fdopen(inp,'rb') as stream:
                 shutil.copyfileobj(stream,out,length=1048576)
-                out.flush();os.fsync(out.fileno())
-            os.chown(dst,uid,gid);os.chmod(dst,mode)
+                out.flush()
+                os.fchmod(out.fileno(),mode)
+                os.fchown(out.fileno(),uid,gid)
+                os.fsync(out.fileno())
     require(registry_tree(target,uid=uid,gid=gid)==rows
             and registry_tree(source,uid=uid,gid=gid)==rows,
             'PILOT_REGISTRY_COLLECTOR_CLONE_MISMATCH')

@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 SPEC=importlib.util.spec_from_file_location(
@@ -101,6 +102,49 @@ class OrphanedClaimStateTests(unittest.TestCase):
         (directory/'capture.sqlite-wal').write_bytes(b'pending')
         with self.assertRaises(RuntimeError):
             self.inspect()
+
+    def test_collector_clone_sets_modes_before_giving_up_ownership(self):
+        from uuid import uuid4
+        from fortis_approvals.integrations.github.gateway.functional_review_runtime import (
+            initialize_functional_state,
+        )
+
+        initialize_functional_state(self.source/'private', str(uuid4()))
+        before = self.inspect()
+        transferred = set()
+        chmod, fchmod = os.chmod, os.fchmod
+        chown, fchown = os.chown, os.fchown
+
+        def path_identity(path):
+            row = os.stat(path)
+            return row.st_dev, row.st_ino
+
+        def fd_identity(fd):
+            row = os.fstat(fd)
+            return row.st_dev, row.st_ino
+
+        def chmod_as_owner(path, mode):
+            if path_identity(path) in transferred:
+                raise PermissionError('chmod after chown without CAP_FOWNER')
+            return chmod(path, mode)
+
+        def fchmod_as_owner(fd, mode):
+            if fd_identity(fd) in transferred:
+                raise PermissionError('fchmod after fchown without CAP_FOWNER')
+            return fchmod(fd, mode)
+
+        def transfer_path(path, uid, gid):
+            chown(path, uid, gid)
+            if Path(path).is_relative_to(self.target/'private'/H.REGISTRY_STATE_DIR):
+                transferred.add(path_identity(path))
+
+        def transfer_file(fd, uid, gid):
+            fchown(fd, uid, gid)
+            transferred.add(fd_identity(fd))
+
+        with patch.object(os, 'chmod', chmod_as_owner), patch.object(os, 'fchmod', fchmod_as_owner),              patch.object(os, 'chown', transfer_path), patch.object(os, 'fchown', transfer_file):
+            self.assertEqual(H.clone_state(self.source, self.target, **self.kw, **self.good), before)
+        self.assertEqual(len(transferred), before['summary']['registryCollector']['entries'])
 
     def test_no_implicit_claimed_allowlist_and_bad_scope_denied(self):
         with self.assertRaisesRegex(RuntimeError,'UNREVIEWED_UNCERTAIN'):
