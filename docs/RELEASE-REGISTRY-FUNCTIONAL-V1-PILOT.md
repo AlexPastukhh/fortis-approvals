@@ -275,6 +275,28 @@ is attributed to either merge.
    ordinary per-merge evidence. Unexpected main, catalog or checkpoint
    state stops the procedure.
 
+### Extend the paused pilot after Approvals #255
+
+Use the accepted cutover above with `--post-255` after verifying the Registry
+genesis, both empty Gateway journals and the retained original backup on
+Windows. The new private file `functional-cutover-post-255.json` is created
+only after separate owner confirmation. Preparation pins the previous recovery
+configuration and requires new source-bound images and release nonce.
+
+Review exact merge and head SHAs, CI and impact for #255 and this recovery
+PR. The new disposition `OWNER_REVIEWED_POST_255_CAPTURE_GAP` records #253,
+#254, #255 and precisely one recovery merge. #255 changes the Gateway backup
+helper. The recovery PR affects Gateway and Registry, with the same catalog
+Publisher classification as the original recovery. A different first-parent
+chain, tree or catalog stops preparation. Future capture starts at the
+recovery tip. The first genuine ingestion retains the explicit gap without
+creating Desired records or owner decisions for those four merges.
+
+Operational status and remaining steps are in the
+[Fortis Release Planning backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md).
+Use the existing protected Check, Apply, Backup and Promote sequence after
+the owner reviews and activates the new binding.
+
 ## Source/runtime wiring to inspect
 
 - Gateway source: `fortis_approvals/r7_unified_server.py` loads

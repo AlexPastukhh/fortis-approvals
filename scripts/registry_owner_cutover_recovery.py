@@ -9,13 +9,15 @@ from registry_owner_pilot_bootstrap import (
     owner_go, put, raw, read, real_dir, sha,
 )
 from fortis_approvals.integrations.github.gateway.forward_lineage import (
-    _CUTOVER_253, _CUTOVER_RECOVERY_IMPACT, cutover_start,
+    _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_RECOVERY_IMPACT,
+    _POST_255_GAP, cutover_start,
 )
 from fortis_approvals.integrations.github.gateway.functional_review_runtime import (
     FunctionalRegistryConfiguration,
 )
 
 _ORIGINAL_CONFIG = 'e61c8cb893cc988f7e78a46a39197788094084609cd436f20b5c78351f73829a'
+_PRIOR_RECOVERY_CONFIG = '581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b'
 _OPERATION = 'dfba6213-f83f-42ca-a136-d269289dcc09'
 
 
@@ -48,15 +50,25 @@ def prepare(args):
         'schema', 'sourceSha', 'imageId', 'gatewaySourceDigest'}
         and readback['schema'] == 'fortis-registry-source-digest-v1',
         'CUTOVER_RECOVERY_GATEWAY_READBACK')
-    gap = {'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'merges': [
-        _CUTOVER_253, {'number': args.pull_request, 'headSha': args.pull_request_head,
-                       'mergeSha': readback['sourceSha'], 'impact': _CUTOVER_RECOVERY_IMPACT},
-    ]}
+    recovery = {'number': args.pull_request, 'headSha': args.pull_request_head,
+                'mergeSha': readback['sourceSha'], 'impact': _CUTOVER_RECOVERY_IMPACT}
+    if args.post_255:
+        prior = read(session/'functional-cutover-recovery.json', 16384)
+        need(sha(prior) == _PRIOR_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_PRIOR_CONFIG')
+        prior_release = loads_strict(prior)['cutoverRecovery']['release']
+        gap = {'disposition': _POST_255_GAP,
+               'merges': [_CUTOVER_253, _CUTOVER_254, _CUTOVER_255, recovery]}
+    else:
+        gap = {'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'merges': [_CUTOVER_253, recovery]}
     baseline = config['baseline']
     source = cutover_start(gap, baseline['baselineSha'])
     release = {'releaseNonce': str(uuid.uuid4()), 'validatorRevision': config['validatorRevision'],
                'registryImageId': args.registry_image_id, 'gatewayImageId': readback['imageId'],
                'gatewaySourceDigest': readback['gatewaySourceDigest']}
+    if args.post_255:
+        need(all(release[key] != prior_release[key] for key in
+                 ('releaseNonce', 'registryImageId', 'gatewayImageId', 'gatewaySourceDigest')),
+             'CUTOVER_RECOVERY_PRIOR_RELEASE_REUSE')
     config['cutoverRecovery'] = {'gap': gap, 'release': release}
     FunctionalRegistryConfiguration(config, read(session/'planner.key', 32),
                                     scope_digest=receipt['scopeDigest'])
@@ -88,13 +100,15 @@ def prepare(args):
              and image['Config']['Labels']['org.opencontainers.image.revision'] == source,
              'CUTOVER_RECOVERY_IMAGE_PIN')
 
-    out = session/'functional-cutover-recovery.json'
+    out = session/('functional-cutover-post-255.json' if args.post_255 else 'functional-cutover-recovery.json')
     need(not out.exists() and not out.is_symlink(), 'CUTOVER_RECOVERY_CONFIG_EXISTS')
     print(raw({'sourceSha': source, 'scopeDigest': receipt['scopeDigest'],
                'instanceId': receipt['instanceId'], 'backupId': receipt['backupId'],
                **config['cutoverRecovery']}).decode())
     print('Review exact merged PRs and CI, release impact, retained backup and new immutable image IDs.')
-    owner_go('CUTOVER RECOVERY CONFIG', _OPERATION)
+    if args.post_255:
+        print('Confirm the retained Windows readback: Registry genesis, empty capture and collector journals, original backup.')
+    owner_go('POST 255 CUTOVER RECOVERY CONFIG' if args.post_255 else 'CUTOVER RECOVERY CONFIG', _OPERATION)
     data = raw(config)
     put(out, data)
     print(raw({'result': 'CUTOVER_RECOVERY_CONFIG_RETAINED', 'sourceSha': source,
@@ -107,6 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--backup-dir', required=True)
     parser.add_argument('--gateway-readback', required=True)
     parser.add_argument('--registry-image-id', required=True)
+    parser.add_argument('--post-255', action='store_true')
     parser.add_argument('--pull-request', required=True, type=int)
     parser.add_argument('--pull-request-head', required=True)
     try:

@@ -69,6 +69,38 @@ class ForwardLineageTests(unittest.TestCase):
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.verify_cutover_commits(wrong, self.baseline, git, repository)
 
+    def test_post_255_gap_extends_the_exact_reviewed_prefix(self):
+        self.initialize_baseline()
+        git, repository = self.fixture.git, self.fixture.validator.source
+        first = self.fixture.selected
+        tree = git.text(['rev-parse', first + '^{tree}'], cwd=repository)
+        rows = [{'number': 253, 'headSha': self.fixture.source_head, 'mergeSha': first,
+                 'impact': f._CUTOVER_253['impact']}]
+        parent = first
+        for number in (254, 255, 256):
+            head = git.text(['commit-tree', tree, '-p', parent, '-m', f'PR {number}'],
+                            cwd=repository)
+            merge = git.text(['commit-tree', tree, '-p', parent, '-p', head, '-m', f'Merge {number}'],
+                             cwd=repository)
+            impact = f._CUTOVER_255['impact'] if number == 255 else f._CUTOVER_RECOVERY_IMPACT
+            rows.append({'number': number, 'headSha': head, 'mergeSha': merge, 'impact': impact})
+            parent = merge
+        gap = {'disposition': f._POST_255_GAP, 'merges': rows}
+        with patch.multiple(f, _CUTOVER_BASELINE=self.baseline['baselineSha'],
+                            _CUTOVER_253=rows[0], _CUTOVER_254=rows[1], _CUTOVER_255=rows[2]):
+            self.assertEqual(f.verify_cutover_commits(gap, self.baseline, git, repository), parent)
+            changed = copy.deepcopy(gap)
+            changed['merges'][2]['impact'] = f._CUTOVER_RECOVERY_IMPACT
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.cutover_start(changed, self.baseline['baselineSha'])
+            missing = {**gap, 'merges': rows[:2] + rows[3:]}
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.cutover_start(missing, self.baseline['baselineSha'])
+            wrong_parent = copy.deepcopy(gap)
+            wrong_parent['merges'][3]['headSha'] = rows[2]['headSha']
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_LINEAGE'):
+                f.verify_cutover_commits(wrong_parent, self.baseline, git, repository)
+
     def test_pending_anchor_and_missing_evidence(self):
         self.initialize_baseline();pending=self.retain()
         with self.assertRaisesRegex(Denied,'P5_SNAPSHOT_ANCHOR_MISMATCH'):self.observe()

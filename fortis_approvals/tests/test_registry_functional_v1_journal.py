@@ -162,6 +162,28 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertNotIn('cutoverGap', self.accept())
         self.assertEqual(self.count('operations'), 2)
 
+    def test_post_255_gap_creates_records_only_for_the_captured_merge(self):
+        plan = self.current['plan']
+        observation = plan['observation']
+        rows = [
+            {'number': 253 + index, 'headSha': str(2 * index + 1) * 40,
+             'mergeSha': str(2 * index + 2) * 40,
+             'impact': {'fortis-gateway': ['image-rebuild']}}
+            for index in range(4)
+        ]
+        gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:3]}
+        observation['cutoverGap'] = gap
+        plan['observationDigest'] = local._hash(observation)
+        with self.assertRaisesRegex(Denied, 'CUTOVER_GAP'):
+            self.append()
+        gap['merges'] = rows
+        observation['mergeAudit'][0]['baseSha'] = rows[-1]['mergeSha']
+        plan['observationDigest'] = local._hash(observation)
+        receipt = self.accept()
+        self.assertEqual(receipt['cutoverGap'], gap)
+        self.assertEqual(len(receipt['recordIds']), 1)
+        self.assertEqual(self.count('records'), 1)
+
     def test_suffix_supersession_and_persistent_history(self):
         first=self.accept()
         self.suffix()
