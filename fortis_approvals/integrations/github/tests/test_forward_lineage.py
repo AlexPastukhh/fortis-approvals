@@ -77,26 +77,29 @@ class ForwardLineageTests(unittest.TestCase):
         rows = [{'number': 253, 'headSha': self.fixture.source_head, 'mergeSha': first,
                  'impact': f._CUTOVER_253['impact']}]
         parent = first
-        for number in (254, 255, 256, 257, 258):
+        for number in (254, 255, 256, 257, 258, 259):
             head = git.text(['commit-tree', tree, '-p', parent, '-m', f'PR {number}'],
                             cwd=repository)
             merge = git.text(['commit-tree', tree, '-p', parent, '-p', head, '-m', f'Merge {number}'],
                              cwd=repository)
             impact = f._CUTOVER_255['impact'] if number == 255 else f._CUTOVER_RECOVERY_IMPACT
-            if number in (257, 258):
+            if number in (257, 258, 259):
                 impact = f._CUTOVER_HANDOVER_IMPACT
             rows.append({'number': number, 'headSha': head, 'mergeSha': merge, 'impact': impact})
             parent = merge
         gap = {'disposition': f._POST_255_GAP, 'merges': rows}
         with patch.multiple(f, _CUTOVER_BASELINE=self.baseline['baselineSha'],
                             _CUTOVER_253=rows[0], _CUTOVER_254=rows[1],
-                            _CUTOVER_255=rows[2], _CUTOVER_256=rows[3], _CUTOVER_257=rows[4]):
+                            _CUTOVER_255=rows[2], _CUTOVER_256=rows[3], _CUTOVER_257=rows[4],
+                            _CUTOVER_258=rows[5]):
             legacy_gap={**gap, 'merges':rows[:4]}
             self.assertEqual(f.verify_cutover_commits(legacy_gap,self.baseline,git,repository),
                              rows[3]['mergeSha'])
             handover_gap={**gap, 'merges':rows[:5]}
             self.assertEqual(f.verify_cutover_commits(handover_gap,self.baseline,git,repository),
                              rows[4]['mergeSha'])
+            prior_gap={**gap, 'merges':rows[:6]}
+            self.assertEqual(f.verify_cutover_commits(prior_gap,self.baseline,git,repository),rows[5]['mergeSha'])
             self.assertEqual(f.verify_cutover_commits(gap, self.baseline, git, repository), parent)
             unreviewed = copy.deepcopy(gap)
             unreviewed['merges'][3]['headSha'] = rows[2]['headSha']
@@ -114,14 +117,14 @@ class ForwardLineageTests(unittest.TestCase):
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.cutover_start(missing, self.baseline['baselineSha'])
             wrong_impact = copy.deepcopy(gap)
-            wrong_impact['merges'][5]['impact'] = f._CUTOVER_RECOVERY_IMPACT
+            wrong_impact['merges'][6]['impact'] = f._CUTOVER_RECOVERY_IMPACT
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.cutover_start(wrong_impact, self.baseline['baselineSha'])
             extra = {**gap, 'merges': [*rows, rows[-1]]}
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.cutover_start(extra, self.baseline['baselineSha'])
             wrong_parent = copy.deepcopy(gap)
-            wrong_parent['merges'][5]['headSha'] = rows[4]['headSha']
+            wrong_parent['merges'][6]['headSha'] = rows[5]['headSha']
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_LINEAGE'):
                 f.verify_cutover_commits(wrong_parent, self.baseline, git, repository)
 

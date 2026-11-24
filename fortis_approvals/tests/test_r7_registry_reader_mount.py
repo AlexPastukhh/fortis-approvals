@@ -166,7 +166,7 @@ class RegistryTrustedMountTests(unittest.TestCase):
         params = dict(source_nonce=self.nonce, source_profile_digest='1'*64,
                       return_nonce=nonce, source_digest=self.source)
         with patch.object(mount, '_load_sealed_registry_reader',
-                          side_effect=lambda root, *_: rows[root]), \
+                          side_effect=lambda root, *_args, **_kwargs: rows[root]), \
              patch.object(mount, '_check_live_peer') as verify:
             self.assertEqual(mount.reviewed_registry_return_profile(**params), '2'*64)
             verify.assert_called_once_with(live)
@@ -185,6 +185,42 @@ class RegistryTrustedMountTests(unittest.TestCase):
             verify.side_effect = Denied('REGISTRY_PIDFD_PROCESS_NOT_PINNED')
             with self.assertRaisesRegex(Denied, 'REGISTRY_PIDFD_PROCESS_NOT_PINNED'):
                 mount.reviewed_registry_return_profile(**params)
+
+    def test_crash_return_pins_historical_boot_and_authenticates_new_peer(self):
+        previous, current = str(uuid.uuid4()), str(uuid.uuid4())
+        nonce = str(uuid.uuid4())
+        old = {**self.profile, 'schemaVersion': 3, 'registryKernelBootId': previous,
+               'functionalConfigSha256': 'd'*64, 'plannerKeySha256': 'e'*64}
+        new = {**old, 'releaseNonce': nonce, 'registryKernelBootId': current,
+               'registryPidfdInode': 18, 'socketDevice': 26, 'socketInode': 31}
+        live = object()
+
+        def load(root, *_args, historical_boot_id=None):
+            if root == mount.RETAINED_MOUNT:
+                self.assertEqual(historical_boot_id, previous)
+                return object(), old, '1'*64
+            self.assertIsNone(historical_boot_id)
+            return live, new, '2'*64
+
+        params = dict(source_nonce=self.nonce, source_profile_digest='1'*64,
+                      return_nonce=nonce, source_digest=self.source,
+                      crash_boot_ids={'previous': previous, 'current': current})
+        with patch.object(mount, '_boot_id', return_value=current), \
+             patch.object(mount, '_load_sealed_registry_reader', side_effect=load), \
+             patch.object(mount, '_check_live_peer') as check:
+            self.assertEqual(mount.reviewed_registry_return_profile(**params), '2'*64)
+            check.assert_called_once_with(live)
+            check.reset_mock()
+            for boot in (previous, 'invalid'):
+                with self.assertRaisesRegex(Denied, 'RETURN_CRASH_BOOT_DENIED'):
+                    mount.reviewed_registry_return_profile(
+                        **{**params, 'crash_boot_ids': {'previous': previous, 'current': boot}})
+            with self.assertRaisesRegex(Denied, 'RETURN_PROFILE_DENIED'):
+                mount.reviewed_registry_return_profile(**{**params, 'source_profile_digest': '0'*64})
+            new['functionalConfigSha256'] = 'f'*64
+            with self.assertRaisesRegex(Denied, 'RETURN_PROFILE_DENIED'):
+                mount.reviewed_registry_return_profile(**params)
+            check.assert_not_called()
 
     def test_reviewed_registry_mount_digest_fails_closed_without_peer_and_source(self):
         from hashlib import sha256

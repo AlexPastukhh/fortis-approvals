@@ -91,7 +91,7 @@ def load_owner_registry_reader(*, expected_release_nonce,
     return reader
 
 
-def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest):
+def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest, *, historical_boot_id=None):
     """Validate a sealed profile and material without using its socket."""
     if not isinstance(root, Path) or not root.is_absolute():
         _stop('PATH_DENIED')
@@ -140,7 +140,7 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
                 or type(value['registryPidfdInode']) is not int
                 or not (0 < value['registryPidfdInode'] < 2**64)
                 or not _uuid(value['registryKernelBootId'])
-                or value['registryKernelBootId'] != _boot_id()):
+                or value['registryKernelBootId'] != (historical_boot_id if historical_boot_id is not None else _boot_id())):
             _stop('PROFILE_DENIED')
         # Reader validates exact real credentials and Linux pinned AF_UNIX
         # owner/permission/device/inode; a configured but absent listener STOP.
@@ -235,11 +235,20 @@ RETAINED_MOUNT = Path('/run/r7-registry-reader-retained')
 
 def reviewed_registry_return_profile(*, source_nonce, source_profile_digest,
                                      return_nonce, source_digest,
-                                     retained_root=RETAINED_MOUNT, return_root=MOUNT):
+                                     retained_root=RETAINED_MOUNT, return_root=MOUNT, crash_boot_ids=None):
     """Review a new seal against exactly one retained functional release."""
     if retained_root == return_root or source_nonce == return_nonce:
         _stop('RETURN_PROFILE_DENIED')
-    retained = _load_sealed_registry_reader(retained_root, source_nonce, source_digest)
+    old_boot_id = None
+    if crash_boot_ids is not None:
+        if (type(crash_boot_ids) is not dict or set(crash_boot_ids) != {'previous', 'current'}
+                or not all(_uuid(v) for v in crash_boot_ids.values())
+                or crash_boot_ids['previous'] == crash_boot_ids['current']
+                or crash_boot_ids['current'] != _boot_id()):
+            _stop('RETURN_CRASH_BOOT_DENIED')
+        old_boot_id = crash_boot_ids['previous']
+    retained = _load_sealed_registry_reader(
+        retained_root, source_nonce, source_digest, historical_boot_id=old_boot_id)
     replacement = _load_sealed_registry_reader(return_root, return_nonce, source_digest)
     if retained is None or replacement is None:
         _stop('RETURN_PROFILE_DENIED')
@@ -248,13 +257,16 @@ def reviewed_registry_return_profile(*, source_nonce, source_profile_digest,
     # Stable identity, source, scope, config bytes and planner key must be
     # unchanged. Only nonce and live process/socket identity may differ.
     peer = {'releaseNonce', 'registryPidfdInode', 'socketDevice', 'socketInode'}
+    if old_boot_id is not None:
+        peer.add('registryKernelBootId')
     if (old_digest != source_profile_digest or old['schemaVersion'] != 3
             or {k: v for k, v in old.items() if k not in peer}
             != {k: v for k, v in new.items() if k not in peer}):
         _stop('RETURN_PROFILE_DENIED')
     _check_live_peer(reader)
     # Re-read both sealed projections after exercising the actual peer.
-    checked_old = _load_sealed_registry_reader(retained_root, source_nonce, source_digest)
+    checked_old = _load_sealed_registry_reader(
+        retained_root, source_nonce, source_digest, historical_boot_id=old_boot_id)
     checked_new = _load_sealed_registry_reader(return_root, return_nonce, source_digest)
     if checked_old is None or checked_new is None or checked_old[2] != old_digest or checked_new[2] != new_digest:
         _stop('RETURN_PROFILE_CHANGED')
