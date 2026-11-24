@@ -284,7 +284,7 @@ function Promote-Primary {
             if($OldImageInfo.Id -cne $Prior.runtime.image){
                 throw 'PRIMARY_PREVIOUS_IMAGE_CHANGED'
             }
-            if(Test-Registry259ReturnSource $Prior.runtime){
+            if((Test-Registry259ReturnSource $Prior.runtime) -or (Test-Registry262ReturnSource $Prior.runtime)){
                 $Applied=Read-Private $Source.path
                 $AppliedOrigin=$Applied.source
                 if($Applied.schema -cne 'fortis-extension-release-v1' -or

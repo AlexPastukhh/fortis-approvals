@@ -459,6 +459,25 @@ class UnifiedPolicyTests(unittest.TestCase):
             self.assertEqual(runtime._reviewed_functional_predecessor_digests(successor),(pin,older_pin))
             successor['cutoverRecovery']['gap']['merges'][-1:]=[lineage._CUTOVER_261,{'number':262}]
             self.assertEqual(runtime._reviewed_functional_predecessor_digests(successor),(pin,older_pin))
+            previous262=deepcopy(successor)
+            previous262['cutoverRecovery']['gap']['merges'][-1]=lineage._CUTOVER_262
+            previous262['cutoverRecovery']['release']={
+                'releaseNonce':'370079a2-d23e-4c55-a97f-cd8cdf305600',
+                'validatorRevision':'f'*40,
+                'registryImageId':'sha256:a535c91943341e8ae04705c458012e3e4c03226efd513efda86cfea644a7992b',
+                'gatewayImageId':'sha256:07450e0f5c362290d3fecce5f5d7cdb7abc5295dbb828f22f6e4321168068966',
+                'gatewaySourceDigest':'c71eebc342f3e4cd45f1cdd502d0c0854088af66c0a0a5fa988fc76ff6182bb4',
+            }
+            next263=deepcopy(previous262)
+            next263['cutoverRecovery']['gap']['merges'] += [lineage._CUTOVER_263, {'number':264}]
+            next263['cutoverRecovery']['release']={'releaseNonce':str(uuid.uuid4())}
+            pin262=runtime._hash(previous262)
+            with patch.object(runtime, '_CUTOVER_262_CONFIG_SHA256', pin262):
+                self.assertEqual(runtime._reviewed_functional_predecessor_digests(next263),
+                                 (pin262,pin,older_pin))
+                next263['cutoverRecovery']['gap']['merges'][9]['headSha']='0'*40
+                with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                    runtime._reviewed_functional_predecessor_digests(next263)
             successor['bootstrapReceipt']['scopeDigest']='b'*64
             with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
                 runtime._reviewed_functional_predecessor_digests(successor)

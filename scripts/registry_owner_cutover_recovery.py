@@ -10,11 +10,12 @@ from registry_owner_pilot_bootstrap import (
 )
 from fortis_approvals.integrations.github.gateway.forward_lineage import (
     _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257, _CUTOVER_258,
-    _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_RECOVERY_IMPACT, _CUTOVER_HANDOVER_IMPACT,
+    _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262, _CUTOVER_263,
+    _CUTOVER_RECOVERY_IMPACT, _CUTOVER_HANDOVER_IMPACT,
     _POST_255_GAP, cutover_start,
 )
 from fortis_approvals.integrations.github.gateway.functional_review_runtime import (
-    FunctionalRegistryConfiguration, _CUTOVER_259_CONFIG_SHA256,
+    FunctionalRegistryConfiguration, _CUTOVER_259_CONFIG_SHA256, _CUTOVER_262_CONFIG_SHA256,
 )
 
 _ORIGINAL_CONFIG = 'e61c8cb893cc988f7e78a46a39197788094084609cd436f20b5c78351f73829a'
@@ -62,7 +63,7 @@ def prepare(args):
     prior_releases = []
     output_name = 'functional-cutover-recovery.json'
     confirm_label = 'CUTOVER RECOVERY CONFIG'
-    if any((args.post_255, args.post_256, args.post_257, args.post_258, args.post_260, args.post_261)):
+    if any((args.post_255, args.post_256, args.post_257, args.post_258, args.post_260, args.post_261, args.post_263)):
         prior = read(session/'functional-cutover-recovery.json', 16384)
         need(sha(prior) == _PRIOR_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_PRIOR_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
@@ -70,7 +71,7 @@ def prepare(args):
         disposition = _POST_255_GAP
         output_name = 'functional-cutover-post-255.json'
         confirm_label = 'POST 255 CUTOVER RECOVERY CONFIG'
-    if any((args.post_256, args.post_257, args.post_258, args.post_260, args.post_261)):
+    if any((args.post_256, args.post_257, args.post_258, args.post_260, args.post_261, args.post_263)):
         prior = read(session/'functional-cutover-post-255.json', 16384)
         need(sha(prior) == _POST_255_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_POST_255_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
@@ -78,34 +79,41 @@ def prepare(args):
         recovery['impact'] = _CUTOVER_HANDOVER_IMPACT
         output_name = 'functional-cutover-post-256.json'
         confirm_label = 'POST 256 CUTOVER RECOVERY CONFIG'
-    if args.post_257 or args.post_258 or args.post_260 or args.post_261:
+    if args.post_257 or args.post_258 or args.post_260 or args.post_261 or args.post_263:
         prior = read(session/'functional-cutover-post-256.json', 16384)
         need(sha(prior) == _POST_256_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_POST_256_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
         prefix.append(_CUTOVER_257)
         output_name = 'functional-cutover-post-257.json'
         confirm_label = 'POST 257 CUTOVER RECOVERY CONFIG'
-    if args.post_258 or args.post_260 or args.post_261:
+    if args.post_258 or args.post_260 or args.post_261 or args.post_263:
         prior = read(session/'functional-cutover-post-257.json', 16384)
         need(sha(prior) == _POST_257_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_POST_257_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
         prefix.append(_CUTOVER_258)
         output_name = 'functional-cutover-post-258.json'
         confirm_label = 'POST 258 CUTOVER RECOVERY CONFIG'
-    if args.post_260 or args.post_261:
+    if args.post_260 or args.post_261 or args.post_263:
         prior = read(session/'functional-cutover-post-258.json', 16384)
         need(sha(prior) == _CUTOVER_259_CONFIG_SHA256, 'CUTOVER_RECOVERY_POST_258_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
         prefix.extend((_CUTOVER_259, _CUTOVER_260))
         output_name = 'functional-cutover-post-260.json'
         confirm_label = 'POST 260 CUTOVER RECOVERY CONFIG'
-    if args.post_261:
+    if args.post_261 or args.post_263:
         prior = read(session/'functional-cutover-post-260.json', 16384)
         need(sha(prior) == _POST_260_RECOVERY_CONFIG, 'CUTOVER_RECOVERY_POST_260_CONFIG')
         prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
         prefix.append(_CUTOVER_261)
         output_name = 'functional-cutover-post-261.json'
         confirm_label = 'POST 261 CUTOVER RECOVERY CONFIG'
+    if args.post_263:
+        prior = read(session/'functional-cutover-post-261.json', 16384)
+        need(sha(prior) == _CUTOVER_262_CONFIG_SHA256, 'CUTOVER_RECOVERY_POST_261_CONFIG')
+        prior_releases.append(loads_strict(prior)['cutoverRecovery']['release'])
+        prefix.extend((_CUTOVER_262, _CUTOVER_263))
+        output_name = 'functional-cutover-post-263.json'
+        confirm_label = 'POST 263 CUTOVER RECOVERY CONFIG'
     gap = {'disposition': disposition, 'merges': [*prefix, recovery]}
     baseline = config['baseline']
     source = cutover_start(gap, baseline['baselineSha'])
@@ -175,6 +183,7 @@ if __name__ == '__main__':
     mode.add_argument('--post-258', action='store_true')
     mode.add_argument('--post-260', action='store_true')
     mode.add_argument('--post-261', action='store_true')
+    mode.add_argument('--post-263', action='store_true')
     parser.add_argument('--pull-request', required=True, type=int)
     parser.add_argument('--pull-request-head', required=True)
     try:
