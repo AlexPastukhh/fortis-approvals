@@ -398,6 +398,32 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0],4)
             self.assertEqual(third._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),'ASK')
 
+        # A fourth functional scope must launch against all three historical
+        # Registry epochs. Exercise the real predecessor constructor and
+        # policy installation together, then repeat startup against the DB.
+        fourth_scope = {**third_scope, 'registryFunctional': 'e'*64}
+        all_history = (third_scope['registryFunctional'], *history)
+        fourth = UnifiedPolicyCore(path, **kwargs)
+        incomplete = RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
+                                                   previous_functional_digests=all_history[:-1])
+        with self.assertRaisesRegex(Denied, 'AUTHORITY_UPGRADE_REVIEW_REQUIRED'):
+            fourth.install_policy_authority(choices, scope_binding=fourth_scope,
+                reviewed_registry_predecessor=incomplete, reviewed_upgrade_from=incomplete.choices)
+        with self.assertRaisesRegex(Denied, 'REGISTRY_PREDECESSOR_INVALID'):
+            RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
+                                         previous_functional_digests=(*all_history, 'f'*64))
+        for _ in range(2):
+            fourth = UnifiedPolicyCore(path, **kwargs)
+            verified = RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
+                                                     previous_functional_digests=all_history)
+            fourth.install_policy_authority(choices, scope_binding=fourth_scope,
+                reviewed_registry_predecessor=verified, reviewed_upgrade_from=verified.choices)
+            with fourth._db() as db:
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')], events)
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 5)
+            self.assertEqual(fourth._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),'ASK')
+
     def test_functional_predecessor_rejects_drift_outside_release(self):
         from copy import deepcopy
         from unittest.mock import patch
@@ -474,6 +500,10 @@ class UnifiedPolicyTests(unittest.TestCase):
             pin262=runtime._hash(previous262)
             with patch.object(runtime, '_CUTOVER_262_CONFIG_SHA256', pin262):
                 self.assertEqual(runtime._reviewed_functional_predecessor_digests(next263),
+                                 (pin262,pin,older_pin))
+                next264=deepcopy(next263)
+                next264['cutoverRecovery']['gap']['merges'][-1:]=[lineage._CUTOVER_264, {'number':265}]
+                self.assertEqual(runtime._reviewed_functional_predecessor_digests(next264),
                                  (pin262,pin,older_pin))
                 next263['cutoverRecovery']['gap']['merges'][9]['headSha']='0'*40
                 with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
