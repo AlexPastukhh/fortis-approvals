@@ -132,6 +132,7 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
                   and (gap['disposition'], len(gap['merges'])) in (
                       ('OWNER_REVIEWED_PRE_CAPTURE_GAP', 2),
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 4),
+                      ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 5),
                   ),
                   'REGISTRY_STATE_CUTOVER_GAP')
             expected_fields.add('cutoverGap')
@@ -169,8 +170,9 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
                 seen.add(cursor)
                 numbers.add(merge['number'])
             if gap['disposition'] == 'OWNER_REVIEWED_POST_255_CAPTURE_GAP':
-                _need([merge['number'] for merge in gap['merges'][:3]] == [253, 254, 255]
-                      and gap['merges'][3]['number'] > 255, 'REGISTRY_STATE_CUTOVER_GAP')
+                prefix = list(range(253, 253 + len(gap['merges']) - 1))
+                _need([merge['number'] for merge in gap['merges'][:-1]] == prefix
+                      and gap['merges'][-1]['number'] > prefix[-1], 'REGISTRY_STATE_CUTOVER_GAP')
         for m in audit:
             p=m['collectorCheckpoint']
             _need(set(m)=={'mergeSha','baseSha','headSha','number','treeSha','evidenceId','evidenceDigest',
