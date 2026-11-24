@@ -142,7 +142,8 @@ def verify_cutover_commits(gap, baseline, git, repository):
         node = _commit(git, repository, row['mergeSha'])
         head = _commit(git, repository, row['headSha'])
         _need(node['parents'] == [parent, row['headSha']]
-              and head['parents'] == [parent]
+              and git.text(['--no-replace-objects', 'merge-base', parent, row['headSha']],
+                           cwd=repository) == parent
               and node['treeSha'] == head['treeSha'], 'P5_CUTOVER_GAP_LINEAGE')
         raw = git.run(['--no-replace-objects', 'cat-file', 'blob',
                        row['mergeSha'] + ':release/targets.yaml'], cwd=repository)[1]

@@ -48,7 +48,8 @@ class ForwardLineageTests(unittest.TestCase):
         git, repository = self.fixture.git, self.fixture.validator.source
         first = self.fixture.selected
         tree = git.text(['rev-parse', first + '^{tree}'], cwd=repository)
-        head = git.text(['commit-tree', tree, '-p', first, '-m', 'recovery'], cwd=repository)
+        recovery = git.text(['commit-tree', tree, '-p', first, '-m', 'recovery'], cwd=repository)
+        head = git.text(['commit-tree', tree, '-p', recovery, '-m', 'follow-up'], cwd=repository)
         second = git.text(['commit-tree', tree, '-p', first, '-p', head, '-m', 'merge'], cwd=repository)
         gap = {'disposition': 'OWNER_REVIEWED_PRE_CAPTURE_GAP', 'merges': [
             {**f._CUTOVER_253, 'headSha': self.fixture.source_head, 'mergeSha': first},

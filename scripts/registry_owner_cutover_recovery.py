@@ -69,8 +69,7 @@ def prepare(args):
         head, merge = row['headSha'], row['mergeSha']
         need(git('--no-replace-objects', 'rev-list', '--parents', '-n', '1', merge).decode().split()
              == [merge, parent, head]
-             and git('--no-replace-objects', 'rev-list', '--parents', '-n', '1', head).decode().split()
-             == [head, parent]
+             and git('--no-replace-objects', 'merge-base', parent, head).decode().strip() == parent
              and git('rev-parse', merge+'^{tree}') == git('rev-parse', head+'^{tree}')
              and sha(git('show', merge+':release/targets.yaml')) == baseline['catalogSha256'],
              'CUTOVER_RECOVERY_GIT_LINEAGE')
@@ -114,4 +113,3 @@ if __name__ == '__main__':
         prepare(parser.parse_args())
     except Exception as exc:
         raise SystemExit(f'CUTOVER_RECOVERY_STOP: {type(exc).__name__}: {exc}') from None
-
