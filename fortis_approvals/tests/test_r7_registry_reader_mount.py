@@ -75,6 +75,44 @@ class RegistryTrustedMountTests(unittest.TestCase):
         self.assertEqual(reader._reader,(os.geteuid(),os.getegid()))
         self.assertEqual(reader._endpoint,(55,66))
 
+    def test_functional_profile_seals_scope_and_private_planner_key(self):
+        import hashlib
+        from fortis_approvals.integrations.github.gateway.p5_ci_binding import policy
+        from fortis_approvals.integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
+        from fortis_approvals.integrations.registry.read_contract import REPOSITORY
+        common={'schemaVersion':1,'repository':REPOSITORY,'enrollmentId':str(uuid.uuid4()),
+                'baselineSha':'a'*40}
+        def digest(v):return hashlib.sha256(canonical(v).encode()).hexdigest()
+        binding={**common,'catalogSha256':'b'*64,'bindings':[],'components':[]}
+        baseline={**common,'catalogSha256':'b'*64,'bindingDigest':digest(binding),
+                  'acceptanceReceiptDigest':'c'*64}
+        reference={**common,'revision':1,'previousDigest':'0'*64,'acceptanceReceiptDigest':'c'*64,
+                   'effectiveAt':1700000000,'maxReviewToMergeSeconds':3600,'clockToleranceSeconds':10,
+                   'profile':policy()}
+        scope={k:baseline[k] for k in ('repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
+        scope.update(baselineDigest=digest(baseline),policyReferenceDigest=digest(reference))
+        config={'schemaVersion':1,'collectorInstanceId':str(uuid.uuid4()),'validatorRevision':'d'*40,
+                'baseline':baseline,'binding':binding,'policyReference':reference}
+        raw=canonical(config).encode()
+        key=os.urandom(32)
+        for name,data in (('functional.json',raw),('planner.key',key)):
+            file=self.root/name;file.write_bytes(data);file.chmod(0o600)
+        self.profile.update(schemaVersion=3,purpose='registry-functional-local-candidate-v1',
+            scopeDigest=digest(scope),functionalConfigSha256=hashlib.sha256(raw).hexdigest(),
+            plannerKeySha256=hashlib.sha256(key).hexdigest())
+        self.write()
+        reader=self.load()
+        self.assertIs(type(reader._functional_config),FunctionalRegistryConfiguration)
+        self.assertEqual(reader._functional_config.digest,digest(config))
+        (self.root/'planner.key').write_bytes(os.urandom(32))
+        with self.assertRaises(Denied):self.load()
+        (self.root/'planner.key').write_bytes(key)
+        (self.root/'functional.json').write_bytes(canonical({**config,'validatorRevision':'e'*40}).encode())
+        with self.assertRaises(Denied):self.load()
+        (self.root/'functional.json').write_bytes(raw)
+        self.profile['scopeDigest']='f'*64;self.write()
+        with self.assertRaises(Denied):self.load()
+
     def test_real_kernel_pidfd_owner_mode_rejects_wrong_process(self):
         # One-UID source-only fixture: kernel pidfd is real but owner seal is
         # synthetic. Cross-UID/cross-namespace admission is an owner host gate.

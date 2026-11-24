@@ -14,6 +14,26 @@
   <button id="notifications" type="button">Включить уведомления</button>
 </nav>
 <p class="small">Очередь заявок обновляется каждые 5 секунд, даже когда открыта вкладка PowerShell.</p>
+<details id="registry-functional-panel" hidden>
+ <summary>Registry — контролируемый Functional V1</summary>
+ <p class="small">Локальные кандидаты. Ни один шаг не выполняет merge или deployment. Подтверждения — в обычной очереди заявок.</p>
+ <div class="provider-controls">
+  <label>Номер PR <input id="registry-pr-number" type="number" min="1" max="1000000"></label>
+  <label>Точный HEAD SHA <input id="registry-pr-head" maxlength="40" autocomplete="off"></label>
+  <label>UUID review <input id="registry-review-id" maxlength="36" autocomplete="off"></label>
+ </div>
+ <button id="registry-review" type="button">1. Создать review ASK</button>
+ <button id="registry-retain" type="button">2. После merge — сохранить evidence</button>
+ <div class="provider-controls">
+  <label>Evidence ID <input id="registry-evidence-id" maxlength="36" autocomplete="off"></label>
+  <label>Evidence SHA256 <input id="registry-evidence-digest" maxlength="64" autocomplete="off"></label>
+  <label>Ожидаемая ревизия <input id="registry-revision" type="number" min="0" max="63"></label>
+  <label>UUID ingest <input id="registry-ingest-id" maxlength="36" autocomplete="off"></label>
+ </div>
+ <button id="registry-ingest" type="button">3. Создать ingest ASK</button>
+ <button id="registry-refresh" type="button">Прочитать ревизию</button>
+ <pre id="registry-functional-result" role="status" aria-live="polite"></pre>
+</details>
 <div class="layout" id="approval-view"><div id="requests" aria-label="Заявки"></div><article id="detail"><p>Выберите заявку.</p></article></div>
 <section id="providers-view" hidden aria-label="API и политики">
  <h2>Доступ к API</h2>

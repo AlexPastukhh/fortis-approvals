@@ -20,6 +20,23 @@ from .extensions.owner_policy_review_http import OwnerPolicyReviewHTTP
 class IncidentCore(Core):
     STATES = Core.STATES | {'CLOSED_UNCONFIRMED', 'CANCELLED_BEFORE_DISPATCH'}
 
+    def _event(self, db, request_id, state, detail=None):
+        # Core.submit inserts the request and its first PENDING audit row in
+        # the same transaction. Bind that initial event to the persisted
+        # creation second, rather than reading the clock a second time.
+        # This preserves the pinned Core storage/schema and all later event
+        # timestamps. Never reinterpret an existing historical event.
+        if state == 'PENDING':
+            row = db.execute('SELECT created_at,state FROM requests WHERE id=?',
+                             (request_id,)).fetchone()
+            prior = db.execute('SELECT 1 FROM events WHERE request_id=? LIMIT 1',
+                               (request_id,)).fetchone()
+            if row is not None and row['state'] == 'PENDING' and prior is None:
+                db.execute('INSERT INTO events(request_id,at,state,detail) VALUES(?,?,?,?)',
+                           (request_id, row['created_at'], state, canonical(detail or {})))
+                return
+        super()._event(db, request_id, state, detail)
+
     def owner_incident_closure(self, request_id):
         # Owner portal only. Preserve the operator attestation and audit event,
         # not a synthetic successful remote result.
@@ -389,6 +406,9 @@ class IncidentOwnerPortal(OwnerShellPortal):
         post_policy_review=(method=='POST' and path in (
             '/v1/owner/policy/review/begin','/v1/owner/policy/review/finish'))
         get_unresolved=method=='GET' and path=='/v1/owner/unresolved'
+        get_registry=method=='GET' and path=='/v1/owner/registry/capabilities'
+        post_registry=method=='POST' and path in (
+            '/v1/owner/registry/review','/v1/owner/registry/retain','/v1/owner/registry/ingest')
         post_incident=method=='POST' and path in (
             '/v1/owner/reconcile',
             '/v1/owner/incidents/close/simple',
@@ -397,7 +417,7 @@ class IncidentOwnerPortal(OwnerShellPortal):
             '/v1/owner/incidents/close/begin',
             '/v1/owner/incidents/close/finish')
         if not (get_inventory or post_policy_preview or get_policy_review_caps or
-                post_policy_review or get_unresolved or post_incident):
+                post_policy_review or get_unresolved or post_incident or post_registry or get_registry):
             return super().__call__(env,start)
         try:
             if (env.get('HTTP_HOST') != self.host or env.get('QUERY_STRING') or
@@ -417,6 +437,15 @@ class IncidentOwnerPortal(OwnerShellPortal):
                         'kind':'OWNER_POLICY_DRAFT_REVIEW_ONLY','requiresStrongWebAuthn':True,
                         'canApply':False})
                 return self._reply(start,200,self._policy_review.capabilities())
+            if get_registry:
+                self.auth.session(token)
+                planner=getattr(self,'_registry_planner_runtime',None)
+                configured=planner is not None and not self.read_only_banner
+                result={'configured':configured,'deploymentAllowed':False,'admissionAllowed':False}
+                if configured:
+                    result['repository']=planner.baseline()['repository']
+                    result['localRevision']=planner.cursor.checkpoint()['localCheckpoint']['revision']
+                return self._reply(start,200,result)
             if get_unresolved:
                 self.auth.session(token)
                 rows=self.core.owner_unresolved()
@@ -428,6 +457,22 @@ class IncidentOwnerPortal(OwnerShellPortal):
             csrf=env.get('HTTP_X_FORTIS_CSRF')
             if not csrf:raise Denied('CSRF_REQUIRED')
             self.auth.session(token,csrf)
+            if post_registry:
+                runtime=getattr(self,'_registry_review_runtime',None)
+                if self.read_only_banner or runtime is None:
+                    raise Denied('OWNER_REGISTRY_REVIEW_NOT_CONFIGURED')
+                if path=='/v1/owner/registry/review' and set(body)=={'requestId','number','headSha'}:
+                    result=runtime.prepare_review(request_id=body['requestId'],number=body['number'],expected_head_sha=body['headSha'])
+                elif path=='/v1/owner/registry/retain' and set(body)=={'requestId'}:
+                    result=runtime.retain_merge(request_id=body['requestId'])
+                elif path=='/v1/owner/registry/ingest':
+                    planner=getattr(self,'_registry_planner_runtime',None)
+                    if planner is None:
+                        raise Denied('OWNER_REGISTRY_PLANNER_NOT_CONFIGURED')
+                    result=planner.submit(body)
+                else:
+                    raise Denied('OWNER_REGISTRY_REVIEW_SCHEMA')
+                return self._reply(start,200,result)
             if post_policy_preview:
                 return self._reply(start,200,preview_policy_change(
                     self.core,getattr(self,'_extension_runtime',None),body))

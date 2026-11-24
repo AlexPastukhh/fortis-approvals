@@ -46,19 +46,25 @@ def _registry_cursor(reader, baseline, baseline_digest, policy_digest):
     planning, NEVER owner acceptance, protected rollback verification or
     admission. Do not accept a generic wrapper or a fake checkpoint reader.
     """
-    from ....registry.state_journal import RegistryStateJournal
-    from ....registry.state_journal_v2 import RegistryStateJournalV2
-    from ....registry.functional_v1_journal import FunctionalV1CandidateJournal
+    from ...registry.candidate_gateway import PinnedRegistryCursor
     owner=getattr(reader,'__self__',None)
     method=getattr(reader,'__func__',None)
-    local=(type(owner) is FunctionalV1CandidateJournal and
-           method is FunctionalV1CandidateJournal.checkpoint)
-    _need(local or
-          (type(owner) is RegistryStateJournal and
-           method is RegistryStateJournal.checkpoint) or
-          (type(owner) is RegistryStateJournalV2 and
-           method is RegistryStateJournalV2.checkpoint),
-          'P5_FORWARD_CURSOR_READER_REQUIRED')
+    remote=(type(owner) is PinnedRegistryCursor and method is PinnedRegistryCursor.checkpoint)
+    if remote:
+        local=True
+    else:
+        # These offline schema classes are NOT packaged in the Gateway image.
+        from ....registry.state_journal import RegistryStateJournal
+        from ....registry.state_journal_v2 import RegistryStateJournalV2
+        from ....registry.functional_v1_journal import FunctionalV1CandidateJournal
+        local=(type(owner) is FunctionalV1CandidateJournal and
+               method is FunctionalV1CandidateJournal.checkpoint)
+        _need(local or
+              (type(owner) is RegistryStateJournal and
+               method is RegistryStateJournal.checkpoint) or
+              (type(owner) is RegistryStateJournalV2 and
+               method is RegistryStateJournalV2.checkpoint),
+              'P5_FORWARD_CURSOR_READER_REQUIRED')
     scope={'repository':REPOSITORY,'enrollmentId':baseline['enrollmentId'],
            'baselineSha':baseline['baselineSha'],'baselineDigest':baseline_digest,
            'catalogSha256':baseline['catalogSha256'],'bindingDigest':baseline['bindingDigest'],

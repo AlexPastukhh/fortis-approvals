@@ -132,6 +132,9 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             len(set(grants.values())) != len(grants) or
             ingress_grant not in grants):
         raise Denied('R7_MACHINE_GRANTS_INVALID')
+    internal_actors=('release-registry-collector-v1','release-registry-planner-v1')
+    if any(actor in grants.values() for actor in internal_actors):
+        raise Denied('R7_REGISTRY_INTERNAL_ACTOR_LEGACY_GRANT_DENIED')
     if PUBLISHER_ACTOR in grants.values():
         raise Denied('R7_PUBLISHER_LEGACY_GRANT_DENIED')
     if publisher_profile is not None and type(publisher_profile) is not PublisherProfile:
@@ -176,6 +179,21 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         if type(registry_candidate_reader) is not GatewayRegistryUnixCandidateRead:
             raise Denied('R7_REGISTRY_CANDIDATE_READER_INVALID')
         registry_candidate_reader._check_identity()
+    functional=getattr(registry_candidate_reader,'_functional_config',None)
+    if functional is not None:
+        import secrets
+        from .integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
+        if (type(functional) is not FunctionalRegistryConfiguration
+                or not extension_registry or unified_policy_source_opt_in is None
+                or github_pilot is None or not github_pilot.native_worktree):
+            raise Denied('R7_REGISTRY_FUNCTIONAL_OWNER_COMPOSITION_REQUIRED')
+        # Non-exported per-process credentials keep the two internal
+        # principals active in Core; never part of machine actor/grant lists.
+        for principal in internal_actors:
+            credential=secrets.token_urlsafe(48)
+            if credential in auth_grants:
+                raise Denied('R7_REGISTRY_INTERNAL_GRANT_COLLISION')
+            auth_grants[credential]=principal
     # Construct adapters *before* modifying state: invalid org/region fail closed.
     reader = SonarReadAdapter(sonar_transport,
                               organization_keys=organizations, region=region,
@@ -287,6 +305,10 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             actors=actors, default_actor=grants[ingress_grant], vault=credential_vault).install(core, portal)
         ingress = ExtensionIngress(machine_base, runtime, delegate=ingress)
         portal._extension_runtime = runtime
+    if functional is not None:
+        functional.install(core=core,portal=portal,reader=registry_candidate_reader,
+                           native=native,root=root)
+        core._baseline_policy_version+=':registry-functional-'+functional.digest
     if unified_policy_source_opt_in is not None:
         from .extensions.owner_policy_r7_v2 import (
             derive_admission, trusted_scope_binding, reviewed_mirror_v1_previous_scope)
@@ -296,6 +318,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             region=region,project_keys=project_keys,github_pilot=github_pilot,
             analysis_review=analysis_review,profile=profile,machine_shell=machine_shell,
             runtime=runtime,broker=broker)
+        if functional is not None:
+            scope_binding['registryFunctional']=functional.digest
         upgrade=unified_policy_source_opt_in.allow_label_policy_upgrade
         all_methods=unified_policy_source_opt_in.allow_all_method_policy_upgrade
         core.install_policy_authority(

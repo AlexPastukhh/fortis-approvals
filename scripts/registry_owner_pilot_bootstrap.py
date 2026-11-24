@@ -26,7 +26,7 @@ from fortis_approvals.registry.state_journal import _scope
 
 # Closed catalog projection for this pilot. Drift stops rather than guessing
 # new targets or physical topology. Raw Git blob, not checkout CRLF bytes.
-CATALOG_SHA = 'c277e85bdf54deb37679de535ff58e08017314af8b370ffea2ded741f038561a'
+CATALOG_SHA = 'ed0ed1e667eabd14afb5b550194df68dee689892265d22910b4749d2521e0667'
 TARGETS = {'fortis-gateway': 'production', 'fortis-registry-pilot': 'non-production',
            'gateway-owner-controller': 'windows-owner', 'release-label-publisher': 'production'}
 REPOSITORY = 'AlexPastukhh/fortis-approvals'
