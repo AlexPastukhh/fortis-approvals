@@ -185,11 +185,12 @@ test('provider filter catalog counts and exact provider selection',()=>{
  const code=full.slice(filterStart,filterEnd);
  const inventory={providers:[{provider:'sonarcloud'},{provider:'github'},{provider:'mirror'}],
   operations:[{provider:'github',operation:'create_pull_request',configuredPolicy:'ALLOW'},{provider:'github',operation:'merge_pull_request',configuredPolicy:'ASK'},
-   {provider:'sonarcloud',operation:'accept_issue',configuredPolicy:'ASK'}]};
+   {provider:'sonarcloud',operation:'accept_issue',configuredPolicy:'ASK'},
+   {provider:'registry',operation:'candidate_head',scope:'exact',currentPolicy:'ALLOW',configuredPolicy:'DENY'}]};
  const ctx=vm.createContext({inventory});
  vm.runInContext(code,ctx);
- const result=vm.runInContext("JSON.stringify({options:providerFilterOptions(inventory),all:visibleProviderRows(inventory,'','').length,github:visibleProviderRows(inventory,'github','').length,ask:visibleProviderRows(inventory,'github','ASK').map(r=>r.operation),none:visibleProviderRows(inventory,'mirror','').length})",ctx);
- assert.deepEqual(JSON.parse(result),{options:[['github',2],['mirror',0],['sonarcloud',1]],all:3,github:2,ask:['merge_pull_request'],none:0});
+ const result=vm.runInContext("JSON.stringify({options:providerFilterOptions(inventory),all:visibleProviderRows(inventory,'','').length,github:visibleProviderRows(inventory,'github','').length,ask:visibleProviderRows(inventory,'github','ASK').map(r=>r.operation),none:visibleProviderRows(inventory,'mirror','').length,allowedRegistry:visibleProviderRows(inventory,'registry','allow').length,deniedRegistry:visibleProviderRows(inventory,'registry','deny').length})",ctx);
+ assert.deepEqual(JSON.parse(result),{options:[['github',2],['mirror',0],['registry',1],['sonarcloud',1]],all:4,github:2,ask:['merge_pull_request'],none:0,allowedRegistry:1,deniedRegistry:0});
  assert.match(html,/id="providers-select"/);
 });
 
@@ -274,9 +275,9 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
    configuredPolicy:'ASK'},
   {provider:'github',operation:'push_commits',actor:'agent',scope:'actor',
    configuredPolicy:'CONDITIONAL',active:true},
-  {provider:'workspace',operation:'commit',actor:'agent',scope:'actor',
-   currentPolicy:'ALLOW',editablePolicies:['DENY','ASK','ALLOW'],active:true,
-   configuredPolicy:'ALLOW'}
+  {provider:'workspace',operation:'commit',actor:'agent',scope:'exact',
+   target:'repo-1',currentPolicy:'ALLOW',editablePolicies:['DENY','ASK','ALLOW'],active:true,
+   configuredPolicy:'DENY'}
  ];
  const context=vm.createContext({$,document:{createElement:tag=>new Element(tag)},
   providerInventory:{policyEditorVersion:2,operations:rows,providers:[{provider:'github'},{provider:'workspace'}]},
@@ -299,6 +300,8 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
  assert.equal(selected[0],'create_pull_request');
  assert.equal(cards[1].children[0].disabled,true);
  assert.match(cards[1].children[1].children[2].textContent,/CONDITIONAL/);
+ const exactCard=groups[1].children[1].children[0];
+ assert.equal(exactCard.children[1].children[2].textContent,'ALLOW · базовое разрешение');
  context.$('providers-editable-only').checked=true;
  vm.runInContext('displayProviderInventory()',context);
  assert.equal(context.$('providers-summary').textContent,'2 из 3 правил · 2 провайдеров · редактор V2');
