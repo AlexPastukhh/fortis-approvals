@@ -141,6 +141,7 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 13),
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 15),
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 16),
+                      ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 18),
                   ),
                   'REGISTRY_STATE_CUTOVER_GAP')
             expected_fields.add('cutoverGap')

@@ -542,3 +542,30 @@ independent Registry restart and a real Docker Desktop cold restart on
 the owner host, with both containers healthy, the same scope and cursor,
 the active gate, typed Repo readback and working owner rollback. This
 section describes the source candidate pending that acceptance.
+
+#### First managed release after the uncaptured #269 merge
+
+Use the exact Approvals #270 HEAD only after it includes the #269 merge
+and all checks pass. Merge #270 with a GitHub merge commit. The recovery
+check requires previous main as first parent, the reviewed #270 HEAD as
+second parent and the merge tree to equal that HEAD. Keep the release
+catalog, Registry instance and existing capture and collector journals.
+
+Use the owner-only cutover preparation mode --post-269 with PR 270, its
+exact merged PR HEAD and the pinned image readback for the clean Windows
+main. Supply --active-268-config with an owner-private, byte-exact copy of
+functional.json from the active #268 reader seal, and retain the original
+functional-cutover-post-267.json. The helper verifies the archived #268
+configuration, its active release variant and the exact #268, #269 and
+#270 merge lineage before sealing the successor. It records #269 and the
+release as an explicitly reviewed gap. It creates no pre-merge review or
+ingest receipt for either PR.
+
+Keep the #268 protected release and cold-recovery evidence. Use the
+single-writer managed Registry migration and the ordinary protected
+Check/Apply with the exact #268 return reserve described above. Its
+legacy reader still pins the current Registry peer for this handover.
+Use the v4 reader profile for the new release. After Backup and Promote,
+test a real cold Docker Desktop restart and Repo readback on the same
+Registry instance. Test the first normal Registry review and ingestion
+with a subsequent open PR after that restart check.

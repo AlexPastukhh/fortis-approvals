@@ -11,13 +11,13 @@ from registry_owner_pilot_bootstrap import (
 from fortis_approvals.integrations.github.gateway.forward_lineage import (
     _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257, _CUTOVER_258,
     _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262, _CUTOVER_263, _CUTOVER_264,
-    _CUTOVER_265, _CUTOVER_266, _CUTOVER_267,
+    _CUTOVER_265, _CUTOVER_266, _CUTOVER_267, _CUTOVER_268, _CUTOVER_269,
     _CUTOVER_RECOVERY_IMPACT, _CUTOVER_HANDOVER_IMPACT,
     _POST_255_GAP, cutover_start,
 )
 from fortis_approvals.integrations.github.gateway.functional_review_runtime import (
     FunctionalRegistryConfiguration, _CUTOVER_259_CONFIG_SHA256, _CUTOVER_262_CONFIG_SHA256,
-    _CUTOVER_265_CONFIG_SHA256,
+    _CUTOVER_265_CONFIG_SHA256, _CUTOVER_268_CONFIG_SHA256, _reviewed_268_predecessor_digest,
 )
 
 _ORIGINAL_CONFIG = 'e61c8cb893cc988f7e78a46a39197788094084609cd436f20b5c78351f73829a'
@@ -32,6 +32,9 @@ _OPERATION = 'dfba6213-f83f-42ca-a136-d269289dcc09'
 def prepare(args):
     need(os.name == 'nt' and ROOT == (Path.home()/'Repos'/'fortis-approvals').resolve(),
          'WINDOWS_OWNER_SOURCE_REQUIRED')
+    need((not args.post_269 and not args.active_268_config) or
+         (args.post_269 and args.pull_request == 270 and args.active_268_config),
+         'CUTOVER_RECOVERY_POST_269_REQUIRES_PR_270_AND_ACTIVE_CONFIG')
     session = real_dir(args.session_dir)
     need(session.name == 'pilot-bootstrap' and session.parent.name == _OPERATION
          and not session.is_relative_to(ROOT), 'CUTOVER_RECOVERY_SESSION')
@@ -65,7 +68,8 @@ def prepare(args):
     prior_releases = []
     output_name = 'functional-cutover-recovery.json'
     confirm_label = 'CUTOVER RECOVERY CONFIG'
-    post_266 = args.post_266 or args.post_267
+    post_267 = args.post_267 or args.post_269
+    post_266 = args.post_266 or post_267
     post_264 = args.post_264 or post_266
     if any((args.post_255, args.post_256, args.post_257, args.post_258, args.post_260, args.post_261, args.post_263, post_264)):
         prior = read(session/'functional-cutover-recovery.json', 16384)
@@ -135,7 +139,7 @@ def prepare(args):
         recovery['impact'] = _CUTOVER_HANDOVER_IMPACT
         output_name = 'functional-cutover-post-266.json'
         confirm_label = 'POST 266 CUTOVER RECOVERY CONFIG'
-    if args.post_267:
+    if post_267:
         prior = read(session/'functional-cutover-post-266.json', 16384)
         need(sha(prior) == '6e49d3816fc44b222a81bbdc494546a48eb9a8ba8cfa2dad06bd67ad83eeba89',
              'CUTOVER_RECOVERY_POST_266_CONFIG')
@@ -144,6 +148,20 @@ def prepare(args):
         recovery['impact'] = _CUTOVER_RECOVERY_IMPACT
         output_name = 'functional-cutover-post-267.json'
         confirm_label = 'POST 267 CUTOVER RECOVERY CONFIG'
+    if args.post_269:
+        prior = read(session/'functional-cutover-post-267.json', 16384)
+        need(sha(prior) == _CUTOVER_268_CONFIG_SHA256, 'CUTOVER_RECOVERY_POST_267_CONFIG')
+        active_path = Path(args.active_268_config)
+        need(active_path.is_absolute() and not active_path.resolve().is_relative_to(ROOT),
+             'CUTOVER_RECOVERY_ACTIVE_CONFIG_LOCATION')
+        active = read(active_path, 16384)
+        active_config = loads_strict(active)
+        need(raw(active_config) == active, 'CUTOVER_RECOVERY_ACTIVE_CONFIG_CANONICAL')
+        prior_releases.append(active_config['cutoverRecovery']['release'])
+        prefix.extend((_CUTOVER_268, _CUTOVER_269))
+        recovery['impact'] = _CUTOVER_HANDOVER_IMPACT
+        output_name = 'functional-cutover-post-269.json'
+        confirm_label = 'POST 269 CUTOVER RECOVERY CONFIG'
     gap = {'disposition': disposition, 'merges': [*prefix, recovery]}
     baseline = config['baseline']
     source = cutover_start(gap, baseline['baselineSha'])
@@ -155,6 +173,10 @@ def prepare(args):
                  ('releaseNonce', 'registryImageId', 'gatewayImageId', 'gatewaySourceDigest')),
              'CUTOVER_RECOVERY_PRIOR_RELEASE_REUSE')
     config['cutoverRecovery'] = {'gap': gap, 'release': release}
+    if args.post_269:
+        config['cutoverRecovery']['predecessorRelease'] = active_config['cutoverRecovery']['release']
+        need(_reviewed_268_predecessor_digest(config) == sha(active),
+             'CUTOVER_RECOVERY_ACTIVE_CONFIG_CHANGED')
     FunctionalRegistryConfiguration(config, read(session/'planner.key', 32),
                                     scope_digest=receipt['scopeDigest'])
     need(git('rev-parse', 'HEAD').strip().decode() == source
@@ -217,6 +239,8 @@ if __name__ == '__main__':
     mode.add_argument('--post-264', action='store_true')
     mode.add_argument('--post-266', action='store_true')
     mode.add_argument('--post-267', action='store_true')
+    mode.add_argument('--post-269', action='store_true')
+    parser.add_argument('--active-268-config')
     parser.add_argument('--pull-request', required=True, type=int)
     parser.add_argument('--pull-request-head', required=True)
     try:
