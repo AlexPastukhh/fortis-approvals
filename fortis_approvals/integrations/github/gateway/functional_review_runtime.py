@@ -528,7 +528,7 @@ def _reviewed_functional_predecessor_digests(value):
     """Reconstruct the exact retained functional policy epochs for this successor."""
     from .forward_lineage import (
         _POST_255_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE,
-        _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE,
+        _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE,
     )
     recovery = value.get('cutoverRecovery')
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
@@ -536,9 +536,9 @@ def _reviewed_functional_predecessor_digests(value):
 
     merges = recovery['gap']['merges']
     digests = []
-    if len(merges) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE):
+    if len(merges) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE):
         digests.append(_reviewed_268_predecessor_digest(value))
-    if len(merges) in (_POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE):
+    if len(merges) in (_POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_264_GAP_SIZE]},
             'release': {
@@ -551,13 +551,13 @@ def _reviewed_functional_predecessor_digests(value):
         }}
         digest = _hash(previous)
         _need(digest == _CUTOVER_265_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
-        if len(merges) in (_POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE):
+        if len(merges) in (_POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE):
             # The promoted #265 retry resealed the same config with its exact new nonce.
             previous['cutoverRecovery']['release']['releaseNonce'] = '2471add6-079b-42ae-9e1d-a22adf821a0d'
             digest = _hash(previous)
         digests.append(digest)
     if len(merges) in (_POST_263_GAP_SIZE, _POST_264_GAP_SIZE, _POST_266_GAP_SIZE,
-                       _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE):
+                       _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_261_GAP_SIZE]},
             'release': {
@@ -573,7 +573,7 @@ def _reviewed_functional_predecessor_digests(value):
         digests.append(digest)
     if len(merges) in (_POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
                        _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE,
-                       _POST_269_GAP_SIZE, _POST_270_GAP_SIZE):
+                       _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:7]},
             'release': {
@@ -613,7 +613,7 @@ class FunctionalRegistryConfiguration:
     HTTP caller. The release controller pins the outer immutable profile.
     """
     def __init__(self, value, key, *, scope_digest):
-        from .forward_lineage import _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _baseline, cutover_start
+        from .forward_lineage import _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE, _baseline, cutover_start
         from .component_bindings import _mapping
         fields={'schemaVersion','collectorInstanceId','baseline','binding','policyReference','validatorRevision'}
         if type(value) is dict and value.get('schemaVersion')==2:
@@ -674,7 +674,7 @@ class FunctionalRegistryConfiguration:
             _need(type(recovery) is dict and {'gap', 'release'} <= recovery.keys(),
                   'P5_CUTOVER_RECOVERY_CONFIG')
             cutover_start(recovery['gap'], baseline['baselineSha'])
-            post_269 = len(recovery['gap']['merges']) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE)
+            post_269 = len(recovery['gap']['merges']) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE)
             fields = {'gap', 'release', 'predecessorRelease'} if post_269 else {'gap', 'release'}
             _need(recovery.keys() == fields, 'P5_CUTOVER_RECOVERY_CONFIG')
             release = recovery['release']

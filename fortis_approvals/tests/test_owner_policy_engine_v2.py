@@ -269,11 +269,20 @@ class UnifiedPolicyTests(unittest.TestCase):
         with self.assertRaises(Denied):
             reopened.policy_version
 
+    def test_registry_reviewed_managed_source_matches_packaged_provider(self):
+        from fortis_approvals.extensions.model import discover
+        from fortis_approvals.extensions.owner_policy_r7_v2 import (
+            _REGISTRY_MANAGED_SOURCE_BEFORE, _REGISTRY_MANAGED_SOURCE_AFTER)
+        provider, = discover(('registry',))
+        self.assertEqual(provider.source_digest, _REGISTRY_MANAGED_SOURCE_AFTER)
+        self.assertNotEqual(provider.source_digest, _REGISTRY_MANAGED_SOURCE_BEFORE)
+
     def test_registry_first_activation_preserves_exact_old_authority_and_epochs(self):
         from copy import deepcopy
         from fortis_approvals.extensions.owner_policy_r7_v2 import (
             RegistryAuthorityPredecessor, _MIRROR_V1_CAPACITY_SOURCE_BEFORE,
-            _MIRROR_V1_CAPACITY_SOURCE_AFTER)
+            _MIRROR_V1_CAPACITY_SOURCE_AFTER, _REGISTRY_MANAGED_SOURCE_BEFORE,
+            _REGISTRY_MANAGED_SOURCE_AFTER)
         from fortis_approvals.integrations.github.gateway.review_attestation import ACTOR as REVIEW, SERVICE, BUNDLE_OPERATION
         from fortis_approvals.integrations.registry.read_contract import PLANNER_ACTOR
         path=self.root/'registry-cutover.sqlite'
@@ -298,7 +307,7 @@ class UnifiedPolicyTests(unittest.TestCase):
             rules=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')]
         new_scope=deepcopy(mirror_scope);new_scope['registryFunctional']='a'*64
         read_ops=('candidate_head','candidate_list_desired','candidate_original_operation')
-        new_scope['extensions']['definitions']['registry']={'source':'b'*64,
+        new_scope['extensions']['definitions']['registry']={'source':_REGISTRY_MANAGED_SOURCE_BEFORE,
             'operations':[[op,'1','read',True,None,None] for op in read_ops]}
         new_scope['extensions']['credentials']['registry']={}
         added={(ACTOR,'registry',op,'fortis-approvals'):'DENY' for op in read_ops}
@@ -437,12 +446,29 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 6)
 
-        sixth_scope = {**fifth_scope, 'registryFunctional': '0'*64}
+        sixth_scope = deepcopy(fifth_scope)
+        sixth_scope['registryFunctional'] = '0'*64
+        sixth_scope['extensions']['definitions']['registry']['source'] = _REGISTRY_MANAGED_SOURCE_AFTER
+        unknown_scope = deepcopy(sixth_scope)
+        unknown_scope['extensions']['definitions']['registry']['source'] = '9'*64
+        unknown = UnifiedPolicyCore(path, **kwargs)
+        unknown_predecessor = RegistryAuthorityPredecessor(
+            unknown, unknown_scope, choices,
+            previous_functional_digests=(fifth_scope['registryFunctional'], *fifth_history))
+        with self.assertRaisesRegex(Denied, 'AUTHORITY_UPGRADE_REVIEW_REQUIRED'):
+            unknown.install_policy_authority(choices, scope_binding=unknown_scope,
+                reviewed_registry_predecessor=unknown_predecessor,
+                reviewed_upgrade_from=unknown_predecessor.choices)
         sixth_history = (fifth_scope['registryFunctional'], *fifth_history)
         for _ in range(2):
             sixth = UnifiedPolicyCore(path, **kwargs)
             verified = RegistryAuthorityPredecessor(sixth, sixth_scope, choices,
                                                     previous_functional_digests=sixth_history)
+            historical = verified.variants()
+            self.assertEqual(
+                {scope['extensions']['definitions']['registry']['source']
+                 for scope, baseline in historical if 'registryFunctional' in scope},
+                {_REGISTRY_MANAGED_SOURCE_BEFORE})
             sixth.install_policy_authority(choices, scope_binding=sixth_scope,
                 reviewed_registry_predecessor=verified, reviewed_upgrade_from=verified.choices)
             with sixth._db() as db:
@@ -582,6 +608,16 @@ class UnifiedPolicyTests(unittest.TestCase):
                         next270['cutoverRecovery']['gap']['merges'][-1:] = [lineage._CUTOVER_270, {'number': 271}]
                         self.assertEqual(runtime._reviewed_functional_predecessor_digests(next270),
                                          (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                        next271 = deepcopy(next270)
+                        next271['cutoverRecovery']['gap']['merges'][-1:] = [
+                            lineage._CUTOVER_271, {'number': 273}]
+                        self.assertEqual(runtime._reviewed_functional_predecessor_digests(next271),
+                                         (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                        # The prepared #270/#271 configurations were never
+                        # active; do not reconstruct additional authority epochs.
+                        next271['cutoverRecovery']['predecessorRelease']['gatewaySourceDigest'] = '0'*64
+                        with self.assertRaisesRegex(Denied, 'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                            runtime._reviewed_functional_predecessor_digests(next271)
                         next269['cutoverRecovery']['predecessorRelease']['gatewaySourceDigest'] = '0'*64
                         with self.assertRaisesRegex(Denied, 'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
                             runtime._reviewed_functional_predecessor_digests(next269)

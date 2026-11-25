@@ -214,6 +214,13 @@ def reviewed_mirror_v1_previous_scope(scope, *, all_methods):
     return previous
 
 
+# Reviewed Registry provider source transition: #254/#259/#262/#265/#268
+# -> #270/#271 managed listener client. These are provider digests, NOT
+# image IDs or the composite installed Gateway source digest.
+_REGISTRY_MANAGED_SOURCE_BEFORE = "1298c276fa8d1863ed9c272b428086fc039eea3935ca9cd42424b421337a6f7a"
+_REGISTRY_MANAGED_SOURCE_AFTER = "3e15015c5eb975c3747066451556de7aa60a8293b412d60541272ca86b1779e8"
+
+
 class RegistryAuthorityPredecessor:
     """Finite source-derived predecessors of owner-sealed Registry activation.
 
@@ -278,6 +285,14 @@ class RegistryAuthorityPredecessor:
         for digest in previous_functional_digests:
             previous_scope = deepcopy(scope)
             previous_scope['registryFunctional'] = digest
+            # The only historical functional epochs in this pilot are the
+            # five promoted pre-managed releases. Reconstruct their exact
+            # provider source together with their reviewed config digest;
+            # do not offer a cross-product of old and current definitions.
+            # An unknown successor digest gets no compatibility variant.
+            previous_registry = previous_scope['extensions']['definitions']['registry']
+            if previous_registry['source'] == _REGISTRY_MANAGED_SOURCE_AFTER:
+                previous_registry['source'] = _REGISTRY_MANAGED_SOURCE_BEFORE
             self._functional_predecessors.append((previous_scope, dict(core.policies)))
         if self._functional_predecessors:
             self.choices = dict(choices)

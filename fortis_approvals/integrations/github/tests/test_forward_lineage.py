@@ -77,7 +77,7 @@ class ForwardLineageTests(unittest.TestCase):
         rows = [{'number': 253, 'headSha': self.fixture.source_head, 'mergeSha': first,
                  'impact': f._CUTOVER_253['impact']}]
         parent = first
-        for number in range(254, 272):
+        for number in range(254, 273):
             head = git.text(['commit-tree', tree, '-p', parent, '-m', f'PR {number}'],
                             cwd=repository)
             merge = git.text(['commit-tree', tree, '-p', parent, '-p', head, '-m', f'Merge {number}'],
@@ -99,7 +99,7 @@ class ForwardLineageTests(unittest.TestCase):
                             _CUTOVER_260=rows[7], _CUTOVER_261=rows[8],
                             _CUTOVER_262=rows[9], _CUTOVER_263=rows[10], _CUTOVER_264=rows[11],
                             _CUTOVER_265=rows[12], _CUTOVER_266=rows[13], _CUTOVER_267=rows[14],
-                            _CUTOVER_268=rows[15], _CUTOVER_269=rows[16], _CUTOVER_270=rows[17]):
+                            _CUTOVER_268=rows[15], _CUTOVER_269=rows[16], _CUTOVER_270=rows[17], _CUTOVER_271=rows[18]):
             legacy_gap={**gap, 'merges':rows[:4]}
             self.assertEqual(f.verify_cutover_commits(legacy_gap,self.baseline,git,repository),
                              rows[3]['mergeSha'])
@@ -114,8 +114,13 @@ class ForwardLineageTests(unittest.TestCase):
             through_270 = {**gap, 'merges': rows[:18]}
             self.assertEqual(f.verify_cutover_commits(through_270, self.baseline, git, repository),
                              rows[17]['mergeSha'])
-            through_271 = {**gap, 'merges': rows}
-            self.assertEqual(f.verify_cutover_commits(through_271, self.baseline, git, repository), parent)
+            through_271 = {**gap, 'merges': rows[:19]}
+            self.assertEqual(f.verify_cutover_commits(through_271, self.baseline, git, repository), rows[18]['mergeSha'])
+            through_recovery = {**gap, 'merges': rows}
+            self.assertEqual(f.verify_cutover_commits(through_recovery, self.baseline, git, repository), parent)
+            wrong_prefix = {**through_recovery, 'merges': [*rows[:18], {**rows[18], 'headSha': 'f'*40}, rows[19]]}
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.cutover_start(wrong_prefix, self.baseline['baselineSha'])
             wrong_release = {**through_271, 'merges': [*rows[:18], {**rows[18], 'number': 272}]}
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.cutover_start(wrong_release, self.baseline['baselineSha'])

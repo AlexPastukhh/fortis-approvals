@@ -11,6 +11,51 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Registry Functional V1 — checkpoint после #271 (2026-11-26)
+
+Источник последовательности E2–E5 — [Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
+owner gates и recovery — [Registry pilot runbook](RELEASE-REGISTRY-FUNCTIONAL-V1-PILOT.md).
+Этот checkpoint уточняет фактическое состояние Gateway/Registry pilot; не даёт
+нового GO на изменение Windows/runtime. В каждом PR обновлять этот план по
+фактическим результатам и оставшимся зависимостям; после каждого шага сверять
+его актуальность и сообщать полную таблицу. Source merge, installed runtime и
+live acceptance — разные статусы.
+
+| Шаг | Статус на входе в recovery PR |
+|---|---|
+| 1–5. #271 merge, CI 5/5, lineage, Docker/Windows main | DONE |
+| 6–8. Windows SelfTest/fixtures, образы, recovery config | DONE для #271 |
+| 9–10. Исправление seal, offline v4 readback | DONE для #271 |
+| 11–13. Owner quiescence, StartManaged/live v4, #268 v3 reserve | DONE для #271; повторить после recovery build |
+| 14.1. Наследуемые Machine PowerShell/Publisher и mounts | DONE (#271 rehearsal preflight) |
+| 14.2. State clone и retained collector | DONE (#271 rehearsal) |
+| 14.3. Startup #271 | BLOCKED: OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED; до Check/Apply |
+| 14.4. Точные исторические пары config/provider digest, regression и 20-merge gap | Recovery source candidate; local 56/56 PASS; CI точного HEAD OPEN |
+| 14.5. Recovery PR, owner merge, Docker/Windows sync | OPEN |
+| 14.6. Оба новых image, fresh v4 seal, single-writer handover и новый v3 reserve | OPEN; сохранить #268/#270/#271 evidence, исходный genesis/backup |
+| 14.7. Rehearsal и protected Check с exact receipt и повторным quiescence | OPEN |
+| 15–17. Separate Apply, Backup, Promote | OPEN |
+| 18–20. Registry restart, cold Docker Desktop restart, Repo readback без rebind | OPEN |
+| 21. E2: новый PR после restart, настоящий review → merge → ingest → Desired/receipt | OPEN |
+| 22. E3: owner report и Board | OPEN |
+| 23. E4: supersession и batch | OPEN |
+| 24. E5: negatives/restart/restore и scoped acceptance | OPEN |
+
+Owner-reported #271 evidence: source `2e32313e203efa8165dc62cf1565dfd0e85ba993`,
+config digest `b9a2a6f92fdb8b07ae174b924178b0d44a2e711feed3ea218e3ec11a8187d3f2`,
+v4 seal `919b5d1e8d10ce6855602a85809847ac5c866d3cd54eec81aad438651035fd0f`,
+managed listener `22aa293e5d5bd9f9e7dc492776d0abb5f960f96b02b94dd938c81b5f9354d2a4`,
+never-started reserve `21a7169e554f441c49c5d4806f65603e04c1145500ee2a5d385a2b98370b19d5`.
+Isolated rehearsal exited 1; no protected Check or Apply. Active Gateway remains
+#268; #270/#271 are not historical admitted policy epochs. Preserve existing
+12 UNCERTAIN and 1 CLAIMED subject to fresh exact census; do not assume
+quiescence after new Git/workspace operations. Reacquire owner-confirmed
+exclusive window before the next protected release.
+
+PowerShell inner-policy architectural review in separate open PR #272 remains
+deferred; do not merge that unrelated PR into the pre-capture gap. Do not
+remove its ASK-only guard or merge PowerShell V2 into this recovery.
+
 <a id="api-onboarding-program"></a>
 
 ## API onboarding → управляемые providers и owner policy — целевая программа
