@@ -1709,6 +1709,34 @@ function Assert-Checked-Image-Binding {
         throw 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'
     }
 }
+# Report only fixed component labels. Protected receipt values and file names
+# outside this allowlist stay private.
+function Get-Checked-Source-Changes {
+    param($Before,$After)
+    $BeforeHashes=$Before.PSObject.Properties['sha256']
+    $AfterHashes=$After.PSObject.Properties['sha256']
+    if($null -eq $BeforeHashes -or $null -eq $BeforeHashes.Value -or
+       $null -eq $AfterHashes -or $null -eq $AfterHashes.Value){return 'OTHER'}
+    $StateFiles=[ordered]@{
+        CORE='approvals.sqlite'
+        OWNER='owner.sqlite'
+        WORKFLOW='native-git/workflow.sqlite'
+        GITHUB_RECEIPTS='github-receipts.sqlite'
+        SONAR_RECEIPTS='sonar-receipts.sqlite'
+        REGISTRY_CAPTURE='registry-functional-v1/capture.sqlite'
+        REGISTRY_COLLECTOR='registry-functional-v1/collector.sqlite'
+    }
+    $Changed=@(foreach($Label in $StateFiles.Keys){
+        $Path=$StateFiles[$Label]
+        $Old=$BeforeHashes.Value.PSObject.Properties[$Path]
+        $New=$AfterHashes.Value.PSObject.Properties[$Path]
+        $OldHash=if($null -ne $Old){[string]$Old.Value}else{''}
+        $NewHash=if($null -ne $New){[string]$New.Value}else{''}
+        if($OldHash -cne $NewHash){$Label}
+    })
+    if($Changed.Count -eq 0){return 'OTHER'}
+    return ($Changed -join ',')
+}
 function Verify-Checked-Image {
     param($Source,$Report)
     if(-not $CheckedImageRecord){return}
@@ -1727,6 +1755,7 @@ function Verify-Checked-Image {
             throw 'RELEASE_GROWTH_SOURCE_STATE_CHANGED'
         }
     } elseif(-not (Same-Json $Record.sourceReceipt $Now)){
+        Write-Host ('FORTIS_CHECKED_SOURCE_CHANGED components='+(Get-Checked-Source-Changes $Record.sourceReceipt $Now))
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
@@ -1743,6 +1772,7 @@ function Assert-Checked-Source-Receipt {
             throw 'RELEASE_GROWTH_SOURCE_STATE_CHANGED'
         }
     } elseif(-not (Same-Json $Stored.sourceReceipt $Receipt)){
+        Write-Host ('FORTIS_CHECKED_SOURCE_CHANGED components='+(Get-Checked-Source-Changes $Stored.sourceReceipt $Receipt))
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
 }
@@ -3112,6 +3142,13 @@ if($Action -eq 'SelfTest'){
     try{Assert-Checked-Image-Binding $Binding $WrongQuiescence}
     catch{if($_.Exception.Message -cne 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'){throw};$Rejected=$true}
     if(-not $Rejected){throw 'RELEASE_CHECKED_IMAGE_QUIESCENCE_SELFTEST_FAILED'}
+    $ReceiptBefore='{"sha256":{"approvals.sqlite":"before","owner.sqlite":"same","private-path":"before"}}'|ConvertFrom-Json
+    $ReceiptAfter='{"sha256":{"approvals.sqlite":"after","owner.sqlite":"same","native-git/workflow.sqlite":"new","private-path":"after"}}'|ConvertFrom-Json
+    $UnknownChange='{"sha256":{"approvals.sqlite":"before","owner.sqlite":"same","private-path":"after"}}'|ConvertFrom-Json
+    if((Get-Checked-Source-Changes $ReceiptBefore $ReceiptAfter) -cne 'CORE,WORKFLOW' -or
+       (Get-Checked-Source-Changes $ReceiptBefore $UnknownChange) -cne 'OTHER'){
+        throw 'RELEASE_CHECKED_SOURCE_DIAGNOSTIC_SELFTEST_FAILED'
+    }
     Write-Host 'FORTIS_INTEGRATIONS_SELFTEST_PASS';return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
