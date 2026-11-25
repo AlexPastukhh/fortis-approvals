@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from fortis_approvals.core import Denied, canonical, loads_strict
+from fortis_approvals.integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
 from fortis_approvals.registry import local_candidate_read_service as server
 from fortis_approvals.tests import test_registry_functional_v1_journal as fixture
 
@@ -25,7 +26,7 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
     accept = fixture.FunctionalV1JournalTests.accept
     suffix = fixture.FunctionalV1JournalTests.suffix
 
-    def setup_service(self, *, reader_uid=None, reader_gid=None):
+    def setup_service(self, *, reader_uid=None, reader_gid=None, **options):
         sock_temp = tempfile.TemporaryDirectory(prefix='fortis-reg-read-')
         self.addCleanup(sock_temp.cleanup)
         self.socketdir = Path(sock_temp.name)
@@ -35,7 +36,7 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
         self.reader_gid = os.getegid() if reader_gid is None else reader_gid
         self.service = server.PrivateCandidateReadService(
             store=self.state, socket_path=str(self.socketpath),
-            reader_uid=self.reader_uid, reader_gid=self.reader_gid)
+            reader_uid=self.reader_uid, reader_gid=self.reader_gid, **options)
 
     def request(self, operation='candidate.capabilities', params=None, **over):
         return {
@@ -118,6 +119,87 @@ class LocalCandidateReadServiceTests(unittest.TestCase):
                     'runtimeActivationAllowed','rollbackProtected'):
             self.assertIs(value[key],False)
         return value['data']
+
+    def test_managed_start_replaces_dead_socket_without_resealing(self):
+        key = b'k' * 32
+        self.setup_service(planner_key=key, managed_startup=True)
+
+        def read(reader):
+            errors = []
+
+            def handle(listener):
+                try:
+                    listener.settimeout(3)
+                    conn, _ = listener.accept()
+                    with conn:
+                        self.service.handle(conn)
+                except Exception as exc:
+                    errors.append(exc)
+
+            with self.service._managed_socket() as listener:
+                worker = threading.Thread(target=handle, args=(listener,), daemon=True)
+                worker.start()
+                try:
+                    if reader is None:
+                        request = self.request('candidate.head')
+                        response = self.decode(self.client(request=request),
+                                               operation='candidate.head',
+                                               request_id=request['requestId'])
+                    else:
+                        response = reader._socket_read('candidate_head', {}, str(uuid.uuid4()))
+                finally:
+                    worker.join(timeout=4)
+                self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            return response
+
+        def reader(peer_key):
+            client = GatewayRegistryUnixCandidateRead(
+                socket_path=str(self.socketpath), instance_id=self.instance,
+                scope_digest=server._hash(self.scope), registry_uid=os.geteuid(),
+                registry_gid=os.getegid(), reader_uid=os.geteuid() + 1,
+                reader_gid=os.getegid() + 1, peer_key=peer_key)
+            # Same-UID fixture. Peer proofs and socket identities are real.
+            client._reader = (os.geteuid(), os.getegid())
+            return client
+
+        with patch.object(GatewayRegistryUnixCandidateRead, '_check_identity'):
+            client = reader(key)
+            before = read(client)
+            # A process can exit without unlinking its published socket.
+            self.socketpath.unlink()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale:
+                stale.bind(str(self.socketpath))
+                self.socketpath.chmod(0o660)
+            after = read(client)
+            self.assertEqual(before, after)
+            # Existing pinned releases use the legacy wire frame. This is
+            # required for the protected reserve during the first migration.
+            self.socketpath.unlink()
+            self.assertEqual(before, read(None))
+            self.socketpath.unlink()
+            with self.assertRaisesRegex(Denied, 'PEER_PROOF_DENIED'):
+                read(reader(b'x' * 32))
+
+    def test_managed_start_preserves_live_socket_and_unexpected_file(self):
+        self.setup_service(planner_key=b'k' * 32, managed_startup=True)
+        self.socketpath.write_text('retain')
+        with self.assertRaisesRegex(Denied, 'STARTUP_SOCKET_DENIED'):
+            with self.service._managed_socket():
+                self.fail('unexpected file replaced')
+        self.assertEqual(self.socketpath.read_text(), 'retain')
+        self.socketpath.unlink()
+
+        with self.service.bind():
+            inode = self.socketpath.stat().st_ino
+            with self.assertRaisesRegex(Denied, 'STARTUP_BUSY'):
+                with self.service._managed_socket():
+                    self.fail('live socket replaced')
+            self.assertEqual(self.socketpath.stat().st_ino, inode)
+        with self.service._managed_socket():
+            with self.assertRaisesRegex(Denied, 'STARTUP_BUSY'):
+                with self.service._managed_socket():
+                    self.fail('second managed listener')
 
     def test_real_unix_capabilities_explicitly_source_only(self):
         self.setup_service()

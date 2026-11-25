@@ -1,9 +1,9 @@
 # Windows PowerShell 5.1 / non-Production E1.3b only.
 # Owner-only Plan or independently approved ephemeral Preview/Provision/Verify.
-# No docker volume create, chown, daemon grants, Registry listener or Gateway release.
+# StartManaged adopts the existing pilot on the normal Docker restart policy.
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan','Preview','Provision','Verify')][string]$Action='Plan',
+    [ValidateSet('Plan','Preview','Provision','Verify','StartManaged')][string]$Action='Plan',
     [string]$SourceRoot='',
     [string]$SourceSha='',
     [string]$RegistryImageId='',
@@ -12,7 +12,9 @@ param(
     [string]$StateVolume='',
     [string]$ConfigVolume='',
     [string]$SocketVolume='fortis-registry-read',
-    [switch]$ConfirmProvision
+    [switch]$ConfirmProvision,
+    [string]$PlannerKeySha256='',
+    [switch]$ConfirmManagedStart
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
@@ -27,6 +29,15 @@ function Invoke-Registry-Bootstrap-DockerRead {
     $Result=@(& docker @Arguments)
     if ($LASTEXITCODE -ne 0) { throw 'REGISTRY_BOOTSTRAP_DOCKER_READ_FAILED' }
     return ,$Result
+}
+
+$ManagedStart=$Action -ceq 'StartManaged'
+if ($ManagedStart -ne [bool]$ConfirmManagedStart -or (-not $ManagedStart -and $PlannerKeySha256)) {
+    throw 'REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED'
+}
+if ($ManagedStart) {
+    Assert-Registry-Bootstrap-Input 'PLANNER_KEY_SHA256' $PlannerKeySha256 '^[0-9a-f]{64}$'
+    if ($SpecPath -or $ExpectedSpecSha256) { throw 'REGISTRY_BOOTSTRAP_MANAGED_START_SPEC_NOT_SUPPORTED' }
 }
 
 if ($Action -ceq 'Plan') {
@@ -46,7 +57,6 @@ if ($Action -ceq 'Provision' -and -not $ConfirmProvision) {
 
 Assert-Registry-Bootstrap-Input 'SOURCE_SHA' $SourceSha '^[0-9a-f]{40}$'
 Assert-Registry-Bootstrap-Input 'IMAGE_ID' $RegistryImageId '^sha256:[0-9a-f]{64}$'
-Assert-Registry-Bootstrap-Input 'SPEC_SHA' $ExpectedSpecSha256 '^[0-9a-f]{64}$'
 Assert-Registry-Bootstrap-Input 'STATE_VOLUME' $StateVolume '^fortis-registry-state-e13b-[0-9a-f]{8,32}$'
 Assert-Registry-Bootstrap-Input 'CONFIG_VOLUME' $ConfigVolume '^fortis-registry-config-e13b-[0-9a-f]{8,32}$'
 if ($SocketVolume -cne 'fortis-registry-read' -or $StateVolume -ceq $ConfigVolume) {
@@ -64,27 +74,30 @@ if ([IO.Path]::GetFullPath($PSScriptRoot) -cne $ExpectedScriptRoot) {
 if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
     throw 'REGISTRY_BOOTSTRAP_SOURCE_GIT_MISSING'
 }
-if (-not $SpecPath -or -not (Test-Path -LiteralPath $SpecPath -PathType Leaf)) {
-    throw 'REGISTRY_BOOTSTRAP_SPEC_UNAVAILABLE'
-}
-$SpecInfo=Get-Item -LiteralPath $SpecPath -Force
-if (($SpecInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'REGISTRY_BOOTSTRAP_SPEC_REPARSE_DENIED'
-}
-$SpecBytes=[IO.File]::ReadAllBytes($SpecInfo.FullName)
-if ($SpecBytes.Length -le 0 -or $SpecBytes.Length -gt 4096) {
-    throw 'REGISTRY_BOOTSTRAP_SPEC_SIZE_DENIED'
-}
-foreach ($Byte in $SpecBytes) {
-    if ($Byte -gt 127 -or $Byte -eq 0 -or $Byte -eq 10 -or $Byte -eq 13) {
-        throw 'REGISTRY_BOOTSTRAP_SPEC_ASCII_SINGLE_LINE_REQUIRED'
+if (-not $ManagedStart) {
+    Assert-Registry-Bootstrap-Input 'SPEC_SHA' $ExpectedSpecSha256 '^[0-9a-f]{64}$'
+    if (-not $SpecPath -or -not (Test-Path -LiteralPath $SpecPath -PathType Leaf)) {
+        throw 'REGISTRY_BOOTSTRAP_SPEC_UNAVAILABLE'
     }
+    $SpecInfo=Get-Item -LiteralPath $SpecPath -Force
+    if (($SpecInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'REGISTRY_BOOTSTRAP_SPEC_REPARSE_DENIED'
+    }
+    $SpecBytes=[IO.File]::ReadAllBytes($SpecInfo.FullName)
+    if ($SpecBytes.Length -le 0 -or $SpecBytes.Length -gt 4096) {
+        throw 'REGISTRY_BOOTSTRAP_SPEC_SIZE_DENIED'
+    }
+    foreach ($Byte in $SpecBytes) {
+        if ($Byte -gt 127 -or $Byte -eq 0 -or $Byte -eq 10 -or $Byte -eq 13) {
+            throw 'REGISTRY_BOOTSTRAP_SPEC_ASCII_SINGLE_LINE_REQUIRED'
+        }
+    }
+    $SpecActual=(Get-FileHash -LiteralPath $SpecInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($SpecActual -cne $ExpectedSpecSha256) {
+        throw 'REGISTRY_BOOTSTRAP_SPEC_PIN_CHANGED'
+    }
+    $SpecLine=[Text.Encoding]::ASCII.GetString($SpecBytes)
 }
-$SpecActual=(Get-FileHash -LiteralPath $SpecInfo.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($SpecActual -cne $ExpectedSpecSha256) {
-    throw 'REGISTRY_BOOTSTRAP_SPEC_PIN_CHANGED'
-}
-$SpecLine=[Text.Encoding]::ASCII.GetString($SpecBytes)
 
 $Branch=@(& git -C $SourceRoot branch --show-current)
 if ($LASTEXITCODE -ne 0 -or $Branch.Count -ne 1 -or $Branch[0] -cne 'main') {
@@ -112,10 +125,53 @@ foreach ($Name in @($StateVolume,$ConfigVolume,$SocketVolume)) {
     if ($Volume.Count -ne 1 -or $Volume[0] -cne ($Name+'|local|local')) {
         throw 'REGISTRY_BOOTSTRAP_VOLUME_NOT_OWNER_VERIFIED'
     }
-    $Users=Invoke-Registry-Bootstrap-DockerRead -Arguments @('ps','-aq','--filter',('volume='+$Name))
-    if ($Users.Count -ne 0) {
-        throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
+    if ($ManagedStart) {
+        $Users=Invoke-Registry-Bootstrap-DockerRead -Arguments @('ps','-aq','--no-trunc','--filter',('volume='+$Name))
+        foreach ($Id in $Users) {
+            Assert-Registry-Bootstrap-Input 'VOLUME_HOLDER' $Id '^[0-9a-f]{64}$'
+            $Holder=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
+                'container','inspect','--format','{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}|{{json .Mounts}}',$Id)
+            if ($Holder.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_MOUNT_READBACK_FAILED' }
+            $Fields=$Holder[0] -split '\|',3
+            if ($Fields.Count -ne 3) { throw 'REGISTRY_BOOTSTRAP_MOUNT_READBACK_FAILED' }
+            $Dormant=($Fields[0] -cin @('created','exited') -and $Fields[1] -ceq 'no')
+            if ($Dormant) { continue }
+            # Existing Gateway may retain the private socket as a reader.
+            $SocketMount=@(ConvertFrom-Json -InputObject $Fields[2] |
+                Where-Object { $_.Type -ceq 'volume' -and $_.Name -ceq $Name })
+            if ($Name -cne $SocketVolume -or $SocketMount.Count -ne 1 -or
+                $SocketMount[0].RW -isnot [bool] -or $SocketMount[0].RW -ne $false) {
+                throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
+            }
+        }
+    } else {
+        $Users=Invoke-Registry-Bootstrap-DockerRead -Arguments @('ps','-aq','--filter',('volume='+$Name))
+        if ($Users.Count -ne 0) {
+            throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
+        }
     }
+}
+
+if ($ManagedStart) {
+    $StartArgs=@(
+        'run','-d','--pull=never','--name','fortis-registry-managed','--restart=unless-stopped',
+        '--init','--network=none','--read-only','--user','20002:20002',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','128m',
+        '--mount',('type=volume,src='+$StateVolume+',dst=/run/fortis-registry-state,volume-nocopy'),
+        '--mount',('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtime,volume-nocopy,readonly'),
+        '--mount',('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy'),
+        $RegistryImageId,'python','-m','fortis_approvals.registry.local_candidate_read_service',
+        '--owner-config','/run/fortis-registry-runtime/profile.json',
+        '--functional-planner-key-digest',$PlannerKeySha256,'--managed-startup'
+    )
+    $RegistryId=@(& docker @StartArgs)
+    if ($LASTEXITCODE -ne 0 -or $RegistryId.Count -ne 1 -or $RegistryId[0] -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'REGISTRY_BOOTSTRAP_MANAGED_START_UNKNOWN_INSPECT_ORIGINAL'
+    }
+    Write-Host ('REGISTRY_BOOTSTRAP_MANAGED_CONTAINER_ID='+$RegistryId[0])
+    # Docker accepted the start. Normal protected Gateway Check verifies the
+    # actual Registry proof before admitting the release.
+    return
 }
 
 # A fixed script, never dynamic Python generated from untrusted spec. The spec

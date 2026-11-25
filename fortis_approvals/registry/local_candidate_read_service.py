@@ -10,6 +10,9 @@ Do not package/deploy or grant this endpoint until a separate owner-approved
 non-Production host/provenance review. This is NOT registry.list_records.
 """
 import argparse
+from contextlib import contextmanager
+import errno
+import fcntl
 import os
 from pathlib import Path
 import socket
@@ -19,7 +22,7 @@ import sys
 import time
 
 from ..core import Conflict, Denied, Stale, canonical, loads_strict
-from ..integrations.registry.owner_pinned_pidfd import kernel_live_peer
+from ..integrations.registry.owner_pinned_pidfd import kernel_live_peer, peer_proof
 from ..integrations.registry.read_contract import (PLANNER_OPERATION, PLANNER_FRAME_LIMIT,
     verify_planner_frame, private_planner_key)
 from .functional_v1_journal import FunctionalV1CandidateJournal
@@ -160,7 +163,8 @@ class PrivateCandidateReadService:
     reader peer identity is checked by Linux SO_PEERCRED, not JSON fields.
     """
 
-    def __init__(self, *, store, socket_path, reader_uid, reader_gid, planner_key=None):
+    def __init__(self, *, store, socket_path, reader_uid, reader_gid, planner_key=None,
+                 managed_startup=False):
         _need(type(store) is FunctionalV1CandidateJournal
               and type(reader_uid) is int and 0 < reader_uid < 2**31
               and type(reader_gid) is int and 0 < reader_gid < 2**31
@@ -172,6 +176,10 @@ class PrivateCandidateReadService:
         # directory or anywhere inside that writer-owned state tree.
         _need(not path.parent.is_relative_to(store.path.parent),
               'REGISTRY_PRIVATE_READ_SHARED_STATE_DIRECTORY')
+        _need(type(managed_startup) is bool and
+              (not managed_startup or type(planner_key) is bytes),
+              'REGISTRY_MANAGED_STARTUP_CONFIG_DENIED')
+        self._managed_startup = managed_startup
         self._store = store
         self._path = path
         self._uid = reader_uid
@@ -208,6 +216,84 @@ class PrivateCandidateReadService:
         _need(self._endpoint == endpoint,
               'REGISTRY_PRIVATE_READ_SOCKET_CHANGED')
         return endpoint
+
+    @contextmanager
+    def _managed_socket(self):
+        """Serialize managed listeners and remove only a verified dead socket."""
+        if not self._managed_startup:
+            with self.bind() as listener:
+                yield listener
+            return
+        _private_socket_dir(self._path, self._gid)
+        directory = os.open(self._path.parent,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            try:
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise Denied('REGISTRY_MANAGED_STARTUP_BUSY') from None
+            # Verify the admitted Registry database before changing its endpoint.
+            self._head()
+            self._remove_dead_socket(directory)
+            # bind() runs before any requests or worker threads are started.
+            # An abrupt kill even before chmod leaves a socket with mode 0660.
+            previous = os.umask(0o117)
+            try:
+                listener = self.bind()
+            finally:
+                os.umask(previous)
+            with listener:
+                yield listener
+        finally:
+            os.close(directory)
+
+    def _remove_dead_socket(self, directory):
+        name = self._path.name
+        try:
+            stale = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        _need(stat.S_ISSOCK(stale.st_mode) and stale.st_nlink == 1
+              and stale.st_uid == os.geteuid() and stale.st_gid == self._gid
+              and stat.S_IMODE(stale.st_mode) == 0o660,
+              'REGISTRY_MANAGED_STARTUP_SOCKET_DENIED')
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(_TIMEOUT)
+            try:
+                probe.connect(str(self._path))
+            except OSError as exc:
+                _need(exc.errno == errno.ECONNREFUSED,
+                      'REGISTRY_MANAGED_STARTUP_SOCKET_DENIED')
+            else:
+                raise Denied('REGISTRY_MANAGED_STARTUP_BUSY')
+        current_dir = self._path.parent.lstat()
+        locked_dir = os.fstat(directory)
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        _need((current_dir.st_dev, current_dir.st_ino) == (locked_dir.st_dev, locked_dir.st_ino)
+              and (current.st_dev, current.st_ino, current.st_ctime_ns) ==
+                  (stale.st_dev, stale.st_ino, stale.st_ctime_ns),
+              'REGISTRY_MANAGED_STARTUP_SOCKET_CHANGED')
+        os.unlink(name, dir_fd=directory)
+
+    def _prove_identity(self, connection):
+        # Independent of the planner request MAC. No effect bytes have arrived.
+        connection.settimeout(_TIMEOUT)
+        challenge = bytearray()
+        deadline = time.monotonic() + _TIMEOUT
+        while len(challenge) < 64:
+            remaining = deadline - time.monotonic()
+            _need(remaining > 0, 'REGISTRY_FUNCTIONAL_PEER_CHALLENGE_DENIED')
+            connection.settimeout(remaining)
+            chunk = connection.recv(64 - len(challenge))
+            _need(chunk, 'REGISTRY_FUNCTIONAL_PEER_CHALLENGE_DENIED')
+            challenge.extend(chunk)
+        try:
+            proof = peer_proof(self._planner_key, challenge.decode('ascii'),
+                               instance_id=self._store.instance_id,
+                               scope_digest=_hash(self._store.scope))
+        except UnicodeDecodeError:
+            raise Denied('REGISTRY_FUNCTIONAL_PEER_CHALLENGE_DENIED') from None
+        connection.sendall(proof)
 
     def bind(self):
         """Bind one private path. Never unlink a preexisting socket/file."""
@@ -254,6 +340,11 @@ class PrivateCandidateReadService:
                           reader_gid=self._gid)
         _need(peer[1:3] == (self._uid, self._gid),
               'REGISTRY_PRIVATE_READ_PEER_DENIED')
+        if self._managed_startup:
+            connection.settimeout(_TIMEOUT)
+            first = connection.recv(1, socket.MSG_PEEK)
+            if first != b'{':
+                self._prove_identity(connection)
         request = _canonical_frame(connection, PLANNER_FRAME_LIMIT if
                                    self._planner_key is not None else _MAX_FRAME)
         if type(request) is dict and request.get('operation') == PLANNER_OPERATION:
@@ -347,7 +438,7 @@ class PrivateCandidateReadService:
               type(max_connections) is int and 1 <= max_connections <= 1000,
               'REGISTRY_PRIVATE_READ_SERVER_LIMIT')
         count = 0
-        with self.bind() as listener:
+        with self._managed_socket() as listener:
             try:
                 while max_connections is None or count < max_connections:
                     connection, _ = listener.accept()
@@ -413,6 +504,7 @@ def main(argv=None):
         description='Inactive Registry candidate read-only private socket')
     parser.add_argument('--owner-config', required=True)
     parser.add_argument('--functional-planner-key-digest')
+    parser.add_argument('--managed-startup', action='store_true')
     args = parser.parse_args(argv)
     cfg = _load_owner_config(args.owner_config)
     planner_key=None
@@ -438,7 +530,8 @@ def main(argv=None):
         scope=cfg['scope'], plan_reader=read_disabled)
     service = PrivateCandidateReadService(
         store=store, socket_path=cfg['socketPath'],
-        reader_uid=cfg['readerUid'], reader_gid=cfg['readerGid'],planner_key=planner_key)
+        reader_uid=cfg['readerUid'], reader_gid=cfg['readerGid'], planner_key=planner_key,
+        managed_startup=args.managed_startup)
     service.serve()
     return 0
 

@@ -411,7 +411,7 @@ class UnifiedPolicyTests(unittest.TestCase):
                 reviewed_registry_predecessor=incomplete, reviewed_upgrade_from=incomplete.choices)
         with self.assertRaisesRegex(Denied, 'REGISTRY_PREDECESSOR_INVALID'):
             RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
-                                         previous_functional_digests=(*all_history, 'f'*64, '0'*64))
+                                         previous_functional_digests=(*all_history, 'f'*64, '0'*64, '9'*64))
         for _ in range(2):
             fourth = UnifiedPolicyCore(path, **kwargs)
             verified = RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
@@ -436,6 +436,19 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')], events)
                 self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 6)
+
+        sixth_scope = {**fifth_scope, 'registryFunctional': '0'*64}
+        sixth_history = (fifth_scope['registryFunctional'], *fifth_history)
+        for _ in range(2):
+            sixth = UnifiedPolicyCore(path, **kwargs)
+            verified = RegistryAuthorityPredecessor(sixth, sixth_scope, choices,
+                                                    previous_functional_digests=sixth_history)
+            sixth.install_policy_authority(choices, scope_binding=sixth_scope,
+                reviewed_registry_predecessor=verified, reviewed_upgrade_from=verified.choices)
+            with sixth._db() as db:
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')], events)
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 7)
 
     def test_functional_predecessor_rejects_drift_outside_release(self):
         from copy import deepcopy
@@ -542,6 +555,32 @@ class UnifiedPolicyTests(unittest.TestCase):
                     next267['cutoverRecovery']['gap']['merges'][-1:]=[lineage._CUTOVER_267, {'number':268}]
                     self.assertEqual(runtime._reviewed_functional_predecessor_digests(next267),
                                      (retry_pin,pin262,pin,older_pin))
+                    previous268 = deepcopy(next267)
+                    previous268['cutoverRecovery']['gap']['merges'][-1] = lineage._CUTOVER_268
+                    prior_release = {
+                        'releaseNonce': runtime._CUTOVER_268_PREPARED_NONCE,
+                        'validatorRevision': 'f'*40,
+                        'registryImageId': 'sha256:'+'a'*64,
+                        'gatewayImageId': 'sha256:'+'b'*64,
+                        'gatewaySourceDigest': 'c'*64,
+                    }
+                    previous268['cutoverRecovery']['release'] = prior_release
+                    pin268 = runtime._hash(previous268)
+                    next269 = deepcopy(previous268)
+                    next269['cutoverRecovery']['gap']['merges'] += [lineage._CUTOVER_269, {'number': 270}]
+                    next269['cutoverRecovery']['release']['releaseNonce'] = str(uuid.uuid4())
+                    next269['cutoverRecovery']['predecessorRelease'] = dict(prior_release)
+                    with patch.object(runtime, '_CUTOVER_268_CONFIG_SHA256', pin268):
+                        self.assertEqual(runtime._reviewed_functional_predecessor_digests(next269),
+                                         (pin268, retry_pin, pin262, pin, older_pin))
+                        actual268 = deepcopy(previous268)
+                        actual268['cutoverRecovery']['release']['releaseNonce'] = runtime._CUTOVER_268_RECHECKED_NONCE
+                        next269['cutoverRecovery']['predecessorRelease'] = dict(actual268['cutoverRecovery']['release'])
+                        self.assertEqual(runtime._reviewed_functional_predecessor_digests(next269),
+                                         (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                        next269['cutoverRecovery']['predecessorRelease']['gatewaySourceDigest'] = '0'*64
+                        with self.assertRaisesRegex(Denied, 'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                            runtime._reviewed_functional_predecessor_digests(next269)
                     next267['cutoverRecovery']['gap']['merges'][12]['headSha']='0'*40
                     with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
                         runtime._reviewed_functional_predecessor_digests(next267)

@@ -6,15 +6,18 @@ request fields. A local event chain is not collector/owner authentication.
 This module is packaged only with a future reviewed Gateway image source.
 """
 import hashlib
+from hmac import compare_digest
 import os
 from pathlib import Path
+import secrets
 import socket
 import stat
 import struct
+import time
 import uuid
 
 from ...core import Denied, canonical, loads_strict
-from .owner_pinned_pidfd import owner_pinned_peer
+from .owner_pinned_pidfd import kernel_live_peer, owner_pinned_peer, peer_proof
 from .read_contract import (
     REPOSITORY, _CANDIDATE_FLAGS, _uuid, _hex,
     validate_gateway_read_query, validate_gateway_read_projection,
@@ -41,8 +44,8 @@ class GatewayRegistryUnixCandidateRead:
 
     def __init__(self, *, socket_path, instance_id, scope_digest,
                  registry_uid, registry_gid, registry_pid=None,
-                 reader_uid, reader_gid, socket_device, socket_inode,
-                 registry_pidfd_inode=None, registry_boot_id=None):
+                 reader_uid, reader_gid, socket_device=None, socket_inode=None,
+                 registry_pidfd_inode=None, registry_boot_id=None, peer_key=None):
         _need(type(socket_path) is str and socket_path.startswith('/')
               and len(os.fsencode(socket_path)) <= 103
               and not socket_path.endswith('/') and '//' not in socket_path
@@ -59,15 +62,19 @@ class GatewayRegistryUnixCandidateRead:
                        and type(registry_pidfd_inode) is int
                        and 0 < registry_pidfd_inode < 2**64
                        and _uuid(registry_boot_id))
+        managed = (type(peer_key) is bytes and len(peer_key) == 32
+                   and registry_pid is None and registry_pidfd_inode is None
+                   and registry_boot_id is None and socket_device is None
+                   and socket_inode is None)
+        fixed = ((legacy or owner_pidfd) and peer_key is None and
+                 all(type(v) is int and v > 0 for v in (socket_device, socket_inode)))
         _need(_uuid(instance_id) and _hex(scope_digest, 64)
               and all(type(v) is int and 0 < v < 2**31
                       for v in (registry_uid, registry_gid,
                                 reader_uid, reader_gid))
-              and all(type(v) is int and v > 0
-                      for v in (socket_device, socket_inode))
               and reader_uid != registry_uid and
               reader_gid != registry_gid
-              and (legacy or owner_pidfd)
+              and (fixed or managed)
               and hasattr(socket, 'SO_PEERCRED'),
               'REGISTRY_CANDIDATE_CONFIG_DENIED')
         self._path = Path(socket_path)
@@ -78,7 +85,8 @@ class GatewayRegistryUnixCandidateRead:
         self._owner_pidfd = ((registry_pidfd_inode, registry_boot_id)
                              if owner_pidfd else None)
         self._reader = (reader_uid, reader_gid)
-        self._endpoint = (socket_device, socket_inode)
+        self._endpoint = None if managed else (socket_device, socket_inode)
+        self._peer_key = peer_key
         # Host must grant the invoking Gateway reader identity before
         # any request. Never switch UIDs or derive identity from a payload.
         # A same-UID fixture may explicitly construct these pins, but is
@@ -149,11 +157,15 @@ class GatewayRegistryUnixCandidateRead:
               and row.st_uid == self._registry[1]
               and row.st_gid == self._reader[1]
               and stat.S_IMODE(row.st_mode) == 0o660
-              and (row.st_dev, row.st_ino) == self._endpoint,
+              and (self._endpoint is None or
+                   (row.st_dev, row.st_ino) == self._endpoint),
               'REGISTRY_CANDIDATE_SOCKET_CHANGED')
-        return self._endpoint
+        return row.st_dev, row.st_ino
 
     def _peer(self, sock):
+        if self._peer_key is not None:
+            return kernel_live_peer(sock, expected_uid=self._registry[1],
+                                    expected_gid=self._registry[2])
         if self._owner_pidfd is not None:
             # Owner R7 always pins the exact kernel process against the
             # immutable release mount. PID 0 across namespaces is not a
@@ -175,6 +187,32 @@ class GatewayRegistryUnixCandidateRead:
               'REGISTRY_CANDIDATE_SERVER_IDENTITY_DENIED')
         return peer
 
+    def _authenticate_peer(self, sock):
+        peer = self._peer(sock)
+        if self._peer_key is None:
+            return peer
+        challenge = secrets.token_hex(32)
+        expected = peer_proof(self._peer_key, challenge,
+                              instance_id=self._instance, scope_digest=self._scope)
+        previous = sock.gettimeout()
+        deadline = time.monotonic() + _TIMEOUT
+        try:
+            sock.settimeout(_TIMEOUT)
+            sock.sendall(challenge.encode('ascii'))
+            reply = bytearray()
+            while len(reply) < len(expected):
+                remaining = deadline - time.monotonic()
+                _need(remaining > 0, 'REGISTRY_FUNCTIONAL_PEER_PROOF_DENIED')
+                sock.settimeout(remaining)
+                chunk = sock.recv(len(expected) - len(reply))
+                _need(chunk, 'REGISTRY_FUNCTIONAL_PEER_PROOF_DENIED')
+                reply.extend(chunk)
+            _need(compare_digest(reply, expected) and self._peer(sock) == peer,
+                  'REGISTRY_FUNCTIONAL_PEER_PROOF_DENIED')
+        finally:
+            sock.settimeout(previous)
+        return peer
+
     def _exchange(self, wire_request, *, limit, timeout):
         self._check_identity()
         endpoint = self._check_socket()
@@ -185,7 +223,7 @@ class GatewayRegistryUnixCandidateRead:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(timeout)
                 sock.connect(str(self._path))
-                peer = self._peer(sock)
+                peer = self._authenticate_peer(sock)
                 sock.sendall(raw)
                 sock.shutdown(socket.SHUT_WR)
                 while True:
@@ -316,7 +354,7 @@ class PinnedRegistryCursor:
     """Exact live candidate READ peer, not a caller-supplied checkpoint DTO."""
     def __init__(self, reader, scope):
         _need(type(reader) is GatewayRegistryUnixCandidateRead
-              and reader._owner_pidfd is not None
+              and (reader._owner_pidfd is not None or reader._peer_key is not None)
               and hashlib.sha256(canonical(scope).encode()).hexdigest() == reader._scope,
               'REGISTRY_PLANNER_CURSOR_BINDING')
         self.reader = reader
@@ -333,7 +371,7 @@ class GatewayRegistryUnixPlanner:
     """Internal-only transport; no public route, grant or automatic retry."""
     def __init__(self, reader, key):
         _need(type(reader) is GatewayRegistryUnixCandidateRead
-              and reader._owner_pidfd is not None
+              and (reader._owner_pidfd is not None or reader._peer_key is not None)
               and type(key) is bytes and len(key) == 32,
               'REGISTRY_PLANNER_BINDING_DENIED')
         self.reader, self._key = reader, key

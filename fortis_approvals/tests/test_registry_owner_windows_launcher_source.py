@@ -19,7 +19,7 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertIn('Registry-Owner-Bootstrap.ps1', CATALOG.read_text())
         self.assertIn('## Windows owner bootstrap launcher', RUNBOOK.read_text())
         self.assertIn('[CmdletBinding()]', self.source)
-        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify')]", self.source)
+        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify','StartManaged')]", self.source)
 
     def test_no_hidden_admin_or_second_service_effect(self):
         src='\n'.join(line for line in self.source.lower().splitlines() if not line.lstrip().startswith('#'))
@@ -69,7 +69,15 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
     def test_powershell_herestring_syntax_static_only(self):
         self.assertEqual(len(re.findall(r'^\$PythonRunner=@\'$',self.source,re.M)),1)
         self.assertEqual(len(re.findall(r"^'@$",self.source,re.M)),1)
-        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),4)
+        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),6)
+
+    def test_managed_start_is_explicit_and_preserves_private_volumes(self):
+        self.assertIn('REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED', self.source)
+        self.assertIn("'--restart=unless-stopped'", self.source)
+        self.assertIn("'--managed-startup'", self.source)
+        self.assertIn("$SocketMount[0].RW -ne $false", self.source)
+        self.assertEqual(self.source.count('& docker @StartArgs'), 1)
+        self.assertIn('REGISTRY_BOOTSTRAP_MANAGED_START_UNKNOWN_INSPECT_ORIGINAL', self.source)
 
 
 if __name__ == '__main__':

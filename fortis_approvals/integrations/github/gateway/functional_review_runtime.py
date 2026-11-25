@@ -499,12 +499,36 @@ _CUTOVER_259_CONFIG_SHA256 = '41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5
 _CUTOVER_262_CONFIG_SHA256 = 'c907b51c43397e14b44a9bed29d72dde99cf30e7ceaa39eed3cdc97f2ddd0d8e'
 _CUTOVER_265_CONFIG_SHA256 = '31aedf27462df2bcae21a993216ccc2b1283bd34ff4b3e6829f156d7a0d2cb70'
 
+_CUTOVER_268_CONFIG_SHA256 = '4d00c8e4afbb59f95da280e5f5aa5dd4723acb503c26a01e6494427104067972'
+_CUTOVER_268_PREPARED_NONCE = '1d6aea94-3e9e-4293-9685-844c37b4197f'
+_CUTOVER_268_RECHECKED_NONCE = '83058e73-53ca-4b24-a11c-0a8e6efd221d'
+
+
+def _reviewed_268_predecessor_digest(value):
+    """Bind the active #268 config to the retained exact pre-recheck config."""
+    from .forward_lineage import _POST_267_GAP_SIZE
+
+    recovery = value['cutoverRecovery']
+    release = recovery['predecessorRelease']
+    _need(type(release) is dict and set(release) == set(recovery['release'])
+          and release.get('releaseNonce') in (_CUTOVER_268_PREPARED_NONCE,
+                                               _CUTOVER_268_RECHECKED_NONCE),
+          'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+    previous = {**value, 'cutoverRecovery': {
+        'gap': {**recovery['gap'], 'merges': recovery['gap']['merges'][:_POST_267_GAP_SIZE]},
+        'release': {**release, 'releaseNonce': _CUTOVER_268_PREPARED_NONCE},
+    }}
+    _need(_hash(previous) == _CUTOVER_268_CONFIG_SHA256,
+          'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+    previous['cutoverRecovery']['release'] = release
+    return _hash(previous)
+
 
 def _reviewed_functional_predecessor_digests(value):
     """Reconstruct the exact retained functional policy epochs for this successor."""
     from .forward_lineage import (
         _POST_255_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE,
-        _POST_266_GAP_SIZE, _POST_267_GAP_SIZE,
+        _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE,
     )
     recovery = value.get('cutoverRecovery')
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
@@ -512,7 +536,9 @@ def _reviewed_functional_predecessor_digests(value):
 
     merges = recovery['gap']['merges']
     digests = []
-    if len(merges) in (_POST_266_GAP_SIZE, _POST_267_GAP_SIZE):
+    if len(merges) == _POST_269_GAP_SIZE:
+        digests.append(_reviewed_268_predecessor_digest(value))
+    if len(merges) in (_POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_264_GAP_SIZE]},
             'release': {
@@ -525,12 +551,13 @@ def _reviewed_functional_predecessor_digests(value):
         }}
         digest = _hash(previous)
         _need(digest == _CUTOVER_265_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
-        if len(merges) == _POST_267_GAP_SIZE:
+        if len(merges) in (_POST_267_GAP_SIZE, _POST_269_GAP_SIZE):
             # The promoted #265 retry resealed the same config with its exact new nonce.
             previous['cutoverRecovery']['release']['releaseNonce'] = '2471add6-079b-42ae-9e1d-a22adf821a0d'
             digest = _hash(previous)
         digests.append(digest)
-    if len(merges) in (_POST_263_GAP_SIZE, _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE):
+    if len(merges) in (_POST_263_GAP_SIZE, _POST_264_GAP_SIZE, _POST_266_GAP_SIZE,
+                       _POST_267_GAP_SIZE, _POST_269_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_261_GAP_SIZE]},
             'release': {
@@ -545,7 +572,7 @@ def _reviewed_functional_predecessor_digests(value):
         _need(digest == _CUTOVER_262_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
         digests.append(digest)
     if len(merges) in (_POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
-                       _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE):
+                       _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:7]},
             'release': {
@@ -585,7 +612,7 @@ class FunctionalRegistryConfiguration:
     HTTP caller. The release controller pins the outer immutable profile.
     """
     def __init__(self, value, key, *, scope_digest):
-        from .forward_lineage import _baseline, cutover_start
+        from .forward_lineage import _POST_269_GAP_SIZE, _baseline, cutover_start
         from .component_bindings import _mapping
         fields={'schemaVersion','collectorInstanceId','baseline','binding','policyReference','validatorRevision'}
         if type(value) is dict and value.get('schemaVersion')==2:
@@ -643,9 +670,12 @@ class FunctionalRegistryConfiguration:
 
         if 'cutoverRecovery' in value:
             recovery = value['cutoverRecovery']
-            _need(type(recovery) is dict and set(recovery) == {'gap', 'release'},
+            _need(type(recovery) is dict and {'gap', 'release'} <= recovery.keys(),
                   'P5_CUTOVER_RECOVERY_CONFIG')
             cutover_start(recovery['gap'], baseline['baselineSha'])
+            post_269 = len(recovery['gap']['merges']) == _POST_269_GAP_SIZE
+            fields = {'gap', 'release', 'predecessorRelease'} if post_269 else {'gap', 'release'}
+            _need(recovery.keys() == fields, 'P5_CUTOVER_RECOVERY_CONFIG')
             release = recovery['release']
             _need(type(release) is dict and set(release) == set(cutover)
                   and release['validatorRevision'] == value['validatorRevision']
@@ -657,6 +687,8 @@ class FunctionalRegistryConfiguration:
                           and _hex(release[k][7:], 64) and release[k] != cutover[k]
                           for k in ('registryImageId', 'gatewayImageId')),
                   'P5_CUTOVER_RECOVERY_RELEASE')
+            if post_269:
+                _reviewed_268_predecessor_digest(value)
         self._raw=canonical(value)
         self._key=key
         self.digest=_hash(value)

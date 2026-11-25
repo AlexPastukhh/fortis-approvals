@@ -131,7 +131,7 @@ class FunctionalReviewRuntimeTests(unittest.TestCase):
         key=os.urandom(32)
         uid,gid=os.geteuid(),os.getegid()
         service=server.PrivateCandidateReadService(store=store,socket_path=str(path),
-            reader_uid=uid,reader_gid=gid,planner_key=key)
+            reader_uid=uid,reader_gid=gid,planner_key=key,managed_startup=True)
         listener=service.bind();listener.settimeout(.1)
         stop=threading.Event();failures=[]
         def serve():
@@ -151,11 +151,9 @@ class FunctionalReviewRuntimeTests(unittest.TestCase):
         self.addCleanup(cleanup)
         self.enterContext(patch.object(wire.GatewayRegistryUnixCandidateRead,'_check_identity',return_value=None))
         self.enterContext(patch.object(wire.GatewayRegistryUnixCandidateRead,'_peer',return_value=(0,uid,gid)))
-        row=path.lstat()
         reader=wire.GatewayRegistryUnixCandidateRead(socket_path=str(path),instance_id=instance,
             scope_digest=rt._hash(scope),registry_uid=uid,registry_gid=gid+100,
-            registry_pidfd_inode=1,registry_boot_id=str(uuid.uuid4()),
-            reader_uid=uid+100,reader_gid=gid,socket_device=row.st_dev,socket_inode=row.st_ino)
+            reader_uid=uid+100,reader_gid=gid,peer_key=key)
         config=ExtensionConfig({'schemaVersion':1,'providers':{'registry':{
             'credentials':{},'operations':{name:{'policy':'ALLOW','targets':['fortis-approvals']}
                 for name in ('candidate_head','candidate_list_desired','candidate_original_operation')}}}})

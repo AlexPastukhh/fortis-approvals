@@ -185,15 +185,21 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertEqual(self.count('records'), 1)
 
     def test_post_267_gap_keeps_all_uncaptured_merges_out_of_desired(self):
+        self.assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(16, 14)
+
+    def test_post_269_gap_keeps_all_uncaptured_merges_out_of_desired(self):
+        self.assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(18, 17)
+
+    def assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(self, size, partial_size):
         plan = self.current['plan']
         observation = plan['observation']
         rows = [
             {'number': 253 + index, 'headSha': f'{2 * index + 1:040x}',
              'mergeSha': f'{2 * index + 2:040x}',
              'impact': {'fortis-gateway': ['image-rebuild']}}
-            for index in range(16)
+            for index in range(size)
         ]
-        gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:14]}
+        gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:partial_size]}
         observation['cutoverGap'] = gap
         observation['mergeAudit'][0]['baseSha'] = rows[-1]['mergeSha']
         plan['observationDigest'] = local._hash(observation)

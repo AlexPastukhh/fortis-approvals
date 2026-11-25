@@ -266,7 +266,7 @@ class RegistryAuthorityPredecessor:
             raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
 
         if (type(previous_functional_digests) is not tuple
-                or len(previous_functional_digests)>4
+                or len(previous_functional_digests)>5
                 or any(type(digest) is not str or not re.fullmatch('[0-9a-f]{64}',digest)
                        or digest==scope['registryFunctional'] for digest in previous_functional_digests)
                 or len(set(previous_functional_digests))!=len(previous_functional_digests)):

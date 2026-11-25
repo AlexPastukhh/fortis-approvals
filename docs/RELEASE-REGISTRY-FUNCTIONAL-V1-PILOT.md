@@ -495,3 +495,77 @@ host isolation, authentic GitHub merges, actual passkeys, or enrollment
 acceptance. Select the final baseline only at the reviewed cutover; the
 earlier pilot-only acceptance record is not an accepted Functional V1
 enrollment. All candidate admission/deployment/rollback claims remain false.
+
+
+### Managed Registry and Primary startup
+
+The managed functional pilot uses the same Docker `unless-stopped` lifecycle
+as Primary. Adopt it once during a protected release window. The Gateway's
+owner-sealed reader profile v4 keeps the same v3 fields and binding material
+except `registryKernelBootId`, `registryPidfdInode`, `socketDevice` and
+`socketInode`. Those four fields are forbidden in v4. Keep the exact
+candidate release nonce, installed-source digest, instance, scope, UID/GID,
+canonical functional config and planner key pins. The owner places the
+canonical profile and those same private files on the standard read-only
+reader volume. The protected Check/Apply procedure still pins the full
+profile digest. Generate no new enrollment, journals or policy grants.
+
+In the reviewed non-Production window, retain the old listener and its
+verified backup, then stop the old writer and disable its automatic restart.
+Use the existing Windows owner bootstrap launcher once with
+`-Action StartManaged -ConfirmManagedStart`, the exact source SHA and new
+Registry image ID, the existing state/config/socket volumes and the
+protected planner key's **digest** in `-PlannerKeySha256`. Read back the
+same state, image and private mounts. The launcher records the exact new
+container ID. It does not confirm a successful listener or authorize
+Gateway promotion. Keep the ordinary protected Check, Apply, Backup and
+Promote sequence. When the retained Gateway needs a v3 reserve during the
+first migration, use its ordinary owner-reviewed peer observation with
+`--managed-startup` and retain the original reserve/release records.
+
+The managed listener holds an exclusive lock on the private socket
+directory. It removes a dead socket only after checking its identity and
+confirming that a connection is refused. It leaves live endpoints and
+unexpected files intact. Gateway proves the listener on each connection
+with the live kernel UID/GID and pidfd plus a fresh, instance- and
+scope-bound challenge under the existing protected key. The proof and the
+planner request use separate HMAC contexts. A v4 Gateway authenticates the
+peer before it sends even a READ frame, with no legacy fallback. The same
+listener accepts the existing v3 wire format for a pinned reserve and
+requires the existing planner MAC for every ingest.
+
+After Docker Desktop restarts, Docker starts both admitted containers.
+Registry opens the existing journal and recovers its endpoint. Primary
+serves only after authenticating Registry. The profile and the protected
+release digest stay byte-identical across ordinary restarts. Verify
+independent Registry restart and a real Docker Desktop cold restart on
+the owner host, with both containers healthy, the same scope and cursor,
+the active gate, typed Repo readback and working owner rollback. This
+section describes the source candidate pending that acceptance.
+
+#### First managed release after the uncaptured #269 merge
+
+Use the exact Approvals #270 HEAD only after it includes the #269 merge
+and all checks pass. Merge #270 with a GitHub merge commit. The recovery
+check requires previous main as first parent, the reviewed #270 HEAD as
+second parent and the merge tree to equal that HEAD. Keep the release
+catalog, Registry instance and existing capture and collector journals.
+
+Use the owner-only cutover preparation mode --post-269 with PR 270, its
+exact merged PR HEAD and the pinned image readback for the clean Windows
+main. Supply --active-268-config with an owner-private, byte-exact copy of
+functional.json from the active #268 reader seal, and retain the original
+functional-cutover-post-267.json. The helper verifies the archived #268
+configuration, its active release variant and the exact #268, #269 and
+#270 merge lineage before sealing the successor. It records #269 and the
+release as an explicitly reviewed gap. It creates no pre-merge review or
+ingest receipt for either PR.
+
+Keep the #268 protected release and cold-recovery evidence. Use the
+single-writer managed Registry migration and the ordinary protected
+Check/Apply with the exact #268 return reserve described above. Its
+legacy reader still pins the current Registry peer for this handover.
+Use the v4 reader profile for the new release. After Backup and Promote,
+test a real cold Docker Desktop restart and Repo readback on the same
+Registry instance. Test the first normal Registry review and ingestion
+with a subsequent open PR after that restart check.
