@@ -578,3 +578,43 @@ that single merge. Run --post-270 with the exact #271 HEAD, both #271 images
 and the byte-exact configuration of the still-active #268 Gateway.
 Use the fresh #271 nonce and v4 seal. The #268 reserve and single-writer
 handover are still required.
+
+### Post-271 authority-source recovery (source candidate, not deployment)
+
+The #271 managed listener and v4 seal passed owner readback; the #268 v3
+return reserve was created but never started. The isolated Gateway rehearsal
+then exited with `OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED` after
+cloning state and retaining the collector, before protected Check. Retain
+all existing release records, images, volumes, failed rehearsal evidence
+and original genesis backup. The active Gateway remains #268.
+
+The historical Registry provider digest for #254/#259/#262/#265/#268 is
+`1298c276fa8d1863ed9c272b428086fc039eea3935ca9cd42424b421337a6f7a`;
+#270/#271 use
+`3e15015c5eb975c3747066451556de7aa60a8293b412d60541272ca86b1779e8`.
+The trusted authority predecessor must reconstruct both the exact old
+functional config digest and provider digest. No new grants, policy rules,
+SQL edits or relaxation of the historical authority hash check.
+The #270/#271 candidates did not activate authority on the primary state,
+so they are retained preparation evidence, not additional predecessors.
+
+The recovery PR must extend the exact #253–#271 prefix by one owner-reviewed
+merge; do not merge the unrelated #272 before this recovery. Use the exact
+merged recovery HEAD and unchanged catalog. Build both new images (the
+Registry journal must accept the 20-entry gap). Owner-only
+`registry_owner_cutover_recovery.py --post-271` additionally verifies the
+retained byte-exact #271 configuration and the active #268 predecessor.
+It writes a fresh recovery config only after its distinct owner GO; no
+container action is authorized by this config preparation.
+
+After fresh exact census and exclusive host/worker quiescence, create a
+fresh v4 seal, retain and stop the current managed #271 listener under the
+single-writer handover contract, and start the new source/image-pinned
+managed listener against the unchanged Registry genesis. Create a new
+never-started #268 v3 reserve for that peer (retain the old reserve);
+verify both live profiles. Preserve Machine PowerShell and Publisher
+mount/digest bindings and the exact reviewed preservation scope. Repeat
+isolated rehearsal, then protected Check and receipt equality, separate
+Apply, Backup and Promote. No Core activity between successful Check and
+Apply. The cold restart and E2–E5 acceptance remain open. The source PR
+does not prove Windows installation or any successful live release.

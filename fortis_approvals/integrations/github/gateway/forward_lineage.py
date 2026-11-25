@@ -225,6 +225,12 @@ _CUTOVER_270 = {
     'mergeSha': 'a28058b555b4dc993fa8b023592e316ca073a7da',
     'impact': _CUTOVER_HANDOVER_IMPACT,
 }
+_CUTOVER_271 = {
+    'number': 271,
+    'headSha': '750e17c4d751a63e5ed25264844572bf0845b745',
+    'mergeSha': '2e32313e203efa8165dc62cf1565dfd0e85ba993',
+    'impact': _CUTOVER_HANDOVER_IMPACT,
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
 _POST_260_GAP_SIZE = 9
 _POST_261_GAP_SIZE = 10
@@ -234,6 +240,7 @@ _POST_266_GAP_SIZE = 15
 _POST_267_GAP_SIZE = 16
 _POST_269_GAP_SIZE = 18
 _POST_270_GAP_SIZE = 19
+_POST_271_GAP_SIZE = 20
 
 
 def cutover_start(gap, baseline_sha):
@@ -246,13 +253,13 @@ def cutover_start(gap, baseline_sha):
     if gap['disposition'] == _POST_255_GAP:
         _need(len(merges) in (4, 5, 6, 7, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
                               _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE,
-                              _POST_270_GAP_SIZE),
+                              _POST_270_GAP_SIZE, _POST_271_GAP_SIZE),
               'P5_CUTOVER_GAP_SCOPE')
         reviewed = [
             _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257,
             _CUTOVER_258, _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262,
             _CUTOVER_263, _CUTOVER_264, _CUTOVER_265, _CUTOVER_266, _CUTOVER_267, _CUTOVER_268, _CUTOVER_269,
-            _CUTOVER_270,
+            _CUTOVER_270, _CUTOVER_271,
         ]
         prefix = reviewed[:len(merges)-1]
         if 5 <= len(merges) < _POST_264_GAP_SIZE or len(merges) in (_POST_266_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE):

@@ -18,6 +18,16 @@ then identify the PENDING request in Owner Portal. Owner WebAuthn remains requir
 for its effect; do not fabricate approval or broaden the task/policy. Report any
 actual outer tool-review rejection and do not bypass it.
 
+After every completed task step, compare the authoritative plan with actual
+receipts/tests and the remaining prerequisites; correct obsolete future steps
+and report the current completed/open/blocked step table. Every PR must include
+the corresponding plan/checkpoint update (in this repository's backlog or its
+linked authoritative runbook), accurate at the intended merge boundary.
+Separate source/test status from CI, merge, installation and live acceptance;
+never mark a future owner-controlled gate as passed. Recheck at actual merge;
+if evidence or the plan changes, update the relevant source checkpoint through
+the normal reviewed PR workflow, not by editing protected runtime state.
+
 Primary stays on main; use a registered linked task worktree. Preserve other tasks,
 the pending HTTP-202 client fix, bootstrap source and retained deployment records.
 Native Git publication/PR/CI/merge use Gateway, not the GitHub connector or legacy
