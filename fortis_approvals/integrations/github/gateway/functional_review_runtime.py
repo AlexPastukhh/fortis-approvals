@@ -497,12 +497,14 @@ class FunctionalRegistryPlanner:
 _CUTOVER_254_CONFIG_SHA256 = '581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b'
 _CUTOVER_259_CONFIG_SHA256 = '41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5b409cf6f337bb4'
 _CUTOVER_262_CONFIG_SHA256 = 'c907b51c43397e14b44a9bed29d72dde99cf30e7ceaa39eed3cdc97f2ddd0d8e'
+_CUTOVER_265_CONFIG_SHA256 = '31aedf27462df2bcae21a993216ccc2b1283bd34ff4b3e6829f156d7a0d2cb70'
 
 
 def _reviewed_functional_predecessor_digests(value):
     """Reconstruct the exact retained functional policy epochs for this successor."""
     from .forward_lineage import (
         _POST_255_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE,
+        _POST_266_GAP_SIZE,
     )
     recovery = value.get('cutoverRecovery')
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
@@ -510,7 +512,21 @@ def _reviewed_functional_predecessor_digests(value):
 
     merges = recovery['gap']['merges']
     digests = []
-    if len(merges) in (_POST_263_GAP_SIZE, _POST_264_GAP_SIZE):
+    if len(merges) == _POST_266_GAP_SIZE:
+        previous = {**value, 'cutoverRecovery': {
+            'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_264_GAP_SIZE]},
+            'release': {
+                'releaseNonce': '8afe6cf9-acc6-4c24-897a-dcde0143e2ff',
+                'validatorRevision': value['validatorRevision'],
+                'registryImageId': 'sha256:2c48c667215c85086a7fb1358b7be3d816e56ee6f4bcb0a4e3cc85ee5dc10081',
+                'gatewayImageId': 'sha256:6334d9d1c75b3dff7d42c9dfef3cf730227e2ad9bf3399caa817dd00b5ad2af6',
+                'gatewaySourceDigest': 'e5d23744bcdb5028d8872aaaae6dc267873a7ddf6406a5e2e40032a80a1c268e',
+            },
+        }}
+        digest = _hash(previous)
+        _need(digest == _CUTOVER_265_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+        digests.append(digest)
+    if len(merges) in (_POST_263_GAP_SIZE, _POST_264_GAP_SIZE, _POST_266_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:_POST_261_GAP_SIZE]},
             'release': {
@@ -524,7 +540,8 @@ def _reviewed_functional_predecessor_digests(value):
         digest = _hash(previous)
         _need(digest == _CUTOVER_262_CONFIG_SHA256, 'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
         digests.append(digest)
-    if len(merges) in (_POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE):
+    if len(merges) in (_POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
+                       _POST_264_GAP_SIZE, _POST_266_GAP_SIZE):
         previous = {**value, 'cutoverRecovery': {
             'gap': {'disposition': _POST_255_GAP, 'merges': merges[:7]},
             'release': {

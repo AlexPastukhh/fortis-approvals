@@ -398,7 +398,8 @@ function Promote-Primary {
             if($OldImageInfo.Id -cne $Prior.runtime.image){
                 throw 'PRIMARY_PREVIOUS_IMAGE_CHANGED'
             }
-            if((Test-Registry259ReturnSource $Prior.runtime) -or (Test-Registry262ReturnSource $Prior.runtime)){
+            if((Test-Registry259ReturnSource $Prior.runtime) -or (Test-Registry262ReturnSource $Prior.runtime) -or
+               (Test-Registry265ReturnSource $Prior.runtime)){
                 $Handover=Get-PrimaryRegistryHandover (Read-Private $Source.path) $Prior
                 Assert-RegistryReturnInputs $Handover.source $Handover.reserve $Prev -AllowUsed:($Handover.used)
                 if($Handover.used){

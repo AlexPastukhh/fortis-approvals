@@ -2348,6 +2348,18 @@ function Test-Registry262ReturnSource {
         $Runtime.registryReleaseNonce -ceq '370079a2-d23e-4c55-a97f-cd8cdf305600')
 }
 
+function Test-Registry265ReturnSource {
+    param($Runtime)
+    $Run='9ce33150477f47d3aff5dffbfe8e458d'
+    return ($Runtime.runId -ceq $Run -and $Runtime.pilotName -ceq 'fortis-gateway' -and
+        $Runtime.originalPilotName -ceq ('fortis-github-pilot-'+$Run) -and
+        $Runtime.restartPolicy -ceq 'unless-stopped' -and
+        $Runtime.pilotId -ceq 'ed698f9c497684aa7b58a73581e4b954b8505a17ca8dda6de76061afe245cbf6' -and
+        $Runtime.image -ceq 'sha256:6334d9d1c75b3dff7d42c9dfef3cf730227e2ad9bf3399caa817dd00b5ad2af6' -and
+        $Runtime.registryProfileDigest -ceq '4564c5c12759dd19e3035e0ea321ad98692ac38bd2b006d10a5175c16ad581b2' -and
+        $Runtime.registryReleaseNonce -ceq '2471add6-079b-42ae-9e1d-a22adf821a0d')
+}
+
 function Get-Registry262RecoveredProfileDigest {
     param($Source)
     $Evidence=Join-Path $ReleaseBase 'registry-peer-recovery-ae933096716b4d1d9d3410142089334a'
@@ -2378,7 +2390,8 @@ function Registry-ReturnRuntime {
         $Original.image -ceq 'sha256:22de6d321559c70d3e7c788dc1e77a77cde7dea078cdd7c67cbe59aa93930963' -and
         $Original.registryProfileDigest -ceq 'c11871b078930e70878f8d0b8199b90ead38626b403ee858606ba71c19cb6fa3' -and
         $Original.registryReleaseNonce -ceq 'e43f890f-fe66-4139-b397-4bb20be82e80')
-    $Promoted=(Test-Registry259ReturnSource $Original) -or (Test-Registry262ReturnSource $Original)
+    $Promoted=(Test-Registry259ReturnSource $Original) -or (Test-Registry262ReturnSource $Original) -or
+        (Test-Registry265ReturnSource $Original)
     if($Source.hash -cnotmatch '^[0-9a-fA-F]{64}$' -or
        (-not $Legacy -and -not $Promoted) -or ($Promoted -and $script:RegistryCrash) -or
        $Original.stateVolume -cne ('fortis-github-pilot-state-'+$Original.runId) -or
@@ -2436,6 +2449,8 @@ print(reviewed_registry_return_profile(**json.load(sys.stdin)))
         # Verify the retained owner recovery evidence before reading the resealed volume.
         $Inputs['source_profile_digest']=Get-Registry262RecoveredProfileDigest $Source
         $Inputs['source_digest']='c71eebc342f3e4cd45f1cdd502d0c0854088af66c0a0a5fa988fc76ff6182bb4'
+    } elseif(Test-Registry265ReturnSource $Original){
+        $Inputs['source_digest']='e5d23744bcdb5028d8872aaaae6dc267873a7ddf6406a5e2e40032a80a1c268e'
     }
     if($script:RegistryCrash){
         if((Get-FileHash -LiteralPath $script:RegistryCrash.checkRecord -Algorithm SHA256).Hash -cne $script:RegistryCrash.checkHash){
@@ -2542,6 +2557,21 @@ function Assert-RegistryReturnSelfTest {
        $RecoveredReserve.PSObject.Properties['restartPolicy'] -or
        $Recovered.registryProfileDigest -cne '68ac5805ee3a21112cbe1b1dd16da72aa3d3a2b7d49b31d0997dfb41fda6f9e5'){
         throw 'RELEASE_REGISTRY_262_RETURN_RUNTIME_SELFTEST_FAILED'
+    }
+    $Current=$Recovered | ConvertTo-Json -Compress | ConvertFrom-Json
+    $Current.runId='9ce33150477f47d3aff5dffbfe8e458d'
+    $Current.originalPilotName='fortis-github-pilot-'+$Current.runId
+    $Current.stateVolume='fortis-github-pilot-state-'+$Current.runId
+    $Current.pilotId='ed698f9c497684aa7b58a73581e4b954b8505a17ca8dda6de76061afe245cbf6'
+    $Current.image='sha256:6334d9d1c75b3dff7d42c9dfef3cf730227e2ad9bf3399caa817dd00b5ad2af6'
+    $Current.registryProfileDigest='4564c5c12759dd19e3035e0ea321ad98692ac38bd2b006d10a5175c16ad581b2'
+    $Current.registryReleaseNonce='2471add6-079b-42ae-9e1d-a22adf821a0d'
+    $Current.releaseNonce=$Current.registryReleaseNonce
+    $Current.registryReaderVolume='fortis-r7-registry-reader-'+$Current.registryReleaseNonce.Replace('-','')
+    $CurrentReserve=Registry-ReturnRuntime @{runtime=$Current;hash=('c'*64)} ('b'*64) $Nonce ('d'*64)
+    if($CurrentReserve.image -cne $Current.image -or $CurrentReserve.stateVolume -cne $Current.stateVolume -or
+       $CurrentReserve.registryReleaseNonce -cne $Nonce -or $CurrentReserve.PSObject.Properties['restartPolicy']){
+        throw 'RELEASE_REGISTRY_265_RETURN_RUNTIME_SELFTEST_FAILED'
     }
     $Promoted.pilotId='a'*64
     try {
