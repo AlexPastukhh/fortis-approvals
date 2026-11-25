@@ -184,14 +184,14 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertEqual(len(receipt['recordIds']), 1)
         self.assertEqual(self.count('records'), 1)
 
-    def test_post_266_gap_keeps_all_uncaptured_merges_out_of_desired(self):
+    def test_post_267_gap_keeps_all_uncaptured_merges_out_of_desired(self):
         plan = self.current['plan']
         observation = plan['observation']
         rows = [
             {'number': 253 + index, 'headSha': f'{2 * index + 1:040x}',
              'mergeSha': f'{2 * index + 2:040x}',
              'impact': {'fortis-gateway': ['image-rebuild']}}
-            for index in range(15)
+            for index in range(16)
         ]
         gap = {'disposition': 'OWNER_REVIEWED_POST_255_CAPTURE_GAP', 'merges': rows[:14]}
         observation['cutoverGap'] = gap

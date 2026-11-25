@@ -534,6 +534,17 @@ class UnifiedPolicyTests(unittest.TestCase):
                 with patch.object(runtime, '_CUTOVER_265_CONFIG_SHA256', pin265):
                     self.assertEqual(runtime._reviewed_functional_predecessor_digests(next266),
                                      (pin265,pin262,pin,older_pin))
+                    current265=deepcopy(previous265)
+                    current265['cutoverRecovery']['release']['releaseNonce']='2471add6-079b-42ae-9e1d-a22adf821a0d'
+                    retry_pin=runtime._hash(current265)
+                    self.assertNotEqual(retry_pin,pin265)
+                    next267=deepcopy(next266)
+                    next267['cutoverRecovery']['gap']['merges'][-1:]=[lineage._CUTOVER_267, {'number':268}]
+                    self.assertEqual(runtime._reviewed_functional_predecessor_digests(next267),
+                                     (retry_pin,pin262,pin,older_pin))
+                    next267['cutoverRecovery']['gap']['merges'][12]['headSha']='0'*40
+                    with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                        runtime._reviewed_functional_predecessor_digests(next267)
                     next266=deepcopy(next266)
                     next266['cutoverRecovery']['gap']['merges'][12]['headSha']='0'*40
                     with self.assertRaisesRegex(Denied,'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
