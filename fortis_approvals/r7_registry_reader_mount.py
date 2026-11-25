@@ -1,9 +1,8 @@
-"""E1.3 SOURCE DRAFT: owner-fixed, read-only mount for a private Registry reader.
+"""Owner-sealed read-only configuration for the private Registry reader.
 
-This does not provision anything, start Registry or activate a grant. The
-owner creates a mount at a *fixed* trusted path and pins process/socket IDs.
-Only owner-reviewed source/image and host can make the mount usable; caller
-requests, Repo params and runtime environment have no path override.
+The trusted mount selects the release, instance and scope. A legacy profile
+uses exact boot/process/socket pins; a managed functional profile binds the
+same materials and authenticates each current listener under the owner key.
 """
 import hashlib
 import os
@@ -19,6 +18,9 @@ from .integrations.registry.owner_pinned_pidfd import _boot_id
 MOUNT = Path('/run/r7-registry-reader')
 _FILE = 'profile.json'
 _MAX_BYTES = 2048
+_LIVE_PEER_FIELDS = frozenset({
+    'registryPidfdInode', 'registryKernelBootId', 'socketDevice', 'socketInode',
+})
 _FIELDS = frozenset({
     'schemaVersion', 'enabled', 'purpose', 'releaseNonce',
     'gatewaySourceDigest', 'instanceId', 'scopeDigest', 'socketPath',
@@ -87,7 +89,10 @@ def load_owner_registry_reader(*, expected_release_nonce,
     if result is None:
         return None
     reader, _, _ = result
-    reader._check_socket()
+    if reader._peer_key is None:
+        reader._check_socket()
+    else:
+        _check_live_peer(reader)
     return reader
 
 
@@ -122,12 +127,16 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
         if len(raw) != info.st_size:
             _stop('FILE_CHANGED')
         value = loads_strict(raw)
-        functional=(type(value) is dict and value.get('schemaVersion')==3)
-        fields=_FIELDS | {'functionalConfigSha256','plannerKeySha256'} if functional else _FIELDS
+        version = value.get('schemaVersion') if type(value) is dict else None
+        functional = version in (3, 4)
+        managed = version == 4
+        fields = _FIELDS | {'functionalConfigSha256', 'plannerKeySha256'} if functional else _FIELDS
+        if managed:
+            fields = fields - _LIVE_PEER_FIELDS
         if (type(value) is not dict or set(value) != fields
                 or canonical(value).encode('utf-8') != raw
                 or type(value['schemaVersion']) is not int
-                or value['schemaVersion'] not in (2,3)
+                or version not in (2, 3, 4)
                 or files!=({_FILE,'functional.json','planner.key'} if functional else {_FILE})
                 or value['enabled'] is not True
                 or value['purpose'] != ('registry-functional-local-candidate-v1' if functional else 'registry-candidate-read-v1')
@@ -136,22 +145,13 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
                 or not _hex(value['gatewaySourceDigest'])
                 or value['gatewaySourceDigest'] != expected_source_digest
                 or not _uuid(value['instanceId'])
-                or not _hex(value['scopeDigest'])
-                or type(value['registryPidfdInode']) is not int
+                or not _hex(value['scopeDigest'])):
+            _stop('PROFILE_DENIED')
+        if not managed and (type(value['registryPidfdInode']) is not int
                 or not (0 < value['registryPidfdInode'] < 2**64)
                 or not _uuid(value['registryKernelBootId'])
                 or value['registryKernelBootId'] != (historical_boot_id if historical_boot_id is not None else _boot_id())):
             _stop('PROFILE_DENIED')
-        # Reader validates exact real credentials and Linux pinned AF_UNIX
-        # owner/permission/device/inode; a configured but absent listener STOP.
-        reader = GatewayRegistryUnixCandidateRead(
-            socket_path=value['socketPath'],
-            instance_id=value['instanceId'], scope_digest=value['scopeDigest'],
-            registry_uid=value['registryUid'], registry_gid=value['registryGid'],
-            registry_pidfd_inode=value['registryPidfdInode'],
-            registry_boot_id=value['registryKernelBootId'],
-            reader_uid=value['readerUid'], reader_gid=value['readerGid'],
-            socket_device=value['socketDevice'], socket_inode=value['socketInode'])
         if functional:
             from .integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
             from .integrations.registry.read_contract import private_planner_key
@@ -170,8 +170,23 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
                     or hashlib.sha256(raw_config).hexdigest()!=value['functionalConfigSha256']):
                 _stop('FUNCTIONAL_PIN_DENIED')
             key=private_planner_key(root/'planner.key',value['plannerKeySha256'])
-            reader._functional_config=FunctionalRegistryConfiguration(parsed,key,
-                scope_digest=value['scopeDigest'])
+        if managed:
+            peer = {'peer_key': key}
+        else:
+            peer = {
+                'registry_pidfd_inode': value['registryPidfdInode'],
+                'registry_boot_id': value['registryKernelBootId'],
+                'socket_device': value['socketDevice'],
+                'socket_inode': value['socketInode'],
+            }
+        reader = GatewayRegistryUnixCandidateRead(
+            socket_path=value['socketPath'],
+            instance_id=value['instanceId'], scope_digest=value['scopeDigest'],
+            registry_uid=value['registryUid'], registry_gid=value['registryGid'],
+            reader_uid=value['readerUid'], reader_gid=value['readerGid'], **peer)
+        if functional:
+            reader._functional_config = FunctionalRegistryConfiguration(
+                parsed, key, scope_digest=value['scopeDigest'])
             reader._release_nonce=value['releaseNonce']
             reader._gateway_source_digest=value['gatewaySourceDigest']
         # Verify our mounted identity and current source still match. This is
@@ -216,7 +231,7 @@ def _check_live_peer(reader):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(2)
             sock.connect(str(reader._path))
-            peer = reader._peer(sock)
+            peer = reader._authenticate_peer(sock)
             if reader._peer(sock) != peer:
                 _stop('PEER_CHANGED')
     except Denied:
@@ -259,7 +274,8 @@ def reviewed_registry_return_profile(*, source_nonce, source_profile_digest,
     peer = {'releaseNonce', 'registryPidfdInode', 'socketDevice', 'socketInode'}
     if old_boot_id is not None:
         peer.add('registryKernelBootId')
-    if (old_digest != source_profile_digest or old['schemaVersion'] != 3
+    if (old_digest != source_profile_digest or old['schemaVersion'] not in (3, 4)
+            or old['schemaVersion'] != new['schemaVersion']
             or {k: v for k, v in old.items() if k not in peer}
             != {k: v for k, v in new.items() if k not in peer}):
         _stop('RETURN_PROFILE_DENIED')

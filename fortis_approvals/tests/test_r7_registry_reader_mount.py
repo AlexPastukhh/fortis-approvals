@@ -113,6 +113,24 @@ class RegistryTrustedMountTests(unittest.TestCase):
         self.profile['scopeDigest']='f'*64;self.write()
         with self.assertRaises(Denied):self.load()
 
+        # A managed release seals identity to existing protected material.
+        # Boot/process/socket coordinates never enter the immutable digest.
+        self.profile['scopeDigest'] = digest(scope)
+        for field in mount._LIVE_PEER_FIELDS:
+            del self.profile[field]
+        self.profile['schemaVersion'] = 4
+        self.write()
+        with patch.object(mount, '_boot_id', side_effect=AssertionError), \
+             patch.object(mount, '_check_live_peer') as live:
+            reader = self.load()
+            self.assertIsNone(reader._owner_pidfd)
+            self.assertEqual(reader._peer_key, key)
+            live.assert_called_once_with(reader)
+        self.profile['socketInode'] = 77
+        self.write()
+        with self.assertRaises(Denied):
+            self.load()
+
     def test_real_kernel_pidfd_owner_mode_rejects_wrong_process(self):
         # One-UID source-only fixture: kernel pidfd is real but owner seal is
         # synthetic. Cross-UID/cross-namespace admission is an owner host gate.

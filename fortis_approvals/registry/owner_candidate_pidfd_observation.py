@@ -52,7 +52,7 @@ def _read(path, limit):
         _stop('PROC_UNAVAILABLE')
 
 
-def _process(pid, registry_uid, registry_gid, reader_gid, planner_key_digest=None):
+def _process(pid, registry_uid, registry_gid, reader_gid, planner_key_digest=None,managed_startup=False):
     root=Path('/proc')/str(pid)
     raw=_read(root/'stat',8192).decode('ascii')
     prefix=str(pid)+' ('
@@ -75,6 +75,8 @@ def _process(pid, registry_uid, registry_gid, reader_gid, planner_key_digest=Non
         if type(planner_key_digest) is not str or not re.fullmatch('[0-9a-f]{64}',planner_key_digest):
             _stop('PLANNER_DIGEST_DENIED')
         expected += [b'--functional-planner-key-digest',planner_key_digest.encode('ascii')]
+    if managed_startup:
+        expected.append(b'--managed-startup')
     if (len(argv)!=len(expected)+1 or Path(os.fsdecode(argv[0])).name not in
         ('python','python3','python3.11') or argv[1:] != expected):
         _stop('COMMAND_MISMATCH')
@@ -131,19 +133,22 @@ def _socket_stat(registry_uid,reader_gid):
     return (row.st_dev,row.st_ino)
 
 
-def observe(*,pid,registry_uid,registry_gid,reader_gid,planner_key_digest=None):
+def observe(*,pid,registry_uid,registry_gid,reader_gid,planner_key_digest=None,
+            managed_startup=False):
     """Check one owner-selected process, never find/assign its own identity."""
     if (type(pid) is not int or not 0<pid<2**31 or
         any(type(v) is not int or not 0<v<2**31 for v in
             (registry_uid,registry_gid,reader_gid)) or
-        reader_gid==registry_gid or
+        reader_gid==registry_gid or type(managed_startup) is not bool or
+        (managed_startup and planner_key_digest is None) or
         os.getresuid()!=(registry_uid,)*3 or
         os.getresgid()!=(registry_gid,)*3 or
         os.getpid()==pid):
         _stop('CALLER_OR_ARGUMENTS_DENIED')
     _require_pidfs()
     boot=_boot_id()
-    extra=() if planner_key_digest is None else (planner_key_digest,)
+    extra=() if planner_key_digest is None else (
+        (planner_key_digest, True) if managed_startup else (planner_key_digest,))
     prior=_process(pid,registry_uid,registry_gid,reader_gid,*extra)
     socket_pair=_socket_stat(registry_uid,reader_gid)
     fd=None
@@ -196,11 +201,13 @@ def main(argv=None):
     parser.add_argument('--registry-gid',type=int,required=True)
     parser.add_argument('--reader-gid',type=int,required=True)
     parser.add_argument('--functional-planner-key-digest')
+    parser.add_argument('--managed-startup', action='store_true')
     opts=parser.parse_args(argv)
     try:
         output=observe(pid=opts.selected_pid,registry_uid=opts.registry_uid,
                        registry_gid=opts.registry_gid,reader_gid=opts.reader_gid,
-                       planner_key_digest=opts.functional_planner_key_digest)
+                       planner_key_digest=opts.functional_planner_key_digest,
+                       managed_startup=opts.managed_startup)
     except Denied as exc:
         print('REGISTRY_PIDFD_OBSERVATION_STOP: '+str(exc),file=sys.stderr)
         return 1

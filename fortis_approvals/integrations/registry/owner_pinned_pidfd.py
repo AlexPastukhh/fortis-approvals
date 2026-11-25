@@ -1,15 +1,10 @@
-"""E1.3b source-only process peer helper for the *existing* AF_UNIX Registry.
+"""Linux AF_UNIX peer identity for owner-configured Registry.
 
-A Linux pidfd is kernel evidence of the connected process, not proof of its
-owner-approved identity. The expected inode + kernel boot ID MUST come from
-an independently checked, immutable owner mount; never from peer request,
-response, environment, Registry state, or a self-reported peer value.
-
-Not a second API, a host enrollment helper, a release controller, a grant,
-or a fallback to UID/GID-only authorization. This module is intentionally
-NOT wired into the accepted R7/Registry runtime until a reviewed owner seal,
-exact mount allowlist and negative tests are complete.
+The kernel pidfd establishes liveness and continuity for a connection.
+Legacy profiles pin the boot and process inode; managed functional profiles
+also require proof under an independently owner-provisioned key.
 """
+import hmac
 import os
 import platform
 import re
@@ -21,11 +16,24 @@ import sys
 import uuid
 
 from ...core import Denied
+from .read_contract import _hex, _need, _uuid
 
 _SO_PEERPIDFD = 77  # Linux UAPI, since 6.5. CPython 3.11 has no symbol.
 _CRED = struct.Struct('=3i')
 _FD = struct.Struct('=i')
 _BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
+
+_PEER_PROOF_DOMAIN = b'fortis-registry-functional-peer-v1\0'
+
+
+def peer_proof(key, challenge, *, instance_id, scope_digest):
+    """Authenticate the listener without reusing the planner frame MAC domain."""
+    _need(type(key) is bytes and len(key) == 32 and
+          _hex(challenge, 64) and _uuid(instance_id) and _hex(scope_digest, 64),
+          'REGISTRY_FUNCTIONAL_PEER_PROOF_INVALID')
+    material = (challenge + instance_id + scope_digest).encode('ascii')
+    return hmac.digest(key, _PEER_PROOF_DOMAIN + material, 'sha256')
+
 
 
 def _stop(suffix):
