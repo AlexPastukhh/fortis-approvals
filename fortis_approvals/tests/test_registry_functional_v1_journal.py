@@ -190,6 +190,9 @@ class FunctionalV1JournalTests(unittest.TestCase):
     def test_post_269_gap_keeps_all_uncaptured_merges_out_of_desired(self):
         self.assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(18, 17)
 
+    def test_post_270_gap_keeps_all_uncaptured_merges_out_of_desired(self):
+        self.assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(19, 17)
+
     def assert_cutover_gap_keeps_uncaptured_merges_out_of_desired(self, size, partial_size):
         plan = self.current['plan']
         observation = plan['observation']

@@ -65,4 +65,17 @@ Need ($verified.roots.Count -eq 3) 'FIXTURE_RECEIPT_INVALID'
 $receipt.roots[2].mode=456
 $bad=$receipt | ConvertTo-Json -Depth 5 -Compress
 Assert-Rejected { Read-RootReceipt @($bad) 'E13B_VOLUME_ROOT_INSPECT_READONLY_PASS' } 'HELPER_RECEIPT_STAT_INVALID'
+
+# Exercise the same mount JSON shape returned by docker inspect under PS5.1.
+$bootstrap=Join-Path (Split-Path $PSScriptRoot -Parent) 'fortis_approvals/deploy/Registry-Owner-Bootstrap.ps1'
+. $bootstrap -Action Plan
+$socketVolume='fortis-registry-read'
+$mounts='[{"Type":"volume","Name":"reader-seal","Destination":"/run/r7-registry-reader","RW":false},{"Type":"volume","Name":"fortis-registry-read","Destination":"/run/fortis-registry-read","RW":false}]'
+Need (Test-Registry-Bootstrap-ReadOnlySocket $mounts $socketVolume) 'BOOTSTRAP_FIXTURE_MULTIPLE_MOUNTS'
+Need (-not (Test-Registry-Bootstrap-ReadOnlySocket ($mounts.Replace('"RW":false','"RW":true')) $socketVolume)) 'BOOTSTRAP_FIXTURE_WRITER'
+Need (-not (Test-Registry-Bootstrap-ReadOnlySocket ($mounts.Replace('"RW":false','"RW":"false"')) $socketVolume)) 'BOOTSTRAP_FIXTURE_RW_TYPE'
+Need (-not (Test-Registry-Bootstrap-ReadOnlySocket ($mounts.Replace('/run/fortis-registry-read','/unexpected')) $socketVolume)) 'BOOTSTRAP_FIXTURE_WRONG_DEST'
+Need (-not (Test-Registry-Bootstrap-ReadOnlySocket '[]' $socketVolume)) 'BOOTSTRAP_FIXTURE_MISSING_SOCKET'
+$socket='{"Type":"volume","Name":"fortis-registry-read","Destination":"/run/fortis-registry-read","RW":false}'
+Need (-not (Test-Registry-Bootstrap-ReadOnlySocket "[$socket,$socket]" $socketVolume)) 'BOOTSTRAP_FIXTURE_DUPLICATE_SOCKET'
 Write-Output 'E13B_WINDOWS_VOLUME_CONTROLLER_FIXTURES_PASS'

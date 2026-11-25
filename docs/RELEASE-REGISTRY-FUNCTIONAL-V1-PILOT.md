@@ -569,3 +569,12 @@ Use the v4 reader profile for the new release. After Backup and Promote,
 test a real cold Docker Desktop restart and Repo readback on the same
 Registry instance. Test the first normal Registry review and ingestion
 with a subsequent open PR after that restart check.
+
+If the first #270 handover stopped at the PowerShell 5.1 mount filter
+before switching the Registry listener, retain the #270 configuration,
+image IDs and reader volume as preparation evidence. The follow-up #271
+merge commit carries the parser correction and extends the reviewed gap by
+that single merge. Run --post-270 with the exact #271 HEAD, both #271 images
+and the byte-exact configuration of the still-active #268 Gateway.
+Use the fresh #271 nonce and v4 seal. The #268 reserve and single-writer
+handover are still required.

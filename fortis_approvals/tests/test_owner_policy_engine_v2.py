@@ -578,6 +578,10 @@ class UnifiedPolicyTests(unittest.TestCase):
                         next269['cutoverRecovery']['predecessorRelease'] = dict(actual268['cutoverRecovery']['release'])
                         self.assertEqual(runtime._reviewed_functional_predecessor_digests(next269),
                                          (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                        next270 = deepcopy(next269)
+                        next270['cutoverRecovery']['gap']['merges'][-1:] = [lineage._CUTOVER_270, {'number': 271}]
+                        self.assertEqual(runtime._reviewed_functional_predecessor_digests(next270),
+                                         (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
                         next269['cutoverRecovery']['predecessorRelease']['gatewaySourceDigest'] = '0'*64
                         with self.assertRaisesRegex(Denied, 'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
                             runtime._reviewed_functional_predecessor_digests(next269)
