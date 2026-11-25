@@ -201,12 +201,19 @@ _CUTOVER_266 = {
     'mergeSha': '9360937467d328a5afa65c8a67fc38fe3523ff82',
     'impact': {'gateway-owner-controller': ['windows-update']},
 }
+_CUTOVER_267 = {
+    'number': 267,
+    'headSha': 'f0d90797dc7bf5d99602625cb7f7f1fa84ce7d4b',
+    'mergeSha': '9b5ed6e88731fe056ecb7a210a7017b88f2e76b3',
+    'impact': _CUTOVER_HANDOVER_IMPACT,
+}
 _POST_255_GAP = 'OWNER_REVIEWED_POST_255_CAPTURE_GAP'
 _POST_260_GAP_SIZE = 9
 _POST_261_GAP_SIZE = 10
 _POST_263_GAP_SIZE = 12
 _POST_264_GAP_SIZE = 13
 _POST_266_GAP_SIZE = 15
+_POST_267_GAP_SIZE = 16
 
 
 def cutover_start(gap, baseline_sha):
@@ -218,12 +225,12 @@ def cutover_start(gap, baseline_sha):
     impact = _CUTOVER_RECOVERY_IMPACT
     if gap['disposition'] == _POST_255_GAP:
         _need(len(merges) in (4, 5, 6, 7, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
-                              _POST_264_GAP_SIZE, _POST_266_GAP_SIZE),
+                              _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE),
               'P5_CUTOVER_GAP_SCOPE')
         reviewed = [
             _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257,
             _CUTOVER_258, _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262,
-            _CUTOVER_263, _CUTOVER_264, _CUTOVER_265, _CUTOVER_266,
+            _CUTOVER_263, _CUTOVER_264, _CUTOVER_265, _CUTOVER_266, _CUTOVER_267,
         ]
         prefix = reviewed[:len(merges)-1]
         if 5 <= len(merges) < _POST_264_GAP_SIZE or len(merges) == _POST_266_GAP_SIZE:
