@@ -30,7 +30,7 @@ live acceptance — разные статусы.
 | 14.1. Наследуемые Machine PowerShell/Publisher и mounts | DONE (#271 rehearsal preflight) |
 | 14.2. State clone и retained collector | DONE (#271 rehearsal) |
 | 14.3. Startup #271 | BLOCKED: OWNER_POLICY_AUTHORITY_UPGRADE_REVIEW_REQUIRED; до Check/Apply |
-| 14.4. Точные исторические пары config/provider digest, regression и 20-merge gap | Recovery source candidate; local 56/56 PASS; CI точного HEAD OPEN |
+| 14.4. Точные исторические пары config/provider digest, regression и 20-merge gap | Recovery source candidate; local 56/56 PASS; первоначальный CI 4/5, устаревший source manifest воспроизведён; manifest regeneration и повторный CI точного HEAD |
 | 14.5. Recovery PR, owner merge, Docker/Windows sync | OPEN |
 | 14.6. Оба новых image, fresh v4 seal, single-writer handover и новый v3 reserve | OPEN; сохранить #268/#270/#271 evidence, исходный genesis/backup |
 | 14.7. Rehearsal и protected Check с exact receipt и повторным quiescence | OPEN |
