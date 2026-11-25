@@ -11,7 +11,7 @@ from registry_owner_pilot_bootstrap import (
 from fortis_approvals.integrations.github.gateway.forward_lineage import (
     _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257, _CUTOVER_258,
     _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262, _CUTOVER_263, _CUTOVER_264,
-    _CUTOVER_265, _CUTOVER_266, _CUTOVER_267, _CUTOVER_268, _CUTOVER_269,
+    _CUTOVER_265, _CUTOVER_266, _CUTOVER_267, _CUTOVER_268, _CUTOVER_269, _CUTOVER_270,
     _CUTOVER_RECOVERY_IMPACT, _CUTOVER_HANDOVER_IMPACT,
     _POST_255_GAP, cutover_start,
 )
@@ -32,9 +32,11 @@ _OPERATION = 'dfba6213-f83f-42ca-a136-d269289dcc09'
 def prepare(args):
     need(os.name == 'nt' and ROOT == (Path.home()/'Repos'/'fortis-approvals').resolve(),
          'WINDOWS_OWNER_SOURCE_REQUIRED')
-    need((not args.post_269 and not args.active_268_config) or
-         (args.post_269 and args.pull_request == 270 and args.active_268_config),
-         'CUTOVER_RECOVERY_POST_269_REQUIRES_PR_270_AND_ACTIVE_CONFIG')
+    post_269 = args.post_269 or args.post_270
+    expected_pr = 271 if args.post_270 else 270
+    need((not post_269 and not args.active_268_config) or
+         (post_269 and args.pull_request == expected_pr and args.active_268_config),
+         'CUTOVER_RECOVERY_MANAGED_PR_AND_ACTIVE_CONFIG_REQUIRED')
     session = real_dir(args.session_dir)
     need(session.name == 'pilot-bootstrap' and session.parent.name == _OPERATION
          and not session.is_relative_to(ROOT), 'CUTOVER_RECOVERY_SESSION')
@@ -68,7 +70,7 @@ def prepare(args):
     prior_releases = []
     output_name = 'functional-cutover-recovery.json'
     confirm_label = 'CUTOVER RECOVERY CONFIG'
-    post_267 = args.post_267 or args.post_269
+    post_267 = args.post_267 or post_269
     post_266 = args.post_266 or post_267
     post_264 = args.post_264 or post_266
     if any((args.post_255, args.post_256, args.post_257, args.post_258, args.post_260, args.post_261, args.post_263, post_264)):
@@ -148,7 +150,7 @@ def prepare(args):
         recovery['impact'] = _CUTOVER_RECOVERY_IMPACT
         output_name = 'functional-cutover-post-267.json'
         confirm_label = 'POST 267 CUTOVER RECOVERY CONFIG'
-    if args.post_269:
+    if post_269:
         prior = read(session/'functional-cutover-post-267.json', 16384)
         need(sha(prior) == _CUTOVER_268_CONFIG_SHA256, 'CUTOVER_RECOVERY_POST_267_CONFIG')
         active_path = Path(args.active_268_config)
@@ -162,6 +164,14 @@ def prepare(args):
         recovery['impact'] = _CUTOVER_HANDOVER_IMPACT
         output_name = 'functional-cutover-post-269.json'
         confirm_label = 'POST 269 CUTOVER RECOVERY CONFIG'
+    if args.post_270:
+        prepared = read(session/'functional-cutover-post-269.json', 16384)
+        need(sha(prepared) == '9a9b934f35c2ac3274c668415aa1de0f9afe94fe3c44bba49f3c530b4fefe7e0',
+             'CUTOVER_RECOVERY_POST_269_CONFIG')
+        prior_releases.append(loads_strict(prepared)['cutoverRecovery']['release'])
+        prefix.append(_CUTOVER_270)
+        output_name = 'functional-cutover-post-270.json'
+        confirm_label = 'POST 270 CUTOVER RECOVERY CONFIG'
     gap = {'disposition': disposition, 'merges': [*prefix, recovery]}
     baseline = config['baseline']
     source = cutover_start(gap, baseline['baselineSha'])
@@ -173,7 +183,7 @@ def prepare(args):
                  ('releaseNonce', 'registryImageId', 'gatewayImageId', 'gatewaySourceDigest')),
              'CUTOVER_RECOVERY_PRIOR_RELEASE_REUSE')
     config['cutoverRecovery'] = {'gap': gap, 'release': release}
-    if args.post_269:
+    if post_269:
         config['cutoverRecovery']['predecessorRelease'] = active_config['cutoverRecovery']['release']
         need(_reviewed_268_predecessor_digest(config) == sha(active),
              'CUTOVER_RECOVERY_ACTIVE_CONFIG_CHANGED')
@@ -240,6 +250,7 @@ if __name__ == '__main__':
     mode.add_argument('--post-266', action='store_true')
     mode.add_argument('--post-267', action='store_true')
     mode.add_argument('--post-269', action='store_true')
+    mode.add_argument('--post-270', action='store_true')
     parser.add_argument('--active-268-config')
     parser.add_argument('--pull-request', required=True, type=int)
     parser.add_argument('--pull-request-head', required=True)

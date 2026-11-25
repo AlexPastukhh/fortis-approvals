@@ -31,6 +31,20 @@ function Invoke-Registry-Bootstrap-DockerRead {
     return ,$Result
 }
 
+function Test-Registry-Bootstrap-ReadOnlySocket {
+    param([string]$MountJson,[string]$VolumeName)
+    # Windows PowerShell 5.1 emits the entire JSON array as one pipeline item.
+    $Mounts=ConvertFrom-Json -InputObject $MountJson
+    $SocketMount=@(foreach ($Mount in $Mounts) {
+        if ($Mount.Type -ceq 'volume' -and $Mount.Name -ceq $VolumeName) { $Mount }
+    })
+    if ($SocketMount.Count -ne 1 -or $SocketMount[0].Destination -cne '/run/fortis-registry-read' -or
+        $SocketMount[0].RW -isnot [bool] -or $SocketMount[0].RW -ne $false) {
+        return $false
+    }
+    return $true
+}
+
 $ManagedStart=$Action -ceq 'StartManaged'
 if ($ManagedStart -ne [bool]$ConfirmManagedStart -or (-not $ManagedStart -and $PlannerKeySha256)) {
     throw 'REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED'
@@ -137,10 +151,7 @@ foreach ($Name in @($StateVolume,$ConfigVolume,$SocketVolume)) {
             $Dormant=($Fields[0] -cin @('created','exited') -and $Fields[1] -ceq 'no')
             if ($Dormant) { continue }
             # Existing Gateway may retain the private socket as a reader.
-            $SocketMount=@(ConvertFrom-Json -InputObject $Fields[2] |
-                Where-Object { $_.Type -ceq 'volume' -and $_.Name -ceq $Name })
-            if ($Name -cne $SocketVolume -or $SocketMount.Count -ne 1 -or
-                $SocketMount[0].RW -isnot [bool] -or $SocketMount[0].RW -ne $false) {
+            if ($Name -cne $SocketVolume -or -not (Test-Registry-Bootstrap-ReadOnlySocket $Fields[2] $Name)) {
                 throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
             }
         }
