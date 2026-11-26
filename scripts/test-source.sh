@@ -5,14 +5,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
 
-# Every provider package participates; adding one never needs a CI script edit.
-for provider_tests in fortis_approvals/integrations/*/tests; do
-  if [[ -d "$provider_tests" ]]; then
-    "$PYTHON" -B -m unittest discover -s "$provider_tests" -p 'test_*.py' -v
-  fi
-done
+# Two independent processes in hosted CI; local serial remains available.
+# Provider discovery and mandatory suite execution share the same runner.
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+  default_jobs=2
+else
+  default_jobs=1
+fi
+jobs="${OFFLINE_TEST_JOBS:-$default_jobs}"
 
 tests=(
+  test_offline_suite_runner.py
   test_core.py
   test_gateway.py
   test_owner_portal.py
@@ -178,11 +181,7 @@ tests=(
   test_registry_owner_storage_denial.py
   test_registry_enrollment_cutover.py
 )
-for test in "${tests[@]}"; do
-  echo "=== $test ==="
-  "$PYTHON" -B -m unittest discover \
-    -s fortis_approvals/tests -p "$test" -v
-done
+"$PYTHON" -B scripts/run-offline-suites.py --python "$PYTHON" --jobs "$jobs" "${tests[@]}"
 
 # Keep the pinned Source CI workflow byte-identical; this existing entrypoint
 # also runs the mandatory isolated browser-logic tests. Missing Node fails CI.
