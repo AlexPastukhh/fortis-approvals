@@ -797,6 +797,26 @@ function Get-ReleaseStateCleanupVolume {
     return [string]$V.CreatedAt
 }
 
+function Get-ReleaseStateHolderReferenceText {
+    param([string]$Text,$Receipt)
+    if($Receipt.schema -cne 'fortis-backup-cleanup-v1' -or $Receipt.phase -cne 'Complete' -or
+       $Receipt.failedId -cne '' -or $Receipt.plan.schema -cne 'fortis-backup-cleanup-preview-v1' -or
+       $Receipt.plan.containerIds -isnot [array] -or -not $Receipt.plan.containerIds.Count -or
+       @($Receipt.plan.containerIds | Where-Object {$_ -isnot [string] -or $_ -cnotmatch '^[0-9a-f]{64}$'}).Count){
+        return $Text
+    }
+    $Selected=@($Receipt.plan.selected | ForEach-Object {$_.id})
+    if(-not $Selected.Count -or @($Selected | Where-Object {$_ -cnotmatch '^[0-9a-f]{32}$'}).Count -or
+       $Receipt.removed -isnot [array] -or ($Selected -join ',') -cne ($Receipt.removed -join ',')){
+        return $Text
+    }
+    # Use the same serializer as Write-Private/Save-Record. If parsing loses
+    # any text (for example duplicate keys), preserve the original full scan.
+    if((ConvertTo-Json -InputObject $Receipt -Depth 25) -cne $Text){return $Text}
+    $Receipt.plan.PSObject.Properties.Remove('containerIds')
+    return (ConvertTo-Json -InputObject $Receipt -Depth 25)
+}
+
 function Get-ReleaseStateCleanupPlan {
     param([string[]]$Ids)
     $Primary=Get-BackupCleanupPlan -PinsOnly
@@ -842,10 +862,18 @@ function Get-ReleaseStateCleanupPlan {
     foreach($File in @(Get-BackupCleanupReferenceFiles $ReleaseBase)){
         $Text=Get-Content -LiteralPath $File.FullName -Raw
         if(-not $Text){continue}
+        $HolderText=$Text
+        if($File.Name -ceq 'record.json' -and $File.Directory.Name -cmatch '^primary-cleanup-[0-9a-f]{32}$' -and
+           $File.Directory.Parent.FullName -ieq $ReleaseBase -and
+           @($Rows | Where-Object {$Text.IndexOf($_.holderId,[StringComparison]::OrdinalIgnoreCase) -ge 0}).Count){
+            # A completed backup cleanup inventories all containers at the
+            # time without claiming them as recovery dependencies.
+            $HolderText=Get-ReleaseStateHolderReferenceText $Text (Read-Private $File.FullName)
+        }
         foreach($Row in $Rows){
             if($File.FullName -ieq (Join-Path (Join-Path $ReleaseBase $Row.id) 'record.json')){continue}
             if($Text.IndexOf($Row.id,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-               $Text.IndexOf($Row.holderId,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+               $HolderText.IndexOf($Row.holderId,[StringComparison]::OrdinalIgnoreCase) -ge 0){
                 throw ('RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE: '+$Row.id)
             }
         }
@@ -998,6 +1026,37 @@ function Assert-ReleaseStateCleanupSelectionSelfTest {
         Assert-ReturnedReleaseState $Id $Record $Holder
         throw 'RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_FAILED'
     } catch {if($_.Exception.Message -cne 'RELEASE_STATE_CLEANUP_HOLDER_INVALID'){throw}}
+
+    $BackupId='c'*32
+    $InventoryReceipt=[ordered]@{
+        schema='fortis-backup-cleanup-v1';phase='Complete';previewDigest=('d'*64)
+        plan=[ordered]@{schema='fortis-backup-cleanup-preview-v1';containerIds=@($Holder.Id)
+            selected=@([ordered]@{id=$BackupId;createdAt='2026-11-26T01:02:03Z';evidence=@()})}
+        removed=@($BackupId);failedId=''
+    }
+    $Text=ConvertTo-Json -InputObject $InventoryReceipt -Depth 25
+    $Filtered=Get-ReleaseStateHolderReferenceText $Text (ConvertFrom-Json -InputObject $Text)
+    if($Filtered.Contains($Holder.Id) -or -not $Filtered.Contains($BackupId)){
+        throw 'RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_FAILED'
+    }
+    $InventoryReceipt.plan['primaryId']=$Holder.Id
+    $Text=ConvertTo-Json -InputObject $InventoryReceipt -Depth 25
+    $Filtered=Get-ReleaseStateHolderReferenceText $Text (ConvertFrom-Json -InputObject $Text)
+    if(-not $Filtered.Contains($Holder.Id)){throw 'RELEASE_STATE_CLEANUP_INVENTORY_REFERENCE_SELFTEST_FAILED'}
+    foreach($Phase in @('Prepared','RecoveryRequired','Complete')){
+        $InventoryReceipt.phase=$Phase
+        if($Phase -ceq 'Complete'){$InventoryReceipt.removed=@()}
+        $Text=ConvertTo-Json -InputObject $InventoryReceipt -Depth 25
+        if((Get-ReleaseStateHolderReferenceText $Text (ConvertFrom-Json -InputObject $Text)) -cne $Text){
+            throw 'RELEASE_STATE_CLEANUP_UNVERIFIED_RECEIPT_SELFTEST_FAILED'
+        }
+    }
+    $InventoryReceipt.removed=@($BackupId)
+    $Text=ConvertTo-Json -InputObject $InventoryReceipt -Depth 25 -Compress
+    if((Get-ReleaseStateHolderReferenceText $Text (ConvertFrom-Json -InputObject $Text)) -cne $Text){
+        throw 'RELEASE_STATE_CLEANUP_NONCANONICAL_RECEIPT_SELFTEST_FAILED'
+    }
+    Write-Host 'FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS'
     Write-Host 'FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS'
 }
 

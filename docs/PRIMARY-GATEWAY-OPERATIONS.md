@@ -676,7 +676,8 @@ volume deletion does not establish VHDX compaction or off-host recovery.
 
 This owner-local source candidate requires accepted Windows main, exact-SHA
 Mirror and Windows PowerShell 5.1 SelfTest, including
-`FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS`. It uses the owner
+`FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS` and
+`FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS`. It uses the owner
 controller and no new Gateway image. Follow UC-CONT-021/022/023 and retain
 the current and previous Primary, their verified backup dependencies, and
 Registry/incident recovery holds.
@@ -688,7 +689,10 @@ the candidate's own protected Returned record with activation and probes
 both false, an inactive marker check, and a single exact matching stopped
 holder. It conservatively holds any ID or holder referenced by **another**
 protected release file, including Registry return attempts and checked
-bindings. The candidate's own record is retained as audit and nonce history.
+bindings. A verified complete BackupCleanup receipt records the former Docker
+inventory in `plan.containerIds`. Holder IDs there describe the earlier
+inventory. The controller checks every other field and every incomplete receipt.
+The candidate's own record is retained as audit and nonce history.
 This is a narrow lifecycle decision for failed-before-activation attempts.
 Any unknown or referenced state, holder, or recovery dependency requires
 STOP and review. The action excludes Auto and release arguments.

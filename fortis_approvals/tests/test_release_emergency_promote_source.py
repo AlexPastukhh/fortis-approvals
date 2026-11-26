@@ -27,11 +27,23 @@ class ReleaseStateCleanupSourceTests(unittest.TestCase):
             self.assertIn(token, candidate)
         plan = section(PRIMARY, "function Get-ReleaseStateCleanupPlan {", "function Assert-ReleaseStateCleanupPins {")
         for token in ("Get-BackupCleanupPlan -PinsOnly", "'auto-check.json'", "Assert-ReturnedReleaseState",
-                      "Assert-BackupCleanupUnheld", "$Text.IndexOf($Row.id,", "$Text.IndexOf($Row.holderId,",
+                      "Assert-BackupCleanupUnheld", "$Text.IndexOf($Row.id,", "$HolderText.IndexOf($Row.holderId,",
                       "RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE", "Assert-RegistryCandidateInactive",
                       "Fortis\\OwnerEvidence"):
             self.assertIn(token, plan)
         self.assertNotIn("'rm'", plan)
+
+    def test_only_verified_backup_inventory_is_excluded_from_holder_search(self):
+        projection = section(PRIMARY, "function Get-ReleaseStateHolderReferenceText {", "function Get-ReleaseStateCleanupPlan {")
+        for token in ("'fortis-backup-cleanup-v1'", "'Complete'", "'fortis-backup-cleanup-preview-v1'",
+                      "$Receipt.removed", "$Selected -join", "ConvertTo-Json -InputObject $Receipt -Depth 25",
+                      "$Receipt.plan.PSObject.Properties.Remove('containerIds')"):
+            self.assertIn(token, projection)
+        plan = section(PRIMARY, "function Get-ReleaseStateCleanupPlan {", "function Assert-ReleaseStateCleanupPins {")
+        self.assertIn("$File.Directory.Parent.FullName -ieq $ReleaseBase", plan)
+        self.assertIn("Get-ReleaseStateHolderReferenceText $Text (Read-Private $File.FullName)", plan)
+        self.assertIn("$Text.IndexOf($Row.id,", plan)
+        self.assertIn("FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS", PRIMARY)
 
     def test_confirmation_and_prepared_receipt_precede_effects(self):
         action = section(PRIMARY, "function Release-State-Cleanup {", "function Assert-ReleaseStateCleanupSelectionSelfTest {")
