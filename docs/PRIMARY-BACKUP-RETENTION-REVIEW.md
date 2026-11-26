@@ -1,6 +1,7 @@
 # Primary Gateway backup retention — minimal policy proposal
 
-Status: SOURCE REVIEW / NOT ACTIVE. This is a backup-volume lifecycle
+Status: SOURCE CANDIDATE / NOT ACTIVE. The owner requested a separate
+selected-ID BackupCleanup action; see the [single operator procedure](PRIMARY-GATEWAY-OPERATIONS.md#selected-backup-cleanup-backupcleanup). This is a backup-volume lifecycle
 proposal, not a new disaster-recovery system. Existing owner operations
 and UC-GW-005/006/007/009/013 and UC-CONT-022 remain authoritative.
 The dated inventory and decisions live in the container maintenance
@@ -123,19 +124,14 @@ Primary and other reserves remain protected, not independently tested.
 
 ## Supported scope and remaining limitation
 
-Use the existing owner release and maintenance contracts
-(UC-GW-005/006 and UC-CONT-021/022/023); do not add another report parser,
-receipt validator, database or release action. A saved report already
-contains counts and observed reference statuses. Its aggregate summary
-does not supply fresh evidence or an operational retention decision.
-
-This source candidate records the recovery assurance and protection
-policy and adds a snapshot round-trip regression in the existing suite.
-It does not bound physical volume or record growth. An effectful
-retention implementation is not available in this scope; do not mark
-that work complete or bypass the maintenance authorization boundary.
-Keep the physical lifecycle open while independently useful source
-verification and release performance work proceed.
+The earlier docs/tests-only review did not implement an effect. The current
+source candidate adds the separate owner-controlled selected-ID action to the
+existing controller, not a new report parser, database or automatic retention
+service. It retains the snapshot round-trip regression and existing recovery
+checks. No operational deletion or Windows acceptance has been performed.
+Original records remain immutable; the existing emergency record-count bound
+is unchanged (36/128 previously observed). Physical lifecycle and growth
+acceptance remain open until actual separately admitted maintenance.
 
 ## Remaining decision
 
@@ -152,5 +148,5 @@ Revalidate relevant identities, receipts, holds and release state at that
 boundary; use prior inventory as evidence, not as current authorization.
 Do not require a general post-activation rollback implementation or
 a restore drill for every historical candidate as a new policy.
-No effect phase is implemented or authorized here. No production backups,
+No live effect is authorized by this source review. No production backups,
 volumes, records, runtime or Windows configuration have changed.

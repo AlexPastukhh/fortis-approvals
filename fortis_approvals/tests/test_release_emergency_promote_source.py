@@ -17,6 +17,101 @@ def section(script, begin, end):
     return script.split(begin, 1)[1].split(end, 1)[0]
 
 
+class BackupCleanupSourceTests(unittest.TestCase):
+    def test_owner_action_is_separate_from_release_and_vault(self):
+        dispatch = section(MANAGE, "if($Action -eq 'BackupCleanup'){", "\nif(-not (Test-Path -LiteralPath $ReleaseBase))")
+        for token in ("@('Action','BackupIds','Preview','SourceSha')", "RELEASE_WINDOWS_SOURCE_DIRTY",
+                      "RELEASE_WINDOWS_MAIN_REQUIRED", "RELEASE_WINDOWS_SHA_MISMATCH",
+                      "Assert-DirectoryAcl $ReleaseBase", "Open-ReleaseControllerLock",
+                      "Backup-Cleanup $BackupIds -PreviewOnly:$Preview", "$ControllerLock.Dispose()"):
+            self.assertIn(token, dispatch)
+        self.assertLess(dispatch.index("RELEASE_WINDOWS_SHA_MISMATCH"), dispatch.index("Backup-Cleanup $BackupIds"))
+        self.assertNotIn("Ensure-Vault", dispatch)
+        self.assertEqual(MANAGE.count("Backup-Cleanup $BackupIds"), 1)
+        self.assertIn("Assert-BackupCleanupSelectionSelfTest", MANAGE)
+
+    def test_exact_registered_ids_and_protected_recovery_scope(self):
+        ids = section(PRIMARY, "function Get-BackupCleanupIds {", "function Assert-BackupCleanupCandidate {")
+        self.assertIn("^[0-9a-f]{32}$", ids)
+        self.assertIn("BACKUP_CLEANUP_ID_DUPLICATE", ids)
+        candidate = section(PRIMARY, "function Assert-BackupCleanupCandidate {", "function Assert-BackupCleanupSelectionSelfTest {")
+        self.assertIn("'fortis-primary-backup-v1'", candidate)
+        self.assertIn("$ProtectedSources -contains $Record.sourceRecord", candidate)
+        self.assertIn("$RecordPath -ieq $ProtectedBackupPath", candidate)
+        plan = section(PRIMARY, "function Get-BackupCleanupPlan {", "function Backup-Cleanup {")
+        for token in ("$Primary.previousPrimaryRecord", "BACKUP_CLEANUP_PROTECTED_BACKUP_MISSING",
+                      "BACKUP_CLEANUP_PRIOR_ATTEMPT_REQUIRES_READBACK", "BACKUP_CLEANUP_ID_ALREADY_RETIRED", "Receipt $CurrentBackup.backupVolume",
+                      "BACKUP_CLEANUP_RELEASE_RECORD_REFERENCE", "Get-BackupCleanupIncidentHolds $C.Id $Ids",
+                      "Assert-BackupCleanupUnheld $Volume.name $Holders", "BACKUP_CLEANUP_POINTER_CHANGED",
+                      "BACKUP_CLEANUP_HISTORICAL_SOURCE_CHANGED", "$HistoricalCleanupRecords -contains $File.FullName"):
+            self.assertIn(token, plan)
+        self.assertLess(plan.index("Get-BackupCleanupVolumeIdentity $CurrentBackupId"), plan.index("Receipt $CurrentBackup.backupVolume"))
+        self.assertNotIn("('volume','rm'", plan)
+
+    def test_preview_and_confirmation_precede_only_exact_effect_and_readback(self):
+        action = section(PRIMARY, "function Backup-Cleanup {", "function Promote-Primary {")
+        tokens = ("Get-BackupCleanupPlan $Ids", "if($PreviewOnly){return}", "Read-Host",
+                  "BACKUP_CLEANUP_OWNER_GO_REQUIRED", "Same-Json (Get-BackupCleanupPlan $Ids) $Plan",
+                  "Write-Private $ResultPath $Result", "Get-BackupCleanupVolumeIdentity $Row.id",
+                  "Docker-Text @('volume','rm',$Row.volume)", "BACKUP_CLEANUP_VOLUME_STILL_PRESENT",
+                  "BACKUP_CLEANUP_PROTECTED_CHANGED_AFTER_EFFECT", "$Result.phase='Complete'",
+                  "FORTIS_BACKUP_CLEANUP_VERIFIED")
+        positions = [action.index(token) for token in tokens]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(action.count("Docker-Text @('volume','rm',"), 1)
+        self.assertNotIn("'-f'", action)
+        self.assertNotIn("'--force'", action)
+        self.assertNotIn("Remove-Item", action)
+        self.assertIn("$Result.phase='RecoveryRequired'", action)
+        self.assertNotIn("Write-Private $PrimaryPointer", action)
+        self.assertNotIn("Write-Private $BackupPointer", action)
+
+    def test_holder_and_incident_guards_are_not_effects(self):
+        held = section(PRIMARY, "function Assert-BackupCleanupUnheld {", "function Get-BackupCleanupIncidentHolds {")
+        self.assertIn("$Holder.Mounts", held)
+        self.assertIn("$Root.StartsWith($MountSource.TrimEnd('/')+'/'", held)
+        self.assertNotIn("State.Status", held)  # stopped/created holders count too
+        incidents = section(PRIMARY, "function Get-BackupCleanupIncidentHolds {", "function Get-BackupCleanupPlan {")
+        self.assertIn("mode=ro", incidents)
+        self.assertIn("PRAGMA query_only=ON", incidents)
+        self.assertIn("backupVolumeOwnerAttested", incidents)
+        self.assertIn("BACKUP_CLEANUP_INCIDENT_HOLD", incidents)
+        import ast
+        code = incidents.split("$Code=@'\n", 1)[1].split("\n'@", 1)[0]
+        ast.parse(code)
+
+    def test_incident_reader_finds_selected_holds_without_changing_fixture(self):
+        import contextlib
+        import io
+        import json
+        import sqlite3
+        import tempfile
+        from unittest.mock import patch
+
+        incidents = section(PRIMARY, "function Get-BackupCleanupIncidentHolds {", "function Get-BackupCleanupPlan {")
+        code = incidents.split("$Code=@'\n", 1)[1].split("\n'@", 1)[0]
+        selected = "a" * 32
+        other = "b" * 32
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "approvals.sqlite"
+            with sqlite3.connect(db_path) as db:
+                db.execute("CREATE TABLE events (state TEXT, detail TEXT)")
+                db.executemany("INSERT INTO events VALUES (?, ?)", [
+                    ("CLOSED_UNCONFIRMED", json.dumps({"backupVolumeOwnerAttested": "fortis-gateway-backup-" + selected})),
+                    ("CLOSED_UNCONFIRMED", json.dumps({"backupVolumeOwnerAttested": "fortis-gateway-backup-" + other})),
+                    ("APPROVED", json.dumps({"backupVolumeOwnerAttested": "fortis-gateway-backup-" + selected})),
+                    ("CLOSED_UNCONFIRMED", "{}"),
+                ])
+            before = db_path.read_bytes()
+            fixture = code.replace("file:/state/private/approvals.sqlite?mode=ro", db_path.as_uri() + "?mode=ro")
+            for ids, expected in (([selected], [selected]), (["c" * 32], [])):
+                output = io.StringIO()
+                with patch("sys.stdin", io.StringIO(json.dumps(ids))), contextlib.redirect_stdout(output):
+                    exec(compile(fixture, "<incident-read-fixture>", "exec"), {})
+                self.assertEqual(json.loads(output.getvalue()), {"holds": expected})
+                self.assertEqual(db_path.read_bytes(), before)
+
+
 class EmergencyPromoteSourceTests(unittest.TestCase):
     def test_ordinary_image_path_still_uses_unmodified_admission(self):
         promote = section(PRIMARY, "function Promote-Primary {", "\n}")
@@ -51,7 +146,7 @@ class EmergencyPromoteSourceTests(unittest.TestCase):
 
     def test_emergency_preflights_two_separate_protected_backups(self):
         fn = section(PRIMARY, "function Assert-Emergency-Promote-Rescue {",
-                     "function Promote-Primary {")
+                     "function Get-PrimaryRegistryHandover {")
         promote = section(PRIMARY, "function Promote-Primary {", "\n}")
         self.assertIn("Same-Json (Receipt $Backup.backupVolume) $Backup.receipt", promote)
         self.assertIn("$Backup.sourceRecord -cne $Source.path", promote)

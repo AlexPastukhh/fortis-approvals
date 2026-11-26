@@ -537,13 +537,13 @@ stage и commit проходят через _command_once без автомат�
 | 0. Перечитать принципы общего плана и сверить его актуальность | ALWAYS: начало/завершение шага, перед PR/merge; не закрывается |
 | 4–5. CI и анализ release consumers | DONE: #274/#275 merged, 146s offline; зависимости Check/Apply/Backup/Promote/Return проверены |
 | 6–9. Минимальная политика, ревью, clone test, lifecycle contract | SOURCE CANDIDATE: [review](PRIMARY-BACKUP-RETENTION-REVIEW.md), 43 focused PASS, без нового runtime module |
-| 10. Поддерживаемый retention lifecycle | BLOCKED for physical lifecycle: owner 36/128; exact #273 V2 isolated copy PASS_EPHEMERAL. Redundant report parser retired from candidate (archived); no deletion implementation, no growth bound. Source policy and regression ready for scoped review |
-| 11. Тесты и ревью итогового кандидата | PARTIAL: docs/tests-only candidate, 48 focused tests PASS, source manifests/diff PASS; exact-head CI and Release Impact pending. No new suite or controller change |
-| 12. PR, Merge и доставка | This PR delivers only the reviewed docs/tests scope when exact-head CI, Registry E2 and owner merge gates pass. Corrected typed inspect EXECUTED with explicit UUID; prior null-ID 403 was not a policy blocker. No Windows install for this scope; Docker main sync requires confirmed owner merge |
-| 13. Исторические backup volumes | EFFECT BLOCKED: no deletion authorized; 12 prior candidates / ~17.685 GB, no fresh host acceptance |
-| 15. Скорость релизов | IN PROGRESS: source-only synthetic ~64 MiB SHA256 comparison, 5 runs, existing 132.52ms/64.004 MiB vs streaming 74.05ms/0.255 MiB peak Python allocation; equal digest; not live release timing. Next representative clone/receipt workload, compatibility and mutation checks |
+| 10. Поддерживаемый retention lifecycle | SOURCE CANDIDATE: selected-ID BackupCleanup in existing Windows controller, preview, explicit owner decision, protected recovery and outcome receipt; no live effect. See operator runbook. |
+| 11. Тесты и ревью итогового кандидата | SOURCE-VERIFIED (local): 60 focused tests PASS; Backup/Promote/emergency recovery bodies unchanged; manifests/diff PASS. Exact-head CI and Windows PS5.1 SelfTest/Preview pending. |
+| 12. PR, Merge и доставка | PENDING: existing #276 exact published head remains docs/tests only; new controller candidate not published. Actual scope windows-update, exact CI/owner merge/Mirror and SelfTest required; no image rebuild for controller-only diff. |
+| 13. Исторические backup volumes | OPEN: 12 historical candidates / ~17.685 GB, ready=0 in historical audit; separate current owner admission and result required. |
+| 15. Скорость релизов | DEFERRED until selected cleanup and sufficient verified disk reserve; historical synthetic timing retained, no live speed claim. |
 
-Данный PR-кандидат ограничен docs/tests; не считать production restore
+Данный controller source-кандидат не установлен; не считать production restore
 проверенным. Не заводить универсальный Restore, новый реестр или
 дополнительный release gate без доказанной необходимости.
 Сохранять защищённые records, pointers, incident/Registry dependencies;

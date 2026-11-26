@@ -630,11 +630,47 @@ must continue using the original attempt record, not fabricated identifiers.
    The reported owner host output and Repo readback confirm deployment; a fresh
    full ALLOW/ASK/DENY policy acceptance cycle is still outstanding.
 
-## Backup retention review (source proposal, not an operation)
+## Selected backup cleanup (BackupCleanup)
 
-See [backup retention review](PRIMARY-BACKUP-RETENTION-REVIEW.md) for the
-minimal operational dependency policy and its limits. It reuses the existing
-Backup and receipt checks; no new restore or cleanup operation is authorized.
+**Source candidate; not installed or live-verified.** This is a separate
+owner-local maintenance action in `Manage-Integrations.ps1`; it is not part
+of `-Auto`, Backup or Promote. Follow UC-CONT-021/022/023 and the
+[retention review](PRIMARY-BACKUP-RETENTION-REVIEW.md). Use only the accepted
+Windows main source, after exact-SHA Mirror sync and PowerShell 5.1 SelfTest
+(including `FORTIS_BACKUP_CLEANUP_SELECTION_SELFTEST_PASS`). No Gateway or
+Registry image build is required for this controller-only change.
+
+The action accepts `-SourceSha` (exact accepted Windows main) and
+`-BackupIds` (comma-separated exact 32-character lowercase backup IDs,
+without volume prefix). `-Preview` returns the checked selection and digest
+without removing anything. It cannot be combined with release/credential
+arguments or `-Auto`. Without `-Preview`, the action presents the same
+review and requires the owner to enter the exact `CLEANUP <digest>` prompt
+in an exclusive maintenance window. Review external recovery/Registry holds
+and all displayed owner evidence references; an inventory reference by
+itself is not an active hold. Uncertainty is STOP, not a force option.
+
+The shared controller lock, current/previous source and protected backup
+bindings, current backup receipt, complete release/attempt, exact local
+volume identity, all container mounts (including stopped containers),
+release-record references and current incident audit are checked before
+confirmation and rechecked before removal. Previous backup metadata checks
+are not a new restore test. Only selected registered older-source backup
+volumes can be removed; current/previous and other recovery dependencies
+remain protected. The action does not remove containers, images, working
+state, Registry resources, credentials, existing records or pointers.
+
+The new protected `primary-cleanup-*/record.json` records the exact selection
+and actual removed IDs. A successful operation reports
+`FORTIS_BACKUP_CLEANUP_VERIFIED` after absence and retained identity readback.
+A partial or ambiguous effect remains `RecoveryRequired` (or a Prepared
+record if persistence was interrupted); do not retry it or start another
+cleanup blindly. Read back exact volume IDs and the original record under
+UC-GW-006. The completed receipt is historical evidence, not a new retention
+hold on the formerly protected generations. Previously retired IDs cannot
+be selected again. Preserve all original records.
+Verify logical disk usage and physical C: separately after maintenance;
+volume deletion does not establish VHDX compaction or off-host recovery.
 
 ## STOP and rollback boundaries
 
