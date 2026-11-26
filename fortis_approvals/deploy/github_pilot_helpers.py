@@ -426,8 +426,8 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         for name in files:
             if name.startswith('native-git/artifacts/'):
                 artifact = root / name
-                require(0 < artifact.stat().st_size <= 24 * 1024 * 1024 and
-                        file_hash(artifact) == artifact.name[:-7], 'PILOT_NATIVE_ARTIFACT_DIGEST_MISMATCH')
+                require(0 < artifact.stat().st_size <= 24 * 1024 * 1024,
+                        'PILOT_NATIVE_ARTIFACT_DIGEST_MISMATCH')
     require((root / MARKER).read_bytes() == b'fortis-r7-unified-v1\n', 'PILOT_SOURCE_MARKER_INVALID')
     connections = {}
     try:
@@ -684,7 +684,18 @@ def inspect_state(volume, *, uid=10001, gid=10001, github=False, native=False,
         if github: summary['githubReceipts'] = connections['github-receipts.sqlite'].execute('SELECT COUNT(*) FROM receipts').fetchone()[0]
     finally:
         for db in connections.values(): db.close()
-    return {'sha256': {name: file_hash(root / name) for name in sorted(files)}, 'summary': summary}
+    # Validate content-addressed bundles with the very digest returned in
+    # this receipt. Do not reuse an earlier hash or cache across inspections.
+    # Every independent source/target inspection still reads all bytes.
+    hashes = {}
+    for name in sorted(files):
+        path = root / name
+        digest = file_hash(path)
+        if name.startswith('native-git/artifacts/'):
+            require(0 < path.stat().st_size <= 24 * 1024 * 1024 and
+                    digest == path.name[:-7], 'PILOT_NATIVE_ARTIFACT_DIGEST_MISMATCH')
+        hashes[name] = digest
+    return {'sha256': hashes, 'summary': summary}
 
 
 def clone_state(source, target, *, uid=10001, gid=10001, github=False,
