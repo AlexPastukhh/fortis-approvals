@@ -11,6 +11,21 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Release performance — timing the next necessary release (2026-11-26)
+
+Read-only backup profile measured repeated artifact digest work; #283 and
+#284 are merged, but post-change live duration is unknown. Clone copy/fsync
+has no representative Windows VHDX timing; previous tmpfs comparison did not
+justify a rewrite. Keep the complete clone, source/target verification,
+fsync and protected Backup/Promote ordering. Controller host-only
+FORTIS_RELEASE_TIMING records monotonic elapsedMs and UTC, fixed phase
+labels, helper begin/end, build archive/expand/Docker, existing steps,
+owner waits and Apply/Backup stop/restart boundaries. No receipt schema,
+helper protocol, approval, or Docker effect changes. Use the transcript at
+the next admitted necessary release, separately measure wall/owner wait/
+live availability and readback; timing lines are not success evidence.
+No additional clone or release just for a benchmark.
+
 ## Release performance — combined ordinary Apply preflight (2026-11-26)
 
 Standard `Apply -Auto` now checks the protected image binding early, then

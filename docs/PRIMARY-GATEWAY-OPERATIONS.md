@@ -236,6 +236,21 @@ copy its old runtime pins. Normal image releases use the next section.
    protected receipt under `%LOCALAPPDATA%\Fortis\GatewayReleases`, then starts
    the same container and checks health. It never copies credentials into Repo.
    The backup is a local Docker recovery copy, not an off-machine disaster backup.
+
+   Release timing: retain the normal owner transcript from Check through
+   Apply, live readback, Backup, Promote and the separately reviewed retention
+   decision/cleanup. `FORTIS_RELEASE_TIMING` lines give fixed phase labels,
+   per-invocation monotonic elapsed milliseconds and UTC correlation across
+   commands. Subtract matched OWNER_QUIESCENCE and OWNER_GO intervals
+   separately from action elapsed; gaps between commands and external
+   readback remain separate. HELPER_*_BEGIN/END measure the complete helper
+   call, including startup and parsing; Clone includes all copy/fsync and
+   inspections, not a pure disk-write measurement. BACKUP_STOP_REQUEST to
+   BACKUP_HEALTH_ADMITTED and APPLY_STOP_REQUEST to APPLY_ACTIVATED bracket
+   interruption, not independent service availability probes. A missing
+   endpoint is unknown; END is not success. Use the existing PASS/readback
+   gates, not timing, for acceptance. Do not repeat a release or cleanup
+   merely to time it.
    `Promote` requires that protected verified backup; changes only container
    name to `fortis-gateway` and restart to `unless-stopped`, then writes
    **separate** `primary.json` without altering the old release record.

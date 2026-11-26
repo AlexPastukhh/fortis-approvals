@@ -15,6 +15,7 @@ param(
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto,
     [string]$BackupIds='', [string]$RunIds='', [switch]$Preview
 )
+$script:ReleaseClock=[Diagnostics.Stopwatch]::StartNew()
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
 # Windows PowerShell 5.1 only. Strict JSON DTO for Gateway release records.
@@ -732,7 +733,39 @@ function Forward-NativeParameters {
     }
     $Native
 }
-function Step { param([string]$Name) $script:Step=$Name; Write-Host ('FORTIS_INTEGRATIONS_STEP_' + $Name) }
+# Host-only timing evidence, never a receipt or authorization. Monotonic
+# elapsed time is per invocation; UTC joins separate owner actions.
+function Write-ReleaseTiming {
+    param([string]$Phase)
+    if($script:Action -notin @('Check','Apply','Backup','Promote','BackupCleanup','ReleaseStateCleanup','Return')){return}
+    if($Phase -cnotmatch '^[A-Z][A-Z0-9_]{0,79}$'){return}
+    try {
+        Write-Host ('FORTIS_RELEASE_TIMING action={0} phase={1} elapsedMs={2} utc={3}' -f
+            $script:Action,$Phase,$script:ReleaseClock.ElapsedMilliseconds,
+            [DateTime]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture))
+    } catch {} # Timing must not replace the release outcome or recovery error.
+}
+function Assert-ReleaseTimingSelfTest {
+    $Prior=$script:Action
+    try {
+        $script:Action='Check'
+        $HostOutput=@(Write-ReleaseTiming 'FIXTURE' 6>&1)
+        if($HostOutput.Count -ne 1 -or [string]$HostOutput[0] -cnotmatch '^FORTIS_RELEASE_TIMING action=Check phase=FIXTURE elapsedMs=[0-9]+ utc=[0-9T:.Z-]+$'){
+            throw 'RELEASE_TIMING_SELFTEST_FAILED'
+        }
+        if(@(Write-ReleaseTiming 'invalid phase' 6>&1).Count -ne 0){throw 'RELEASE_TIMING_LABEL_SELFTEST_FAILED'}
+        $script:Action='SelfTest'
+        if(@(Write-ReleaseTiming 'FIXTURE' 6>&1).Count -ne 0){throw 'RELEASE_TIMING_SCOPE_SELFTEST_FAILED'}
+    } finally {$script:Action=$Prior}
+    Write-Host 'FORTIS_RELEASE_TIMING_SELFTEST_PASS'
+}
+function Step {
+    param([string]$Name)
+    $script:Step=$Name
+    Write-Host ('FORTIS_INTEGRATIONS_STEP_' + $Name)
+    Write-ReleaseTiming ('STEP_'+$Name)
+}
+Write-ReleaseTiming 'ACTION_START'
 function Assert-DirectoryAcl {
     param([string]$Path)
     if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {throw 'RELEASE_REPARSE_POINT_DENIED'}
@@ -898,7 +931,13 @@ function State-Helper {
         # general Docker/PowerShell helper limit remains 120s elsewhere.
         $Native['WaitTimeoutMs']=900000
     }
-    (Private-Process ($Arguments+$Mounts+@('--entrypoint','python',$script:Image,'-I','-B','-c',$Wrapper)) (ConvertTo-Json -InputObject $Payload -Depth 25 -Compress) @Native) | ConvertFrom-Json
+    $TimedAction=$Payload.action -cin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review')
+    if($TimedAction){Write-ReleaseTiming ('HELPER_'+$Payload.action.ToUpperInvariant()+'_BEGIN')}
+    try {
+        (Private-Process ($Arguments+$Mounts+@('--entrypoint','python',$script:Image,'-I','-B','-c',$Wrapper)) (ConvertTo-Json -InputObject $Payload -Depth 25 -Compress) @Native) | ConvertFrom-Json
+    } finally {
+        if($TimedAction){Write-ReleaseTiming ('HELPER_'+$Payload.action.ToUpperInvariant()+'_END')}
+    }
 }
 function Ensure-Vault {
     if($VaultVolume -cnotmatch '^fortis-review-secrets(?:-[a-z0-9-]{1,48})?$'){throw 'RELEASE_VAULT_NAME_INVALID'}
@@ -2275,6 +2314,7 @@ function Resume-Target {
     [ordered]@{record=$script:RecordPath;image=$P.image;configurationDigest=$script:R.configurationDigest
         active=$true;previousRetained=$true;productionUnchanged=$true;providerMutationAcceptance='PENDING_OR_NOT_APPLICABLE'}|ConvertTo-Json
     Write-Host 'FORTIS_INTEGRATIONS_ACTIVATED'
+    Write-ReleaseTiming 'APPLY_ACTIVATED'
 }
 
 # Exact owner-controlled return for this pilot handover. Loaded by
@@ -2967,6 +3007,7 @@ if($Action -eq 'SelfTest'){
     Assert-BackupCleanupSelectionSelfTest
     Assert-ContainerInventorySelfTest
     Assert-CheckedImagePreflightSelfTest
+    Assert-ReleaseTimingSelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
     Assert-FormerPrimaryRetirementSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
@@ -3301,7 +3342,7 @@ if($Action -cin @('BackupCleanup','ReleaseStateCleanup')){
     try {
         if($Action -ceq 'BackupCleanup'){Backup-Cleanup $BackupIds -PreviewOnly:$Preview}
         else{Release-State-Cleanup $RunIds -PreviewOnly:$Preview}
-    } finally{$ControllerLock.Dispose()}
+    } finally{$ControllerLock.Dispose();Write-ReleaseTiming 'ACTION_END'}
     return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
@@ -3484,17 +3525,23 @@ print(json.dumps({'schema':1,'sourceSha':sha,'uncertain':states['UNCERTAIN'],
             ' uncertain='+@($Snapshot.uncertain).Count+
             ' claimed='+@($Snapshot.claimed).Count)
     }
+    Write-ReleaseTiming 'OWNER_QUIESCENCE_BEGIN'
     $OwnerQuiescence=Read-Host 'Independently verified no active workers? Type QUIESCENT'
+    Write-ReleaseTiming 'OWNER_QUIESCENCE_END'
     if($OwnerQuiescence -cne 'QUIESCENT'){
         throw 'RELEASE_AUTO_QUIESCENCE_NOT_ATTESTED'
     }
     $ConfirmWorkerQuiescent=[switch]$true
     if($Action -eq 'Apply'){
+        Write-ReleaseTiming 'OWNER_GO_BEGIN'
         $OwnerGo=Read-Host ('Apply checked Gateway image for '+$SourceSha+'? Type APPLY')
+        Write-ReleaseTiming 'OWNER_GO_END'
         if($OwnerGo -cne 'APPLY'){throw 'RELEASE_AUTO_OWNER_GO_REQUIRED'}
     }
     if($Action -cin @('Backup','Promote')){
+        Write-ReleaseTiming 'OWNER_GO_BEGIN'
         $OwnerGo=Read-Host ('Run protected '+$Action+'? Type '+$Action.ToUpperInvariant())
+        Write-ReleaseTiming 'OWNER_GO_END'
         if($OwnerGo -cne $Action.ToUpperInvariant()){
             throw 'RELEASE_AUTO_OWNER_GO_REQUIRED'
         }
@@ -3683,11 +3730,17 @@ if($Build){
     $BuildDirectory=Join-Path $env:TEMP ('fortis-integration-build-'+[Guid]::NewGuid().ToString('N'))
     Protect-Directory $BuildDirectory
     $Zip=Join-Path $BuildDirectory 'source.zip';$Context=Join-Path $BuildDirectory 'context'
+    Write-ReleaseTiming 'BUILD_ARCHIVE_BEGIN'
     $null=Private-Process @('-C',$SourceRoot,'archive','--format=zip',('--output='+$Zip),$SourceSha) '' $Git
+    Write-ReleaseTiming 'BUILD_ARCHIVE_END'
+    Write-ReleaseTiming 'BUILD_EXPAND_BEGIN'
     Expand-Archive -LiteralPath $Zip -DestinationPath $Context
+    Write-ReleaseTiming 'BUILD_EXPAND_END'
     $Tag='fortis-approvals-gateway:extensions-'+$SourceSha.Substring(0,12)
+    Write-ReleaseTiming 'BUILD_DOCKER_BEGIN'
     $null=Docker-Text @('build','--label',('org.opencontainers.image.revision='+$SourceSha),'-f',
         (Join-Path $Context 'fortis_approvals\deploy\Dockerfile-Gateway-Modularized-Candidate'),'-t',$Tag,$Context)
+    Write-ReleaseTiming 'BUILD_DOCKER_END'
     $script:Image=@(Docker-Json @('image','inspect',$Tag))[0].Id
 }
 if($CheckedImageRecord -or $script:RegistryPrebuiltCheck){
@@ -4084,6 +4137,7 @@ try {
     Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
     Step 'ATTEMPT_POINTER_SAVED'
     $RegistryStopAuthorized=[bool]$script:RegistryReturn
+    Write-ReleaseTiming 'APPLY_STOP_REQUEST'
     if($script:RegistryCrash){
         Step 'STOP_CRASH_INCUMBENT'
         $null=Docker-Text @('stop','--timeout','20',$script:RegistryCrash.incumbentId)
@@ -4095,6 +4149,7 @@ try {
         $null=Docker-Text @('stop','--timeout','20',$Old.Id)
     }
     if((Container $Old.Id).State.Status -cne 'exited'){throw 'RELEASE_SOURCE_STOP_UNCONFIRMED'}
+    Write-ReleaseTiming 'APPLY_SOURCE_EXITED'
     Assert-OnlyWriter $Source.runtime.stateVolume
     $FrozenReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     if($script:RegistryReturn){Assert-Checked-Source-Receipt $FrozenReceipt}
@@ -4169,4 +4224,4 @@ try {
     throw ('RELEASE_FAILED: '+$Failure+'; record='+$script:RecordPath)
 }
 
-} finally { $ControllerLock.Dispose() }
+} finally { $ControllerLock.Dispose();Write-ReleaseTiming 'ACTION_END' }

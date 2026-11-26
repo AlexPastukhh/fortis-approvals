@@ -26,10 +26,13 @@ function Backup-Primary {
     $Directory=Join-Path $ReleaseBase ('primary-backup-'+$Id)
     $Stopped=$false;$Pass=$false
     try {
+        Write-ReleaseTiming 'BACKUP_STOP_REQUEST'
         $null=Docker-Text @('stop','--timeout','20',$C.Id);$Stopped=$true
         if((Container $C.Id).State.Status -cne 'exited'){throw 'PRIMARY_BACKUP_STOP_UNCONFIRMED'}
+        Write-ReleaseTiming 'BACKUP_SOURCE_EXITED'
         Assert-OnlyWriter $P.stateVolume
         $Before=Receipt $P.stateVolume
+        Write-ReleaseTiming 'BACKUP_SOURCE_RECEIPT_READY'
         $null=Docker-Text @('volume','create','--label',('io.fortis.primary-backup='+$Id),$Name)
         Assert-Volume $Name
         $Clone=State-Helper @{action='clone';github=$true;native=$true;
@@ -41,6 +44,7 @@ function Backup-Primary {
         if(-not (Same-Json $Clone $Before) -or -not (Same-Json (Receipt $P.stateVolume) $Before)){
             throw 'PRIMARY_BACKUP_CLONE_MISMATCH'
         }
+        Write-ReleaseTiming 'BACKUP_CLONE_VERIFIED'
         Protect-Directory $Directory
         Write-Private (Join-Path $Directory 'record.json') ([ordered]@{
             schema='fortis-primary-backup-v1';phase='Complete';sourceRecord=$Source.path
@@ -48,11 +52,14 @@ function Backup-Primary {
             backupVolume=$Name;receipt=$Before})
         Write-Private (Join-Path $ReleaseBase 'primary-backup.json') @{schema=1;record=(Join-Path $Directory 'record.json')}
         $Pass=$true
+        Write-ReleaseTiming 'BACKUP_RECORD_COMMITTED'
     } finally {
         if($Stopped){
             $Old=Container $C.Id
+            Write-ReleaseTiming 'BACKUP_RESTART_BEGIN'
             if($Old.State.Status -ceq 'exited'){$null=Docker-Text @('start',$C.Id)}
             Wait-Healthy $C.Id;Admit (Container $C.Id) $P
+            Write-ReleaseTiming 'BACKUP_HEALTH_ADMITTED'
         }
     }
     if($Pass){Write-Host ('FORTIS_PRIMARY_BACKUP_PASS '+$Name)}
@@ -674,7 +681,9 @@ function Backup-Cleanup {
     if($PreviewOnly){return}
     # Exact owner decision includes evidence references and external holds that
     # cannot be inferred from Docker metadata. No confirmation switch or Auto.
+    Write-ReleaseTiming 'OWNER_GO_BEGIN'
     $Confirmation=Read-Host ('Review all evidence/holds, retained recovery and exclusive maintenance window. Type CLEANUP '+$Digest)
+    Write-ReleaseTiming 'OWNER_GO_END'
     if($Confirmation -cne ('CLEANUP '+$Digest)){throw 'BACKUP_CLEANUP_OWNER_GO_REQUIRED'}
     if(-not (Same-Json (Get-BackupCleanupPlan $Ids) $Plan)){throw 'BACKUP_CLEANUP_PREVIEW_CHANGED'}
     # The protected record preserves the precise selected set and partial
@@ -1079,7 +1088,9 @@ function Release-State-Cleanup {
     Write-Host $Json
     Write-Host ('FORTIS_RELEASE_STATE_CLEANUP_PREVIEW '+$Digest)
     if($PreviewOnly){return}
+    Write-ReleaseTiming 'OWNER_GO_BEGIN'
     $Confirmation=Read-Host ('Review referenced evidence and external recovery holds in an exclusive maintenance window. Type CLEANUP '+$Digest)
+    Write-ReleaseTiming 'OWNER_GO_END'
     if($Confirmation -cne ('CLEANUP '+$Digest)){throw 'RELEASE_STATE_CLEANUP_OWNER_GO_REQUIRED'}
     if(-not (Same-Json (Get-ReleaseStateCleanupPlan $Ids) $Plan)){throw 'RELEASE_STATE_CLEANUP_PREVIEW_CHANGED'}
     $ExpectedContainers=@($Plan.containerIds)
