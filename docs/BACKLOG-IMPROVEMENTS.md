@@ -510,6 +510,45 @@ ASK-only V1. Их завершённые результаты и открыты�
 - При будущих релизах distinguish snapshot-копию state от controller-managed `Backup` (последний требуется для `Promote`); не создавать rescue volume без необходимости, но не удалять защищённую rollback-копию автоматически.
 
 
+## Backup Retention — scoped delivery plan (2026-11-26)
+
+Общий план и последовательность host maintenance принадлежат
+[Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#docker-disk-budget-backup-retention-and-release-performance--2026-11-26).
+Здесь только связанные Gateway source-этапы и их результаты. Каждый PR
+обновляет свой план; после каждого этапа проверять дальнейшие зависимости
+и выводить общую таблицу. Merge подтверждает source, не live operation.
+Применять принципы общего плана Fortis Container: разумная скорость,
+минимальная достаточная реализация, обоснованность каждого усложнения,
+соразмерные проверки без повторных аудитов, актуализация всего плана
+после каждого шага и в каждом PR. После шага выводить полную таблицу
+и подробно описывать следующую работу, проверки и критерий завершения.
+При 403/429/500/timeout/UNCERTAIN сначала проверить формирование вызова,
+requestId, status/receipt и фактический readback по UC-CONT-003/UC-GW-009.
+Единичный 403 не равен DENY. Для command() явно передавать UUID; inspect,
+stage и commit проходят через _command_once без автоматической генерации.
+Для stage/commit сохранять точные HEAD/tree/index SHA и список файлов.
+Не повторять достигнутое; новая безопасная авторизованная попытка только
+после readback и свежих preconditions, с новым UUID и в retry budget.
+Реальный DENY и иные конкретные препятствия — STOP без обхода Gateway.
+При блокере продолжать независимую полезную работу.
+
+| Шаг общего плана | Статус |
+| --- | --- |
+| 0. Перечитать принципы общего плана и сверить его актуальность | ALWAYS: начало/завершение шага, перед PR/merge; не закрывается |
+| 4–5. CI и анализ release consumers | DONE: #274/#275 merged, 146s offline; зависимости Check/Apply/Backup/Promote/Return проверены |
+| 6–9. Минимальная политика, ревью, clone test, lifecycle contract | SOURCE CANDIDATE: [review](PRIMARY-BACKUP-RETENTION-REVIEW.md), 43 focused PASS, без нового runtime module |
+| 10. Поддерживаемый retention lifecycle | BLOCKED for physical lifecycle: owner 36/128; exact #273 V2 isolated copy PASS_EPHEMERAL. Redundant report parser retired from candidate (archived); no deletion implementation, no growth bound. Source policy and regression ready for scoped review |
+| 11. Тесты и ревью итогового кандидата | PARTIAL: docs/tests-only candidate, 48 focused tests PASS, source manifests/diff PASS; exact-head CI and Release Impact pending. No new suite or controller change |
+| 12. PR, Merge и доставка | This PR delivers only the reviewed docs/tests scope when exact-head CI, Registry E2 and owner merge gates pass. Corrected typed inspect EXECUTED with explicit UUID; prior null-ID 403 was not a policy blocker. No Windows install for this scope; Docker main sync requires confirmed owner merge |
+| 13. Исторические backup volumes | EFFECT BLOCKED: no deletion authorized; 12 prior candidates / ~17.685 GB, no fresh host acceptance |
+| 15. Скорость релизов | IN PROGRESS: source-only synthetic ~64 MiB SHA256 comparison, 5 runs, existing 132.52ms/64.004 MiB vs streaming 74.05ms/0.255 MiB peak Python allocation; equal digest; not live release timing. Next representative clone/receipt workload, compatibility and mutation checks |
+
+Данный PR-кандидат ограничен docs/tests; не считать production restore
+проверенным. Не заводить универсальный Restore, новый реестр или
+дополнительный release gate без доказанной необходимости.
+Сохранять защищённые records, pointers, incident/Registry dependencies;
+не ослаблять UC-GW-013. Следующие шаги уточнять по actual evidence.
+
 ## GitHub Actions в native профиле — частично проверено live (2026-11-09)
 
 Принятый в `main` source (коммит `9e5a72b6`, вошёл в последний

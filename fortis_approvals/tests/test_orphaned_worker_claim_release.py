@@ -103,6 +103,31 @@ class OrphanedClaimStateTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.inspect()
 
+    def test_synthetic_backup_restore_preserves_exact_native_and_collector_state(self):
+        from uuid import uuid4
+        from fortis_approvals.integrations.github.gateway.functional_review_runtime import (
+            initialize_functional_state,
+        )
+        initialize_functional_state(self.source/'private', str(uuid4()))
+
+        def observe(path):
+            return H.inspect_state(path, **self.kw, **self.good,
+                                   require_exact_uncertain=True, require_exact_claimed=True)
+
+        expected = observe(self.source)
+        self.assertEqual(H.clone_state(self.source, self.target, **self.kw, **self.good), expected)
+        # A backup remains valid after new events appear in the source.
+        self.update('INSERT INTO events VALUES (?)', ('newer-event',), 'approvals.sqlite')
+        current = observe(self.source)
+        self.assertNotEqual(current, expected)
+        restore = self.root/'isolated-restore'
+        restore.mkdir()
+        self.assertEqual(observe(self.target), expected)
+        self.assertEqual(H.clone_state(self.target, restore, **self.kw, **self.good), expected)
+        self.assertEqual(observe(restore), expected)
+        self.assertEqual(observe(self.target), expected)
+        self.assertEqual(observe(self.source), current)
+
     def test_collector_clone_sets_modes_before_giving_up_ownership(self):
         from uuid import uuid4
         from fortis_approvals.integrations.github.gateway.functional_review_runtime import (

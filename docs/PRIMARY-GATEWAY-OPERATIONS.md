@@ -630,6 +630,12 @@ must continue using the original attempt record, not fabricated identifiers.
    The reported owner host output and Repo readback confirm deployment; a fresh
    full ALLOW/ASK/DENY policy acceptance cycle is still outstanding.
 
+## Backup retention review (source proposal, not an operation)
+
+See [backup retention review](PRIMARY-BACKUP-RETENTION-REVIEW.md) for the
+minimal operational dependency policy and its limits. It reuses the existing
+Backup and receipt checks; no new restore or cleanup operation is authorized.
+
 ## STOP and rollback boundaries
 
 Mismatched source image/record, unexpected writer, insecure mount/ACL, missing
