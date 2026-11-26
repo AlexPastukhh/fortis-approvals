@@ -11,6 +11,20 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Release performance — combined ordinary Apply preflight (2026-11-26)
+
+Standard `Apply -Auto` now checks the protected image binding early, then
+combines the full checked-image receipt audit with the existing source
+preflight after read-only admission. The same freshly verified receipt is
+used for the bounded serialization proof before stopping Gateway. Final
+pre-stop binding and full state recheck, attempt pointer ordering, frozen
+receipt, Clone and pre-activation checks remain independent. Manual and
+recovery paths retain their early full audit. No cache across boundaries,
+no change to Check/growth witness, approvals or runtime image. Source
+regression and offline PS5.1 fixture cover binding-only, receipt return,
+fresh final verification and changed binding/receipt/growth denial.
+Windows controller update required; live speed not yet measured.
+
 ## Release performance — single artifact digest per receipt (2026-11-26)
 
 Owner read-only current-backup benchmark: full receipts 63.398s and 17.087s,

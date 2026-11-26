@@ -135,7 +135,9 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         serialize its real sourceReceipt; INVALID_PROPERTY blocked both failure
         recording and durable Return. The static gate protects the live source.
         """
-        source_probe=MANAGER.index("Step 'SOURCE_STATE_PREFLIGHT';$PreStopReceipt=Receipt")
+        source_probe=MANAGER.index("Step 'SOURCE_STATE_PREFLIGHT'\n$PreStopReceipt=if")
+        combined=MANAGER.index('Verify-Checked-Image $Source $Report -ReturnReceipt',source_probe)
+        self.assertLess(source_probe,combined)
         model=MANAGER.index("Step 'PREPARE_RECORD_MODEL_READY'", source_probe)
         proof=MANAGER.index("Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT'", model)
         actual=MANAGER.index("Assert-Release-Receipt-Serializable $script:R $PreStopReceipt", proof)
