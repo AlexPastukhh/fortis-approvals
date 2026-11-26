@@ -11,6 +11,21 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Release performance — single artifact digest per receipt (2026-11-26)
+
+Owner read-only current-backup benchmark: full receipts 63.398s and 17.087s,
+both equal protected expected receipt. Profile: 746 bundles hashed twice,
+8.143s initial + 7.811s repeated, total inspection 20.432s. Source candidate
+validates every bundle's content-addressed filename against the digest in
+its final receipt, not a separate earlier hash. Retain size limits, file
+admission, DB integrity/references, complete sorted receipt and independent
+source/target/freeze/growth checks. No digest cache across receipts. Tests
+cover one hash per bundle per receipt, registered/unregistered corruption
+and clone denial before target writes. 130 focused tests PASS. Estimated
+~8s saving per profiled warm inspection; actual new-image timing pending.
+This changes the packaged Gateway state helper, so image-rebuild is required
+on the next necessary admitted release; no artificial release for benchmark.
+
 ## Release performance — batched Docker inventory (2026-11-26)
 
 Release timing scope: Check through accepted Promote and necessary retention

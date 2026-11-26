@@ -1,4 +1,5 @@
 """Offline byte-exact orphaned worker claim carryover; never a replay or terminalization."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -74,6 +75,48 @@ class OrphanedClaimStateTests(unittest.TestCase):
     def update(self,query,params=(),table='native-git/workflow.sqlite'):
         with sqlite3.connect(self.source/'private'/table) as db:
             db.execute(query,params)
+
+    def artifact_fixture(self, content=b'offline artifact', registered=True):
+        digest = hashlib.sha256(content).hexdigest()
+        relative = 'native-git/artifacts/' + digest + '.bundle'
+        path = self.source / 'private' / relative
+        path.write_bytes(content)
+        path.chmod(0o600)
+        if registered:
+            self.update('INSERT INTO artifacts VALUES (?,?,?)',
+                        (ACTOR, digest, '{}'))
+        return path, relative, digest
+
+    def test_artifact_digest_is_computed_once_per_independent_receipt(self):
+        path, relative, digest = self.artifact_fixture()
+        extra, extra_relative, extra_digest = self.artifact_fixture(
+            b'unregistered retained artifact', registered=False)
+        with patch.object(H, 'file_hash', wraps=H.file_hash) as measured:
+            first = self.inspect()
+            second = self.inspect()
+        for artifact in (path, extra):
+            self.assertEqual(sum(call.args == (artifact,)
+                                 for call in measured.call_args_list), 2)
+        self.assertEqual(first, second)
+        self.assertEqual(first['sha256'][relative], digest)
+        self.assertEqual(first['sha256'][extra_relative], extra_digest)
+        self.assertEqual(H.clone_state(self.source, self.target,
+                                       **self.kw, **self.good), first)
+
+    def test_artifact_content_mismatch_blocks_receipt_and_clone(self):
+        path, _, _ = self.artifact_fixture()
+        path.write_bytes(b'corrupted artifact')
+        with self.assertRaisesRegex(RuntimeError, 'ARTIFACT_DIGEST_MISMATCH'):
+            self.inspect()
+        with self.assertRaisesRegex(RuntimeError, 'ARTIFACT_DIGEST_MISMATCH'):
+            H.clone_state(self.source, self.target, **self.kw, **self.good)
+        self.assertEqual(list(self.target.iterdir()), [])
+
+    def test_unregistered_artifact_is_not_exempt_from_digest_validation(self):
+        path, _, _ = self.artifact_fixture(registered=False)
+        path.write_bytes(b'invalid')
+        with self.assertRaisesRegex(RuntimeError, 'ARTIFACT_DIGEST_MISMATCH'):
+            self.inspect()
 
     def test_explicit_claimed_id_preserves_all_bytes_and_unknown_state(self):
         result=self.inspect(require_exact_uncertain=True,require_exact_claimed=True)
