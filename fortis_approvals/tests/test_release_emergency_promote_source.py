@@ -20,13 +20,13 @@ def section(script, begin, end):
 
 class ReleaseStateCleanupSourceTests(unittest.TestCase):
     def test_plan_requires_exact_returned_inactive_candidate_and_checks_references(self):
-        candidate = section(PRIMARY, "function Assert-ReturnedReleaseState {", "function Get-ReleaseStateRetirementPath {")
-        for token in ("'Returned'", "$Record.activated", "$Record.probesPassed", "'registryReturnAttempt'",
+        candidate = section(PRIMARY, "function Assert-ReleaseStateCleanupCandidate {", "function Get-ReleaseStateRetirementPath {")
+        for token in ("$ExpectedPhase", "$Record.activated", "$Record.probesPassed", "'registryReturnAttempt'",
                       "$Record.runtime.pilotId", "$Holder.Id", "$Holder.HostConfig.RestartPolicy.Name",
                       "$State[0].Name", "$State[0].RW"):
             self.assertIn(token, candidate)
         plan = section(PRIMARY, "function Get-ReleaseStateCleanupPlan {", "function Assert-ReleaseStateCleanupPins {")
-        for token in ("Get-BackupCleanupPlan -PinsOnly", "'auto-check.json'", "Assert-ReturnedReleaseState",
+        for token in ("Get-BackupCleanupPlan -PinsOnly", "'auto-check.json'", "Assert-ReleaseStateCleanupCandidate",
                       "Assert-BackupCleanupUnheld", "$Text.IndexOf($Row.id,", "$HolderText.IndexOf($Row.holderId,",
                       "RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE", "Assert-RegistryCandidateInactive",
                       "Fortis\\OwnerEvidence"):
@@ -34,7 +34,7 @@ class ReleaseStateCleanupSourceTests(unittest.TestCase):
         self.assertNotIn("'rm'", plan)
 
     def test_only_verified_backup_inventory_is_excluded_from_holder_search(self):
-        projection = section(PRIMARY, "function Get-ReleaseStateHolderReferenceText {", "function Get-ReleaseStateCleanupPlan {")
+        projection = section(PRIMARY, "function Test-CompletedBackupCleanupReceipt {", "function Test-ReleaseStateSourceBinding {")
         for token in ("'fortis-backup-cleanup-v1'", "'Complete'", "'fortis-backup-cleanup-preview-v1'",
                       "$Receipt.removed", "$Selected -join", "ConvertTo-Json -InputObject $Receipt -Depth 25",
                       "$Receipt.plan.PSObject.Properties.Remove('containerIds')"):
@@ -44,6 +44,22 @@ class ReleaseStateCleanupSourceTests(unittest.TestCase):
         self.assertIn("Get-ReleaseStateHolderReferenceText $Text (Read-Private $File.FullName)", plan)
         self.assertIn("$Text.IndexOf($Row.id,", plan)
         self.assertIn("FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS", PRIMARY)
+
+    def test_complete_candidate_needs_verified_predecessor_and_checks_reference_roles(self):
+        plan = section(PRIMARY, "function Get-ReleaseStateCleanupPlan {", "function Assert-ReleaseStateCleanupPins {")
+        proof = section(PRIMARY, "function Get-FormerPrimaryProof {", "function Get-HistoricalReleaseStateReferenceText {")
+        historical = section(PRIMARY, "function Get-HistoricalReleaseStateReferenceText {", "function Assert-ReleaseStateSourceAvailable {")
+        for token in ("RELEASE_STATE_CLEANUP_PRIMARY_PROTECTED", "$Primary.previousRecordHash",
+                      "Get-FileHash", "Test-ReleaseStateSourceBinding", "'fortis-gateway'", "'unless-stopped'"):
+            self.assertIn(token, proof)
+        for token in ("Get-FormerPrimaryProof", "Read-Private $File.FullName",
+                      "Get-HistoricalReleaseStateReferenceText", "RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE"):
+            self.assertIn(token, plan)
+        for token in ("$AutoCheckPath", "$CurrentPath", "$Binding.currentPointerHash",
+                      "'registryReturn'", "'retainedSourceRecord'", "$Primary.protectedBackups",
+                      "Test-CompletedBackupCleanupReceipt"):
+            self.assertIn(token, historical)
+        self.assertIn("FORTIS_RELEASE_STATE_CLEANUP_FORMER_PRIMARY_SELFTEST_PASS", PRIMARY)
 
     def test_confirmation_and_prepared_receipt_precede_effects(self):
         action = section(PRIMARY, "function Release-State-Cleanup {", "function Assert-ReleaseStateCleanupSelectionSelfTest {")
@@ -64,6 +80,9 @@ class ReleaseStateCleanupSourceTests(unittest.TestCase):
         fence = section(PRIMARY, "function Assert-ReleaseStateAttemptAvailable {", "function Get-ReleaseStateCleanupVolume {")
         self.assertIn("Test-Path -LiteralPath (Get-ReleaseStateRetirementPath $Id)", fence)
         self.assertIn("Assert-ReleaseStateCleanupSelectionSelfTest", MANAGE)
+        self.assertIn("Assert-FormerPrimaryRetirementSelfTest", MANAGE)
+        self.assertIn("Get-SourceRecord -RetirementCheckOnly", branch)
+        self.assertIn("Assert-ReleaseStateSourceAvailable $SourceField.Value.runtime", branch)
 
 
 class BackupCleanupSourceTests(unittest.TestCase):
@@ -98,7 +117,7 @@ class BackupCleanupSourceTests(unittest.TestCase):
         self.assertNotIn("('volume','rm'", plan)
 
     def test_preview_and_confirmation_precede_only_exact_effect_and_readback(self):
-        action = section(PRIMARY, "function Backup-Cleanup {", "function Assert-ReturnedReleaseState {")
+        action = section(PRIMARY, "function Backup-Cleanup {", "function Assert-ReleaseStateCleanupCandidate {")
         tokens = ("Get-BackupCleanupPlan $Ids", "if($PreviewOnly){return}", "Read-Host",
                   "BACKUP_CLEANUP_OWNER_GO_REQUIRED", "Same-Json (Get-BackupCleanupPlan $Ids) $Plan",
                   "Write-Private $ResultPath $Result", "Get-BackupCleanupVolumeIdentity $Row.id",
