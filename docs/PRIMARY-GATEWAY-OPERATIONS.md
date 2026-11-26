@@ -515,7 +515,10 @@ $manager = Join-Path $HOME 'Repos\fortis-approvals\fortis_approvals\deploy\Manag
 & $manager -Action Promote -Auto
 ```
 
-Do not proceed to Check unless SelfTest finishes successfully. The
+Do not proceed to Check unless SelfTest finishes successfully, including
+`FORTIS_CONTAINER_INVENTORY_SELFTEST_PASS` for the batched exact-ID inventory
+used by writer guards and cleanup planners. Each existing verification
+boundary obtains fresh data; no inventory cache across effects. The
 `FORTIS_RELEASE_JSON_OBJECT_LIMIT scope= count=257 limit=256` line is an
 intentional negative serializer fixture, not a failure by itself. An actual
 `VariableIsUndefined` error on `RecordPath`/`R`, or any incomplete SelfTest,

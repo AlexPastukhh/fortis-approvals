@@ -11,6 +11,24 @@ readback и принятого source. [Current state](guides/FORTIS-APPROVALS-S
 не означает допуск к нему действующего Gateway (UC-CONT-018).
 Это **единственный backlog этого репозитория**. Пункты здесь не разрешают менять Production. Общее Docker, Tunnel, Windows/Mirror и multi-agent направление принадлежат своим репозиториям; здесь только Gateway-specific задачи. Принятый результат и техническая история остаются в датированных evidence и source runbooks.
 
+## Release performance — batched Docker inventory (2026-11-26)
+
+Release timing scope: Check through accepted Promote and necessary retention
+readback, not source delivery or CI. Owner read-only comparison on 72
+containers: sequential inspect + JSON parse 9.51s, batch 1.45s. Exact ID set
+and normalized status/mount projections match. Approximate saving 8.06s
+per full inventory; actual release improvement not yet measured.
+Source candidate: shared bounded Inspect-Containers (128 exact IDs per
+native invocation) used by Assert-OnlyWriter and both cleanup planners.
+Preserve all existing independent verification boundaries, mount-alias
+and writer checks, cleanup digests, approvals, receipts and effects.
+Missing/extra/duplicate IDs, malformed/native failure stop; no cache.
+Existing Windows SelfTest exercises batch parser, cardinality/order and
+writer safety offline. CI/merge/Windows acceptance pending. Controller-only
+Windows source update; no Gateway image release needed. Further receipt,
+build and backup downtime optimizations require measured evidence; no
+artificial release or repeated deletion just to time them.
+
 ## Registry Functional V1 — checkpoint после #271 (2026-11-26)
 
 Источник последовательности E2–E5 — [Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
