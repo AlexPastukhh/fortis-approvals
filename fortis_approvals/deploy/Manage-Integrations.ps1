@@ -1742,7 +1742,8 @@ function Get-Checked-Source-Changes {
     return ($Changed -join ',')
 }
 function Verify-Checked-Image {
-    param($Source,$Report)
+    param($Source,$Report,[switch]$BindingOnly,[switch]$ReturnReceipt)
+    if($BindingOnly -and $ReturnReceipt){throw 'RELEASE_CHECKED_IMAGE_VERIFICATION_MODE_INVALID'}
     if(-not $CheckedImageRecord){return}
     $Record=Read-Private $CheckedImageRecord
     if($Record.schema -cne 'fortis-extension-image-check-v1' -or $Record.phase -cne 'Ready' -or
@@ -1751,6 +1752,7 @@ function Verify-Checked-Image {
     }
     $Expected=Checked-Image-Binding $Source $Report
     Assert-Checked-Image-Binding $Record.binding $Expected
+    if($BindingOnly){return}
     $Now=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
     if($AllowUncertainGrowth){
         # The original immutable Check receipt and prefix witness are
@@ -1762,6 +1764,59 @@ function Verify-Checked-Image {
         Write-Host ('FORTIS_CHECKED_SOURCE_CHANGED components='+(Get-Checked-Source-Changes $Record.sourceReceipt $Now))
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
+    if($ReturnReceipt){return $Now}
+}
+# Offline fixture: exercise the real verifier with a changing in-memory
+# binding and receipt. No Docker, protected records or owner state.
+function Assert-CheckedImagePreflightSelfTest {
+    $CheckedImageRecord='fixture'
+    $AllowUncertainGrowth=$false
+    $Good=[pscustomobject]@{sha256=[pscustomobject]@{'approvals.sqlite'='good'}}
+    $Bad=[pscustomobject]@{sha256=[pscustomobject]@{'approvals.sqlite'='bad'}}
+    $Binding=[pscustomobject]@{image='fixture';sourceHash='original'}
+    $Fixture=@{calls=0;receipt=$Good;binding=$Binding;review=$Good}
+    $Source=@{runtime=@{stateVolume='fixture'}}
+    function Read-Private {
+        param($Path)
+        return [pscustomobject]@{schema='fortis-extension-image-check-v1';phase='Ready';binding=$Binding;sourceReceipt=$Good}
+    }
+    function Checked-Image-Binding { param($Source,$Report) return $Fixture.binding }
+    function Receipt {
+        param($Volume,[switch]$Exact,[switch]$ExactClaimed,[switch]$ExactApproved)
+        $Fixture.calls++
+        if($AllowUncertainGrowth){$script:GrowthReviewedReceipt=$Fixture.review}
+        return $Fixture.receipt
+    }
+    $PriorGrowth=$script:GrowthReviewedReceipt
+    try {
+        $Early=@(Verify-Checked-Image $Source $null -BindingOnly)
+        if($Early.Count -ne 0 -or $Fixture.calls -ne 0){throw 'RELEASE_PREFLIGHT_BINDING_ONLY_SELFTEST_FAILED'}
+        $Verified=Verify-Checked-Image $Source $null -ReturnReceipt
+        if($Fixture.calls -ne 1 -or -not (Same-Json $Verified $Good)){throw 'RELEASE_PREFLIGHT_RECEIPT_SELFTEST_FAILED'}
+        $Final=@(Verify-Checked-Image $Source $null)
+        if($Final.Count -ne 0 -or $Fixture.calls -ne 2){throw 'RELEASE_PREFLIGHT_FINAL_FRESH_SELFTEST_FAILED'}
+        $Fixture.binding=[pscustomobject]@{image='fixture';sourceHash='changed'}
+        try {
+            $null=Verify-Checked-Image $Source $null -ReturnReceipt
+            throw 'RELEASE_PREFLIGHT_ACCEPTED_CHANGED_BINDING'
+        } catch {if($_.Exception.Message -cne 'RELEASE_CHECKED_IMAGE_BINDING_CHANGED'){throw}}
+        if($Fixture.calls -ne 2){throw 'RELEASE_PREFLIGHT_BINDING_ORDER_SELFTEST_FAILED'}
+        $Fixture.binding=$Binding
+        $Fixture.receipt=$Bad
+        try {
+            $null=Verify-Checked-Image $Source $null -ReturnReceipt
+            throw 'RELEASE_PREFLIGHT_ACCEPTED_CHANGED_RECEIPT'
+        } catch {if($_.Exception.Message -cne 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'){throw}}
+        $AllowUncertainGrowth=$true
+        try {
+            $null=Verify-Checked-Image $Source $null -ReturnReceipt
+            throw 'RELEASE_PREFLIGHT_ACCEPTED_GROWTH_MISMATCH'
+        } catch {if($_.Exception.Message -cne 'RELEASE_GROWTH_SOURCE_STATE_CHANGED'){throw}}
+        $Fixture.review=$Bad
+        $Verified=Verify-Checked-Image $Source $null -ReturnReceipt
+        if($Fixture.calls -ne 5 -or -not (Same-Json $Verified $Bad)){throw 'RELEASE_PREFLIGHT_GROWTH_RECEIPT_SELFTEST_FAILED'}
+    } finally {$script:GrowthReviewedReceipt=$PriorGrowth}
+    Write-Host 'FORTIS_CHECKED_IMAGE_PREFLIGHT_SELFTEST_PASS'
 }
 function Assert-Checked-Source-Receipt {
     param($Receipt)
@@ -2911,6 +2966,7 @@ if($Action -eq 'SelfTest'){
     Assert-PrimaryReturnedRegistrySourceSelfTest
     Assert-BackupCleanupSelectionSelfTest
     Assert-ContainerInventorySelfTest
+    Assert-CheckedImagePreflightSelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
     Assert-FormerPrimaryRetirementSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
@@ -3834,7 +3890,10 @@ if($RegistryReturnContainerId){
     $script:RegistryReturn=Registry-ReturnRuntime $SourceForOwnerShell $RegistryReturnContainerId $RegistryReturnNonce $ReturnDigest
     Admit-Source (Container $SourceForOwnerShell.runtime.pilotId) $SourceForOwnerShell
 }
-if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report}
+# Ordinary Auto Apply can defer the full receipt to the read-only source
+# admission below. Reject a changed binding immediately; manual/recovery
+# paths retain their original full early audit.
+if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto}
 if($Action -eq 'Check'){
     $CheckReceipt=$null
     if($Build -or $script:RegistryPrebuiltCheck -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
@@ -3909,7 +3968,14 @@ if($script:RegistryCrash){
 Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'
 Assert-Previous-Image-Retained $Source
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
-Step 'SOURCE_STATE_PREFLIGHT';$PreStopReceipt=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+Step 'SOURCE_STATE_PREFLIGHT'
+$PreStopReceipt=if($Auto -and $CheckedImageRecord){
+    # Fresh binding and full state/growth verification after read-only source
+    # admission. Serialize this exact verified receipt, not an earlier cache.
+    Verify-Checked-Image $Source $Report -ReturnReceipt
+} else {
+    Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+}
 if($script:RegistryCrash){Assert-RegistryCrashReceipt $PreStopReceipt}
 Step 'SOURCE_STATE_PREFLIGHT_COMPLETE'
 $Baseline=Release-Production-Baseline

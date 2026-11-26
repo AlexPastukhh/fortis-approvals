@@ -36,7 +36,7 @@ class GrowthGuardSourceTests(unittest.TestCase):
         self.assertIn('RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED',SCRIPT)
 
     def test_check_uses_offline_witness_before_save(self):
-        entry=SCRIPT.index("if($Action -eq 'Check'){",SCRIPT.index("if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report}"))
+        entry=SCRIPT.index("if($Action -eq 'Check'){",SCRIPT.index("if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto}"))
         snapshot=SCRIPT.index('Snapshot-Uncertain-Growth $Source.runtime.stateVolume',entry)
         witnessed=SCRIPT.index('$script:GrowthWitness=$GrowthSnapshot.witness',snapshot)
         save=SCRIPT.index('Save-Checked-Image $Source $Report $CheckReceipt',witnessed)
@@ -45,7 +45,7 @@ class GrowthGuardSourceTests(unittest.TestCase):
         self.assertLess(witnessed,save)
 
     def test_apply_rechecks_growth_and_freezes_actual_ids_after_source_stop(self):
-        scope=SCRIPT.index('function Receipt {')
+        scope=SCRIPT.index('\nfunction Receipt {')
         self.assertIn('Review-Uncertain-Growth $Volume',SCRIPT[scope:scope+750])
         self.assertIn('preserveUncertainIds=$Ids',SCRIPT[scope:scope+900])
         self.assertIn('Effective-Uncertain-Ids',SCRIPT[scope:scope+900])

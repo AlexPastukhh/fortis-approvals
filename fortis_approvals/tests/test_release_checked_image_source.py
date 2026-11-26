@@ -95,6 +95,24 @@ class CheckedImageSourceTests(unittest.TestCase):
         ):
             self.assertIn(marker, SCRIPT)
 
+    def test_auto_combines_initial_receipt_with_preflight_without_skipping_final_guard(self):
+        verify = SCRIPT.split('function Verify-Checked-Image {', 1)[1].split('function Assert-CheckedImagePreflightSelfTest {', 1)[0]
+        self.assertLess(verify.index('Assert-Checked-Image-Binding $Record.binding $Expected'),
+                        verify.index('if($BindingOnly){return}'))
+        self.assertLess(verify.index('if($BindingOnly){return}'), verify.index('$Now=Receipt'))
+        self.assertLess(verify.index('RELEASE_GROWTH_SOURCE_STATE_CHANGED'), verify.index('if($ReturnReceipt){return $Now}'))
+        self.assertLess(verify.index('RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'), verify.index('if($ReturnReceipt){return $Now}'))
+        early = SCRIPT.index('Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto')
+        admission = SCRIPT.index("Step 'SOURCE_ADMISSION'", early)
+        preflight = SCRIPT.index("Step 'SOURCE_STATE_PREFLIGHT'", admission)
+        merged = SCRIPT.index('Verify-Checked-Image $Source $Report -ReturnReceipt', preflight)
+        proof = SCRIPT.index('Assert-Release-Receipt-Serializable $script:R $PreStopReceipt', merged)
+        final = SCRIPT.index('if($CheckedImageRecord){Verify-Checked-Image $Source $Report}', proof)
+        stop = SCRIPT.index("Docker-Text @('stop','--timeout','20',$Old.Id)", final)
+        self.assertTrue(early < admission < preflight < merged < proof < final < stop)
+        self.assertIn('$PreStopReceipt=if($Auto -and $CheckedImageRecord)', SCRIPT[preflight:merged])
+        self.assertIn('FORTIS_CHECKED_IMAGE_PREFLIGHT_SELFTEST_PASS', SCRIPT)
+
     def test_previous_image_is_pre_stop_precondition(self):
         self.assertIn("RELEASE_PREVIOUS_IMAGE_MISSING", SCRIPT)
         admission = SCRIPT.index("Step 'SOURCE_ADMISSION'")
