@@ -524,13 +524,41 @@ def _reviewed_268_predecessor_digest(value):
     return _hash(previous)
 
 
+_CUTOVER_273_CONFIG_SHA256 = '65d98082fb0c2f736aa40b72a60ad8d5eebc4e2ca4154d930e385a98faf99e74'
+_CUTOVER_273_RELEASE = {
+    'gatewayImageId': 'sha256:15778778842717504ed5c860c8b66fd999a6c9e80303607920eab2305dc823f9',
+    'gatewaySourceDigest': '40d42581f6332109f04d96b9a9c1e163cb57f45e0d3ea79a71d710ff3ce139c2',
+    'registryImageId': 'sha256:e240e88098b3789c67cc45c832e7d11f433dcf14fcc053db443b46e3b017c43e',
+    'releaseNonce': 'a951d808-b5ee-4ef8-9b6d-8db29017ca9b',
+    'validatorRevision': '4c9d5e886a720b55b84cdf581679e9c0350bee42',
+}
+
+
+def _reviewed_273_predecessor(value):
+    from .forward_lineage import _POST_255_GAP, _POST_285_GAP
+    recovery = value['cutoverRecovery']
+    _need(recovery['gap']['disposition'] == _POST_285_GAP,
+          'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+    previous = {**value, 'cutoverRecovery': {
+        'gap': {'disposition': _POST_255_GAP, 'merges': recovery['gap']['merges'][:20]},
+        'release': dict(_CUTOVER_273_RELEASE),
+        'predecessorRelease': recovery['predecessorRelease'],
+    }}
+    _need(_hash(previous) == _CUTOVER_273_CONFIG_SHA256,
+          'P5_CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED')
+    return previous
+
+
 def _reviewed_functional_predecessor_digests(value):
     """Reconstruct the exact retained functional policy epochs for this successor."""
     from .forward_lineage import (
-        _POST_255_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE,
+        _POST_255_GAP, _POST_285_GAP, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE, _POST_264_GAP_SIZE,
         _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE,
     )
     recovery = value.get('cutoverRecovery')
+    if recovery is not None and recovery['gap']['disposition'] == _POST_285_GAP:
+        previous = _reviewed_273_predecessor(value)
+        return (_CUTOVER_273_CONFIG_SHA256, *_reviewed_functional_predecessor_digests(previous))
     if recovery is None or recovery['gap']['disposition'] != _POST_255_GAP:
         return ()
 
@@ -674,7 +702,9 @@ class FunctionalRegistryConfiguration:
             _need(type(recovery) is dict and {'gap', 'release'} <= recovery.keys(),
                   'P5_CUTOVER_RECOVERY_CONFIG')
             cutover_start(recovery['gap'], baseline['baselineSha'])
-            post_269 = len(recovery['gap']['merges']) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE)
+            from .forward_lineage import _POST_285_GAP
+            post_285 = recovery['gap']['disposition'] == _POST_285_GAP
+            post_269 = post_285 or len(recovery['gap']['merges']) in (_POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE)
             fields = {'gap', 'release', 'predecessorRelease'} if post_269 else {'gap', 'release'}
             _need(recovery.keys() == fields, 'P5_CUTOVER_RECOVERY_CONFIG')
             release = recovery['release']
@@ -688,7 +718,12 @@ class FunctionalRegistryConfiguration:
                           and _hex(release[k][7:], 64) and release[k] != cutover[k]
                           for k in ('registryImageId', 'gatewayImageId')),
                   'P5_CUTOVER_RECOVERY_RELEASE')
-            if post_269:
+            if post_285:
+                _reviewed_functional_predecessor_digests(value)
+                _need(all(release[k] != _CUTOVER_273_RELEASE[k] for k in (
+                    'releaseNonce', 'registryImageId', 'gatewayImageId', 'gatewaySourceDigest')),
+                    'P5_CUTOVER_RECOVERY_RELEASE')
+            elif post_269:
                 _reviewed_268_predecessor_digest(value)
         self._raw=canonical(value)
         self._key=key

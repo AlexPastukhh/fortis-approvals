@@ -272,8 +272,18 @@ class RegistryAuthorityPredecessor:
                for name in ('readGrants','writeGrants') for ops in self._scope[name].values()):
             raise Denied('OWNER_POLICY_REGISTRY_PREDECESSOR_INVALID')
 
+        from ..integrations.github.gateway.functional_review_runtime import _CUTOVER_273_CONFIG_SHA256
+        reviewed_post285 = (previous_functional_digests == (
+            _CUTOVER_273_CONFIG_SHA256,
+            'daaa52a095d101dd36f69a52e2a4c26a54153b9b96cac36f1de452e4bd8561c7',
+            'f723dc5dd0bb569e3fb59780a32a9ba7cf03d95a8123c1c61083f112397a706b',
+            'c907b51c43397e14b44a9bed29d72dde99cf30e7ceaa39eed3cdc97f2ddd0d8e',
+            '41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5b409cf6f337bb4',
+            '581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b',
+        ) and registry['source'] == _REGISTRY_MANAGED_SOURCE_AFTER)
         if (type(previous_functional_digests) is not tuple
-                or len(previous_functional_digests)>5
+                or (len(previous_functional_digests)>5 and not reviewed_post285)
+                or (_CUTOVER_273_CONFIG_SHA256 in previous_functional_digests and not reviewed_post285)
                 or any(type(digest) is not str or not re.fullmatch('[0-9a-f]{64}',digest)
                        or digest==scope['registryFunctional'] for digest in previous_functional_digests)
                 or len(set(previous_functional_digests))!=len(previous_functional_digests)):
@@ -285,13 +295,13 @@ class RegistryAuthorityPredecessor:
         for digest in previous_functional_digests:
             previous_scope = deepcopy(scope)
             previous_scope['registryFunctional'] = digest
-            # The only historical functional epochs in this pilot are the
-            # five promoted pre-managed releases. Reconstruct their exact
-            # provider source together with their reviewed config digest;
+            # Five promoted pre-managed releases and exact managed #273.
+            # Reconstruct the provider source with its reviewed config digest;
             # do not offer a cross-product of old and current definitions.
             # An unknown successor digest gets no compatibility variant.
             previous_registry = previous_scope['extensions']['definitions']['registry']
-            if previous_registry['source'] == _REGISTRY_MANAGED_SOURCE_AFTER:
+            if (previous_registry['source'] == _REGISTRY_MANAGED_SOURCE_AFTER
+                    and not (reviewed_post285 and digest == _CUTOVER_273_CONFIG_SHA256)):
                 previous_registry['source'] = _REGISTRY_MANAGED_SOURCE_BEFORE
             self._functional_predecessors.append((previous_scope, dict(core.policies)))
         if self._functional_predecessors:

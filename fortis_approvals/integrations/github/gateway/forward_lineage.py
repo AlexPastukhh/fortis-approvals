@@ -242,6 +242,77 @@ _POST_269_GAP_SIZE = 18
 _POST_270_GAP_SIZE = 19
 _POST_271_GAP_SIZE = 20
 
+# Exact owner-reviewed historical gap after the installed #273.
+_POST_285_GAP = 'OWNER_REVIEWED_POST_285_CAPTURE_GAP'
+_POST_285_SUFFIX = (
+    {
+        'number': 273,
+        'headSha': 'b39c2a775aa310a24120fa164120a1867a63cb36',
+        'mergeSha': 'eac07e20274885a75bbbaf01a6955c90e091d673',
+        'impact': _CUTOVER_RECOVERY_IMPACT,
+    },
+    {
+        'number': 274,
+        'headSha': '58744c845731f05a5b7d15e26942e6089d937428',
+        'mergeSha': '7727cf14ea66da786c3a85ff0a49c8e23229ead5',
+        'impact': {},
+    },
+    {
+        'number': 275,
+        'headSha': '48c7af47fae4acf60eba2a5c6940f66104725a3e',
+        'mergeSha': '0e518fd76f2ed7b431fd25b3b8605d956036cb60',
+        'impact': {},
+    },
+    {
+        'number': 276,
+        'headSha': '9e36e7f915d5b94167883b6f167b9ace526b8ef5',
+        'mergeSha': '5998c89763298a7e0a1bf4d38782692c15c421f2',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 277,
+        'headSha': 'd0c6e644df466ad70e19b67bed52d64f083089b4',
+        'mergeSha': '78385bd7f996bf617e6fb922fb90ae5475671679',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 278,
+        'headSha': '2047baba9fcc50f8e317b74a6307050cdc8fb593',
+        'mergeSha': '7f0475ab8fc54ad2588dcdfb5d42119dcfb1bdf6',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 281,
+        'headSha': 'b0178bc4808aa1ceda0cdf513ba793844e96b002',
+        'mergeSha': '03b1301b8d7ddfd0fedb1ec6019015f6d4c5ccdd',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 282,
+        'headSha': '5c5edc6f7c6a39fa8be6d6efa1420ac01f2749a7',
+        'mergeSha': '1101ba5c1ec9d92e72fb8f0326b15b78b35c6bed',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 283,
+        'headSha': '8257368269f579d8f6438c1b05562b21deac3cc5',
+        'mergeSha': '43c7cb9739d13902f928220ce74fce4d674079bf',
+        'impact': {'fortis-gateway': ['image-rebuild']},
+    },
+    {
+        'number': 284,
+        'headSha': '4f6b0f61bdeb08b8e5e6712e3ff9dca2d3ead085',
+        'mergeSha': '89539975d11cda47c7dab65574a32ec84265ea53',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+    {
+        'number': 285,
+        'headSha': '364189c94e17b7cc4c86f740ae18ffc2d6c0a618',
+        'mergeSha': 'dd9a51cd6b4226242d7115dc86487f0fa5548678',
+        'impact': {'gateway-owner-controller': ['windows-update']},
+    },
+)
+
 
 def cutover_start(gap, baseline_sha):
     """Validate the owner-sealed interval before checking its Git objects."""
@@ -250,7 +321,16 @@ def cutover_start(gap, baseline_sha):
           'P5_CUTOVER_GAP_SCOPE')
     merges = gap['merges']
     impact = _CUTOVER_RECOVERY_IMPACT
-    if gap['disposition'] == _POST_255_GAP:
+    if gap['disposition'] == _POST_285_GAP:
+        reviewed = [
+            _CUTOVER_253, _CUTOVER_254, _CUTOVER_255, _CUTOVER_256, _CUTOVER_257,
+            _CUTOVER_258, _CUTOVER_259, _CUTOVER_260, _CUTOVER_261, _CUTOVER_262,
+            _CUTOVER_263, _CUTOVER_264, _CUTOVER_265, _CUTOVER_266, _CUTOVER_267,
+            _CUTOVER_268, _CUTOVER_269, _CUTOVER_270, _CUTOVER_271, *_POST_285_SUFFIX,
+        ]
+        _need(len(merges) == 31 and merges[:-1] == reviewed, 'P5_CUTOVER_GAP_SCOPE')
+        prefix = reviewed
+    elif gap['disposition'] == _POST_255_GAP:
         _need(len(merges) in (4, 5, 6, 7, _POST_260_GAP_SIZE, _POST_261_GAP_SIZE, _POST_263_GAP_SIZE,
                               _POST_264_GAP_SIZE, _POST_266_GAP_SIZE, _POST_267_GAP_SIZE, _POST_269_GAP_SIZE,
                               _POST_270_GAP_SIZE, _POST_271_GAP_SIZE),

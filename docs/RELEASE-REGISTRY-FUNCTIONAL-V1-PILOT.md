@@ -618,3 +618,40 @@ isolated rehearsal, then protected Check and receipt equality, separate
 Apply, Backup and Promote. No Core activity between successful Check and
 Apply. The cold restart and E2–E5 acceptance remain open. The source PR
 does not prove Windows installation or any successful live release.
+
+### Post-285 exact continuity recovery (source candidate)
+
+Owner readback 2026-11-26: installed #273, original schema-3 instance
+`08ef25a7-defb-4c7a-ac83-26ba8f994fc0`, revision zero, unchanged
+genesis/cursor, empty Capture/Collector, verified v4 seal, seven authority
+epochs at policy revision 8. These are non-atomic owner observations, not
+quiescence or recovery admission. #273 remains live.
+
+The separately agreed recovery scope is a single exact 31-merge interval:
+original 20, exact #274/#275/#276/#277/#278/#281/#282/#283/#284/#285,
+and this necessary successor merge. #274/#275 have empty impact (CI only);
+other rows carry source-derived impact, not reconstructed pre-merge owner
+attestations. Retain the explicit gap in the first genuine ingestion receipt;
+no Desired or installed record arises from the gap itself. The Registry
+journal pins the entire known prefix independently of Gateway Git verification.
+Old interval formats and grants remain unchanged.
+
+`registry_owner_cutover_recovery.py --post-285 --active-268-config ...
+--active-273-config ...` uses the existing retained originals, backup,
+exact-main Git/image verification and distinct owner GO. The active #273
+canonical configuration must match SHA256
+`65d98082fb0c2f736aa40b72a60ad8d5eebc4e2ca4154d930e385a98faf99e74`.
+The exact sixth prior functional digest uses the managed provider source,
+not the pre-managed source of the five older epochs. Preserve all rules,
+events, original Registry/Collector instances and recovery resources.
+
+After exact-head CI and owner merge, synchronize Docker/Windows main,
+check disk budget, original backup and quiescence. Build the two pinned
+images once for the admitted recovery, retain source/return protections,
+verify the same genesis, fresh v4 seal, peer and preserved collector state.
+Use protected Check, isolated rehearsal as required, separate Apply, live
+acceptance, Backup, Promote and separately eligible retention decisions.
+Measure the necessary release using existing FORTIS_RELEASE_TIMING markers.
+No automatic cleanup, unrelated merge, reset, or publisher activation.
+E2 requires real pre-merge review and original ingestion receipt; E3–E5
+remain open. Source tests and merge alone are not runtime acceptance.

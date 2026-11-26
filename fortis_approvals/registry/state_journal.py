@@ -144,6 +144,7 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 18),
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 19),
                       ('OWNER_REVIEWED_POST_255_CAPTURE_GAP', 20),
+                      ('OWNER_REVIEWED_POST_285_CAPTURE_GAP', 31),
                   ),
                   'REGISTRY_STATE_CUTOVER_GAP')
             expected_fields.add('cutoverGap')
@@ -167,20 +168,30 @@ def _plan(evidence,request,scope,*,start_sha=None,previous_checkpoint=None,
         cursor=start_sha if start_sha is not None else scope['baselineSha']
         seen={cursor};eids=set();numbers=set();owners=set();rev=0
         if 'cutoverGap' in o:
+            post285 = gap['disposition'] == 'OWNER_REVIEWED_POST_285_CAPTURE_GAP'
+            if post285:
+                # Independently pin the full known prefix, including two CI-only rows.
+                _need(_hash(gap['merges'][:-1]) == '91e1de5b02af9e2eaa0cf33b251f2e2db16edf13baab70e49b06a1ffc4dd9c36',
+                      'REGISTRY_STATE_CUTOVER_GAP')
             for merge in gap['merges']:
                 _need(type(merge) is dict and set(merge) == {'number', 'mergeSha', 'headSha', 'impact'}
                       and type(merge['number']) is int and merge['number'] > 0
                       and merge['number'] not in numbers
                       and _hex(merge['mergeSha'], 40) and merge['mergeSha'] not in seen
                       and _hex(merge['headSha'], 40)
-                      and type(merge['impact']) is dict and bool(merge['impact'])
+                      and type(merge['impact']) is dict
+                      and (bool(merge['impact']) or (post285 and merge['number'] in (274, 275)))
                       and all(_name(target) and _names(actions, empty=False)
                               and set(actions) <= ACTIONS for target, actions in merge['impact'].items()),
                       'REGISTRY_STATE_CUTOVER_GAP')
                 cursor = merge['mergeSha']
                 seen.add(cursor)
                 numbers.add(merge['number'])
-            if gap['disposition'] == 'OWNER_REVIEWED_POST_255_CAPTURE_GAP':
+            if post285:
+                _need(gap['merges'][-1]['number'] > 285 and gap['merges'][-1]['impact'] == {
+                    'fortis-gateway': ['image-rebuild'], 'fortis-registry-pilot': ['image-rebuild'],
+                    'release-label-publisher': ['image-rebuild']}, 'REGISTRY_STATE_CUTOVER_GAP')
+            elif gap['disposition'] == 'OWNER_REVIEWED_POST_255_CAPTURE_GAP':
                 prefix = list(range(253, 253 + len(gap['merges']) - 1))
                 _need([merge['number'] for merge in gap['merges'][:-1]] == prefix
                       and gap['merges'][-1]['number'] > prefix[-1], 'REGISTRY_STATE_CUTOVER_GAP')

@@ -69,6 +69,23 @@ class ForwardLineageTests(unittest.TestCase):
             with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
                 f.verify_cutover_commits(wrong, self.baseline, git, repository)
 
+    def test_post_285_exact_gap_scope(self):
+        rows = copy.deepcopy([getattr(f, '_CUTOVER_'+str(n)) for n in range(253,272)]
+                             + list(f._POST_285_SUFFIX))
+        rows.append({'number': 286, 'headSha': '7'*40, 'mergeSha': '8'*40,
+                     'impact': copy.deepcopy(f._CUTOVER_RECOVERY_IMPACT)})
+        gap = {'disposition': f._POST_285_GAP, 'merges': rows}
+        self.assertEqual(f.cutover_start(gap, f._CUTOVER_BASELINE), '8'*40)
+        for index in (0, 19, 20, 21, 29, 30):
+            wrong = copy.deepcopy(gap)
+            wrong['merges'][index]['impact'] = (
+                {'fortis-gateway': ['image-rebuild']} if index in (20,21) else {})
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.cutover_start(wrong, f._CUTOVER_BASELINE)
+        for invalid in (rows[:-1], rows+[rows[-1]], rows[:20]+rows[21:22]+rows[20:21]+rows[22:]):
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP_SCOPE'):
+                f.cutover_start({**gap,'merges':invalid}, f._CUTOVER_BASELINE)
+
     def test_post_255_gap_extends_the_exact_reviewed_prefix(self):
         self.initialize_baseline()
         git, repository = self.fixture.git, self.fixture.validator.source

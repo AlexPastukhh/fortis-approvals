@@ -73,6 +73,18 @@ Windows source update; no Gateway image release needed. Further receipt,
 build and backup downtime optimizations require measured evidence; no
 artificial release or repeated deletion just to time them.
 
+## Registry Functional V1 — checkpoint after #285 (2026-11-26)
+
+Owner #273 continuity readback PASS: original instance/genesis at revision
+zero, baseline cursor, empty capture/collector, v4 seal and seven authority
+epochs. The exact ten subsequent merges are not covered by pre-merge
+attestations. Owner agreed source recovery scope: one exact successor
+31-merge interval, unchanged genesis, explicit historical gap, exact #273
+managed authority predecessor. Source candidate in this PR; CI, owner
+merge, Windows sync, image/recovery config, protected release and genuine
+E2 ingestion pending. See [post-285 owner recovery](RELEASE-REGISTRY-FUNCTIONAL-V1-PILOT.md#post-285-exact-continuity-recovery-source-candidate).
+E3–E5 remain open. The #271 section below is historical only.
+
 ## Registry Functional V1 — checkpoint после #271 (2026-11-26)
 
 Источник последовательности E2–E5 — [Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md);
