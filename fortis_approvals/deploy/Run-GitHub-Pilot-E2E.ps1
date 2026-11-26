@@ -30,6 +30,40 @@ function Container {
     if ($Items.Count -ne 1) { throw 'PILOT_CONTAINER_INSPECT_INVALID' }
     return $Items[0]
 }
+# Fresh bounded batches of exact IDs, never cached across guards.
+# 128 full IDs fit within Windows native command-line limits.
+function Inspect-Containers {
+    param([string[]]$Ids)
+    if (-not $Ids) { return }
+    $Requested=@{}
+    foreach ($Id in $Ids) {
+        if ($Id -cnotmatch '^[0-9a-f]{64}$' -or $Requested.ContainsKey($Id)) {
+            throw 'PILOT_CONTAINER_INVENTORY_INVALID'
+        }
+        $Requested[$Id]=$true
+    }
+    $Observed=@{}
+    for ($Offset=0; $Offset -lt $Ids.Count; $Offset+=128) {
+        $Chunk=@($Ids[$Offset..([math]::Min($Offset+127,$Ids.Count-1))])
+        $Parsed=ConvertFrom-Json -InputObject (Docker-Text (@('inspect','--type','container')+$Chunk)) -ErrorAction Stop
+        $Count=0
+        # PS5.1 ConvertFrom-Json can emit an array as one pipeline object.
+        foreach ($Item in $Parsed) {
+            if ($null -eq $Item -or $Item.Id -cnotmatch '^[0-9a-f]{64}$' -or
+                $Chunk -cnotcontains $Item.Id -or $Observed.ContainsKey($Item.Id) -or
+                $null -eq $Item.State -or -not $Item.State.Status -or
+                $null -eq $Item.PSObject.Properties['Mounts']) {
+                throw 'PILOT_CONTAINER_INVENTORY_INVALID'
+            }
+            $Observed[$Item.Id]=$Item
+            $Count++
+        }
+        if ($Count -ne $Chunk.Count) { throw 'PILOT_CONTAINER_INVENTORY_INVALID' }
+    }
+    # Validate all chunks before yielding any results; preserve caller order.
+    if ($Observed.Count -ne $Ids.Count) { throw 'PILOT_CONTAINER_INVENTORY_INVALID' }
+    foreach ($Id in $Ids) { $Observed[$Id] }
+}
 function Private-Process {
     param([string[]]$Arguments, [string]$InputText, [string]$Executable = '',
           [switch]$DiagnosticDockerClone,
@@ -194,8 +228,8 @@ function Assert-Volume {
 function Assert-OnlyWriter {
     param([string]$Volume, [string]$AllowedId='')
     $Root='/var/lib/docker/volumes/' + $Volume + '/_data'
-    foreach ($Id in @((Docker-Text @('ps','-aq','--no-trunc')) -split '\r?\n' | Where-Object { $_ })) {
-        $C=Container $Id
+    $Ids=@((Docker-Text @('ps','-aq','--no-trunc')) -split '\r?\n' | Where-Object { $_ })
+    foreach ($C in @(Inspect-Containers $Ids)) {
         if ($C.State.Status -cin @('created','exited','dead')) { continue }
         foreach ($M in @($C.Mounts)) {
             $Alias=($M.Name -ceq $Volume -or $M.Source -ceq $Root)
@@ -206,6 +240,75 @@ function Assert-OnlyWriter {
             if ($Alias -and $M.RW -and $C.Id -cne $AllowedId) { throw 'PILOT_UNEXPECTED_STATE_WRITER' }
         }
     }
+}
+function Assert-ContainerInventorySelfTest {
+    # No Docker or owner state: exercise the real batch parser and writer guard.
+    $FixtureIds=@(1..129 | ForEach-Object { '{0:x64}' -f $_ })
+    $FixtureList=$FixtureIds
+    $FixtureMode='valid'
+    $FixtureCalls=[Collections.Generic.List[int]]::new()
+    $FixtureRows=@{}
+    foreach ($FixtureId in $FixtureIds) {
+        $FixtureRows[$FixtureId]=@{Id=$FixtureId;State=@{Status='exited'};Mounts=@()}
+    }
+    function Docker-Text {
+        param([string[]]$Arguments)
+        if (($Arguments -join ' ') -ceq 'ps -aq --no-trunc') { return ($FixtureList -join "`n") }
+        if ($Arguments.Count -lt 4 -or ($Arguments[0..2] -join ' ') -cne 'inspect --type container') {
+            throw 'INVENTORY_SELFTEST_UNEXPECTED_COMMAND'
+        }
+        $FixtureCalls.Add($Arguments.Count-3)
+        if ($FixtureMode -ceq 'native-failure') { throw 'PILOT_DOCKER_COMMAND_FAILED' }
+        $Response=@(for ($I=$Arguments.Count-1; $I -ge 3; $I--) { $FixtureRows[$Arguments[$I]] })
+        switch ($FixtureMode) {
+            'missing' { $Response=@($Response[0]) }
+            'duplicate' { $Response=@($Response[0],$Response[0]) }
+            'unexpected' { $Response=@($Response[0],$FixtureRows[$FixtureIds[2]]) }
+        }
+        ConvertTo-Json -InputObject $Response -Depth 8 -Compress
+    }
+    $Actual=@(Inspect-Containers $FixtureIds)
+    if ($Actual.Count -ne 129 -or ($Actual.Id -join ',') -cne ($FixtureIds -join ',') -or
+        ($FixtureCalls -join ',') -cne '128,1') { throw 'INVENTORY_SELFTEST_BATCH_FAILED' }
+    $FixtureCalls.Clear()
+    if (@(Inspect-Containers @()).Count -ne 0 -or $FixtureCalls.Count -ne 0) {
+        throw 'INVENTORY_SELFTEST_EMPTY_FAILED'
+    }
+    $Pair=@($FixtureIds[0],$FixtureIds[1])
+    foreach ($FixtureMode in @('missing','duplicate','unexpected','native-failure')) {
+        $ExpectedError='PILOT_CONTAINER_INVENTORY_INVALID'
+        if ($FixtureMode -ceq 'native-failure') { $ExpectedError='PILOT_DOCKER_COMMAND_FAILED' }
+        try {
+            $null=Inspect-Containers $Pair
+            throw 'INVENTORY_SELFTEST_ACCEPTED_INVALID_RESPONSE'
+        } catch { if ($_.Exception.Message -cne $ExpectedError) { throw } }
+    }
+    $FixtureMode='valid'
+    try {
+        $null=Inspect-Containers @($Pair[0],$Pair[0])
+        throw 'INVENTORY_SELFTEST_ACCEPTED_DUPLICATE_INPUT'
+    } catch { if ($_.Exception.Message -cne 'PILOT_CONTAINER_INVENTORY_INVALID') { throw } }
+    $FixtureList=$Pair
+    $FixtureRows[$Pair[0]].State.Status='running'
+    $FixtureRows[$Pair[0]].Mounts=@(@{Name='fixture-state';Source='/var/lib/docker/volumes/fixture-state/_data';RW=$true})
+    Assert-OnlyWriter 'fixture-state' $Pair[0]
+    try {
+        Assert-OnlyWriter 'fixture-state'
+        throw 'INVENTORY_SELFTEST_ACCEPTED_WRITER'
+    } catch { if ($_.Exception.Message -cne 'PILOT_UNEXPECTED_STATE_WRITER') { throw } }
+    $FixtureRows[$Pair[0]].Mounts[0].Name=''
+    $FixtureRows[$Pair[0]].Mounts[0].Source='/var/lib/docker/volumes'
+    $FixtureRows[$Pair[0]].State.Status='paused'
+    try {
+        Assert-OnlyWriter 'fixture-state'
+        throw 'INVENTORY_SELFTEST_ACCEPTED_ALIAS_WRITER'
+    } catch { if ($_.Exception.Message -cne 'PILOT_UNEXPECTED_STATE_WRITER') { throw } }
+    $FixtureRows[$Pair[0]].Mounts[0].RW=$false
+    Assert-OnlyWriter 'fixture-state'
+    $FixtureRows[$Pair[0]].Mounts[0].RW=$true
+    $FixtureRows[$Pair[0]].State.Status='exited'
+    Assert-OnlyWriter 'fixture-state'
+    Write-Host 'FORTIS_CONTAINER_INVENTORY_SELFTEST_PASS'
 }
 function Wait-Healthy {
     param([string]$Id)

@@ -2910,6 +2910,7 @@ if($Action -eq 'SelfTest'){
     Assert-RegistryReturnSelfTest
     Assert-PrimaryReturnedRegistrySourceSelfTest
     Assert-BackupCleanupSelectionSelfTest
+    Assert-ContainerInventorySelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
     Assert-FormerPrimaryRetirementSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.

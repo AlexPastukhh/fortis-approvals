@@ -605,7 +605,7 @@ function Get-BackupCleanupPlan {
         $HistoricalCleanupRecords+=@($EarlierPath)
     }
     $ContainerIds=@(Get-BackupCleanupContainerIds)
-    $Holders=@(foreach($ContainerId in $ContainerIds){Container $ContainerId})
+    $Holders=@(Inspect-Containers $ContainerIds)
     $Rows=@()
     foreach($Id in $Ids){
         $Path=Join-Path $ReleaseBase ('primary-backup-'+$Id+'\record.json')
@@ -966,7 +966,7 @@ function Get-ReleaseStateCleanupPlan {
         $Primary.pointers['auto-check.json']=(Get-FileHash -LiteralPath $AutoCheck -Algorithm SHA256).Hash
     }
     $ContainerIds=@(Get-BackupCleanupContainerIds)
-    $Containers=@(foreach($Id in $ContainerIds){Container $Id})
+    $Containers=@(Inspect-Containers $ContainerIds)
     $Rows=@(foreach($Id in $Ids){
         $Path=Join-Path (Join-Path $ReleaseBase $Id) 'record.json'
         $Retirement=Get-ReleaseStateRetirementPath $Id
