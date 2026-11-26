@@ -1556,6 +1556,7 @@ print(json.dumps(prepare_staged_functional_state(reader,'/state/private'),sort_k
 }
 
 function Get-SourceRecord {
+    param([switch]$RetirementCheckOnly)
     if($CurrentRecord){$Path=[IO.Path]::GetFullPath($CurrentRecord)}
     elseif(Test-Path -LiteralPath $Pointer){$Path=(Read-Private $Pointer).record}
     else {$Path=Join-Path $env:LOCALAPPDATA 'Fortis\GitHubPilot\review-update-515ad033-native-v3\record.json'}
@@ -1568,6 +1569,8 @@ function Get-SourceRecord {
             ciReads=$Value.ciReads;nativeWorktree=$Value.nativeWorktree;requiredWorkflows=$Value.requiredWorkflows
             bootstrapTask=$Value.bootstrapTask;vaultVolume='';extensionsConfig='';releaseNonce='';ownerShell=$false;runId=$Value.runId}
     } else {throw 'RELEASE_SOURCE_PROFILE_UNSUPPORTED'}
+    Assert-ReleaseStateSourceAvailable $P
+    if($RetirementCheckOnly){return}
     $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     if(Test-Path -LiteralPath $PrimaryPointer){
         $Primary=Read-Private $PrimaryPointer
@@ -2908,6 +2911,7 @@ if($Action -eq 'SelfTest'){
     Assert-PrimaryReturnedRegistrySourceSelfTest
     Assert-BackupCleanupSelectionSelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
+    Assert-FormerPrimaryRetirementSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
@@ -3594,6 +3598,7 @@ if($Action -eq 'RegistrySourceDigest' -and (
     $VaultVolume -cne 'fortis-review-secrets')){
     throw 'RELEASE_REGISTRY_DIGEST_ARGUMENTS_INVALID'
 }
+if($Action -cin @('Check','Apply') -and -not $AttemptRecord){Get-SourceRecord -RetirementCheckOnly}
 $script:ActionCoreNetworks=$null
 if($EnableActionCoreNetwork -or $EnableObservatoryNetwork){
     Step 'GATEWAY_NETWORK_PREFLIGHT_READ_ONLY'
@@ -3687,7 +3692,15 @@ if($Action -eq 'RegistrySourceDigest'){
 }
 $ControllerLock=Open-ReleaseControllerLock
 try {
-if($Action -eq 'Return' -or $AttemptRecord){Assert-ReleaseStateAttemptAvailable}
+if($Action -eq 'Return' -or $AttemptRecord){
+    Assert-ReleaseStateAttemptAvailable
+    $SourceField=$script:R.PSObject.Properties['source']
+    if($SourceField -and $SourceField.Value){Assert-ReleaseStateSourceAvailable $SourceField.Value.runtime}
+    $ReserveField=$script:R.PSObject.Properties['registryReturn']
+    if($ReserveField -and $ReserveField.Value){Assert-ReleaseStateSourceAvailable $ReserveField.Value}
+} elseif($Action -cin @('Check','Apply')){
+    Get-SourceRecord -RetirementCheckOnly
+}
 if($Action -eq 'Credential' -and $Service){Put-ProviderCredential $Service;return}
 Ensure-Vault
 if($Action -eq 'Credential'){

@@ -16,11 +16,13 @@ WebAuthn, machine TLS, Sonar/GitHub/native readback, Repo worker.
 Отдельное обслуживание старых backup volumes — [BackupCleanup](../PRIMARY-GATEWAY-OPERATIONS.md#selected-backup-cleanup-backupcleanup),
 после доставки и проверки соответствующего controller source. Выбор только
 по точным ID, независимый owner review и UC-CONT-023; не часть Promote.
-Для завершённых `Returned` без активации предусмотрен отдельный
+Сохраняются текущий и предыдущий рабочий state и привязанные проверенные
+backups. После принятого Promote и live-проверки старшее поколение можно
+проверить на выход из rollback. Отдельный
 [ReleaseStateCleanup](../PRIMARY-GATEWAY-OPERATIONS.md#selected-release-state-cleanup-releasestatecleanup)
-после доставки и owner Preview. Сохранённый record фиксирует историю попытки.
-Любая ссылка на том или держателя из другой protected release/recovery-записи
-блокирует этот узкий режим.
+принимает неактивированные `Returned` и доказанно замещённые `Complete`.
+Действующая или неразобранная recovery-ссылка сохраняет ресурс. Исторические
+записи остаются для аудита.
 `FORTIS_PRIMARY_PROMOTED` и post-promote `docker inspect` не
 доказывают автозапуск после реального Docker Desktop restart либо
 browser WebAuthn acceptance. Их проверяют отдельно в owner maintenance

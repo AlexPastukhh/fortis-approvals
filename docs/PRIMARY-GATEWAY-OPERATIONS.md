@@ -676,26 +676,33 @@ volume deletion does not establish VHDX compaction or off-host recovery.
 
 This owner-local source candidate requires accepted Windows main, exact-SHA
 Mirror and Windows PowerShell 5.1 SelfTest, including
-`FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS` and
-`FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS`. It uses the owner
+`FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS`,
+`FORTIS_RELEASE_STATE_CLEANUP_INVENTORY_SELFTEST_PASS`, and
+`FORTIS_RELEASE_STATE_CLEANUP_FORMER_PRIMARY_SELFTEST_PASS`. It uses the owner
 controller and no new Gateway image. Follow UC-CONT-021/022/023 and retain
 the current and previous Primary, their verified backup dependencies, and
 Registry/incident recovery holds.
 
 Pass the exact `-RunIds` (comma-separated 32-character lowercase IDs, without
 the volume prefix), `-SourceSha` for that Windows main and `-Preview` to
-`Manage-Integrations.ps1 -Action ReleaseStateCleanup`. The preview requires
-the candidate's own protected Returned record with activation and probes
-both false, an inactive marker check, and a single exact matching stopped
-holder. It conservatively holds any ID or holder referenced by **another**
-protected release file, including Registry return attempts and checked
-bindings. A verified complete BackupCleanup receipt records the former Docker
-inventory in `plan.containerIds`. Holder IDs there describe the earlier
-inventory. The controller checks every other field and every incomplete receipt.
-The candidate's own record is retained as audit and nonce history.
-This is a narrow lifecycle decision for failed-before-activation attempts.
-Any unknown or referenced state, holder, or recovery dependency requires
-STOP and review. The action excludes Auto and release arguments.
+`Manage-Integrations.ps1 -Action ReleaseStateCleanup`. An eligible
+`Returned` attempt has false activation/probe flags, no activation marker
+and one exact stopped holder. An eligible `Complete` generation was a
+Primary subsequently replaced, as proven by the hash-linked source records
+rooted at the protected previous Primary. The holder must match the record,
+and both newer generations and their verified backups stay protected.
+
+After an accepted Promote and live readback, review which generation has
+left the rollback set. For `Complete`, a former source snapshot, a stale
+unpinned Check binding, and validated backup metadata can describe history.
+The controller checks their exact bindings and continues checking all other
+fields. Current and usable Check bindings, incomplete releases, Registry
+Return, emergency/incident dependencies and unknown references hold the
+resources. A verified complete BackupCleanup receipt may describe an earlier
+inventory. Review other owner recovery evidence in every case. Original
+release/check records stay in audit and nonce history. Use BackupCleanup
+separately for the oldest generation's backup, with its own Preview and
+confirmation. The action excludes Auto and release arguments.
 
 Review the exact volume and full holder ID in the preview, along with any
 listed OwnerEvidence path/hash, and establish whether an external hold exists.
@@ -705,7 +712,8 @@ the displayed selection and digest still match. The controller rechecks the
 plan under its normal lock. The only Docker removals are the exact targeted
 holder (no force or volume cascade), then its exact state volume. It records
 each effect under the original run directory in `state-retirement.json`;
-historical Return is fenced for the selected run even if cleanup is partial.
+a retired source is fenced from Check, Apply, Return and Resume even if
+cleanup is partial.
 
 `FORTIS_RELEASE_STATE_CLEANUP_VERIFIED` means absence of the selected
 volumes and holders, healthy exact Primary, and verified protected records
