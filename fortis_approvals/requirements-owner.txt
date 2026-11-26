@@ -5,5 +5,5 @@ cffi==2.1.1
 pycparser==3.12
 
 # Exact shared Release Impact validator requirements (Fortis Container).
-PyYAML==6.0.2
+PyYAML==6.0.4
 jsonschema==4.23.0
