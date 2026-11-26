@@ -510,6 +510,45 @@ ASK-only V1. Их завершённые результаты и открыты�
 - При будущих релизах distinguish snapshot-копию state от controller-managed `Backup` (последний требуется для `Promote`); не создавать rescue volume без необходимости, но не удалять защищённую rollback-копию автоматически.
 
 
+## Backup Retention — scoped delivery plan (2026-11-26)
+
+Общий план и последовательность host maintenance принадлежат
+[Fortis Container backlog](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/BACKLOG-IMPROVEMENTS.md#docker-disk-budget-backup-retention-and-release-performance--2026-11-26).
+Здесь только связанные Gateway source-этапы и их результаты. Каждый PR
+обновляет свой план; после каждого этапа проверять дальнейшие зависимости
+и выводить общую таблицу. Merge подтверждает source, не live operation.
+Применять принципы общего плана Fortis Container: разумная скорость,
+минимальная достаточная реализация, обоснованность каждого усложнения,
+соразмерные проверки без повторных аудитов, актуализация всего плана
+после каждого шага и в каждом PR. После шага выводить полную таблицу
+и подробно описывать следующую работу, проверки и критерий завершения.
+При 403/429/500/timeout/UNCERTAIN сначала проверить формирование вызова,
+requestId, status/receipt и фактический readback по UC-CONT-003/UC-GW-009.
+Единичный 403 не равен DENY. Для command() явно передавать UUID; inspect,
+stage и commit проходят через _command_once без автоматической генерации.
+Для stage/commit сохранять точные HEAD/tree/index SHA и список файлов.
+Не повторять достигнутое; новая безопасная авторизованная попытка только
+после readback и свежих preconditions, с новым UUID и в retry budget.
+Реальный DENY и иные конкретные препятствия — STOP без обхода Gateway.
+При блокере продолжать независимую полезную работу.
+
+| Шаг общего плана | Статус |
+| --- | --- |
+| 0. Перечитать принципы общего плана и сверить его актуальность | ALWAYS: начало/завершение шага, перед PR/merge; не закрывается |
+| 4–5. CI и анализ release consumers | DONE: #274/#275 merged, 146s offline; зависимости Check/Apply/Backup/Promote/Return проверены |
+| 6–9. Минимальная политика, ревью, clone test, lifecycle contract | SOURCE CANDIDATE: [review](PRIMARY-BACKUP-RETENTION-REVIEW.md), 43 focused PASS, без нового runtime module |
+| 10. Поддерживаемый retention lifecycle | SOURCE CANDIDATE: selected-ID BackupCleanup in existing Windows controller, preview, explicit owner decision, protected recovery and outcome receipt; no live effect. See operator runbook. |
+| 11. Тесты и ревью итогового кандидата | SOURCE-VERIFIED (local): 60 focused tests PASS; Backup/Promote/emergency recovery bodies unchanged; manifests/diff PASS. Exact-head CI and Windows PS5.1 SelfTest/Preview pending. |
+| 12. PR, Merge и доставка | PENDING: existing #276 exact published head remains docs/tests only; new controller candidate not published. Actual scope windows-update, exact CI/owner merge/Mirror and SelfTest required; no image rebuild for controller-only diff. |
+| 13. Исторические backup volumes | OPEN: 12 historical candidates / ~17.685 GB, ready=0 in historical audit; separate current owner admission and result required. |
+| 15. Скорость релизов | DEFERRED until selected cleanup and sufficient verified disk reserve; historical synthetic timing retained, no live speed claim. |
+
+Данный controller source-кандидат не установлен; не считать production restore
+проверенным. Не заводить универсальный Restore, новый реестр или
+дополнительный release gate без доказанной необходимости.
+Сохранять защищённые records, pointers, incident/Registry dependencies;
+не ослаблять UC-GW-013. Следующие шаги уточнять по actual evidence.
+
 ## GitHub Actions в native профиле — частично проверено live (2026-11-09)
 
 Принятый в `main` source (коммит `9e5a72b6`, вошёл в последний

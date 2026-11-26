@@ -13,6 +13,9 @@
 WebAuthn, machine TLS, Sonar/GitHub/native readback, Repo worker.
 Затем отдельный [UC-CONT-023](https://github.com/AlexPastukhh/fortis-container/blob/main/docs/use-cases/docker.md#uc-cont-023)
 для сохранённого Legacy, без удаления volumes и образа.
+Отдельное обслуживание старых backup volumes — [BackupCleanup](../PRIMARY-GATEWAY-OPERATIONS.md#selected-backup-cleanup-backupcleanup),
+после доставки и проверки соответствующего controller source. Выбор только
+по точным ID, независимый owner review и UC-CONT-023; не часть Promote.
 `FORTIS_PRIMARY_PROMOTED` и post-promote `docker inspect` не
 доказывают автозапуск после реального Docker Desktop restart либо
 browser WebAuthn acceptance. Их проверяют отдельно в owner maintenance

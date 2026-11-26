@@ -344,6 +344,381 @@ function Assert-PrimaryReturnedRegistrySourceSelfTest {
     Write-Host 'FORTIS_PRIMARY_RETURNED_REGISTRY_SOURCE_SELFTEST_PASS'
 }
 
+# Explicit owner maintenance, never called by Backup or Promote.
+# This source action operates only on registered, explicitly selected backup IDs.
+function Get-BackupCleanupIds {
+    param([string]$Selection)
+    if(-not $Selection -or $Selection.Length -gt 4223){throw 'BACKUP_CLEANUP_IDS_REQUIRED'}
+    $Ids=@($Selection -split ',')
+    if($Ids.Count -gt 128){throw 'BACKUP_CLEANUP_ID_LIMIT'}
+    foreach($Id in $Ids){
+        if($Id -cnotmatch '^[0-9a-f]{32}$'){throw 'BACKUP_CLEANUP_ID_INVALID'}
+    }
+    if(@($Ids | Sort-Object -Unique).Count -ne $Ids.Count){throw 'BACKUP_CLEANUP_ID_DUPLICATE'}
+    return @($Ids | Sort-Object)
+}
+
+function Assert-BackupCleanupCandidate {
+    param([string]$Id,$Record,[string[]]$ProtectedSources,[string]$ProtectedBackupPath,[string]$RecordPath)
+    if($Record.schema -cne 'fortis-primary-backup-v1' -or $Record.phase -cne 'Complete' -or
+       $Record.backupVolume -cne ('fortis-gateway-backup-'+$Id) -or
+       $Record.sourceHash -notmatch '^[0-9a-fA-F]{64}$' -or
+       $Record.containerId -cnotmatch '^[0-9a-f]{64}$' -or
+       $Record.image -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       -not $Record.sourceRecord -or -not $Record.stateVolume -or -not $Record.receipt){
+        throw 'BACKUP_CLEANUP_RECORD_INVALID'
+    }
+    if($RecordPath -ieq $ProtectedBackupPath -or $ProtectedSources -contains $Record.sourceRecord){
+        throw 'BACKUP_CLEANUP_RECOVERY_PROTECTED'
+    }
+}
+
+function Assert-BackupCleanupSelectionSelfTest {
+    $Id='a'*32
+    if((@(Get-BackupCleanupIds $Id)).Count -ne 1){throw 'BACKUP_CLEANUP_SELFTEST_FAILED'}
+    foreach($Bad in @('','*',('a'*31),($Id+','+$Id),(' '+$Id))){
+        $Rejected=$false
+        try{$null=Get-BackupCleanupIds $Bad}catch{$Rejected=$true}
+        if(-not $Rejected){throw 'BACKUP_CLEANUP_NEGATIVE_SELFTEST_FAILED'}
+    }
+    $Record=@{schema='fortis-primary-backup-v1';phase='Complete';backupVolume=('fortis-gateway-backup-'+$Id)
+        sourceHash=('b'*64);containerId=('c'*64);image=('sha256:'+('d'*64));sourceRecord='historical'
+        stateVolume='historical-state';receipt=@{sha256=@{fixture='digest'}}}
+    Assert-BackupCleanupCandidate $Id $Record @('current','previous') 'current-backup' 'historical-backup'
+    foreach($Protected in @('historical','HISTORICAL')){
+        $Rejected=$false
+        try{Assert-BackupCleanupCandidate $Id $Record @($Protected) 'current-backup' 'historical-backup'}
+        catch{if($_.Exception.Message -cne 'BACKUP_CLEANUP_RECOVERY_PROTECTED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'BACKUP_CLEANUP_PROTECTED_SELFTEST_FAILED'}
+    }
+    $Name='fortis-gateway-backup-'+$Id
+    $Root='/var/lib/docker/volumes/'+$Name+'/_data'
+    Assert-BackupCleanupUnheld $Name @([pscustomobject]@{Mounts=@([pscustomobject]@{Name='unrelated';Source='/unrelated'})})
+    foreach($Mount in @([pscustomobject]@{Name=$Name;Source=$Root},[pscustomobject]@{Source=($Root+'/nested')},[pscustomobject]@{Source='/var/lib/docker/volumes'})){
+        $Rejected=$false
+        try{Assert-BackupCleanupUnheld $Name @([pscustomobject]@{Mounts=@($Mount)})}
+        catch{if($_.Exception.Message -cne 'BACKUP_CLEANUP_VOLUME_HELD'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'BACKUP_CLEANUP_HOLDER_SELFTEST_FAILED'}
+    }
+    Write-Host 'FORTIS_BACKUP_CLEANUP_SELECTION_SELFTEST_PASS'
+}
+
+# Enumerate the bounded owner record/evidence tree without following junctions.
+function Get-BackupCleanupReferenceFiles {
+    param([string]$Root)
+    if(-not (Test-Path -LiteralPath $Root -PathType Container)){throw 'BACKUP_CLEANUP_REFERENCE_ROOT_MISSING'}
+    $Pending=New-Object 'System.Collections.Generic.Queue[string]'
+    $Pending.Enqueue($Root)
+    $Count=0
+    while($Pending.Count){
+        $Directory=$Pending.Dequeue()
+        if((Get-Item -LiteralPath $Directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'BACKUP_CLEANUP_REFERENCE_SCAN_INCOMPLETE'}
+        foreach($Item in @(Get-ChildItem -LiteralPath $Directory -Force | Sort-Object FullName)){
+            $Count++
+            if($Count -gt 4096 -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)){
+                throw 'BACKUP_CLEANUP_REFERENCE_SCAN_INCOMPLETE'
+            }
+            if($Item.PSIsContainer){$Pending.Enqueue($Item.FullName);continue}
+            if($Item.Extension -in @('.json','.txt','.log','.ps1','.md')){
+                if($Item.Length -gt 16MB){throw 'BACKUP_CLEANUP_REFERENCE_SCAN_INCOMPLETE'}
+                $Item
+            }
+        }
+    }
+}
+
+function Get-BackupCleanupVolumeIdentity {
+    param([string]$Id)
+    $Name='fortis-gateway-backup-'+$Id
+    Assert-Volume $Name
+    $V=@(Docker-Json @('volume','inspect',$Name))[0]
+    if($V.Labels.'io.fortis.primary-backup' -cne $Id -or -not $V.CreatedAt){throw 'BACKUP_CLEANUP_VOLUME_PROVENANCE_INVALID'}
+    return @{name=$Name;createdAt=$V.CreatedAt}
+}
+function Get-BackupCleanupContainerIds {
+    return @((Docker-Text @('ps','-aq','--no-trunc')) -split '\r?\n' | Where-Object {$_} | Sort-Object)
+}
+function Assert-BackupCleanupUnheld {
+    param([string]$Name,[object[]]$Holders)
+    $Root='/var/lib/docker/volumes/'+$Name+'/_data'
+    foreach($Holder in $Holders){
+        foreach($Mount in @($Holder.Mounts)){
+            $MountSource=[string]$Mount.Source
+            $MountName=$Mount.PSObject.Properties['Name']
+            if(($null -ne $MountName -and $MountName.Value -ceq $Name) -or ($MountSource -and
+                ($MountSource -ceq $Root -or $MountSource.StartsWith($Root+'/',[StringComparison]::Ordinal) -or
+                 $Root.StartsWith($MountSource.TrimEnd('/')+'/',[StringComparison]::Ordinal)))){
+                throw 'BACKUP_CLEANUP_VOLUME_HELD'
+            }
+        }
+    }
+}
+
+function Get-BackupCleanupIncidentHolds {
+    param([string]$ContainerId,[string[]]$Ids)
+    # Only the existing Core audit, read-only, no claim/close/reconcile.
+    $Code=@'
+import json, sqlite3, sys
+ids = set(json.load(sys.stdin))
+holds = set()
+db = sqlite3.connect('file:/state/private/approvals.sqlite?mode=ro', uri=True, timeout=5)
+try:
+    db.execute('PRAGMA query_only=ON')
+    for (raw,) in db.execute("SELECT detail FROM events WHERE state='CLOSED_UNCONFIRMED'"):
+        detail = json.loads(raw)
+        volume = detail.get('backupVolumeOwnerAttested')
+        if isinstance(volume, str) and volume.startswith('fortis-gateway-backup-'):
+            ident = volume[len('fortis-gateway-backup-'):]
+            if ident in ids:
+                holds.add(ident)
+    print(json.dumps({'holds': sorted(holds)}))
+finally:
+    db.close()
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<backup-cleanup-incident-read>','exec'))"
+    $Payload=ConvertTo-Json -InputObject @($Ids) -Compress
+    $Result=(Private-Process @('exec','-i','--user','10001:10001',$ContainerId,'python','-I','-B','-c',$Wrapper) $Payload)|ConvertFrom-Json
+    if($null -eq $Result.holds){throw 'BACKUP_CLEANUP_INCIDENT_READ_INVALID'}
+    if(@($Result.holds).Count){throw 'BACKUP_CLEANUP_INCIDENT_HOLD'}
+}
+
+function Get-BackupCleanupPlan {
+    param([string[]]$Ids)
+    $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
+    $Paths=@($Pointer,$PrimaryPointer,$AttemptPointer,$BackupPointer)
+    $Pins=[ordered]@{}
+    foreach($Path in $Paths){
+        $null=Read-Private $Path
+        $Pins[(Split-Path $Path -Leaf)]=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    }
+    $Primary=Read-Private $PrimaryPointer
+    $Current=(Read-Private $Pointer).record
+    $AttemptPath=(Read-Private $AttemptPointer).record
+    $Attempt=Read-Private $AttemptPath
+    $Source=Get-SourceRecord
+    if($Current -cne $Primary.sourceRecord -or $AttemptPath -cne $Current -or
+       $Source.path -cne $Current -or $Attempt.phase -cne 'Complete' -or
+       $Source.runtime.pilotName -cne 'fortis-gateway' -or
+       $Source.runtime.restartPolicy -cne 'unless-stopped'){
+        throw 'BACKUP_CLEANUP_PRIMARY_NOT_SETTLED'
+    }
+    $P=$Source.runtime
+    $script:Image=$P.image
+    $C=Container $P.pilotId
+    Admit $C $P
+    if($C.State.Status -cne 'running' -or $C.State.Health.Status -cne 'healthy'){
+        throw 'BACKUP_CLEANUP_PRIMARY_NOT_HEALTHY'
+    }
+    Assert-OnlyWriter $P.stateVolume $C.Id
+    $ProtectedSources=@($Current)
+    $ProtectedHashes=@($Source.hash)
+    $ProtectedContainers=@($P.pilotId)
+    $ProtectedState=@($P.stateVolume)
+    if($Primary.previousPrimaryRecord){
+        $Previous=Read-Private $Primary.previousPrimaryRecord
+        if($Previous.phase -cne 'Complete' -or $Previous.schema -cne 'fortis-extension-release-v1' -or
+           -not $Previous.runtime.pilotId -or -not $Previous.runtime.stateVolume){
+            throw 'BACKUP_CLEANUP_PREVIOUS_SOURCE_UNKNOWN'
+        }
+        $ProtectedSources+=@($Primary.previousPrimaryRecord)
+        $ProtectedHashes+=@((Get-FileHash -LiteralPath $Primary.previousPrimaryRecord -Algorithm SHA256).Hash)
+        $ProtectedContainers+=@($Previous.runtime.pilotId)
+        $ProtectedState+=@($Previous.runtime.stateVolume)
+    }
+    $ProtectedBackupPath=(Read-Private $BackupPointer).record
+    $CurrentBackup=Read-Private $ProtectedBackupPath
+    if($CurrentBackup.backupVolume -cnotmatch '^fortis-gateway-backup-([0-9a-f]{32})$'){throw 'BACKUP_CLEANUP_CURRENT_BACKUP_INVALID'}
+    $CurrentBackupId=$CurrentBackup.backupVolume.Substring('fortis-gateway-backup-'.Length)
+    if($ProtectedBackupPath -ine (Join-Path $ReleaseBase ('primary-backup-'+$CurrentBackupId+'\record.json'))){throw 'BACKUP_CLEANUP_CURRENT_BACKUP_INVALID'}
+    $null=Get-BackupCleanupVolumeIdentity $CurrentBackupId
+    if($CurrentBackup.schema -cne 'fortis-primary-backup-v1' -or $CurrentBackup.phase -cne 'Complete' -or
+       $CurrentBackup.sourceRecord -cne $Source.path -or $CurrentBackup.sourceHash -cne $Source.hash -or
+       $CurrentBackup.containerId -cne $C.Id -or $CurrentBackup.image -cne $P.image -or
+       $CurrentBackup.stateVolume -cne $P.stateVolume -or
+       -not (Same-Json (Receipt $CurrentBackup.backupVolume) $CurrentBackup.receipt)){
+        throw 'BACKUP_CLEANUP_CURRENT_BACKUP_INVALID'
+    }
+    # All current and predecessor backup records remain active recovery
+    # dependencies, including equal-content duplicates. Verify their identities
+    # and require an extant previous backup when there is a previous Primary.
+    $ProtectedBackups=@()
+    $PriorFound=(-not $Primary.previousPrimaryRecord)
+    $CurrentFound=$false
+    $Directories=@(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Filter 'primary-backup-*' | Sort-Object Name)
+    if($Directories.Count -gt 128){throw 'RELEASE_EMERGENCY_PROMOTE_BACKUP_SCAN_LIMIT'}
+    foreach($Directory in $Directories){
+        if($Directory.Name -cnotmatch '^primary-backup-([0-9a-f]{32})$'){continue}
+        $ProtectedId=$Directory.Name.Substring('primary-backup-'.Length)
+        $ProtectedPath=Join-Path $Directory.FullName 'record.json'
+        if(-not (Test-Path -LiteralPath $ProtectedPath -PathType Leaf)){continue}
+        $B=Read-Private $ProtectedPath
+        if($ProtectedSources -notcontains $B.sourceRecord -and $ProtectedHashes -notcontains $B.sourceHash -and
+           $ProtectedContainers -notcontains $B.containerId -and $ProtectedState -notcontains $B.stateVolume){continue}
+        if($B.schema -cne 'fortis-primary-backup-v1' -or $B.phase -cne 'Complete' -or
+           $B.backupVolume -cne ('fortis-gateway-backup-'+$ProtectedId) -or -not $B.receipt -or
+           (Get-FileHash -LiteralPath $B.sourceRecord -Algorithm SHA256).Hash -ine $B.sourceHash){throw 'BACKUP_CLEANUP_PROTECTED_BACKUP_INVALID'}
+        $Identity=Get-BackupCleanupVolumeIdentity $ProtectedId
+        $ProtectedBackups+=@([ordered]@{id=$ProtectedId;createdAt=$Identity.createdAt
+            recordHash=(Get-FileHash -LiteralPath $ProtectedPath -Algorithm SHA256).Hash})
+        if($ProtectedPath -ieq $ProtectedBackupPath){$CurrentFound=$true}
+        if($Primary.previousPrimaryRecord -and $B.sourceRecord -ieq $Primary.previousPrimaryRecord -and
+           $B.containerId -ceq $Previous.runtime.pilotId -and $B.image -ceq $Previous.runtime.image -and
+           $B.stateVolume -ceq $Previous.runtime.stateVolume){$PriorFound=$true}
+    }
+    if(-not $CurrentFound -or -not $PriorFound){throw 'BACKUP_CLEANUP_PROTECTED_BACKUP_MISSING'}
+    $HistoricalCleanupRecords=@()
+    foreach($Directory in @(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Filter 'primary-cleanup-*')){
+        if($Directory.Name -cnotmatch '^primary-cleanup-[0-9a-f]{32}$'){throw 'BACKUP_CLEANUP_PRIOR_ATTEMPT_INVALID'}
+        $EarlierPath=Join-Path $Directory.FullName 'record.json'
+        $Earlier=Read-Private $EarlierPath
+        if($Earlier.schema -cne 'fortis-backup-cleanup-v1' -or $Earlier.phase -cne 'Complete'){
+            throw 'BACKUP_CLEANUP_PRIOR_ATTEMPT_REQUIRES_READBACK'
+        }
+        $EarlierSelected=@($Earlier.plan.selected | ForEach-Object {$_.id})
+        $EarlierRemoved=@($Earlier.removed)
+        if(-not $EarlierSelected.Count -or $EarlierSelected.Count -ne $EarlierRemoved.Count -or
+           ($EarlierSelected -join ',') -cne ($EarlierRemoved -join ',')){
+            throw 'BACKUP_CLEANUP_PRIOR_ATTEMPT_INVALID'
+        }
+        if(@($Ids | Where-Object {$EarlierRemoved -contains $_}).Count){
+            throw 'BACKUP_CLEANUP_ID_ALREADY_RETIRED'
+        }
+        $HistoricalCleanupRecords+=@($EarlierPath)
+    }
+    $ContainerIds=@(Get-BackupCleanupContainerIds)
+    $Holders=@(foreach($ContainerId in $ContainerIds){Container $ContainerId})
+    $Rows=@()
+    foreach($Id in $Ids){
+        $Path=Join-Path $ReleaseBase ('primary-backup-'+$Id+'\record.json')
+        $Record=Read-Private $Path
+        Assert-BackupCleanupCandidate $Id $Record $ProtectedSources $ProtectedBackupPath $Path
+        if($ProtectedHashes -contains $Record.sourceHash -or $ProtectedContainers -contains $Record.containerId -or
+           $ProtectedState -contains $Record.stateVolume){throw 'BACKUP_CLEANUP_RECOVERY_PROTECTED'}
+        $Historical=Read-Private $Record.sourceRecord
+        if($Historical.phase -cne 'Complete' -or $Historical.schema -cne 'fortis-extension-release-v1' -or
+           $Historical.runtime.pilotId -cne $Record.containerId -or $Historical.runtime.image -cne $Record.image -or
+           $Historical.runtime.stateVolume -cne $Record.stateVolume -or
+           (Get-FileHash -LiteralPath $Record.sourceRecord -Algorithm SHA256).Hash -ine $Record.sourceHash){
+            throw 'BACKUP_CLEANUP_HISTORICAL_SOURCE_CHANGED'
+        }
+        $Volume=Get-BackupCleanupVolumeIdentity $Id
+        Assert-BackupCleanupUnheld $Volume.name $Holders
+        $Rows+=@([ordered]@{id=$Id;volume=$Volume.name;createdAt=$Volume.createdAt
+            recordHash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+            sourceHash=$Record.sourceHash;evidence=@()})
+    }
+    foreach($File in @(Get-BackupCleanupReferenceFiles $ReleaseBase)){
+        # Completed cleanup records are immutable evidence, not new recovery
+        # holds on the backups that were protected at the time.
+        if($HistoricalCleanupRecords -contains $File.FullName){continue}
+        $Content=Get-Content -LiteralPath $File.FullName -Raw
+        if(-not $Content){continue}
+        foreach($Row in $Rows){
+            $Own=Join-Path $ReleaseBase ('primary-backup-'+$Row.id+'\record.json')
+            if($File.FullName -ine $Own -and $Content.IndexOf($Row.id,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                throw 'BACKUP_CLEANUP_RELEASE_RECORD_REFERENCE'
+            }
+        }
+    }
+    $EvidenceRoot=Join-Path $env:LOCALAPPDATA 'Fortis\OwnerEvidence'
+    foreach($File in @(Get-BackupCleanupReferenceFiles $EvidenceRoot)){
+        $Content=Get-Content -LiteralPath $File.FullName -Raw
+        if(-not $Content){continue}
+        foreach($Row in $Rows){
+            if($Content.IndexOf($Row.id,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                $Row.evidence+=@([ordered]@{path=$File.FullName.Substring($EvidenceRoot.Length+1)
+                    sha256=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash})
+            }
+        }
+    }
+    Get-BackupCleanupIncidentHolds $C.Id $Ids
+    foreach($Path in $Paths){
+        if((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -cne $Pins[(Split-Path $Path -Leaf)]){
+            throw 'BACKUP_CLEANUP_POINTER_CHANGED'
+        }
+    }
+    if((@(Get-BackupCleanupContainerIds) -join ',') -cne ($ContainerIds -join ',')){throw 'BACKUP_CLEANUP_INVENTORY_CHANGED'}
+    return [ordered]@{schema='fortis-backup-cleanup-preview-v1';primaryId=$C.Id;image=$C.Image
+        stateVolume=$P.stateVolume;pointers=$Pins;sourceHash=$Source.hash;currentBackup=$CurrentBackup.backupVolume
+        protected=$ProtectedBackups;containerIds=$ContainerIds;selected=$Rows}
+}
+
+function Backup-Cleanup {
+    param([string]$Selection,[switch]$PreviewOnly)
+    $Ids=@(Get-BackupCleanupIds $Selection)
+    $Plan=Get-BackupCleanupPlan $Ids
+    $Json=ConvertTo-Json -InputObject $Plan -Depth 12 -Compress
+    if($Json.Length -gt 262144){throw 'BACKUP_CLEANUP_PREVIEW_LIMIT'}
+    $Digest=Sha256-Utf8 $Json
+    Write-Host $Json
+    Write-Host ('FORTIS_BACKUP_CLEANUP_PREVIEW '+$Digest)
+    if($PreviewOnly){return}
+    # Exact owner decision includes evidence references and external holds that
+    # cannot be inferred from Docker metadata. No confirmation switch or Auto.
+    $Confirmation=Read-Host ('Review all evidence/holds, retained recovery and exclusive maintenance window. Type CLEANUP '+$Digest)
+    if($Confirmation -cne ('CLEANUP '+$Digest)){throw 'BACKUP_CLEANUP_OWNER_GO_REQUIRED'}
+    if(-not (Same-Json (Get-BackupCleanupPlan $Ids) $Plan)){throw 'BACKUP_CLEANUP_PREVIEW_CHANGED'}
+    # The protected record preserves the precise selected set and partial
+    # outcome without altering any existing release or backup receipt.
+    $Directory=Join-Path $ReleaseBase ('primary-cleanup-'+[Guid]::NewGuid().ToString('N'))
+    Protect-Directory $Directory
+    $ResultPath=Join-Path $Directory 'record.json'
+    $Result=[ordered]@{schema='fortis-backup-cleanup-v1';phase='Prepared';previewDigest=$Digest
+        plan=$Plan;removed=@();failedId=''}
+    Write-Private $ResultPath $Result
+    try {
+        foreach($Row in $Plan.selected){
+            $Result.failedId=$Row.id
+            # Container mounts cannot change without a new container identity.
+            # The owner holds an exclusive maintenance window; the common
+            # controller lock prevents competing releases, and Docker rejects
+            # an in-use named volume. Never use force or prune.
+            if((@(Get-BackupCleanupContainerIds) -join ',') -cne ($Plan.containerIds -join ',')){throw 'BACKUP_CLEANUP_INVENTORY_CHANGED'}
+            $Volume=Get-BackupCleanupVolumeIdentity $Row.id
+            $RecordPath=Join-Path $ReleaseBase ('primary-backup-'+$Row.id+'\record.json')
+            if($Volume.createdAt -cne $Row.createdAt -or
+               (Get-FileHash -LiteralPath $RecordPath -Algorithm SHA256).Hash -cne $Row.recordHash){throw 'BACKUP_CLEANUP_VOLUME_CHANGED'}
+            $null=Docker-Text @('volume','rm',$Row.volume)
+            $Remaining=@((Docker-Text @('volume','ls','-q')) -split '\r?\n')
+            if($Remaining -ccontains $Row.volume){throw 'BACKUP_CLEANUP_VOLUME_STILL_PRESENT'}
+            $Result.removed+=@($Row.id)
+            $Result.failedId=''
+            Write-Private $ResultPath $Result
+        }
+        $Remaining=@((Docker-Text @('volume','ls','-q')) -split '\r?\n')
+        foreach($Row in $Plan.selected){
+            if($Remaining -ccontains $Row.volume){throw 'BACKUP_CLEANUP_VOLUME_STILL_PRESENT'}
+        }
+        foreach($Name in $Plan.pointers.Keys){
+            if((Get-FileHash -LiteralPath (Join-Path $ReleaseBase $Name) -Algorithm SHA256).Hash -cne $Plan.pointers[$Name]){
+                throw 'BACKUP_CLEANUP_POINTER_CHANGED_AFTER_EFFECT'
+            }
+        }
+        foreach($Protected in $Plan.protected){
+            $Identity=Get-BackupCleanupVolumeIdentity $Protected.id
+            $RecordPath=Join-Path $ReleaseBase ('primary-backup-'+$Protected.id+'\record.json')
+            if($Identity.createdAt -cne $Protected.createdAt -or
+               (Get-FileHash -LiteralPath $RecordPath -Algorithm SHA256).Hash -cne $Protected.recordHash){throw 'BACKUP_CLEANUP_PROTECTED_CHANGED_AFTER_EFFECT'}
+        }
+        $Final=Container $Plan.primaryId
+        $FinalSource=Get-SourceRecord
+        if($Final.Image -cne $Plan.image -or $Final.State.Status -cne 'running' -or $Final.State.Health.Status -cne 'healthy' -or
+           $FinalSource.hash -cne $Plan.sourceHash -or $FinalSource.runtime.stateVolume -cne $Plan.stateVolume -or
+           $Final.HostConfig.RestartPolicy.Name -cne 'unless-stopped' -or
+           (@(Get-BackupCleanupContainerIds) -join ',') -cne ($Plan.containerIds -join ',')){
+            throw 'BACKUP_CLEANUP_PRIMARY_CHANGED_AFTER_EFFECT'
+        }
+        $Result.phase='Complete'
+        Write-Private $ResultPath $Result
+    } catch {
+        $Result.phase='RecoveryRequired'
+        Write-Private $ResultPath $Result
+        throw 'BACKUP_CLEANUP_OUTCOME_REQUIRES_READBACK'
+    }
+    Write-Host ('FORTIS_BACKUP_CLEANUP_VERIFIED '+($Result.removed -join ','))
+}
+
 function Promote-Primary {
     if(-not (Test-Path -LiteralPath $Pointer)){throw 'PRIMARY_CURRENT_RELEASE_REQUIRED'}
     $Current=(Read-Private $Pointer).record

@@ -26,6 +26,11 @@ host docker inspect**. Полный порядок, вопросы подтве�
 STOP до остановки исходного Gateway.
 ИИ не исполняет owner-команды за владельца.
 
+Выборочная очистка ненужных backups — отдельное owner maintenance действие
+[BackupCleanup](../PRIMARY-GATEWAY-OPERATIONS.md#selected-backup-cleanup-backupcleanup)
+при наличии принятого и проверенного Windows controller. Она не добавляется
+в обязательную последовательность Check/Apply/Backup/Promote.
+
 **Что делает -Auto:** Check строит image и защищённый immutable
 binding; Apply использует **тот же** image ID без повторной сборки.
 Config/probes берутся из защищённого Complete record, Gateway READ
