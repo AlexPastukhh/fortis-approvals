@@ -305,7 +305,7 @@ class UnifiedPolicyTests(unittest.TestCase):
         with intermediate._db() as db:
             events=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')]
             rules=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')]
-        new_scope=deepcopy(mirror_scope);new_scope['registryFunctional']='a'*64
+        new_scope=deepcopy(mirror_scope);new_scope['registryFunctional']='581381a958f9d2736810c657524582497eea71db13fa478971e136d8c822059b'
         read_ops=('candidate_head','candidate_list_desired','candidate_original_operation')
         new_scope['extensions']['definitions']['registry']={'source':_REGISTRY_MANAGED_SOURCE_BEFORE,
             'operations':[[op,'1','read',True,None,None] for op in read_ops]}
@@ -355,7 +355,7 @@ class UnifiedPolicyTests(unittest.TestCase):
         with new._db() as db:
             events=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')]
             rules=[tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')]
-        next_scope={**new_scope, 'registryFunctional':'c'*64}
+        next_scope={**new_scope, 'registryFunctional':'41d27088b48ab14887ab99602f6d86dd3ebcaf7e8e4d30b9c5b409cf6f337bb4'}
         successor=UnifiedPolicyCore(path,**kwargs)
         unreviewed=RegistryAuthorityPredecessor(successor,next_scope,choices)
         with self.assertRaisesRegex(Denied,'AUTHORITY_UPGRADE_REVIEW_REQUIRED'):
@@ -383,7 +383,7 @@ class UnifiedPolicyTests(unittest.TestCase):
 
         # This is the rehearsal failure: the immediate current variant
         # matches, but an earlier functional epoch also admitted Registry.
-        third_scope={**next_scope,'registryFunctional':'d'*64}
+        third_scope={**next_scope,'registryFunctional':'c907b51c43397e14b44a9bed29d72dde99cf30e7ceaa39eed3cdc97f2ddd0d8e'}
         third=UnifiedPolicyCore(path,**kwargs)
         immediate=(next_scope['registryFunctional'],)
         incomplete=RegistryAuthorityPredecessor(third,third_scope,choices,
@@ -410,7 +410,7 @@ class UnifiedPolicyTests(unittest.TestCase):
         # A fourth functional scope must launch against all three historical
         # Registry epochs. Exercise the real predecessor constructor and
         # policy installation together, then repeat startup against the DB.
-        fourth_scope = {**third_scope, 'registryFunctional': 'e'*64}
+        fourth_scope = {**third_scope, 'registryFunctional': 'f723dc5dd0bb569e3fb59780a32a9ba7cf03d95a8123c1c61083f112397a706b'}
         all_history = (third_scope['registryFunctional'], *history)
         fourth = UnifiedPolicyCore(path, **kwargs)
         incomplete = RegistryAuthorityPredecessor(fourth, fourth_scope, choices,
@@ -433,7 +433,7 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 5)
             self.assertEqual(fourth._policy(ACTOR,dict(service='synthetic',operation='set_ask',target='record')),'ASK')
 
-        fifth_scope = {**fourth_scope, 'registryFunctional': 'f'*64}
+        fifth_scope = {**fourth_scope, 'registryFunctional': 'daaa52a095d101dd36f69a52e2a4c26a54153b9b96cac36f1de452e4bd8561c7'}
         fifth_history = (fourth_scope['registryFunctional'], *all_history)
         for _ in range(2):
             fifth = UnifiedPolicyCore(path, **kwargs)
@@ -447,7 +447,7 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 6)
 
         sixth_scope = deepcopy(fifth_scope)
-        sixth_scope['registryFunctional'] = '0'*64
+        sixth_scope['registryFunctional'] = '65d98082fb0c2f736aa40b72a60ad8d5eebc4e2ca4154d930e385a98faf99e74'
         sixth_scope['extensions']['definitions']['registry']['source'] = _REGISTRY_MANAGED_SOURCE_AFTER
         unknown_scope = deepcopy(sixth_scope)
         unknown_scope['extensions']['definitions']['registry']['source'] = '9'*64
@@ -475,6 +475,28 @@ class UnifiedPolicyTests(unittest.TestCase):
                 self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')], events)
                 self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 7)
+
+        seventh_scope = {**sixth_scope, 'registryFunctional': '0'*64}
+        seventh_history = (sixth_scope['registryFunctional'], *sixth_history)
+        for invalid in (seventh_history[:-1], seventh_history[::-1],
+                        (seventh_history[0], 'f'*64, *seventh_history[2:])):
+            with self.assertRaisesRegex(Denied, 'REGISTRY_PREDECESSOR_INVALID'):
+                RegistryAuthorityPredecessor(UnifiedPolicyCore(path, **kwargs),
+                    seventh_scope, choices, previous_functional_digests=invalid)
+        for _ in range(2):
+            seventh = UnifiedPolicyCore(path, **kwargs)
+            verified = RegistryAuthorityPredecessor(seventh, seventh_scope, choices,
+                                                    previous_functional_digests=seventh_history)
+            pairs = {s['registryFunctional']: s['extensions']['definitions']['registry']['source']
+                     for s, _ in verified.variants() if 'registryFunctional' in s}
+            self.assertEqual(pairs, {**{d: _REGISTRY_MANAGED_SOURCE_BEFORE for d in sixth_history},
+                                     seventh_history[0]: _REGISTRY_MANAGED_SOURCE_AFTER})
+            seventh.install_policy_authority(choices, scope_binding=seventh_scope,
+                reviewed_registry_predecessor=verified, reviewed_upgrade_from=verified.choices)
+            with seventh._db() as db:
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_events')], events)
+                self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM owner_local_policy_v2_rules')], rules)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM owner_local_policy_v2_authority_epochs').fetchone()[0], 8)
 
     def test_functional_predecessor_rejects_drift_outside_release(self):
         from copy import deepcopy
@@ -613,6 +635,20 @@ class UnifiedPolicyTests(unittest.TestCase):
                             lineage._CUTOVER_271, {'number': 273}]
                         self.assertEqual(runtime._reviewed_functional_predecessor_digests(next271),
                                          (runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                        prior273 = deepcopy(next271)
+                        prior273['cutoverRecovery']['gap']['merges'][-1] = deepcopy(lineage._POST_285_SUFFIX[0])
+                        prior273['cutoverRecovery']['release'] = dict(runtime._CUTOVER_273_RELEASE)
+                        next285 = deepcopy(prior273)
+                        next285['cutoverRecovery']['gap']['disposition'] = lineage._POST_285_GAP
+                        next285['cutoverRecovery']['gap']['merges'] += list(lineage._POST_285_SUFFIX[1:]) + [{'number':286}]
+                        next285['cutoverRecovery']['release']['releaseNonce'] = str(uuid.uuid4())
+                        with patch.object(runtime, '_CUTOVER_273_CONFIG_SHA256', runtime._hash(prior273)):
+                            self.assertEqual(runtime._reviewed_273_predecessor(next285), prior273)
+                            self.assertEqual(runtime._reviewed_functional_predecessor_digests(next285),
+                                (runtime._hash(prior273), runtime._hash(actual268), retry_pin, pin262, pin, older_pin))
+                            next285['cutoverRecovery']['gap']['merges'][19]['headSha'] = '0'*40
+                            with self.assertRaisesRegex(Denied, 'CUTOVER_POLICY_PREDECESSOR_NOT_REVIEWED'):
+                                runtime._reviewed_273_predecessor(next285)
                         # The prepared #270/#271 configurations were never
                         # active; do not reconstruct additional authority epochs.
                         next271['cutoverRecovery']['predecessorRelease']['gatewaySourceDigest'] = '0'*64

@@ -218,6 +218,39 @@ class FunctionalV1JournalTests(unittest.TestCase):
         self.assertEqual(len(receipt['recordIds']), 1)
         self.assertEqual(self.count('records'), 1)
 
+    def test_post_285_exact_gap_and_first_genuine_ingestion(self):
+        from fortis_approvals.integrations.github.gateway import forward_lineage as f
+        rows = copy.deepcopy([getattr(f, '_CUTOVER_'+str(n)) for n in range(253,272)]
+                              + list(f._POST_285_SUFFIX))
+        rows.append({'number': 286, 'headSha': '7'*40, 'mergeSha': '8'*40,
+                     'impact': copy.deepcopy(f._CUTOVER_RECOVERY_IMPACT)})
+        gap = {'disposition': f._POST_285_GAP, 'merges': rows}
+        plan = self.current['plan']
+        obs = plan['observation']
+        obs['mergeAudit'][0]['baseSha'] = rows[-1]['mergeSha']
+        for invalid in (rows[:-1], rows+[rows[-1]],
+                        rows[:20]+rows[21:22]+rows[20:21]+rows[22:],
+                        [{**rows[0], 'impact': {}}, *rows[1:]],
+                        [*rows[:20], {**rows[20], 'impact': {'fortis-gateway':['image-rebuild']}}, *rows[21:]],
+                        [*rows[:-1], {**rows[-1], 'number': 285}],
+                        [*rows[:-1], {**rows[-1], 'impact': {}}]):
+            obs['cutoverGap'] = {**gap, 'merges': invalid}
+            plan['observationDigest'] = local._hash(obs)
+            with self.assertRaisesRegex(Denied, 'CUTOVER_GAP'):
+                self.append()
+        self.assertEqual(self.count('operations'), 0)
+        obs['cutoverGap'] = gap
+        plan['observationDigest'] = local._hash(obs)
+        receipt = self.accept()
+        self.assertEqual(receipt['cutoverGap'], gap)
+        self.assertEqual(self.count('records'), 1)
+        self.state = local.FunctionalV1CandidateJournal(
+            self.path, instance_id=self.instance, scope=self.scope, plan_reader=self.read)
+        self.assertEqual(self.state.append_range(**self.operations[0][0])['receipt'], receipt)
+        self.suffix()
+        self.assertNotIn('cutoverGap', self.accept())
+        self.assertEqual(self.count('operations'), 2)
+
     def test_suffix_supersession_and_persistent_history(self):
         first=self.accept()
         self.suffix()
