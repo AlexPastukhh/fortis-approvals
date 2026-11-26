@@ -672,6 +672,45 @@ be selected again. Preserve all original records.
 Verify logical disk usage and physical C: separately after maintenance;
 volume deletion does not establish VHDX compaction or off-host recovery.
 
+## Selected release state cleanup (ReleaseStateCleanup)
+
+This owner-local source candidate requires accepted Windows main, exact-SHA
+Mirror and Windows PowerShell 5.1 SelfTest, including
+`FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS`. It uses the owner
+controller and no new Gateway image. Follow UC-CONT-021/022/023 and retain
+the current and previous Primary, their verified backup dependencies, and
+Registry/incident recovery holds.
+
+Pass the exact `-RunIds` (comma-separated 32-character lowercase IDs, without
+the volume prefix), `-SourceSha` for that Windows main and `-Preview` to
+`Manage-Integrations.ps1 -Action ReleaseStateCleanup`. The preview requires
+the candidate's own protected Returned record with activation and probes
+both false, an inactive marker check, and a single exact matching stopped
+holder. It conservatively holds any ID or holder referenced by **another**
+protected release file, including Registry return attempts and checked
+bindings. The candidate's own record is retained as audit and nonce history.
+This is a narrow lifecycle decision for failed-before-activation attempts.
+Any unknown or referenced state, holder, or recovery dependency requires
+STOP and review. The action excludes Auto and release arguments.
+
+Review the exact volume and full holder ID in the preview, along with any
+listed OwnerEvidence path/hash, and establish whether an external hold exists.
+When the owner has approved that exact selection, repeat within an exclusive
+maintenance window without `-Preview` and type `CLEANUP <digest>` only if
+the displayed selection and digest still match. The controller rechecks the
+plan under its normal lock. The only Docker removals are the exact targeted
+holder (no force or volume cascade), then its exact state volume. It records
+each effect under the original run directory in `state-retirement.json`;
+historical Return is fenced for the selected run even if cleanup is partial.
+
+`FORTIS_RELEASE_STATE_CLEANUP_VERIFIED` means absence of the selected
+volumes and holders, healthy exact Primary, and verified protected records
+and recovery pins after the operation. A Prepared or RecoveryRequired
+receipt, or a missing success marker after any effect, requires exact
+resource and receipt readback under UC-GW-006. Do not rerun a partial action.
+No activation, promotion, deployment, changes to release records/pointers,
+or broad cleanup is implied by this action.
+
 ## STOP and rollback boundaries
 
 Mismatched source image/record, unexpected writer, insecure mount/ACL, missing

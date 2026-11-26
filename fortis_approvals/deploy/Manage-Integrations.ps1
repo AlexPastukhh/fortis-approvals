@@ -1,7 +1,7 @@
 # Windows PowerShell 5.1. Owner-only review controller; tokens never enter argv.
 [CmdletBinding()]
 param(
-    [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest','RegistrySourceDigest','BackupCleanup')][string]$Action='Check',
+    [ValidateSet('Apply','Credential','Check','Return','Backup','Promote','SelfTest','RegistrySourceDigest','BackupCleanup','ReleaseStateCleanup')][string]$Action='Check',
     [string]$Config='', [string]$Image='', [string]$SourceSha='', [string]$CheckedImageRecord='', [string]$CurrentRecord='',
     [string]$AttemptRecord='', [string]$CredentialName='', [switch]$Rotate,
     [string]$EmergencyRescueImage='', [string]$EmergencyRescueArchiveSha256='',
@@ -13,7 +13,7 @@ param(
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$RegistryReturnContainerId='', [string]$RegistryReturnNonce='', [switch]$RegistryCrashRecovery,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto,
-    [string]$BackupIds='', [switch]$Preview
+    [string]$BackupIds='', [string]$RunIds='', [switch]$Preview
 )
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
@@ -2888,7 +2888,9 @@ function Restore-RegistrySource {
 if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INVALID'}
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
-if($Action -ne 'BackupCleanup' -and ($ForwardParameters.ContainsKey('BackupIds') -or $ForwardParameters.ContainsKey('Preview'))){throw 'BACKUP_CLEANUP_ARGUMENT_ACTION_INVALID'}
+if($Action -ne 'BackupCleanup' -and $ForwardParameters.ContainsKey('BackupIds')){throw 'BACKUP_CLEANUP_ARGUMENT_ACTION_INVALID'}
+if($Action -ne 'ReleaseStateCleanup' -and $ForwardParameters.ContainsKey('RunIds')){throw 'RELEASE_STATE_CLEANUP_ARGUMENT_ACTION_INVALID'}
+if($Action -cnotin @('BackupCleanup','ReleaseStateCleanup') -and $ForwardParameters.ContainsKey('Preview')){throw 'BACKUP_CLEANUP_ARGUMENT_ACTION_INVALID'}
 if($Action -eq 'SelfTest'){
     # CI and owner SelfTest must exercise the same strict variable semantics.
     # This is a fixture-only path; no Docker/Primary release is attempted.
@@ -2905,6 +2907,7 @@ if($Action -eq 'SelfTest'){
     Assert-RegistryReturnSelfTest
     Assert-PrimaryReturnedRegistrySourceSelfTest
     Assert-BackupCleanupSelectionSelfTest
+    Assert-ReleaseStateCleanupSelectionSelfTest
     # Ensure the private native-argv restriction cannot break the rescue smoke.
     $RescueSmokeArgument=Emergency-Rescue-Smoke-Argument
     if(-not $RescueSmokeArgument -or $RescueSmokeArgument.Contains('"') -or
@@ -3220,11 +3223,13 @@ function Open-ReleaseControllerLock {
     if((Test-Path -LiteralPath $LockPath) -and ((Get-Item -LiteralPath $LockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'RELEASE_LOCK_REPARSE_POINT_DENIED'}
     try{return [IO.File]::Open($LockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{throw 'RELEASE_CONTROLLER_ALREADY_RUNNING_OR_LOCK_UNAVAILABLE'}
 }
-if($Action -eq 'BackupCleanup'){
+if($Action -cin @('BackupCleanup','ReleaseStateCleanup')){
+    $SelectionKey=if($Action -ceq 'BackupCleanup'){'BackupIds'}else{'RunIds'}
+    $ArgumentError=if($Action -ceq 'BackupCleanup'){'BACKUP_CLEANUP_ARGUMENTS_INVALID'}else{'RELEASE_STATE_CLEANUP_ARGUMENTS_INVALID'}
     foreach($Key in $ForwardParameters.Keys){
-        if($Key -notin @('Action','BackupIds','Preview','SourceSha')){throw 'BACKUP_CLEANUP_ARGUMENTS_INVALID'}
+        if($Key -notin @('Action',$SelectionKey,'Preview','SourceSha')){throw $ArgumentError}
     }
-    $null=Get-BackupCleanupIds $BackupIds
+    $null=Get-BackupCleanupIds $ForwardParameters[$SelectionKey]
     if($SourceSha -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_APPROVED_SOURCE_SHA_REQUIRED'}
     $Git=(Get-Command git.exe -CommandType Application).Source
     if((Private-Process @('-C',$SourceRoot,'status','--porcelain') '' $Git)){throw 'RELEASE_WINDOWS_SOURCE_DIRTY'}
@@ -3232,8 +3237,10 @@ if($Action -eq 'BackupCleanup'){
     if((Private-Process @('-C',$SourceRoot,'rev-parse','HEAD') '' $Git) -cne $SourceSha){throw 'RELEASE_WINDOWS_SHA_MISMATCH'}
     Assert-DirectoryAcl $ReleaseBase
     $ControllerLock=Open-ReleaseControllerLock
-    try{Backup-Cleanup $BackupIds -PreviewOnly:$Preview}
-    finally{$ControllerLock.Dispose()}
+    try {
+        if($Action -ceq 'BackupCleanup'){Backup-Cleanup $BackupIds -PreviewOnly:$Preview}
+        else{Release-State-Cleanup $RunIds -PreviewOnly:$Preview}
+    } finally{$ControllerLock.Dispose()}
     return
 }
 if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}else{Assert-DirectoryAcl $ReleaseBase}
@@ -3680,6 +3687,7 @@ if($Action -eq 'RegistrySourceDigest'){
 }
 $ControllerLock=Open-ReleaseControllerLock
 try {
+if($Action -eq 'Return' -or $AttemptRecord){Assert-ReleaseStateAttemptAvailable}
 if($Action -eq 'Credential' -and $Service){Put-ProviderCredential $Service;return}
 Ensure-Vault
 if($Action -eq 'Credential'){

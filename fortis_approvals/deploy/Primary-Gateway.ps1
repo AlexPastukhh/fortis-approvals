@@ -484,7 +484,7 @@ finally:
 }
 
 function Get-BackupCleanupPlan {
-    param([string[]]$Ids)
+    param([string[]]$Ids,[switch]$PinsOnly)
     $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
     $Paths=@($Pointer,$PrimaryPointer,$AttemptPointer,$BackupPointer)
     $Pins=[ordered]@{}
@@ -567,6 +567,24 @@ function Get-BackupCleanupPlan {
            $B.stateVolume -ceq $Previous.runtime.stateVolume){$PriorFound=$true}
     }
     if(-not $CurrentFound -or -not $PriorFound){throw 'BACKUP_CLEANUP_PROTECTED_BACKUP_MISSING'}
+    if($PinsOnly){
+        $PreviousVolume='';$PreviousId='';$PreviousImage=''
+        if($Primary.previousPrimaryRecord){
+            $Old=Container $Previous.runtime.pilotId
+            $PreviousVolume=$Previous.runtime.stateVolume
+            Assert-Volume $PreviousVolume
+            $PreviousId=$Old.Id;$PreviousImage=$Old.Image
+            if($Old.Id -cne $Previous.runtime.pilotId -or $Old.Image -cne $Previous.runtime.image -or
+               $Old.State.Status -cne 'exited' -or $Old.HostConfig.RestartPolicy.Name -cne 'no' -or
+               @($Old.Mounts | Where-Object {$_.Destination -ceq '/state' -and $_.Name -ceq $PreviousVolume}).Count -ne 1){
+                throw 'RELEASE_STATE_CLEANUP_PREVIOUS_PRIMARY_CHANGED'
+            }
+        }
+        return [ordered]@{primaryId=$C.Id;image=$C.Image;stateVolume=$P.stateVolume;pointers=$Pins
+            sourceHash=$Source.hash;currentBackup=$CurrentBackup.backupVolume;protectedBackups=$ProtectedBackups
+            previousId=$PreviousId;previousImage=$PreviousImage;previousVolume=$PreviousVolume
+            previousRecordHash=$(if($PreviousId){$ProtectedHashes[1]}else{''})}
+    }
     $HistoricalCleanupRecords=@()
     foreach($Directory in @(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Filter 'primary-cleanup-*')){
         if($Directory.Name -cnotmatch '^primary-cleanup-[0-9a-f]{32}$'){throw 'BACKUP_CLEANUP_PRIOR_ATTEMPT_INVALID'}
@@ -717,6 +735,270 @@ function Backup-Cleanup {
         throw 'BACKUP_CLEANUP_OUTCOME_REQUIRES_READBACK'
     }
     Write-Host ('FORTIS_BACKUP_CLEANUP_VERIFIED '+($Result.removed -join ','))
+}
+
+
+# Only a returned, never-activated candidate can cross this boundary. Any
+# reference from another protected file (including a return-attempt path)
+# holds the candidate even if it has no direct pointer or running holder.
+function Assert-ReturnedReleaseState {
+    param([string]$Id,$Record,$Holder)
+    $Volume='fortis-github-pilot-state-'+$Id
+    if($Record.schema -cne 'fortis-extension-release-v1' -or $Record.phase -cne 'Returned' -or
+       $Record.activated -isnot [bool] -or $Record.activated -or
+       $Record.probesPassed -isnot [bool] -or $Record.probesPassed -or
+       $Record.PSObject.Properties['registryReturn'] -or $Record.PSObject.Properties['registryCrash'] -or
+       $Record.PSObject.Properties['registryReturnAttempt'] -or $Record.PSObject.Properties['retainedSourceRecord'] -or
+       $Record.runtime.runId -cne $Id -or $Record.runtime.stateVolume -cne $Volume -or
+       $Record.source.runtime.stateVolume -ceq $Volume -or
+       $Record.runtime.pilotId -cnotmatch '^[0-9a-f]{64}$' -or
+       $Record.runtime.pilotName -cne ('fortis-github-pilot-'+$Id) -or
+       $Record.runtime.image -cnotmatch '^sha256:[0-9a-f]{64}$'){
+        throw 'RELEASE_STATE_CLEANUP_RECORD_NOT_RETIRED_CANDIDATE'
+    }
+    if($Holder.Id -cne $Record.runtime.pilotId -or $Holder.Name -cne ('/'+$Record.runtime.pilotName) -or
+       $Holder.Image -cne $Record.runtime.image -or $Holder.Config.Labels.'io.fortis.review-update' -cne $Id -or
+       $Holder.HostConfig.RestartPolicy.Name -cne 'no' -or $Holder.State.Status -cnotin @('created','exited') -or
+       $Holder.State.Running -ne $false){
+        throw 'RELEASE_STATE_CLEANUP_HOLDER_INVALID'
+    }
+    $State=@($Holder.Mounts | Where-Object { $_.Destination -ceq '/state' })
+    if($State.Count -ne 1 -or $State[0].Type -cne 'volume' -or $State[0].Name -cne $Volume -or
+       $State[0].Source -cne ('/var/lib/docker/volumes/'+$Volume+'/_data') -or $State[0].RW -ne $true -or
+       @($Holder.Mounts | Where-Object {$_.Type -ceq 'bind' -or ($_.Source -clike '/var/lib/docker/volumes/fortis-github-pilot-state-*' -and $_.Destination -cne '/state')}).Count){
+        throw 'RELEASE_STATE_CLEANUP_HOLDER_MOUNT_INVALID'
+    }
+}
+
+function Get-ReleaseStateRetirementPath {
+    param([string]$Id)
+    if($Id -cnotmatch '^[0-9a-f]{32}$'){throw 'RELEASE_STATE_CLEANUP_RUN_ID_INVALID'}
+    return (Join-Path (Join-Path $ReleaseBase $Id) 'state-retirement.json')
+}
+
+function Assert-ReleaseStateAttemptAvailable {
+    # Only normal release records can own a retirement receipt. Its presence
+    # fences even a Prepared/partial cleanup from an explicit historical Return.
+    $Id=$script:R.runtime.runId
+    if($Id -cmatch '^[0-9a-f]{32}$' -and
+       (Test-Path -LiteralPath (Get-ReleaseStateRetirementPath $Id))){
+        throw 'RELEASE_STATE_CLEANUP_ATTEMPT_RETIRED_OR_REQUIRES_READBACK'
+    }
+}
+
+function Get-ReleaseStateCleanupVolume {
+    param([string]$Id)
+    $Name='fortis-github-pilot-state-'+$Id
+    Assert-Volume $Name
+    $V=@(Docker-Json @('volume','inspect',$Name))[0]
+    if($V.Labels.'io.fortis.release' -cne $Id -or -not $V.CreatedAt){
+        throw 'RELEASE_STATE_CLEANUP_VOLUME_PROVENANCE_INVALID'
+    }
+    return [string]$V.CreatedAt
+}
+
+function Get-ReleaseStateCleanupPlan {
+    param([string[]]$Ids)
+    $Primary=Get-BackupCleanupPlan -PinsOnly
+    $AutoCheck=Join-Path $ReleaseBase 'auto-check.json'
+    $Primary.pointers['auto-check.json']=''
+    if(Test-Path -LiteralPath $AutoCheck){
+        $Auto=Read-Private $AutoCheck
+        if($Auto.schema -cne 'fortis-auto-check-v1' -or -not $Auto.record){
+            throw 'RELEASE_STATE_CLEANUP_AUTO_CHECK_INVALID'
+        }
+        $Check=Read-Private $Auto.record
+        if($Check.schema -cne 'fortis-extension-image-check-v1' -or $Check.phase -cne 'Ready'){
+            throw 'RELEASE_STATE_CLEANUP_AUTO_CHECK_INVALID'
+        }
+        $Primary.pointers['auto-check.json']=(Get-FileHash -LiteralPath $AutoCheck -Algorithm SHA256).Hash
+    }
+    $ContainerIds=@(Get-BackupCleanupContainerIds)
+    $Containers=@(foreach($Id in $ContainerIds){Container $Id})
+    $Rows=@(foreach($Id in $Ids){
+        $Path=Join-Path (Join-Path $ReleaseBase $Id) 'record.json'
+        $Retirement=Get-ReleaseStateRetirementPath $Id
+        if(Test-Path -LiteralPath $Retirement){
+            throw 'RELEASE_STATE_CLEANUP_PRIOR_ATTEMPT_REQUIRES_READBACK'
+        }
+        $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        $Record=Read-Private $Path
+        $Holder=@($Containers | Where-Object {$_.Id -ceq $Record.runtime.pilotId})
+        if($Holder.Count -ne 1){throw 'RELEASE_STATE_CLEANUP_EXPECTED_HOLDER_MISSING'}
+        Assert-ReturnedReleaseState $Id $Record $Holder[0]
+        $Volume=$Record.runtime.stateVolume
+        $CreatedAt=Get-ReleaseStateCleanupVolume $Id
+        Assert-BackupCleanupUnheld $Volume @($Containers | Where-Object {$_.Id -cne $Holder[0].Id})
+        [ordered]@{id=$Id;volume=$Volume;createdAt=$CreatedAt;recordHash=$Hash;holderId=$Holder[0].Id
+            holderName=$Holder[0].Name;holderImage=$Holder[0].Image;holderStatus=$Holder[0].State.Status
+            holderStartedAt=$Holder[0].State.StartedAt;holderFinishedAt=$Holder[0].State.FinishedAt;evidence=@()}
+    })
+    foreach($Directory in @(Get-ChildItem -LiteralPath $ReleaseBase -Directory -Force)){
+        if($Directory.Name -cmatch '^(?:(?:image-check-|primary-backup-)?[0-9a-f]{32})$' -and
+           -not (Test-Path -LiteralPath (Join-Path $Directory.FullName 'record.json') -PathType Leaf)){
+            throw 'RELEASE_STATE_CLEANUP_REFERENCE_SCAN_INCOMPLETE'
+        }
+    }
+    foreach($File in @(Get-BackupCleanupReferenceFiles $ReleaseBase)){
+        $Text=Get-Content -LiteralPath $File.FullName -Raw
+        if(-not $Text){continue}
+        foreach($Row in $Rows){
+            if($File.FullName -ieq (Join-Path (Join-Path $ReleaseBase $Row.id) 'record.json')){continue}
+            if($Text.IndexOf($Row.id,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+               $Text.IndexOf($Row.holderId,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                throw ('RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE: '+$Row.id)
+            }
+        }
+    }
+    $EvidenceRoot=Join-Path $env:LOCALAPPDATA 'Fortis\OwnerEvidence'
+    foreach($File in @(Get-BackupCleanupReferenceFiles $EvidenceRoot)){
+        $Text=Get-Content -LiteralPath $File.FullName -Raw
+        if(-not $Text){continue}
+        foreach($Row in $Rows){
+            if($Text.IndexOf($Row.id,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+               $Text.IndexOf($Row.holderId.Substring(0,12),[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                $Row.evidence+=@([ordered]@{path=$File.FullName.Substring($EvidenceRoot.Length+1)
+                    sha256=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash})
+            }
+        }
+    }
+    if((@(Get-BackupCleanupContainerIds) -join ',') -cne ($ContainerIds -join ',')){
+        throw 'RELEASE_STATE_CLEANUP_INVENTORY_CHANGED'
+    }
+    foreach($Row in $Rows){
+        # Reuse the read-only marker check used by Registry Return. A
+        # Returned record alone cannot prove the volume is still inactive.
+        Assert-RegistryCandidateInactive @{runId=$Row.id;stateVolume=$Row.volume}
+        if((Get-ReleaseStateCleanupVolume $Row.id) -cne $Row.createdAt){
+            throw 'RELEASE_STATE_CLEANUP_TARGET_CHANGED'
+        }
+    }
+    return [ordered]@{schema='fortis-release-state-cleanup-preview-v1';primary=$Primary
+        containerIds=$ContainerIds;selected=$Rows}
+}
+
+function Assert-ReleaseStateCleanupPins {
+    param($Plan)
+    foreach($Name in $Plan.primary.pointers.Keys){
+        $Path=Join-Path $ReleaseBase $Name
+        $Hash=if(Test-Path -LiteralPath $Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash}else{''}
+        if($Hash -cne $Plan.primary.pointers[$Name]){throw 'RELEASE_STATE_CLEANUP_POINTER_CHANGED'}
+    }
+    foreach($Row in $Plan.selected){
+        $Path=Join-Path (Join-Path $ReleaseBase $Row.id) 'record.json'
+        if((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -cne $Row.recordHash){
+            throw 'RELEASE_STATE_CLEANUP_RECORD_CHANGED'
+        }
+    }
+}
+
+function Release-State-Cleanup {
+    param([string]$Selection,[switch]$PreviewOnly)
+    $Ids=@(Get-BackupCleanupIds $Selection)
+    $Plan=Get-ReleaseStateCleanupPlan $Ids
+    Assert-ReleaseStateCleanupPins $Plan
+    $Json=ConvertTo-Json -InputObject $Plan -Depth 12 -Compress
+    if($Json.Length -gt 262144){throw 'RELEASE_STATE_CLEANUP_PREVIEW_LIMIT'}
+    $Digest=Sha256-Utf8 $Json
+    Write-Host $Json
+    Write-Host ('FORTIS_RELEASE_STATE_CLEANUP_PREVIEW '+$Digest)
+    if($PreviewOnly){return}
+    $Confirmation=Read-Host ('Review referenced evidence and external recovery holds in an exclusive maintenance window. Type CLEANUP '+$Digest)
+    if($Confirmation -cne ('CLEANUP '+$Digest)){throw 'RELEASE_STATE_CLEANUP_OWNER_GO_REQUIRED'}
+    if(-not (Same-Json (Get-ReleaseStateCleanupPlan $Ids) $Plan)){throw 'RELEASE_STATE_CLEANUP_PREVIEW_CHANGED'}
+    $ExpectedContainers=@($Plan.containerIds)
+    $Receipts=@()
+    foreach($Row in $Plan.selected){
+        Assert-ReleaseStateCleanupPins $Plan
+        if((@(Get-BackupCleanupContainerIds) -join ',') -cne ($ExpectedContainers -join ',')){
+            throw 'RELEASE_STATE_CLEANUP_INVENTORY_CHANGED'
+        }
+        $Holder=Container $Row.holderId
+        $Path=Join-Path (Join-Path $ReleaseBase $Row.id) 'record.json'
+        Assert-ReturnedReleaseState $Row.id (Read-Private $Path) $Holder
+        if($Holder.State.Status -cne $Row.holderStatus -or $Holder.State.StartedAt -cne $Row.holderStartedAt -or
+           $Holder.State.FinishedAt -cne $Row.holderFinishedAt -or (Get-ReleaseStateCleanupVolume $Row.id) -cne $Row.createdAt){
+            throw 'RELEASE_STATE_CLEANUP_TARGET_CHANGED'
+        }
+        $ReceiptPath=Get-ReleaseStateRetirementPath $Row.id
+        if(Test-Path -LiteralPath $ReceiptPath){throw 'RELEASE_STATE_CLEANUP_PRIOR_ATTEMPT_REQUIRES_READBACK'}
+        $Result=[ordered]@{schema='fortis-release-state-retirement-v1';phase='Prepared';previewDigest=$Digest
+            selected=$Row;holderRemoved=$false;volumeRemoved=$false}
+        Write-Private $ReceiptPath $Result
+        try {
+            $null=Docker-Text @('container','rm',$Row.holderId)
+            $ExpectedContainers=@($ExpectedContainers | Where-Object {$_ -cne $Row.holderId})
+            $Observed=@(Get-BackupCleanupContainerIds)
+            $Result.holderRemoved=($Observed -cnotcontains $Row.holderId)
+            Write-Private $ReceiptPath $Result
+            if(($Observed -join ',') -cne ($ExpectedContainers -join ',')){
+                throw 'RELEASE_STATE_CLEANUP_HOLDER_REMOVAL_UNCONFIRMED'
+            }
+            if((Get-ReleaseStateCleanupVolume $Row.id) -cne $Row.createdAt){throw 'RELEASE_STATE_CLEANUP_TARGET_CHANGED'}
+            $null=Docker-Text @('volume','rm',$Row.volume)
+            $Remaining=(Docker-Text @('volume','ls','-q')) -split '\r?\n'
+            $Result.volumeRemoved=($Remaining -cnotcontains $Row.volume)
+            if(-not $Result.volumeRemoved){throw 'RELEASE_STATE_CLEANUP_VOLUME_STILL_PRESENT'}
+            Write-Private $ReceiptPath $Result
+            $Receipts+=@(@{path=$ReceiptPath;result=$Result})
+        } catch {
+            $Result.phase='RecoveryRequired'
+            Write-Private $ReceiptPath $Result
+            throw ('RELEASE_STATE_CLEANUP_OUTCOME_REQUIRES_READBACK: '+$Row.id)
+        }
+    }
+    Assert-ReleaseStateCleanupPins $Plan
+    $Final=Get-BackupCleanupPlan -PinsOnly
+    $Final.pointers['auto-check.json']=$Plan.primary.pointers['auto-check.json']
+    Assert-ReleaseStateCleanupPins $Plan
+    if(-not (Same-Json $Plan.primary $Final) -or
+       (@(Get-BackupCleanupContainerIds) -join ',') -cne ($ExpectedContainers -join ',')){
+        throw 'RELEASE_STATE_CLEANUP_POSTCONDITIONS_REQUIRE_READBACK'
+    }
+    $Remaining=(Docker-Text @('volume','ls','-q')) -split '\r?\n'
+    foreach($Row in $Plan.selected){
+        if($Remaining -ccontains $Row.volume){throw 'RELEASE_STATE_CLEANUP_VOLUME_STILL_PRESENT'}
+    }
+    foreach($Receipt in $Receipts){
+        $Receipt.result.phase='Complete'
+        Write-Private $Receipt.path $Receipt.result
+    }
+    Write-Host ('FORTIS_RELEASE_STATE_CLEANUP_VERIFIED '+($Ids -join ','))
+}
+
+
+function Assert-ReleaseStateCleanupSelectionSelfTest {
+    $Id='a'*32
+    $Name='fortis-github-pilot-'+$Id
+    $Volume='fortis-github-pilot-state-'+$Id
+    $Record=[pscustomobject]@{schema='fortis-extension-release-v1';phase='Returned';activated=$false;probesPassed=$false
+        source=@{runtime=@{stateVolume='prior-state'}}
+        runtime=@{runId=$Id;pilotId=('b'*64);pilotName=$Name;stateVolume=$Volume;image=('sha256:'+('c'*64))}}
+    $Holder=@{Id=$Record.runtime.pilotId;Name=('/'+$Name);Image=$Record.runtime.image
+        Config=@{Labels=@{'io.fortis.review-update'=$Id}};HostConfig=@{RestartPolicy=@{Name='no'}}
+        State=@{Status='exited';Running=$false};Mounts=@(@{Destination='/state';Name=$Volume;Type='volume';RW=$true
+            Source=('/var/lib/docker/volumes/'+$Volume+'/_data')})}
+    Assert-ReturnedReleaseState $Id $Record $Holder
+    foreach($Phase in @('Prepared','Created','Staged','Complete')){
+        $Record.phase=$Phase
+        try {
+            Assert-ReturnedReleaseState $Id $Record $Holder
+            throw 'RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_FAILED'
+        } catch {if($_.Exception.Message -cne 'RELEASE_STATE_CLEANUP_RECORD_NOT_RETIRED_CANDIDATE'){throw}}
+    }
+    $Record.phase='Returned'
+    $Record | Add-Member -NotePropertyName registryReturn -NotePropertyValue @{stateVolume='prior-state'}
+    try {
+        Assert-ReturnedReleaseState $Id $Record $Holder
+        throw 'RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_FAILED'
+    } catch {if($_.Exception.Message -cne 'RELEASE_STATE_CLEANUP_RECORD_NOT_RETIRED_CANDIDATE'){throw}}
+    $Record.PSObject.Properties.Remove('registryReturn')
+    $Holder.State.Status='running'
+    try {
+        Assert-ReturnedReleaseState $Id $Record $Holder
+        throw 'RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_FAILED'
+    } catch {if($_.Exception.Message -cne 'RELEASE_STATE_CLEANUP_HOLDER_INVALID'){throw}}
+    Write-Host 'FORTIS_RELEASE_STATE_CLEANUP_SELECTION_SELFTEST_PASS'
 }
 
 function Promote-Primary {
