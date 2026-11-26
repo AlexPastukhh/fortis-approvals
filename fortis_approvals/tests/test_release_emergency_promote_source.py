@@ -17,10 +17,47 @@ def section(script, begin, end):
     return script.split(begin, 1)[1].split(end, 1)[0]
 
 
+
+class ReleaseStateCleanupSourceTests(unittest.TestCase):
+    def test_plan_requires_exact_returned_inactive_candidate_and_checks_references(self):
+        candidate = section(PRIMARY, "function Assert-ReturnedReleaseState {", "function Get-ReleaseStateRetirementPath {")
+        for token in ("'Returned'", "$Record.activated", "$Record.probesPassed", "'registryReturnAttempt'",
+                      "$Record.runtime.pilotId", "$Holder.Id", "$Holder.HostConfig.RestartPolicy.Name",
+                      "$State[0].Name", "$State[0].RW"):
+            self.assertIn(token, candidate)
+        plan = section(PRIMARY, "function Get-ReleaseStateCleanupPlan {", "function Assert-ReleaseStateCleanupPins {")
+        for token in ("Get-BackupCleanupPlan -PinsOnly", "'auto-check.json'", "Assert-ReturnedReleaseState",
+                      "Assert-BackupCleanupUnheld", "$Text.IndexOf($Row.id,", "$Text.IndexOf($Row.holderId,",
+                      "RELEASE_STATE_CLEANUP_PROTECTED_REFERENCE", "Assert-RegistryCandidateInactive",
+                      "Fortis\\OwnerEvidence"):
+            self.assertIn(token, plan)
+        self.assertNotIn("'rm'", plan)
+
+    def test_confirmation_and_prepared_receipt_precede_effects(self):
+        action = section(PRIMARY, "function Release-State-Cleanup {", "function Assert-ReleaseStateCleanupSelectionSelfTest {")
+        tokens = ("if($PreviewOnly){return}", "Read-Host", "Same-Json (Get-ReleaseStateCleanupPlan $Ids) $Plan",
+                  "phase='Prepared'", "Write-Private $ReceiptPath $Result",
+                  "Docker-Text @('container','rm',$Row.holderId)", "RELEASE_STATE_CLEANUP_HOLDER_REMOVAL_UNCONFIRMED",
+                  "Docker-Text @('volume','rm',$Row.volume)", "Get-BackupCleanupPlan -PinsOnly",
+                  "$Receipt.result.phase='Complete'", "FORTIS_RELEASE_STATE_CLEANUP_VERIFIED")
+        positions = [action.index(token) for token in tokens]
+        self.assertEqual(positions, sorted(positions))
+        for token in ("'--force'", "'-f'", "'-v'", "Write-Private $PrimaryPointer", "Write-Private $AttemptPointer"):
+            self.assertNotIn(token, action)
+        self.assertIn("$Result.phase='RecoveryRequired'", action)
+
+    def test_historical_return_is_fenced_before_mutation(self):
+        branch = section(MANAGE, "$ControllerLock=Open-ReleaseControllerLock\ntry {\n", "if($Action -cin @('Backup','Promote'))")
+        self.assertLess(branch.index("Assert-ReleaseStateAttemptAvailable"), branch.index("Ensure-Vault"))
+        fence = section(PRIMARY, "function Assert-ReleaseStateAttemptAvailable {", "function Get-ReleaseStateCleanupVolume {")
+        self.assertIn("Test-Path -LiteralPath (Get-ReleaseStateRetirementPath $Id)", fence)
+        self.assertIn("Assert-ReleaseStateCleanupSelectionSelfTest", MANAGE)
+
+
 class BackupCleanupSourceTests(unittest.TestCase):
     def test_owner_action_is_separate_from_release_and_vault(self):
-        dispatch = section(MANAGE, "if($Action -eq 'BackupCleanup'){", "\nif(-not (Test-Path -LiteralPath $ReleaseBase))")
-        for token in ("@('Action','BackupIds','Preview','SourceSha')", "RELEASE_WINDOWS_SOURCE_DIRTY",
+        dispatch = section(MANAGE, "if($Action -cin @('BackupCleanup','ReleaseStateCleanup')){", "\nif(-not (Test-Path -LiteralPath $ReleaseBase))")
+        for token in ("@('Action',$SelectionKey,'Preview','SourceSha')", "'BackupIds'}else{'RunIds'", "RELEASE_WINDOWS_SOURCE_DIRTY",
                       "RELEASE_WINDOWS_MAIN_REQUIRED", "RELEASE_WINDOWS_SHA_MISMATCH",
                       "Assert-DirectoryAcl $ReleaseBase", "Open-ReleaseControllerLock",
                       "Backup-Cleanup $BackupIds -PreviewOnly:$Preview", "$ControllerLock.Dispose()"):
@@ -49,7 +86,7 @@ class BackupCleanupSourceTests(unittest.TestCase):
         self.assertNotIn("('volume','rm'", plan)
 
     def test_preview_and_confirmation_precede_only_exact_effect_and_readback(self):
-        action = section(PRIMARY, "function Backup-Cleanup {", "function Promote-Primary {")
+        action = section(PRIMARY, "function Backup-Cleanup {", "function Assert-ReturnedReleaseState {")
         tokens = ("Get-BackupCleanupPlan $Ids", "if($PreviewOnly){return}", "Read-Host",
                   "BACKUP_CLEANUP_OWNER_GO_REQUIRED", "Same-Json (Get-BackupCleanupPlan $Ids) $Plan",
                   "Write-Private $ResultPath $Result", "Get-BackupCleanupVolumeIdentity $Row.id",
