@@ -68,6 +68,29 @@ class BoundedReleaseProcessSourceTests(unittest.TestCase):
         self.assertIn("Assert-Checked-Source-Receipt $script:R.sourceReceipt",source)
         self.assertIn("Assert-SourceUnchanged",source)
 
+    def test_timing_is_host_only_and_preserves_backup_boundaries(self):
+        source=(DEPLOY / "Manage-Integrations.ps1").read_text()
+        timing=source.split("function Write-ReleaseTiming {",1)[1].split(
+            "function Assert-ReleaseTimingSelfTest {",1)[0]
+        self.assertIn("Write-Host",timing)
+        self.assertIn("$script:ReleaseClock.ElapsedMilliseconds",timing)
+        self.assertIn("[DateTime]::UtcNow",timing)
+        self.assertNotIn("Write-Private",timing)
+        self.assertNotIn("$Payload",timing)
+        self.assertIn("FORTIS_RELEASE_TIMING_SELFTEST_PASS",source)
+        helper=source.split("function State-Helper {",1)[1].split("\nfunction Ensure-Vault {",1)[0]
+        self.assertLess(helper.index("'_BEGIN'"),helper.index("(Private-Process"))
+        self.assertLess(helper.index("(Private-Process"),helper.index("'_END'"))
+        backup=(DEPLOY / "Primary-Gateway.ps1").read_text().split(
+            "function Backup-Primary {",1)[1].split("function Read-Emergency-Promote-Binding {",1)[0]
+        markers=("BACKUP_STOP_REQUEST","BACKUP_SOURCE_EXITED","BACKUP_SOURCE_RECEIPT_READY",
+                 "BACKUP_CLONE_VERIFIED","BACKUP_RECORD_COMMITTED","BACKUP_RESTART_BEGIN",
+                 "BACKUP_HEALTH_ADMITTED")
+        offsets=[backup.index("Write-ReleaseTiming '"+m+"'") for m in markers]
+        self.assertEqual(offsets,sorted(offsets))
+        self.assertLess(backup.index("Same-Json (Receipt $P.stateVolume) $Before"),offsets[3])
+        self.assertLess(backup.index("Wait-Healthy $C.Id;Admit"),offsets[-1])
+
     def test_nonsecret_markers_localize_before_stop_source(self):
         source = (DEPLOY / "Manage-Integrations.ps1").read_text()
         markers = (
