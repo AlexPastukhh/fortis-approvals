@@ -2,6 +2,8 @@
 import contextlib
 import importlib.util
 import io
+import json
+from unittest.mock import patch
 from pathlib import Path
 import sys
 import tempfile
@@ -31,13 +33,42 @@ class OfflineRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RUNNER.suite_commands(root, sys.executable, ["test_x.py", "test_x.py"])
 
+    def test_expansion_preserves_exact_membership_and_module_boundaries(self):
+        github = ["test_a.C.test_a", "test_a.C.test_b", "test_b.C.test_a"]
+        native = ["test_native_workflow.C.test_a", "test_native_workflow.C.test_b"]
+        commands = [
+            ("fortis_approvals/integrations/github/tests", ["old-github"]),
+            ("test_native_workflow.py", ["old-native"]),
+            ("test_other.py", ["other"]),
+        ]
+        with patch.object(RUNNER.subprocess, "check_output",
+                          side_effect=[json.dumps(github), json.dumps(native)]):
+            expanded = RUNNER.expanded_commands(ROOT, sys.executable, commands)
+        flat = RUNNER.ordered_commands(expanded)
+        self.assertEqual(flat, RUNNER.ordered_commands(list(reversed(expanded))))
+        self.assertEqual(len(flat), 5)
+        self.assertEqual(set(label for label, _ in flat),
+                         {label for _, label, _ in expanded})
+        selected = [name for label, cmd in flat if ":" in label for name in cmd[4:]]
+        self.assertCountEqual(selected, github + native)
+        self.assertEqual(dict(flat)["github:test_a"][4:], github[:2])
+        with self.assertRaises(ValueError):
+            RUNNER.ordered_commands(expanded + [expanded[0]])
+
+    def test_invalid_discovery_fails_closed(self):
+        commands = [("test_native_workflow.py", ["old-native"])]
+        for ids in ([], ["duplicate", "duplicate"]):
+            with patch.object(RUNNER.subprocess, "check_output", return_value=json.dumps(ids)):
+                with self.assertRaises(ValueError):
+                    RUNNER.expanded_commands(ROOT, sys.executable, commands)
+
     def test_failure_and_empty_suite_cannot_pass(self):
         commands = [
             ("pass", [sys.executable, "-c", "print('PASS')"]),
             ("failure", [sys.executable, "-c", "raise SystemExit(7)"]),
             ("empty", [sys.executable, "-c", "print('Ran 0 tests')"]),
         ]
-        for workers in (1, 2):
+        for workers in (1, 2, 4):
             with self.subTest(workers=workers):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):

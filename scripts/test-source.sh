@@ -5,10 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
 
-# Two independent processes in hosted CI; local serial remains available.
-# Provider discovery and mandatory suite execution share the same runner.
+# Public-repository ubuntu-latest provides four vCPUs.
+# Retain the original one-worker local mode and the exact pinned workflow.
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
-  default_jobs=2
+  default_jobs=4
 else
   default_jobs=1
 fi
@@ -183,7 +183,6 @@ tests=(
 )
 "$PYTHON" -B scripts/run-offline-suites.py --python "$PYTHON" --jobs "$jobs" "${tests[@]}"
 
-# Keep the pinned Source CI workflow byte-identical; this existing entrypoint
-# also runs the mandatory isolated browser-logic tests. Missing Node fails CI.
+# Mandatory isolated browser-logic tests; missing Node fails CI.
 echo '=== local_deny_ui.test.cjs + ui.test.cjs ==='
 node --test fortis_approvals/tests/local_deny_ui.test.cjs fortis_approvals/tests/ui.test.cjs
