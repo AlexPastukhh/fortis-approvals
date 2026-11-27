@@ -76,6 +76,35 @@ def materialize(git, repository, revision, destination):
     return dict(files=len(entries), bytes=total)
 
 
+def decode_source_bundle(response, *, repository, ref, expected):
+    require(type(response) is dict and set(response) == {
+        'repository','ref','sha','bundleSha256','bundle'} and
+        response['repository'] == repository and response['ref'] == ref and
+        response['sha'] == expected and type(response['bundleSha256']) is str and
+        re.fullmatch('[0-9a-f]{64}', response['bundleSha256']) and
+        type(response['bundle']) is str and
+        0 < len(response['bundle']) <= (MAX_BUNDLE+2)//3*4,
+        'PUBLISHER_BUNDLE_RESPONSE_INVALID')
+    try:
+        data = base64.b64decode(response['bundle'], validate=True)
+    except (ValueError, UnicodeError):
+        raise Denied('PUBLISHER_BUNDLE_INVALID') from None
+    require(0 < len(data) <= MAX_BUNDLE and hashlib.sha256(data).hexdigest() ==
+            response['bundleSha256'], 'PUBLISHER_BUNDLE_DIGEST_INVALID')
+    return data
+
+
+def import_source_bundle(git, repository, path, *, expected, target):
+    sha(expected)
+    heads = git.text(['bundle','list-heads',path], cwd=repository)
+    require(heads == expected+' refs/heads/transfer', 'PUBLISHER_BUNDLE_REF_INVALID')
+    git.run(['bundle','verify',path], cwd=repository)
+    git.run(['fetch','--no-tags','--no-write-fetch-head',path,
+        'refs/heads/transfer:refs/heads/'+target], cwd=repository, protocols='file')
+    require(git.text(['rev-parse','refs/heads/'+target], cwd=repository) ==
+            expected, 'PUBLISHER_SOURCE_SHA_CHANGED')
+
+
 class SourceView:
     def __init__(self, gateway, folder):
         self.gateway = gateway
@@ -88,31 +117,12 @@ class SourceView:
     def _bundle(self, ref, expected, target):
         response = self.gateway.post('/v1/git/fetch', dict(
             repository=REPOSITORY, ref=ref, expectedSha=expected))
-        require(type(response) is dict and set(response) == {
-            'repository','ref','sha','bundleSha256','bundle'} and
-            response['repository'] == REPOSITORY and response['ref'] == ref and
-            response['sha'] == expected and type(response['bundleSha256']) is str and
-            re.fullmatch('[0-9a-f]{64}', response['bundleSha256']) and
-            type(response['bundle']) is str and
-            0 < len(response['bundle']) <= (MAX_BUNDLE+2)//3*4,
-            'PUBLISHER_BUNDLE_RESPONSE_INVALID')
-        try:
-            data = base64.b64decode(response['bundle'], validate=True)
-        except (ValueError, UnicodeError):
-            raise Denied('PUBLISHER_BUNDLE_INVALID') from None
-        require(0 < len(data) <= MAX_BUNDLE and hashlib.sha256(data).hexdigest() ==
-                response['bundleSha256'], 'PUBLISHER_BUNDLE_DIGEST_INVALID')
+        data = decode_source_bundle(response, repository=REPOSITORY, ref=ref, expected=expected)
         path = self.folder / (target + '.bundle')
         with path.open('xb') as stream:
             os.chmod(path, 0o600)
             stream.write(data)
-        heads = self.git.text(['bundle','list-heads',path], cwd=self.repository)
-        require(heads == expected+' refs/heads/transfer', 'PUBLISHER_BUNDLE_REF_INVALID')
-        self.git.run(['bundle','verify',path], cwd=self.repository)
-        self.git.run(['fetch','--no-tags','--no-write-fetch-head',path,
-            'refs/heads/transfer:refs/heads/'+target], cwd=self.repository, protocols='file')
-        require(self.git.text(['rev-parse','refs/heads/'+target], cwd=self.repository) ==
-                expected, 'PUBLISHER_SOURCE_SHA_CHANGED')
+        import_source_bundle(self.git, self.repository, path, expected=expected, target=target)
         return response['bundleSha256']
 
     def acquire(self, *, main_sha, head_sha, base_sha, task_branch):

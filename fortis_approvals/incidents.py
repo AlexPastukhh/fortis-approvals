@@ -390,11 +390,20 @@ class IncidentOwnerPortal(OwnerShellPortal):
 
     def _owner_view(self, row):
         action = (row['request']['service'], row['request']['operation'])
-        return {**row, 'requiresStrongProof': self._strong(row),
-                'approvalAllowed': (action not in self.blocked_approvals and
-                                    self._approval_policy_current(row)),
-                'incidentClosure': self.core.owner_incident_closure(row['requestId'])
-                        if row['state']=='CLOSED_UNCONFIRMED' else None}
+        view={**row, 'requiresStrongProof': self._strong(row),
+              'approvalAllowed': (action not in self.blocked_approvals and
+                                  self._approval_policy_current(row)),
+              'incidentClosure': self.core.owner_incident_closure(row['requestId'])
+                      if row['state']=='CLOSED_UNCONFIRMED' else None}
+        if action==('release','merge_and_register') and row['state']=='UNCERTAIN':
+            from .extensions.merge_register import MergeRegisterAdapter
+            adapter=self.core.adapters.get('release')
+            if type(adapter) is MergeRegisterAdapter:
+                try:
+                    view['mergeRegistrationAvailable']=adapter.registration_available(row['requestId'])
+                except Denied:
+                    view['mergeRegistrationAvailable']=False
+        return view
 
     def __call__(self, env, start):
         method=env.get('REQUEST_METHOD')

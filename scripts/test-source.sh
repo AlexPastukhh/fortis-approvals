@@ -180,6 +180,30 @@ tests=(
   test_registry_owner_runtime_isolation.py
   test_registry_owner_storage_denial.py
   test_registry_enrollment_cutover.py
+  # Registry Functional V1 successor (source-only; no live grants).
+  test_composite_authority.py
+  test_composite_executor.py
+  test_composite_journal.py
+  test_composite_preservation.py
+  test_composite_successor.py
+  test_maintenance_boundaries.py
+  test_maintenance_gate.py
+  test_maintenance_http.py
+  test_merge_register.py
+  test_merge_source_transport.py
+  test_native_merge_discovery.py
+  test_registry_group_binding.py
+  test_registry_release_domain.py
+  test_registry_release_event_journal.py
+  test_registry_release_planner.py
+  test_registry_semantic_contract.py
+  test_registry_source_lineage.py
+  test_registry_transition_contract.py
+  test_semantic_access.py
+  test_semantic_enrollment.py
+  test_semantic_wire.py
+  test_successor_evidence.py
+  test_transition_authority.py
 )
 "$PYTHON" -B scripts/run-offline-suites.py --python "$PYTHON" --jobs "$jobs" "${tests[@]}"
 

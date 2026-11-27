@@ -40,8 +40,9 @@ class VirtualKey:
         if cross_origin: value['crossOrigin'] = True
         return json.dumps(value, separators=(',', ':')).encode()
 
-    def enroll(self, begin):
-        client = self.client_data(begin['options'], 'webauthn.create')
+    def enroll(self, begin, *, origin=None):
+        options = {} if origin is None else {'origin':origin}
+        client = self.client_data(begin['options'], 'webauthn.create', **options)
         key = cbor.encode(ES256.from_cryptography_key(self.secret.public_key()))
         auth = (hashlib.sha256(b'localhost').digest() + bytes([0x45]) + (0).to_bytes(4,'big')+
                 bytes(16) + len(self.cred_id).to_bytes(2,'big') + self.cred_id + key)
@@ -82,9 +83,10 @@ class G2WebAuthnTest(unittest.TestCase):
         return dict(requestId=str(uuid.uuid4()),service='synthetic',operation='set_ask',
                     target='R3',params={'value':'after'},expectedVersion=0,reason='test')
 
-    def call(self,path,body=None,cookie=None,csrf=None,origin='http://localhost:18990',method=None):
+    def call(self,path,body=None,cookie=None,csrf=None,origin='http://localhost:18990',method=None,
+             *, host='localhost:18990'):
         raw=body if isinstance(body,bytes) else json.dumps(body or {}).encode()
-        env={'HTTP_HOST':'localhost:18990','REQUEST_METHOD':method or ('POST' if body is not None else 'GET'),
+        env={'HTTP_HOST':host,'REQUEST_METHOD':method or ('POST' if body is not None else 'GET'),
              'PATH_INFO':path,'QUERY_STRING':'','wsgi.input':BytesIO(raw),
              'CONTENT_LENGTH':str(len(raw)),'CONTENT_TYPE':'application/json'}
         if method == 'POST' or body is not None:env['HTTP_ORIGIN']=origin

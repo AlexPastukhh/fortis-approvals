@@ -79,3 +79,66 @@
 }
 
 .policy-check[hidden]{display:none}
+
+#semantic-registry-view[hidden],#semantic-report-form[hidden]{display:none}
+#semantic-registry-rows{overflow:auto;max-width:100%}
+.semantic-table{border-collapse:collapse;width:100%;font-size:.875rem}
+.semantic-table th,.semantic-table td{border:1px solid #8887;padding:8px;vertical-align:top;overflow-wrap:anywhere;max-width:15rem;text-align:left}
+#semantic-report-form textarea{display:block;width:95%;min-height:5rem}
+#semantic-registry-result{max-height:45vh;overflow:auto}
+
+/* Low-glare visual treatment, explicit tokens for both color schemes.
+   Meaning is conveyed by labels as well as color. No logic changes. */
+:root{color-scheme:light;--page:#f4f6f8;--surface:#fbfcfd;--text:#293442;--muted:#586677;--border:#d9e0e7;--soft:#eef2f6;--selection:#eaf1f8;--selection-border:#8ca9c8;--accent:#355f8b;--link:#315d89;--ok:#326849;--warn:#80571e;--bad:#a13d42;--primary:#356b50;--primary-hover:#29563e;--open-bg:#e5eee7;--closed-bg:#ede9f2;--closed-text:#705781;--focus:#3b73a6}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--page:#171c23;--surface:#1e252e;--text:#d5dde6;--muted:#a3afbf;--border:#37414e;--soft:#272f3a;--selection:#283b4c;--selection-border:#6587a7;--accent:#8aafcf;--link:#9cbddd;--ok:#9bc5a8;--warn:#dfba80;--bad:#e1a1a1;--primary:#36694e;--primary-hover:#40795a;--open-bg:#293e33;--closed-bg:#382e45;--closed-text:#c8b3db;--focus:#9cbddd}}
+:root[data-theme="dark"]{color-scheme:dark;--page:#171c23;--surface:#1e252e;--text:#d5dde6;--muted:#a3afbf;--border:#37414e;--soft:#272f3a;--selection:#283b4c;--selection-border:#6587a7;--accent:#8aafcf;--link:#9cbddd;--ok:#9bc5a8;--warn:#dfba80;--bad:#e1a1a1;--primary:#36694e;--primary-hover:#40795a;--open-bg:#293e33;--closed-bg:#382e45;--closed-text:#c8b3db;--focus:#9cbddd}
+html{background:var(--page);color:var(--text)}
+body{line-height:1.55}
+button,select{background:var(--surface);color:var(--text)}
+button:hover:not(:disabled){background:var(--soft)}
+button:disabled{opacity:.6}
+button.active,.request.active{outline:none;border-color:var(--selection-border);background:var(--selection)}
+button.primary,.merge-panel .primary{background:var(--primary);border-color:var(--primary);color:#fff}
+button.primary:hover:not(:disabled),.merge-panel .primary:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover)}
+button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+article,.request,dialog{background:var(--surface);color:var(--text)}
+a,.pr-nav a{color:var(--link)}
+.pr-nav a{text-decoration:none}.pr-nav a:hover{text-decoration:underline}
+.pr-pill{background:var(--open-bg);color:var(--ok);font-weight:600}
+.pr-pill.closed{background:var(--closed-bg);color:var(--closed-text)}
+.callout{background:var(--soft);color:var(--text)}
+.callout.warn{border-color:var(--warn)}.callout.bad{border-color:var(--bad)}.callout.ok{border-color:var(--ok)}
+.demo{background:var(--soft);border-style:solid;border-color:var(--border)}
+.registry-summary{padding:10px 0}
+.registry-table tbody tr:hover{background:var(--soft)}
+h1,h2,h3,strong{letter-spacing:normal}
+.eyebrow{letter-spacing:.025em}
+.theme-control{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+/* Personal theme editor; only presentation tokens are configurable. */
+#theme-editor{margin:12px 0 20px;background:var(--surface);padding:14px}
+#theme-editor>summary{font-size:15px}
+nav button.active{box-shadow:inset 0 -2px var(--accent)}
+.palette-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px 18px;margin:15px 0}
+.palette-item{display:grid;grid-template-columns:1fr 40px 90px;gap:8px;align-items:center;font-size:13px}
+.palette-item input[type=color]{width:40px;height:34px;border:1px solid var(--border);border-radius:5px;background:var(--surface);padding:3px;cursor:pointer}
+.palette-item input[type=text]{min-width:0;width:100%;font:13px monospace;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);padding:7px}
+.palette-item input[aria-invalid=true]{border-color:var(--bad)}
+.palette-preview{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px;border:1px solid var(--border);border-radius:6px;margin:12px 0;background:var(--surface)}
+#palette-contrast{font-size:13px;margin:10px 0}
+#palette-json{display:block;width:100%;box-sizing:border-box;min-height:110px;font:12px monospace;background:var(--soft);color:var(--text);border:1px solid var(--border);padding:10px;border-radius:6px}
+button.primary,.merge-panel .primary{color:var(--primary-text,#fff)}
+button.primary:hover:not(:disabled),.merge-panel .primary:hover:not(:disabled){background:color-mix(in srgb,var(--primary) 88%,var(--primary-text));border-color:var(--primary)}
+
+/* Live Portal keeps original layout, controls and CSP; inherit V2 palette. */
+html{background:var(--page);color:var(--text)}
+body{color:var(--text)}
+header,article,.policy-editor,#powershell-view{border-color:var(--border)}
+button,select,input,textarea{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px}
+nav button[aria-pressed=true]{background:var(--selection);border-color:var(--selection-border);box-shadow:inset 0 -2px var(--accent)}
+pre{background:var(--soft);color:var(--text)}
+.small,.muted{color:var(--muted)}
+#status.error,.bad{color:var(--bad)}.warn{color:var(--warn)}.ok{color:var(--ok)}
+.semantic-table th,.semantic-table td{border-color:var(--border)}
+.semantic-table tr:has(input:checked){background:var(--selection)}
+#semantic-actual-source[hidden]{display:none}
+#semantic-actual-source label{margin:6px 0}

@@ -10,10 +10,21 @@
   <button id="history-tab" type="button">История</button>
   <button id="powershell-tab" type="button">PowerShell</button>
   <button id="providers-tab" type="button">API и политики</button>
+  <button id="semantic-registry-tab" type="button" hidden>Registry</button>
   <button id="refresh" type="button">Обновить</button>
   <button id="notifications" type="button">Включить уведомления</button>
+  <label class="theme-control" for="theme">Тема <select id="theme"><option value="auto">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
 </nav>
 <p class="small">Очередь заявок обновляется каждые 5 секунд, даже когда открыта вкладка PowerShell.</p>
+<details id="theme-editor"><summary>Настройки оформления</summary>
+<p class="muted">Изменения применяются сразу. Светлая и тёмная палитры сохраняются отдельно в этом браузере, если локальное хранилище доступно.</p>
+<div class="actions"><label for="palette-mode">Редактируемая тема</label><select id="palette-mode"><option value="light">Светлая</option><option value="dark">Тёмная</option></select><button id="palette-reset">Сбросить эту тему</button><button id="palette-reset-all">Сбросить обе темы</button></div>
+<div class="palette-grid" id="palette-fields"></div>
+<div class="palette-preview"><button type="button" class="primary">Primary</button><button type="button">Secondary</button><span class="status ok">Успех</span><span class="status warn">Внимание</span><span class="status bad">Ошибка</span><span class="muted">Вторичный текст</span><span class="pr-pill closed">Merged</span></div>
+<p id="palette-contrast" role="status"></p><p id="palette-storage" class="muted" role="status"></p>
+<details><summary>Экспорт / импорт палитры (JSON)</summary><p class="muted">Скопируйте настройки для переноса в другой браузер. Импорт принимает только известные цветовые токены и HEX #RRGGBB.</p><textarea id="palette-json" aria-label="JSON палитры" spellcheck="false"></textarea><div class="actions"><button id="palette-export">Получить JSON</button><button id="palette-import">Применить JSON</button></div><p id="palette-feedback" role="status"></p></details>
+</details>
+
 <details id="registry-functional-panel" hidden>
  <summary>Registry — контролируемый Functional V1</summary>
  <p class="small">Создайте review для открытого PR и подтвердите его ключом в очереди заявок. Когда исходная заявка получит статус EXECUTED, выполните merge в GitHub и сохраните evidence. Ingest создаёт локального кандидата.</p>
@@ -34,14 +45,51 @@
  <button id="registry-refresh" type="button">Прочитать ревизию</button>
  <pre id="registry-functional-result" role="status" aria-live="polite"></pre>
 </details>
+<div id="semantic-discovery-status" role="status" hidden></div>
 <div class="layout" id="approval-view"><div id="requests" aria-label="Заявки"></div><article id="detail"><p>Выберите заявку.</p></article></div>
+<section id="semantic-registry-view" hidden aria-label="Registry">
+ <h2>Registry</h2>
+ <p id="semantic-registry-status" role="status">Данные не загружены.</p>
+ <div class="provider-controls">
+  <button id="semantic-board" type="button">Компоненты</button>
+  <button id="semantic-active" type="button">Активные релизы</button>
+  <label>Показать <select id="semantic-filter">
+   <option value="actionable">Требуют действий</option>
+   <option value="all">Все</option>
+   <option value="unknown">Неизвестные</option>
+  </select></label>
+  <button id="semantic-maintenance" type="button">Ограничения</button>
+  <button id="semantic-plan" type="button" disabled>Рассчитать план</button>
+  <button id="semantic-begin" type="button" disabled>Начать релиз</button>
+  <button id="semantic-report" type="button" disabled>Зарегистрировать результат</button>
+  <button id="semantic-next" type="button" hidden>Следующая страница</button>
+  <button id="semantic-readback" type="button" hidden>Проверить исходную заявку</button>
+ </div>
+ <div id="semantic-registry-rows"></div>
+ <section id="semantic-report-form" hidden>
+  <label>Результат <select id="semantic-outcome"><option>REPORTED_COMPLETE</option><option>REPORTED_FAILED</option><option>UNKNOWN</option></select></label>
+  <label>Контекст <select id="semantic-context"><option>release</option><option>initial</option><option>external</option><option>historical</option><option>rollback</option></select></label>
+  <fieldset id="semantic-actual-source" hidden><legend>Фактические исходники (не Desired)</legend>
+   <label><input id="semantic-source-unknown" type="checkbox"> Источник неизвестен (только initial/external + UNKNOWN)</label>
+   <label>Source SHA <input id="semantic-source-sha" maxlength="40" autocomplete="off"></label>
+   <label>Catalog commit SHA <input id="semantic-catalog-commit" maxlength="40" autocomplete="off"></label>
+   <label>Catalog SHA256 <input id="semantic-catalog-sha" maxlength="64" autocomplete="off"></label>
+   <label>Artifact SHA256 (если известен) <input id="semantic-artifact-sha" maxlength="64" autocomplete="off"></label>
+  </fieldset>
+  <label>Время наблюдения <input id="semantic-observed-at" type="datetime-local"></label>
+  <label>SHA256 свидетельств <textarea id="semantic-evidence" maxlength="1100"></textarea></label>
+  <label>Сообщение владельца <textarea id="semantic-assertion" maxlength="2000"></textarea></label>
+  <button id="semantic-report-confirm" type="button">Отправить результат</button>
+ </section>
+ <div id="semantic-registry-result" role="status"></div>
+</section>
 <section id="providers-view" hidden aria-label="API и политики">
  <h2>Доступ к API</h2>
  <p class="small">Выберите провайдер и операцию. Изменять можно только те правила, для которых сервер явно разрешил переход.</p>
  <div class="provider-controls">
   <div>
-   <label for="providers-select">Провайдер</label>
-   <select id="providers-select"><option value="">Все провайдеры</option></select>
+   <label for="providers-select">Категория</label>
+   <select id="providers-select"><option value="">Все категории</option></select>
   </div>
   <div>
    <label for="providers-filter">Поиск по методу, actor, target или политике</label>

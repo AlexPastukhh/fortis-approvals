@@ -48,13 +48,13 @@ function signedOut(message){
  if($('policy-review-button'))clearPolicyReview('Сессия владельца завершена.');
  policyPreviewRow=null;providerInventory=null;policyReviewCapabilities=null;
  resetLocalDenyPanel();resetUnifiedPolicyPanel();
- resetRegistryFunctional();
+ resetRegistryFunctional();resetSemanticRegistry();
  if(message)status(message,true);
 }
 async function login(){const begin=await api('/v1/login/begin',{});const response=await ceremony(begin);
  const result=await api('/v1/login/finish',{ceremonyId:begin.ceremonyId,response});csrf=result.csrf;
  $('signin').hidden=true;$('registration').hidden=true;$('workspace').hidden=false;status('Вход подтверждён');
- pendingIds=null;await refresh();await loadRegistryFunctional();}
+ pendingIds=null;await refresh();await loadRegistryFunctional();await loadSemanticRegistry();}
 function notifyOnNewPending(rows){
  const next=new Set(rows.map(r=>r.requestId));
  if(pendingIds!==null){
@@ -149,6 +149,21 @@ function show(row){
    area.append(err);
   }
  }
+ if(row.request.service==='release'&&row.request.operation==='merge_and_register'){
+  const p=row.request.params;
+  if(/^[-A-Za-z0-9_.]+\/[-A-Za-z0-9_.]+$/.test(p.repository)
+     &&Number.isInteger(p.number)&&p.number>0&&p.number<=1000000){
+   const pr=document.createElement('a');pr.href='https://github.com/'+p.repository+'/pull/'+p.number;
+   pr.target='_blank';pr.rel='noopener noreferrer';pr.textContent=p.repository+' #'+p.number;
+   const checks=document.createElement('a');checks.href=pr.href+'/checks';
+   checks.target='_blank';checks.rel='noopener noreferrer';checks.textContent='Проверки GitHub';
+   const links=document.createElement('p');links.append(pr,document.createTextNode(' · '),checks);
+   area.append(links,line('HEAD',p.headSha),line('Base',p.baseSha),
+    line('Release Impact',p.classification==='no-deployment'?'Без развёртывания':
+     p.targets.map(t=>t.subject.targetId+' · '+t.subject.environment+' · '+t.actions.join(', ')).join('; ')),
+    line('Ревизия Registry',p.expectedSourceRevision));
+  }
+ }
  const controls=document.createElement('div');controls.className='detail-actions';
  const feedback=document.createElement('p');feedback.id='detail-feedback';
  feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
@@ -163,6 +178,22 @@ function show(row){
    }else btn.onclick=action(()=>decide(row,decision));
    controls.append(btn);
   }
+ }
+ if(row.request.service==='release'&&row.request.operation==='merge_and_register'
+    &&['REJECTED','EXPIRED','STALE'].includes(row.state)&&row.failure!=='MERGE_ALREADY_EXTERNAL'){
+  const button=document.createElement('button');button.type='button';button.textContent='Предложить снова';
+  button.onclick=action(async()=>{
+   const next=await api(semanticPrefix+'/repropose',{requestId:row.requestId},true);
+   switchWorkspaceTab('pending');await refresh();
+   show(await api('/v1/owner/requests/'+next.requestId));
+  });
+  controls.append(button);
+ }
+ if(row.mergeRegistrationAvailable===true || row.failure==='MERGE_ALREADY_EXTERNAL'){
+  const external=row.failure==='MERGE_ALREADY_EXTERNAL';
+  const btn=document.createElement('button');btn.type='button';
+  btn.textContent=external?'Зарегистрировать merge из GitHub':'Зарегистрировать подтверждённый merge';
+  btn.onclick=action(()=>registerReviewedMerge(row,external));controls.append(btn);
  }
  if(['UNCERTAIN','DISPATCHED'].includes(row.state)){
   const btn=document.createElement('button');btn.type='button';
@@ -267,6 +298,25 @@ async function decide(row,decision){
   throw err;
  }finally{decisionBusy=false;await refresh();}
 }
+async function registerReviewedMerge(row,external){
+ if(decisionBusy)return;
+ decisionBusy=true;lockDetailActions(true);
+ try{
+  const path=semanticPrefix+(external?'/register-external':'/register-confirmed');
+  const begin=await api(path+'/begin',{requestId:row.requestId},true);
+  let result=begin;
+  if(!begin.state){
+   detailFeedback('Регистрация в Registry · '+begin.mergeSha+' · подтвердите ключом безопасности.');
+   const response=await ceremony(begin);
+   result=await api(path+'/finish',{requestId:row.requestId,fingerprint:begin.fingerprint,
+    ceremonyId:begin.ceremonyId,response},true);
+  }
+  show(await api('/v1/owner/requests/'+row.requestId));
+  const registered=['EXECUTED','EXTERNAL_REGISTERED'].includes(result.state);
+  detailFeedback(registered?'Merge зарегистрирован в Registry.':
+   'Исход записи требует проверки.',!registered);
+ }finally{decisionBusy=false;lockDetailActions(false);await refresh();}
+}
 async function reconcileUncertain(row){
  if(decisionBusy)return;
  decisionBusy=true;lockDetailActions(true);
@@ -365,10 +415,11 @@ $('enroll').onsubmit=action(async()=>{const begin=await api('/v1/enroll/begin',{
 function switchWorkspaceTab(which){
  if(which!=='providers'){resetLocalDenyPanel();resetUnifiedPolicyPanel();}
  tab=which;
- $('approval-view').hidden=which==='powershell'||which==='providers';
+ $('approval-view').hidden=['powershell','providers','semantic-registry'].includes(which);
+ $('semantic-registry-view').hidden=which!=='semantic-registry';
  $('powershell-view').hidden=which!=='powershell';
  $('providers-view').hidden=which!=='providers';
- for(const id of ['pending','unresolved','history','powershell','providers']){
+ for(const id of ['pending','unresolved','history','powershell','providers','semantic-registry']){
   $(''+id+'-tab').setAttribute('aria-pressed',String(which===id));
  }
 }
@@ -786,28 +837,30 @@ $('local-deny-confirm').onclick=action(confirmLocalDeny);
 $('local-deny-readback').onclick=action(readbackLocalDeny);
 
 let selectedProviderFilter='';
+function isCompositeRow(row){return row.operationKind==='composite'||(row.provider==='registry'&&['begin_release_group','report_release_results'].includes(row.operation))||(row.provider==='release'&&row.operation==='merge_and_register');}
+function providerCategory(row){return isCompositeRow(row)?'@composite':row.provider;}
 function providerFilterOptions(inventory){
  const counts=new Map();
  for(const provider of inventory.providers)counts.set(provider.provider,0);
- for(const row of inventory.operations)counts.set(row.provider,(counts.get(row.provider)??0)+1);
+ for(const row of inventory.operations)counts.set(providerCategory(row),(counts.get(providerCategory(row))??0)+1);
  return [...counts.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
 }
 function syncProviderFilter(){
  const select=$('providers-select'),previous=select.value??'';
  const options=providerFilterOptions(providerInventory);
  const all=document.createElement('option');all.value='';
- all.textContent='Все провайдеры ('+providerInventory.operations.length+')';
+ all.textContent='Все категории ('+providerInventory.operations.length+')';
  select.replaceChildren(all);
  for(const [provider,count] of options){
   const option=document.createElement('option');option.value=provider;
-  option.textContent=provider+' ('+count+')';select.append(option);
+  option.textContent=(provider==='@composite'?'Composite Actions':provider)+' ('+count+')';select.append(option);
  }
  select.value=options.some(([provider])=>provider===previous)?previous:'';
  selectedProviderFilter=select.value;
 }
 function visibleProviderRows(inventory,provider,query){
  const search=query.trim().toLowerCase();
- return inventory.operations.filter(row=>(!provider||row.provider===provider)&&[
+ return inventory.operations.filter(row=>(!provider||providerCategory(row)===provider)&&[
   row.provider,row.operation,row.actor,row.target,row.currentPolicy??row.configuredPolicy,row.effectivePolicy
  ].some(value=>String(value??'').toLowerCase().includes(search)));
 }
@@ -868,6 +921,10 @@ function renderUnifiedProviderCards(target,rows){
    if(eligible)input.onchange=()=>chooseUnified(row);
    const info=document.createElement('span');info.className='provider-rule-info';
    const name=document.createElement('strong');name.textContent=row.operation;info.append(name);
+   if(row.operationKind==='composite'){
+    const children=document.createElement('small');children.textContent=(row.children??[]).map(c=>c.service+'.'+c.operation+' v'+c.version).join(' → ')+(row.protectedOwnerGate?' · обязательное ASK':'');info.append(children);
+   }
+
    const scope=document.createElement('small');
    scope.textContent=(row.actor?'Actor: '+row.actor:'Общее правило')+
     (row.target?' · Target: '+row.target:' · Все target');
@@ -887,14 +944,14 @@ function displayProviderInventory(){
  if(!providerInventory)return;
  const provider=$('providers-select').value??'';
  const matching=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
- const total=providerInventory.operations.filter(row=>!provider||row.provider===provider).length;
+ const total=providerInventory.operations.filter(row=>!provider||providerCategory(row)===provider).length;
  // Capability controls WRITE permissions, not the presentation of a V2
  // inventory. Never switch to the legacy table during a capability refresh.
  const v2Inventory=providerInventory.policyEditorVersion===2;
  const rows=v2Inventory&&unifiedEnabled&&$('providers-editable-only').checked?
   matching.filter(canSelectUnified):matching;
  $('providers-summary').textContent=rows.length+' из '+total+' правил · '+
-  (provider||providerInventory.providers.length+' провайдеров')+
+  (provider==='@composite'?'Composite Actions':provider||providerInventory.providers.length+' провайдеров')+
   (v2Inventory?' · редактор V2':' · инвентаризация');
  if(!rows.length){
   const empty=document.createElement('p');empty.textContent=
@@ -1074,7 +1131,7 @@ $('providers-editable-only').addEventListener('change',()=>{
 $('providers-tab').onclick=action(async()=>{switchWorkspaceTab('providers');await loadProviderInventory();});
 
 $('powershell-execute').onclick=action(ownerPowerShellExecute);
-$('refresh').onclick=action(async()=>{await refresh();if(tab==='providers')await loadProviderInventory();});
+$('refresh').onclick=action(async()=>{await refresh();if(tab==='providers')await loadProviderInventory();await loadSemanticRegistry();if(tab==='semantic-registry')await semanticList();});
 $('notifications').onclick=action(allowNotifications);
 setInterval(()=>{if(csrf)refresh();},pollingIntervalMs);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&csrf)refresh();});
@@ -1139,4 +1196,292 @@ async function registryAction(kind){
 for(const kind of ['review','retain','ingest'])
  $('registry-'+kind).onclick=action(()=>registryAction(kind));
 $('registry-refresh').onclick=action(loadRegistryFunctional);
-api('/v1/owner/session').then(async data=>{csrf=data.csrf;$('signin').hidden=true;$('workspace').hidden=false;await refresh();await loadRegistryFunctional();}).catch(()=>{});
+// Live semantic panel: no mock data, no calculated deployment status.
+const semanticPrefix='/v1/owner/registry/semantic';
+let semanticCaps=null,semanticRows=[],semanticSelected=new Map(),semanticBusy=false,semanticEpoch=0;
+let semanticCursor=null,semanticView='list_components',semanticUnknown=null,semanticCatalog=null;
+const semanticPendingReads=new Map();
+function resetSemanticRegistry(){
+ semanticEpoch++;semanticCaps=null;semanticRows=[];semanticSelected.clear();semanticCursor=null;semanticPendingReads.clear();
+ $('semantic-registry-tab').hidden=true;$('semantic-registry-rows').replaceChildren();
+ $('semantic-registry-result').textContent='';$('semantic-report-form').hidden=true;
+ $('semantic-discovery-status').replaceChildren();$('semantic-discovery-status').hidden=true;
+ semanticControls();
+}
+function semanticControls(){
+ const ready=!!semanticCaps&&!semanticBusy&&!semanticUnknown&&semanticSelected.size>0;
+ const rows=[...semanticSelected.values()];
+ $('semantic-plan').disabled=!ready||rows.some(r=>!r.desired);
+ $('semantic-begin').disabled=!ready||rows.some(r=>!r.desired||r.activeAttempt||r.incidentStatus);
+ $('semantic-report').disabled=!ready||rows.some(r=>r.incidentStatus);
+ $('semantic-readback').hidden=!semanticUnknown;
+ $('semantic-next').hidden=!semanticCursor;$('semantic-next').disabled=semanticBusy;
+}
+function semanticRequest(operation,params,service='registry'){
+ return {requestId:crypto.randomUUID(),service,operation,target:semanticCaps.target,params,reason:'Owner Portal'};
+}
+function showDiscoveryStatus(rows,repository){
+ const box=$('semantic-discovery-status');box.replaceChildren();box.hidden=true;
+ if(!Array.isArray(rows)||!/^[-A-Za-z0-9_.]+\/[-A-Za-z0-9_.]+$/.test(repository))return;
+ const labels={CI_NOT_READY:'CI не подтверждён',DRAFT:'Черновик',BASE_NOT_MAIN:'Целевая ветка не main',
+  BASE_CHANGED:'Изменён base',DIFF_UNVERIFIED:'Diff не подтверждён',IMPACT_INVALID:'Release Impact не подтверждён',
+  DEPENDENCY_UNVERIFIED:'Зависимости не подтверждены',REVIEW_CHANGED:'Данные изменились после проверки',
+  PROPOSAL_UNAVAILABLE:'Создание заявки недоступно',
+  EXTERNAL_MERGE:'Слито в GitHub. Запись в Registry требует отдельной проверки'};
+ for(const row of rows){
+  if(row.state!=='BLOCKED'||!Number.isInteger(row.number)||row.number<1||row.number>1000000)continue;
+  const line=document.createElement('p'),link=document.createElement('a');
+  link.href='https://github.com/'+repository+'/pull/'+row.number;link.target='_blank';link.rel='noopener noreferrer';
+  link.textContent='PR #'+row.number;line.append(link,document.createTextNode(' — '+(labels[row.reason]??'Предложение заблокировано')));
+  box.append(line);
+ }
+ box.hidden=!box.childElementCount;
+}
+async function loadSemanticRegistry(){
+ if(!csrf)return;
+ const session=csrf,epoch=++semanticEpoch;
+ try{
+  const caps=await api(semanticPrefix+'/capabilities');
+  if(csrf!==session||epoch!==semanticEpoch)return;
+  if(caps.configured!==true){resetSemanticRegistry();return;}
+  semanticCaps=caps;$('semantic-registry-tab').hidden=false;
+  if(caps.discoveryConfigured){
+   $('semantic-discovery-status').replaceChildren();$('semantic-discovery-status').hidden=true;
+   try{const rows=await api(semanticPrefix+'/discover',{},true);
+    if(csrf!==session||epoch!==semanticEpoch)return;
+    showDiscoveryStatus(rows,caps.repository);await refresh();}
+   catch(err){if(csrf===session&&epoch===semanticEpoch){
+    const box=$('semantic-discovery-status');box.textContent='Обнаружение PR недоступно: '+err.message;box.hidden=false;
+   }}
+  }
+ }catch(err){if(csrf===session&&epoch===semanticEpoch)resetSemanticRegistry();}
+}
+function semanticText(parent,tag,text){const node=document.createElement(tag);node.textContent=String(text??'UNKNOWN');parent.append(node);return node;}
+function semanticDate(value){
+ return Number.isSafeInteger(value)?new Date(value*1000).toLocaleString():'Время неизвестно';
+}
+function semanticMaintenance(parent,profile,digest){
+ const details=document.createElement('details');parent.append(details);
+ semanticText(details,'summary','Профиль паузы');
+ if(!profile){
+  semanticText(details,'p','Ограничения не подтверждены.');
+  return;
+ }
+ details.append(line('Окно релиза',profile.beginRequired?'Обязательно':'Не требуется'));
+ details.append(line('Заморозка состояния',profile.stateFreeze?'Требуется':'Не требуется'));
+ const ops=profile.blockedOperations.map(op=>op.service+'.'+op.operation);
+ details.append(line('Явные блокировки',ops.length?ops.join(', '):'Нет'));
+ for(const note of profile.notes)semanticText(details,'p',note);
+ if(/^[0-9a-f]{64}$/.test(digest??''))details.append(line('Версия ограничений',digest));
+}
+function semanticRender(){
+ const box=$('semantic-registry-rows');box.replaceChildren();semanticSelected.clear();
+ const table=document.createElement('table');table.className='semantic-table';box.append(table);
+ const head=table.createTHead().insertRow();
+ for(const h of ['Выбор','Компонент','Installed','Desired','Owner Reported','Состояние','Действия'])semanticText(head,'th',h);
+ const filter=$('semantic-filter').value;
+ const rows=semanticView==='list_active_releases'?semanticRows:semanticRows.filter(row=>{
+  const unknown=['UNKNOWN','PLANNED_UNVERIFIED'].includes(row.planningState);
+  return filter==='all'||(filter==='unknown'?unknown:!unknown&&row.planningState!=='DEPLOYED');
+ });
+ for(const row of rows){
+  const tr=table.insertRow(),cell=tr.insertCell(),check=document.createElement('input');check.type='checkbox';
+  check.disabled=!row.deployable;cell.append(check);
+  const k=JSON.stringify(row.subject);check.onchange=()=>{if(check.checked)semanticSelected.set(k,row);else semanticSelected.delete(k);semanticControls();};
+  const link=document.createElement('button');link.type='button';link.textContent=row.subject.targetId+' · '+row.subject.environment;
+  const component=tr.insertCell();component.append(link);link.onclick=action(()=>semanticHistory(row));
+  semanticMaintenance(component,row.maintenanceProfile,row.restrictionDigest);
+  const installed=semanticText(tr,'td',row.installed?row.installed.source.sourceSha:'UNKNOWN');
+  if(row.installed)semanticText(installed,'p',row.installed.validity+' · '+semanticDate(row.installed.observedAt));
+  const desired=semanticText(tr,'td',row.desired?.source?.sourceSha??'UNKNOWN');
+  const pr=row.desired?.pullRequest;
+  if(pr?.repository===row.subject.repository&&/^[-A-Za-z0-9_.]+\/[-A-Za-z0-9_.]+$/.test(pr.repository)
+     &&Number.isInteger(pr.number)&&pr.number>0&&pr.number<=1000000){
+   const source=semanticText(desired,'p',row.desired.evidenceVerified?'Подтверждённый merge ':'Переход на новую версию ');
+   const prLink=semanticText(source,'a','PR #'+pr.number);
+   prLink.href='https://github.com/'+pr.repository+'/pull/'+pr.number;
+   prLink.target='_blank';prLink.rel='noopener noreferrer';
+  }
+  const reported=semanticText(tr,'td',row.ownerReported?.outcome??'UNKNOWN');
+  if(row.ownerReported)semanticText(reported,'p',row.ownerReported.actor+' · '+semanticDate(row.ownerReported.observedAt));
+  const planning={QUEUED:'Ожидает релиза',DEPLOYED:'Установлен',IN_PROGRESS:'Релиз идёт',
+   FAILED:'Ошибка релиза',PLANNED_UNVERIFIED:'Источник требует проверки',UNKNOWN:'Неизвестно'};
+  semanticText(tr,'td',(planning[row.planningState]??'Неизвестно')+(row.activeAttempt?' · активное окно':''));
+  semanticText(tr,'td',(row.outstandingActions??[]).join(', ')||'—');
+ }
+ semanticControls();
+}
+async function semanticRead(operation,params){
+ const key=JSON.stringify([operation,params,semanticCaps.target]);
+ const q=semanticPendingReads.get(key)??semanticRequest(operation,params),session=csrf;
+ const response=await api(semanticPrefix+'/read',q,true);
+ if(csrf!==session)throw Error('Сессия изменена');
+ if(response.state){
+  if(response.state==='PENDING'||response.state==='APPROVED')semanticPendingReads.set(key,q);
+  else semanticPendingReads.delete(key);
+  $('semantic-registry-result').textContent=response.state+' · '+q.requestId+' · подтверждение через очередь; повторите исходный READ после одобрения.';
+  throw Error('READ не выполнен: '+response.state+'; данные не получены.');}
+ semanticPendingReads.delete(key);
+ return response.data;
+}
+async function semanticList(append=false){
+ if(!semanticCaps||semanticBusy)return;
+ const session=csrf,epoch=++semanticEpoch;semanticBusy=true;semanticControls();
+ if(!append){semanticRows=[];semanticCursor=null;semanticSelected.clear();$('semantic-registry-rows').replaceChildren();}
+ try{
+  const data=await semanticRead(semanticView,{repository:semanticCaps.repository,page:{limit:20,cursor:append?semanticCursor:null}});
+  if(csrf!==session||epoch!==semanticEpoch)return;
+  semanticRows.push(...data.data.items);semanticCursor=data.data.nextCursor;semanticCatalog=data.catalogSha256;
+  $('semantic-registry-status').textContent='Ревизия '+data.snapshotRevision+' · '+(data.runtimeAdmissionAllowed?'':'локальная проекция, допуск не подтверждён');
+  semanticRender();
+ }catch(err){if(csrf===session&&epoch===semanticEpoch){semanticRows=[];semanticSelected.clear();semanticCursor=null;
+  $('semantic-registry-rows').replaceChildren();$('semantic-registry-status').textContent=err.message+' · состояние неизвестно';}}
+ finally{semanticBusy=false;semanticControls();}
+}
+async function semanticHistory(row){
+ $('semantic-registry-result').textContent='';
+ const data=await semanticRead('list_history',{subject:row.subject,page:{limit:20,cursor:null}});
+ const box=$('semantic-registry-result');
+ for(const row of data.data.items){
+  const event=row.event,receipt=row.receipt;
+  const description=event.number?'PR #'+event.number+' · '+event.sourceSha:
+   [event.kind,event.params?.outcome,event.actor].filter(Boolean).join(' · ');
+  box.append(line(semanticDate(event.params?.observedAt??receipt.recordedAt),description));
+  if(event.params?.evidenceDigests?.length)box.append(line('Свидетельства',event.params.evidenceDigests.join(', ')));
+ }
+ if(!data.data.items.length)box.textContent='Записей пока нет.';
+ if(!data.data.complete)box.append(line('История','Показаны первые '+data.data.items.length+' записей'));
+}
+function semanticItems(){
+ return [...semanticSelected.values()].sort((a,b)=>{
+ const x=[a.subject.repository.toLowerCase(),a.subject.targetId,a.subject.environment].join('\0');
+ const y=[b.subject.repository.toLowerCase(),b.subject.targetId,b.subject.environment].join('\0');return x<y?-1:x>y?1:0;});
+}
+function semanticGuard(row){return {subject:row.subject,source:row.desired?.source??null,
+ expected:{targetRevision:row.targetRevision,desiredRecordId:row.desired?.recordId??null,catalogSha256:semanticCatalog}};}
+function semanticActualSource(){
+ if($('semantic-source-unknown').checked){
+  if(!['initial','external'].includes($('semantic-context').value)||$('semantic-outcome').value!=='UNKNOWN')throw Error('Неизвестный источник допустим только для initial/external и UNKNOWN.');
+  return null;
+ }
+ const source={sourceSha:$('semantic-source-sha').value.trim(),catalogCommitSha:$('semantic-catalog-commit').value.trim(),
+ catalogSha256:$('semantic-catalog-sha').value.trim(),artifactSha256:$('semantic-artifact-sha').value.trim()||null};
+ if(!/^[a-f0-9]{40}$/.test(source.sourceSha)||!/^[a-f0-9]{40}$/.test(source.catalogCommitSha)||!/^[a-f0-9]{64}$/.test(source.catalogSha256)||
+ (source.artifactSha256!==null&&!/^[a-f0-9]{64}$/.test(source.artifactSha256)))throw Error('Укажите точные фактические SHA.');
+ return source;
+}
+async function semanticPlan(){
+ $('semantic-registry-result').textContent='';
+ const data=await semanticRead('plan_batch',{items:semanticItems().map(r=>({subject:r.subject,source:r.desired.source}))});
+ const plan=data.data,box=$('semantic-registry-result');
+ const status={PLAN_READY:'План рассчитан',STALE:'Исходники изменились',BLOCKED:'Есть ограничения',UNKNOWN:'Не хватает подтверждений'};
+ semanticText(box,'h3',status[plan.status]??plan.status);
+ if(plan.order.length)box.append(line('Порядок релиза',plan.order.map(s=>s.targetId+' · '+s.environment).join(' → ')));
+ for(const target of plan.targets){
+  semanticText(box,'h4',target.subject.targetId+' · '+target.subject.environment);
+  if(target.outstandingActions.length)box.append(line('Действия',target.outstandingActions.join(', ')));
+  const procedure=semanticText(box,'p','Процедура ');
+  if(/^docs\/[A-Za-z0-9_./-]+\.md(?:#[a-z0-9-]+)?$/.test(target.procedure)
+     &&!target.procedure.split('/').includes('..')&&/^[a-f0-9]{40}$/.test(target.source.sourceSha)){
+   const link=semanticText(procedure,'a',target.procedure);
+   link.href='https://github.com/'+target.subject.repository+'/blob/'+target.source.sourceSha+'/'+target.procedure;
+   link.target='_blank';link.rel='noopener noreferrer';
+  }else procedure.append(document.createTextNode(target.procedure));
+  box.append(line('Проверки',target.verification.join(', ')));
+  semanticMaintenance(box,target.maintenance,target.restrictionDigest);
+ }
+ for(const group of plan.buildGroups)
+  box.append(line('Сборка',group.identity.buildUnitId+' · '+group.artifactState+' · '+
+   group.subjects.map(s=>s.targetId).join(', ')));
+ for(const conflict of plan.windowConflicts)
+  box.append(line('Раздельные окна',conflict.subjects.map(s=>s.targetId).join(', ')));
+ for(const check of plan.checks){
+  if(!['PASS','NOT_APPLICABLE'].includes(check.status))
+   box.append(line(check.subject?.targetId??'Проверка',check.code+' · '+check.status));
+ }
+}
+async function semanticSubmit(report){
+ if(semanticBusy||semanticUnknown)return;
+ const context=$('semantic-context').value;
+ const time=report?$('semantic-observed-at').value:'';
+ const observedAt=time?Math.floor(new Date(time).getTime()/1000):null;
+ const evidenceDigests=report?[...new Set($('semantic-evidence').value.trim().split(/[\s,]+/).filter(Boolean))].sort():[];
+ if((time&&(!Number.isSafeInteger(observedAt)||observedAt<0))||evidenceDigests.length>16||
+    evidenceDigests.some(digest=>!/^[a-f0-9]{64}$/.test(digest)))throw Error('Проверьте время и SHA256 свидетельств.');
+ if(report&&context!=='release'&&semanticSelected.size!==1)throw Error('Для фактического внешнего источника выберите один компонент.');
+ const items=semanticItems().map(r=>{
+  const p=semanticGuard(r);if(!report)return p;
+  const source=context==='release'?(r.activeAttempt?.verifiedSource??r.activeAttempt?.source??p.source):semanticActualSource();
+  if(context==='release'&&!source)throw Error('Нет точного источника релиза.');
+  if(context!=='release'&&r.activeAttempt&&context!=='historical')throw Error('Сначала разберите активное окно.');
+  return {...p,source,attemptId:context==='release'?r.activeAttempt?.attemptId??null:null,
+   context,outcome:$('semantic-outcome').value,
+   assertion:$('semantic-assertion').value,observedAt,evidenceDigests};
+ });
+ if(!items.length||items.length>20)throw Error('Выберите от 1 до 20 компонентов.');
+ if(report&&!$('semantic-assertion').value.trim())throw Error('Укажите результат владельца.');
+ const op=report?(items.length===1?'report_release_result':'report_release_results'):(items.length===1?'begin_release':'begin_release_group');
+ const q=semanticRequest(op,items.length===1?items[0]:{items});semanticBusy=true;semanticControls();
+ try{
+  const out=await api(semanticPrefix+'/submit',q,true);
+  $('semantic-registry-result').textContent=out.state+' · '+out.requestId;
+  if(out.state==='UNCERTAIN'||out.state==='DISPATCHED')semanticUnknown=out.requestId;
+  $('semantic-report-form').hidden=true;await refresh();
+ }catch(err){semanticUnknown=q.requestId;$('semantic-registry-result').textContent='Не подтверждено: '+q.requestId+' · '+err.message+' · проверьте исходную заявку. Новый UUID не создаётся.';}
+ finally{semanticBusy=false;semanticControls();}
+ await semanticList();
+}
+$('semantic-registry-tab').onclick=action(async()=>{switchWorkspaceTab('semantic-registry');await semanticList();});
+$('semantic-board').onclick=action(async()=>{semanticView='list_components';await semanticList();});
+$('semantic-active').onclick=action(async()=>{semanticView='list_active_releases';await semanticList();});
+$('semantic-filter').onchange=()=>semanticRender();
+$('semantic-next').onclick=action(()=>semanticList(true));
+$('semantic-maintenance').onclick=action(async()=>{
+ const box=$('semantic-registry-result');box.replaceChildren();
+ const response=await semanticRead('get_maintenance_status',{repository:semanticCaps.repository});
+ const status=response.data;
+ box.append(line('Состояние',status.status),line('State Freeze',status.stateFreeze===null?'Неизвестно':status.stateFreeze?'Активен':'Нет'));
+ for(const op of status.blockedOperations??[])box.append(line('Заблокировано',op.service+'.'+op.operation));
+ for(const hold of status.holds??[]){
+  semanticText(box,'h4',hold.subject.targetId+' · '+hold.subject.environment);
+  for(const note of hold.maintenance.notes)semanticText(box,'p',note);
+ }
+});
+$('semantic-plan').onclick=action(semanticPlan);
+$('semantic-begin').onclick=action(()=>semanticSubmit(false));
+$('semantic-report').onclick=()=>{$('semantic-report-form').hidden=false;};
+$('semantic-context').onchange=()=>{$('semantic-actual-source').hidden=$('semantic-context').value==='release';};
+$('semantic-readback').onclick=action(async()=>{
+ const ident=semanticUnknown;if(!ident)return;
+ const row=await api('/v1/owner/requests/'+ident);
+ $('semantic-registry-result').textContent=row.state+' · '+ident;
+ if(!['UNCERTAIN','DISPATCHED','APPROVED','PENDING'].includes(row.state)){semanticUnknown=null;await semanticList();}
+ semanticControls();
+});
+$('semantic-report-confirm').onclick=action(()=>semanticSubmit(true));
+
+const paletteTokens=[['primary','Primary · основная кнопка'],['primary-text','Текст Primary'],['accent','Акцент'],['page','Общий фон'],['surface','Карточки и поля'],['text','Основной текст'],['muted','Вторичный текст'],['border','Границы'],['soft','Вторичный фон'],['selection','Выбранная строка'],['selection-border','Граница выбора'],['link','Ссылки'],['ok','Успех'],['warn','Предупреждение'],['bad','Ошибка'],['open-bg','Фон Open'],['closed-bg','Фон Merged'],['closed-text','Текст Merged'],['focus','Фокус клавиатуры']];
+const paletteDefaults={light:{'primary':'#356b50','primary-text':'#ffffff','accent':'#355f8b','page':'#f4f6f8','surface':'#fbfcfd','text':'#293442','muted':'#586677','border':'#d9e0e7','soft':'#eef2f6','selection':'#eaf1f8','selection-border':'#8ca9c8','link':'#315d89','ok':'#326849','warn':'#80571e','bad':'#a13d42','open-bg':'#e5eee7','closed-bg':'#ede9f2','closed-text':'#705781','focus':'#3b73a6'},dark:{'primary':'#36694e','primary-text':'#ffffff','accent':'#8aafcf','page':'#171c23','surface':'#1e252e','text':'#d5dde6','muted':'#a3afbf','border':'#37414e','soft':'#272f3a','selection':'#283b4c','selection-border':'#6587a7','link':'#9cbddd','ok':'#9bc5a8','warn':'#dfba80','bad':'#e1a1a1','open-bg':'#293e33','closed-bg':'#382e45','closed-text':'#c8b3db','focus':'#9cbddd'}};
+const paletteKey='fortis.owner.palette.v1',media=window.matchMedia('(prefers-color-scheme: dark)');
+let palette={light:{...paletteDefaults.light},dark:{...paletteDefaults.dark}},themeChoice='auto';
+const validColor=v=>typeof v==='string'&&/^#[0-9a-f]{6}$/i.test(v);
+function readPalette(value){if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!['light','dark'].includes(k)))throw Error('Ожидается объект light/dark');const next={light:{...paletteDefaults.light},dark:{...paletteDefaults.dark}};for(const m of ['light','dark']){const part=value[m];if(!part||typeof part!=='object'||Array.isArray(part))throw Error('Нужны обе темы');for(const [k,v] of Object.entries(part)){if(!Object.hasOwn(paletteDefaults[m],k)||!validColor(v))throw Error('Некорректный токен: '+k);next[m][k]=v.toLowerCase()}}return next;}
+function persistPalette(){try{localStorage.setItem(paletteKey,JSON.stringify({theme:themeChoice,palette}));$('palette-storage').textContent='Настройки сохранены локально в браузере.'}catch{$('palette-storage').textContent='Локальное сохранение недоступно. Для переноса используйте экспорт JSON.'}}
+function effectiveTheme(){return themeChoice==='auto'?(media.matches?'dark':'light'):themeChoice}
+function applyPalette(){const m=effectiveTheme(),root=document.documentElement;root.setAttribute('data-theme',m);for(const [k,v] of Object.entries(palette[m]))root.style.setProperty('--'+k,v);$('palette-mode').value=m;checkPaletteContrast(m)}
+function lum(h){const c=h.slice(1).match(/../g).map(x=>parseInt(x,16)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]}
+function contrast(a,b){const x=lum(a),y=lum(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)}
+function checkPaletteContrast(m){const p=palette[m],pairs=[['text','surface'],['text','page'],['muted','surface'],['muted','page'],['link','surface'],['ok','surface'],['warn','surface'],['bad','surface'],['primary-text','primary'],['text','selection'],['ok','open-bg'],['closed-text','closed-bg']];const results=pairs.map(([a,b])=>({name:a+' / '+b,ratio:contrast(p[a],p[b])}));const failures=results.filter(x=>x.ratio<4.5);$('palette-contrast').className=failures.length?'warn':'ok';$('palette-contrast').textContent=failures.length?'Низкий контраст текста: '+failures.map(x=>x.name+' '+x.ratio.toFixed(2)+':1').join('; '):'Основные пары текста: контраст не ниже 4.5:1. Это не полная проверка доступности.';}
+function drawPaletteFields(){const m=effectiveTheme(),area=$('palette-fields');area.replaceChildren();for(const [k,label] of paletteTokens){const row=document.createElement('label');row.className='palette-item';const title=document.createElement('span');title.textContent=label;const picker=document.createElement('input');picker.type='color';picker.value=palette[m][k];picker.setAttribute('aria-label',label+' — выбор цвета');const hex=document.createElement('input');hex.type='text';hex.value=picker.value;hex.maxLength=7;hex.spellcheck=false;hex.setAttribute('aria-label',label+' — HEX');const update=v=>{if(!validColor(v)){hex.setAttribute('aria-invalid','true');return}hex.removeAttribute('aria-invalid');palette[m][k]=v.toLowerCase();picker.value=palette[m][k];applyPalette();persistPalette()};picker.oninput=()=>{hex.value=picker.value;update(picker.value)};hex.oninput=()=>update(hex.value);row.append(title,picker,hex);area.append(row)}}
+function changeTheme(v){themeChoice=v;$('theme').value=v;applyPalette();drawPaletteFields();persistPalette()}
+try{const saved=JSON.parse(localStorage.getItem(paletteKey)||'null');if(saved){palette=readPalette(saved.palette);if(['auto','light','dark'].includes(saved.theme))themeChoice=saved.theme}}catch{}
+$('theme').onchange=()=>changeTheme($('theme').value);
+$('palette-mode').onchange=()=>changeTheme($('palette-mode').value);
+$('palette-reset').onclick=()=>{const m=effectiveTheme();palette[m]={...paletteDefaults[m]};applyPalette();drawPaletteFields();persistPalette()};
+$('palette-reset-all').onclick=()=>{palette={light:{...paletteDefaults.light},dark:{...paletteDefaults.dark}};applyPalette();drawPaletteFields();persistPalette()};
+$('palette-export').onclick=()=>{$('palette-json').value=JSON.stringify(palette,null,2);$('palette-json').select();$('palette-feedback').textContent='JSON готов для копирования.'};
+$('palette-import').onclick=()=>{try{const next=readPalette(JSON.parse($('palette-json').value));palette=next;applyPalette();drawPaletteFields();persistPalette();$('palette-feedback').textContent='Палитра импортирована.'}catch(e){$('palette-feedback').textContent='Импорт отклонён: '+e.message}};
+if(media.addEventListener)media.addEventListener('change',()=>{if(themeChoice==='auto'){applyPalette();drawPaletteFields()}});
+changeTheme(themeChoice);
+
+api('/v1/owner/session').then(async data=>{csrf=data.csrf;$('signin').hidden=true;$('workspace').hidden=false;await refresh();await loadRegistryFunctional();await loadSemanticRegistry();}).catch(()=>{});

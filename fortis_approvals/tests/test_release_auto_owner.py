@@ -100,6 +100,72 @@ class AutoOwnerSourceTests(unittest.TestCase):
         self.assertIn('RELEASE_AUTO_QUIESCENCE_NOT_ATTESTED',SOURCE)
         self.assertIn('RELEASE_AUTO_OWNER_GO_REQUIRED',SOURCE)
 
+    def test_successor_checked_profile_is_bound_and_verified_before_source_stop(self):
+        store=SOURCE.split('function Save-Checked-Image',1)[1].split(
+            'function Assert-Checked-Image-Binding',1)[0]
+        verify=SOURCE.split('function Verify-Checked-Image',1)[1].split(
+            'function Assert-CheckedImagePreflightSelfTest',1)[0]
+        self.assertIn("binding=(Checked-Image-Binding $Source $Report $Maintenance)",store)
+        self.assertIn("$Record['maintenanceSeal']=$Seal",store)
+        self.assertLess(verify.index('Read-SuccessorMaintenanceContext $Source'),
+                        verify.index('Assert-Checked-Image-Binding $Record.binding $Expected'))
+        self.assertLess(verify.index('Same-Json $Record.maintenanceSeal $Maintenance.checkSeal'),
+                        verify.index('Read-SuccessorFreezeSeal $Maintenance'))
+        stop=SOURCE.index("throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'")
+        prepare=SOURCE.index('Verify-Checked-Image $SourceForOwnerShell $Report -PrepareSuccessorStop')
+        save=SOURCE.index('Save-SuccessorApplyStopIntent $StopIntent',prepare)
+        self.assertLess(prepare,save)
+        self.assertLess(save,stop)
+        self.assertLess(stop,SOURCE.index("Step 'STOP_SOURCE';Assert-Release-Production"))
+
+    def test_successor_publication_keeps_pending_intent_until_exact_readback(self):
+        publish=SOURCE.split('function Publish-SuccessorInterlock',1)[1].split(
+            'function Read-SuccessorMaintenanceContext',1)[0]
+        check=SOURCE.split('function Read-SuccessorMaintenanceContext',1)[1].split('function Ensure-Vault',1)[0]
+        self.assertIn("if(-not (Same-Json $Anchor.next $Next))",publish)
+        self.assertLess(publish.index("state='Pending'"),publish.index("mode='readback'"))
+        self.assertLess(publish.index("mode='readback'"),publish.index("$Payload.mode='publish'"))
+        self.assertLess(publish.index("$Actual.position -cne 'NEXT'"),publish.index("state='Committed'"))
+        self.assertEqual(publish.count('-FlushToDisk'),2)
+        self.assertIn("$Publication.state -cne 'Committed'",check)
+        self.assertIn("Same-Json $Publication.record $Transitions.checked",check)
+
+    def test_successor_check_starts_pause_before_snapshot_and_never_reports_ready_at_draining(self):
+        flow=SOURCE.split("if($Action -eq 'Check'){\n    $CheckReceipt",1)[1].split(
+            'if(Test-Path -LiteralPath $AttemptPointer)',1)[0]
+        assert_start=flow.index('Start-SuccessorMaintenanceCheck $Source $CurrentMaintenance')
+        waiting=flow.index("status='MAINTENANCE_DRAINING'",assert_start)
+        capture=flow.index('Read-SuccessorFreezeSeal $SuccessorMaintenance',waiting)
+        save=flow.index('Save-Checked-Image $Source $Report $CheckReceipt',capture)
+        self.assertLess(flow.index('return',waiting),capture)
+        finish=flow.index('Complete-SuccessorMaintenanceCheck $Source $CurrentMaintenance $Stored',save)
+        self.assertLess(finish,flow.index("-NotePropertyName checkedImageRecord",finish))
+        self.assertIn("$Record['maintenanceTransitions']=$Transitions",SOURCE)
+        complete=SOURCE.split('function Complete-SuccessorMaintenanceCheck',1)[1].split(
+            'function Assert-SuccessorCheckSealSelfTest',1)[0]
+        freeze=complete.index('Publish-SuccessorInterlock $Source $Transitions.frozen')
+        checked=complete.index('Publish-SuccessorInterlock $Source $Transitions.checked')
+        readback=complete.index('Read-SuccessorFreezeSeal $Verify')
+        self.assertLess(freeze,checked)
+        self.assertLess(checked,readback)
+        self.assertIn('Same-Json $Final.sourceReceipt $Stored.sourceReceipt',complete)
+        self.assertIn('Successor-CheckRecordPath $Maintenance.attemptId',SOURCE)
+        self.assertIn("if(-not (Same-Json (Read-Private $Path) $Record))",SOURCE)
+        self.assertIn('Assert-SuccessorCheckStartSelfTest',SOURCE)
+
+    def test_successor_apply_reuses_check_context_and_persists_exact_stop_intent(self):
+        context=SOURCE.split('function Read-SuccessorMaintenanceContext',1)[1].split(
+            'function New-SuccessorApplyVerifyPayload',1)[0]
+        self.assertIn("Payload.action -cne 'successor_freeze_inspect'",context)
+        self.assertIn('$Stored=Read-Private $ExpectedPath',context)
+        self.assertIn('Same-Json $Publication.record $Transitions.checked',context)
+        self.assertIn('New-SuccessorApplyVerifyPayload $Payload $Stored.maintenanceSeal',context)
+        store=SOURCE.split('function Save-SuccessorApplyStopIntent',1)[1].split(
+            '# Offline fixture',1)[0]
+        self.assertIn("Join-Path $Directory 'apply-stop.json'",store)
+        self.assertIn('Write-Private $Path $Intent -FlushToDisk',store)
+        self.assertIn('Same-Json (Read-Private $Path) $Intent',store)
+
     def test_auto_check_refuses_old_unwitnessed_pointer(self):
         auto=SOURCE.split('if($Auto){',1)[1].split('if($Pull -and -not $Build)',1)[0]
         check=auto.index('$SavedCheck=Read-Private $CheckedImageRecord')

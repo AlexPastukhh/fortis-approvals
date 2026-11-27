@@ -77,12 +77,23 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                               publisher_profile=None, publisher_grant=None,
                               machine_shell=None, local_deny_source_opt_in=None,
                               unified_policy_source_opt_in=None,
-                              registry_candidate_reader=None):
+                              registry_candidate_reader=None,
+                              reviewed_registry_successor=None):
     """Return (core, owner, portal, ingress), no listeners or token provisioning.
 
     Restricted machine actor is authorized for four READ + one ASK proposal;
     the same actor NEVER receives owner decisions, raw service token or POST.
     """
+    if (reviewed_registry_successor is None and
+            getattr(registry_candidate_reader,'_semantic_transport',None) is not None):
+        raise Denied('R7_REGISTRY_SUCCESSOR_REVIEWED_BINDING_REQUIRED')
+    if reviewed_registry_successor is not None:
+        from .extensions.composite_successor import ReviewedRegistrySuccessor
+        if (type(reviewed_registry_successor) is not ReviewedRegistrySuccessor
+                or unified_policy_source_opt_in is None or registry_candidate_reader is None
+                or getattr(registry_candidate_reader,'_functional_config',None) is None):
+            raise Denied('R7_REGISTRY_SUCCESSOR_REVIEWED_BINDING_REQUIRED')
+        reviewed_registry_successor.verify_startup(registry_candidate_reader)
     # Explicit trusted composition selector. The normal server only creates
     # the restricted variant for the reviewed owner release config.
     if unified_policy_source_opt_in is not None:
@@ -212,6 +223,8 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
         receipt_store=root/'sonar-receipts.sqlite',region=region)
     owner = IncidentOwnerWebAuthn(root/'owner.sqlite',origin=owner_origin)
     auth = Authenticator(auth_grants)
+    if reviewed_registry_successor is not None:
+        auth = reviewed_registry_successor.owner_auth(auth,owner)
     actors = legacy_actors
     policies = {(actor, service, operation): 'ALLOW'
                 for actor in actors
@@ -219,7 +232,10 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
     policies.update({(actor, *G4_OPERATION): 'ASK' for actor in actors})
     if enabled:
         policies.update(profile.owner_policy_map())
-    if unified_policy_source_opt_in is not None:
+    if reviewed_registry_successor is not None:
+        from .extensions.composite_successor import CompositeUnifiedCore
+        core_type = CompositeUnifiedCore
+    elif unified_policy_source_opt_in is not None:
         from .extensions.owner_policy_engine_v2 import UnifiedPolicyCore
         core_type = UnifiedPolicyCore
     elif local_deny_source_opt_in is not None:
@@ -335,6 +351,13 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
             predecessor=RegistryAuthorityPredecessor(
                 core,scope_binding,choices,
                 previous_functional_digests=functional.reviewed_authority_predecessor_digests())
+        if reviewed_registry_successor is not None:
+            portal,ingress=reviewed_registry_successor.install(
+                core=core,portal=portal,ingress=ingress,machine_base=machine_base,
+                native=native,reader=registry_candidate_reader,incumbent_choices=choices,
+                incumbent_scope=scope_binding,opt_in=unified_policy_source_opt_in,
+                registry_predecessor=predecessor)
+            return core,owner,portal,ingress
         core.install_policy_authority(
             choices, scope_binding=scope_binding,
             reviewed_previous_scope=reviewed_mirror_v1_previous_scope(

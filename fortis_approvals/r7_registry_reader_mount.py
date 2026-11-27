@@ -3,9 +3,11 @@
 The trusted mount selects the release, instance and scope. A legacy profile
 uses exact boot/process/socket pins; a managed functional profile binds the
 same materials and authenticates each current listener under the owner key.
+The successor profile also pins the authenticated semantic Registry service.
 """
 import hashlib
 import os
+import re
 from pathlib import Path
 import socket
 import stat
@@ -18,6 +20,12 @@ from .integrations.registry.owner_pinned_pidfd import _boot_id
 MOUNT = Path('/run/r7-registry-reader')
 _FILE = 'profile.json'
 _MAX_BYTES = 2048
+_SEMANTIC_FIELDS = frozenset((
+    'semanticFrameKeySha256','semanticGeneration','semanticProfileDigest','semanticInternalActor',
+    'policyHistorySha256', 'successorSha256',
+))
+_FUNCTIONAL_FILES = {_FILE,'functional.json','planner.key'}
+_SEMANTIC_FILES = _FUNCTIONAL_FILES | {'semantic-frame.key', 'policy-history.json', 'successor.json'}
 _LIVE_PEER_FIELDS = frozenset({
     'registryPidfdInode', 'registryKernelBootId', 'socketDevice', 'socketInode',
 })
@@ -45,7 +53,7 @@ def _hex(value):
             all(c in '0123456789abcdef' for c in value))
 
 
-def _exact_readonly_mountinfo(raw, root):
+def _exact_mountinfo(raw, root, mode):
     """Closed mountinfo parser; no prefix or duplicate mountpoint accepted."""
     if type(raw) is not bytes or not 1 <= len(raw) <= 524288:
         return False
@@ -55,7 +63,11 @@ def _exact_readonly_mountinfo(raw, root):
         fields = line.split(b' - ', 1)[0].split()
         if len(fields) >= 6 and fields[4] == path:
             matches.append(fields)
-    return len(matches) == 1 and b'ro' in matches[0][5].split(b',')
+    return len(matches) == 1 and mode in matches[0][5].split(b',')
+
+
+def _exact_readonly_mountinfo(raw, root):
+    return _exact_mountinfo(raw,root,b'ro')
 
 
 def _check_owner_readonly_mount(root):
@@ -111,7 +123,7 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
         _stop('DIRECTORY_DENIED')
     try:
         files={p.name for p in root.iterdir()}
-        if files not in ({_FILE},{_FILE,'functional.json','planner.key'}):
+        if files not in ({_FILE},_FUNCTIONAL_FILES,_SEMANTIC_FILES):
             _stop('FILES_DENIED')
         # Neither a process running as Gateway UID nor an untrusted Repo actor
         # can rewrite the owner-pinned mount while it is active.
@@ -128,18 +140,26 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
             _stop('FILE_CHANGED')
         value = loads_strict(raw)
         version = value.get('schemaVersion') if type(value) is dict else None
-        functional = version in (3, 4)
-        managed = version == 4
+        functional = version in (3,4,5)
+        managed = version in (4,5)
+        semantic = version == 5
         fields = _FIELDS | {'functionalConfigSha256', 'plannerKeySha256'} if functional else _FIELDS
         if managed:
             fields = fields - _LIVE_PEER_FIELDS
+        if semantic:
+            fields = fields | _SEMANTIC_FIELDS
+        expected_files = _FUNCTIONAL_FILES if functional else {_FILE}
+        if semantic:
+            expected_files = _SEMANTIC_FILES
+        purpose=('registry-functional-successor-v1' if semantic else
+                 'registry-functional-local-candidate-v1' if functional else 'registry-candidate-read-v1')
         if (type(value) is not dict or set(value) != fields
                 or canonical(value).encode('utf-8') != raw
                 or type(value['schemaVersion']) is not int
-                or version not in (2, 3, 4)
-                or files!=({_FILE,'functional.json','planner.key'} if functional else {_FILE})
+                or version not in (2,3,4,5)
+                or files!=expected_files
                 or value['enabled'] is not True
-                or value['purpose'] != ('registry-functional-local-candidate-v1' if functional else 'registry-candidate-read-v1')
+                or value['purpose'] != purpose
                 or not _uuid(value['releaseNonce'])
                 or value['releaseNonce'] != expected_release_nonce
                 or not _hex(value['gatewaySourceDigest'])
@@ -157,18 +177,8 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
             from .integrations.registry.read_contract import private_planner_key
             if not _hex(value['functionalConfigSha256']) or not _hex(value['plannerKeySha256']):
                 _stop('FUNCTIONAL_PIN_DENIED')
-            fd=os.open(root/'functional.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
-            with os.fdopen(fd,'rb') as stream:
-                info=os.fstat(stream.fileno())
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
-                        or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1
-                        or not 0<info.st_size<=65536):
-                    _stop('FUNCTIONAL_FILE_DENIED')
-                raw_config=stream.read(65537)
-            parsed=loads_strict(raw_config)
-            if (len(raw_config)!=info.st_size or canonical(parsed).encode()!=raw_config
-                    or hashlib.sha256(raw_config).hexdigest()!=value['functionalConfigSha256']):
-                _stop('FUNCTIONAL_PIN_DENIED')
+            parsed = _read_pinned_json(root/'functional.json', value['functionalConfigSha256'],
+                                       max_bytes=65536, label='FUNCTIONAL')
             key=private_planner_key(root/'planner.key',value['plannerKeySha256'])
         if managed:
             peer = {'peer_key': key}
@@ -189,6 +199,29 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
                 parsed, key, scope_digest=value['scopeDigest'])
             reader._release_nonce=value['releaseNonce']
             reader._gateway_source_digest=value['gatewaySourceDigest']
+        if semantic:
+            from .extensions.composite_successor import ReviewedHistoryEvidence
+            from .extensions.semantic_gateway import GatewayRegistrySemanticTransport
+            actor = value['semanticInternalActor']
+            if (not all(_hex(value[field]) for field in (
+                    'semanticFrameKeySha256', 'semanticGeneration', 'semanticProfileDigest',
+                    'policyHistorySha256', 'successorSha256'))
+                    or type(actor) is not str
+                    or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', actor)):
+                _stop('SEMANTIC_PIN_DENIED')
+            frame_key = private_planner_key(root/'semantic-frame.key', value['semanticFrameKeySha256'])
+            reader._semantic_transport = GatewayRegistrySemanticTransport(
+                reader, frame_key=frame_key, generation=value['semanticGeneration'], internal_actor=actor)
+            reader._semantic_profile_digest = value['semanticProfileDigest']
+            history_pin = value['policyHistorySha256']
+            history = _read_pinned_json(root/'policy-history.json', history_pin,
+                                        max_bytes=8192, label='POLICY_HISTORY')
+            reader._policy_history = ReviewedHistoryEvidence(history, expected_digest=history_pin)
+            from .extensions.successor_runtime import ProtectedRegistrySuccessor
+            composition = _read_pinned_json(root/'successor.json', value['successorSha256'],
+                                            max_bytes=262144, label='SUCCESSOR')
+            reader._successor_config = ProtectedRegistrySuccessor(
+                composition, source_digest=reader._gateway_source_digest)
         # Verify our mounted identity and current source still match. This is
         # NOT a substitute for the independent owner-host mount/UID audit.
         if (root.lstat().st_ino != meta.st_ino
@@ -204,8 +237,25 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
         _stop('PROFILE_UNAVAILABLE')
 
 
+def _read_pinned_json(path, expected_digest, *, max_bytes, label):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or not 0 < info.st_size <= max_bytes):
+            _stop(label + '_FILE_DENIED')
+        raw = stream.read(max_bytes + 1)
+    if len(raw) != info.st_size or hashlib.sha256(raw).hexdigest() != expected_digest:
+        _stop(label + '_PIN_DENIED')
+    value = loads_strict(raw)
+    if canonical(value).encode() != raw:
+        _stop(label + '_PIN_DENIED')
+    return value
+
+
 def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
-                                          expected_source_digest, root=MOUNT):
+                                          expected_source_digest, root=MOUNT, legacy_only=False):
     """Check owner-sealed profile and live pinned socket WITHOUT Registry READ.
 
     For the existing protected owner Check/Apply controller to call only after
@@ -217,7 +267,9 @@ def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
         root, expected_release_nonce, expected_source_digest)
     if result is None:
         _stop('NOT_ENABLED')
-    reader, _, digest = result
+    reader, profile, digest = result
+    if legacy_only and profile['schemaVersion'] == 5:
+        _stop('SUCCESSOR_DELIVERY_REQUIRED')
     _check_live_peer(reader)
     checked = _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest)
     if checked is None or checked[2] != digest:
@@ -225,7 +277,34 @@ def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
     return digest
 
 
+def reviewed_successor_delivery(*, expected_release_nonce, expected_source_digest,
+                                expected_interlock_digest, incumbent_core=None, scratch_root=None, root=MOUNT):
+    """Read both packages' exact delivery pins and optionally preview the clone."""
+    result = _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest)
+    if result is None or result[1]['schemaVersion'] != 5:
+        _stop('SUCCESSOR_PROFILE_REQUIRED')
+    reader, _, digest = result
+    _check_live_peer(reader)
+    receipt = reader._successor_config.checked_delivery(
+        reader, expected_interlock_digest=expected_interlock_digest,
+        incumbent_core=incumbent_core, scratch_root=scratch_root)
+    if reviewed_registry_reader_mount_digest(
+            expected_release_nonce=expected_release_nonce, expected_source_digest=expected_source_digest,
+            root=root) != digest:
+        _stop('PROFILE_CHANGED')
+    return {**receipt, 'profileDigest':digest}
+
+
 def _check_live_peer(reader):
+    semantic = getattr(reader, '_semantic_transport', None)
+    if semantic is not None:
+        from .extensions.maintenance_gate import hold_snapshot
+        if semantic.profile_digest() != reader._semantic_profile_digest:
+            _stop('SEMANTIC_PROFILE_CHANGED')
+        hold=hold_snapshot(semantic.maintenance_snapshot())
+        if hold['instanceId'] != reader._instance or hold['scopeDigest'] != reader._scope:
+            _stop('SEMANTIC_SCOPE_CHANGED')
+        return
     initial = reader._check_socket()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:

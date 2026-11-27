@@ -281,14 +281,19 @@ class UnifiedPolicyCore(IncidentCore):
         return self._baseline_policy_version + "|owner-policy-v2:" + str(revision)
 
     def _historical_admission(self, choices, authority, expected):
+        return self._compiled_historical_admission(
+            choices, authority, expected,
+            previous_scope=getattr(self, '_reviewed_previous_scope', None),
+            predecessor=getattr(self, '_reviewed_registry_predecessor', None))
+
+    def _compiled_historical_admission(self, choices, authority, expected, *,
+                                       previous_scope, predecessor):
         # Reconstruct the exact old digest using a source-owned finite set of
         # scopes. Historical event rows cannot inject a scope or widen grants.
         scopes = [authority.scope_binding]
-        previous_scope = getattr(self, '_reviewed_previous_scope', None)
         if previous_scope is not None and previous_scope != authority.scope_binding:
             scopes.append(previous_scope)
-        variants = [(scope, None) for scope in scopes]
-        predecessor = getattr(self, '_reviewed_registry_predecessor', None)
+        variants = [(scope, dict(authority.baseline)) for scope in scopes]
         if predecessor is not None:
             variants.extend(predecessor.variants())
         for scope, baseline in variants:

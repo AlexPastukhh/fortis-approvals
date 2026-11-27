@@ -46,7 +46,7 @@ def derive_admission(core, broker, *, native, extension_runtime,
     Conditional push/cleanup and publisher profile guards are not replaced.
     Exact configuration DENY is not a new grant: leave it fixed.
     """
-    if type(core) is not UnifiedPolicyCore or broker.core is not core:
+    if not isinstance(core,UnifiedPolicyCore) or broker.core is not core:
         raise Denied("R7_UNIFIED_POLICY_COMPOSITION_REQUIRED")
     from ..workflow.common import WORKSPACE_OPS
     from ..integrations.github.analysis_contract import ACTIONS as CI_ACTIONS

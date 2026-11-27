@@ -180,7 +180,7 @@ test('global, extension, nonliteral, inactive or previously denied rows are not 
 });
 
 test('provider filter catalog counts and exact provider selection',()=>{
- const filterStart=full.indexOf('function providerFilterOptions(');
+ const filterStart=full.indexOf('function isCompositeRow(');
  const filterEnd=full.indexOf('function resetProviderSelections(',filterStart);
  const code=full.slice(filterStart,filterEnd);
  const inventory={providers:[{provider:'sonarcloud'},{provider:'github'},{provider:'mirror'}],
@@ -192,6 +192,10 @@ test('provider filter catalog counts and exact provider selection',()=>{
  const result=vm.runInContext("JSON.stringify({options:providerFilterOptions(inventory),all:visibleProviderRows(inventory,'','').length,github:visibleProviderRows(inventory,'github','').length,ask:visibleProviderRows(inventory,'github','ASK').map(r=>r.operation),none:visibleProviderRows(inventory,'mirror','').length,allowedRegistry:visibleProviderRows(inventory,'registry','allow').length,deniedRegistry:visibleProviderRows(inventory,'registry','deny').length})",ctx);
  assert.deepEqual(JSON.parse(result),{options:[['github',2],['mirror',0],['registry',1],['sonarcloud',1]],all:4,github:2,ask:['merge_pull_request'],none:0,allowedRegistry:1,deniedRegistry:0});
  assert.match(html,/id="providers-select"/);
+ inventory.operations.push({provider:'registry',operation:'begin_release_group',operationKind:'composite'});
+ const composite=vm.runInContext("JSON.stringify({rows:visibleProviderRows(inventory,'@composite','').map(r=>r.operation),registry:visibleProviderRows(inventory,'registry','').length})",ctx);
+ assert.deepEqual(JSON.parse(composite),{rows:['begin_release_group'],registry:1});
+
 });
 
 test('unified editor supports scoped transition, verifies descriptor and never retries finish',async()=>{

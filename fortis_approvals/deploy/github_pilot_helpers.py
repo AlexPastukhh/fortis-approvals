@@ -1086,13 +1086,19 @@ def admit(container, expected, *, pilot):
     reg_nonce = expected.get('registryReleaseNonce', '')
     reg_profile = expected.get('registryReaderVolume', '')
     reg_socket = expected.get('registrySocketVolume', '')
+    reg_successor = expected.get('registrySuccessorDelivery', False)
+    require(type(reg_successor) is bool, 'PILOT_REGISTRY_SUCCESSOR_VOLUME_DENIED')
+    expected_socket = 'fortis-registry-read'
+    if reg_successor and type(reg_nonce) is str and reg_nonce:
+        expected_socket += '-' + reg_nonce.replace('-', '')
+    require(not reg_successor or bool(reg_nonce) and pilot, 'PILOT_REGISTRY_SUCCESSOR_VOLUME_DENIED')
     require(type(reg_nonce) is str and
             (reg_nonce == '' or bool(re.fullmatch(
                 r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                 reg_nonce))) and
             type(reg_profile) is str and type(reg_socket) is str and
             bool(reg_profile) == bool(reg_socket) == bool(reg_nonce) and
-            reg_socket in ('', 'fortis-registry-read') and
+            reg_socket == (expected_socket if reg_nonce else '') and
             reg_profile == (('fortis-r7-registry-reader-' +
                              reg_nonce.replace('-', '')) if reg_nonce else ''),
             'PILOT_REGISTRY_VOLUME_PAIR_DENIED')
@@ -1100,6 +1106,10 @@ def admit(container, expected, *, pilot):
         require(pilot, 'PILOT_REGISTRY_REQUIRES_PROTECTED_RELEASE')
         desired.add(('volume', reg_profile, '/run/r7-registry-reader', False))
         desired.add(('volume', reg_socket, '/run/fortis-registry-read', False))
+        if reg_successor:
+            evidence = 'fortis-registry-source-evidence-' + reg_nonce.replace('-', '')
+            desired.add(('volume', evidence, '/run/fortis-registry-source-evidence', True))
+            desired.add(('volume', 'fortis-r7-maintenance-interlock', '/run/r7-maintenance', False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')
@@ -1225,6 +1235,143 @@ def verify_file_pr_receipts(scenario, root='/state/private'):
                 prRequestId=scenario['prRequestId'], commitSha=scenario['commitSha'], pullRequestNumber=scenario['pullRequestNumber'])
 
 
+def successor_interlock_publish(value, *, root=None):
+    """Compare-and-replace on the controller's dedicated volume."""
+    import fcntl
+    if __name__=='__main__':
+        sys.path.insert(0,'/opt/fortis')
+    from fortis_approvals.extensions.maintenance_interlock_reader import MOUNT, _read_record
+    from fortis_approvals.r7_registry_reader_mount import _exact_mountinfo
+    from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
+    from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
+
+    sc.fields(value,('action','mode','previous','next'))
+    require(value['action']=='successor_interlock_publish'
+            and value['mode'] in ('publish','readback'),'PILOT_INTERLOCK_REQUEST_INVALID')
+    previous=mc.validate_record(value['previous'])
+    proposed=mc.validate_transition(previous,value['next'])
+    require(proposed['phase'] in ('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP'),
+            'PILOT_INTERLOCK_PHASE_DENIED')
+    root=MOUNT if root is None else root
+    require(os.geteuid()==0 and _exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),root,b'rw'),
+            'PILOT_INTERLOCK_WRITER_MOUNT_REQUIRED')
+    dirfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        directory=os.fstat(dirfd)
+        require(directory.st_uid==0 and stat.S_IMODE(directory.st_mode)==0o555
+                and not os.fstatvfs(dirfd).f_flag & os.ST_RDONLY,'PILOT_INTERLOCK_WRITER_MOUNT_REQUIRED')
+        lock=os.open('publish.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK,0o600,dir_fd=dirfd)
+        try:
+            info=os.fstat(lock)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid==0 and info.st_nlink==1
+                    and stat.S_IMODE(info.st_mode)==0o600,'PILOT_INTERLOCK_WRITER_LOCK_INVALID')
+            # This lock is separate from the shared worker reservations.
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            current=mc.validate_record(_read_record(dirfd))
+            require(current in (previous,proposed),'PILOT_INTERLOCK_PREDECESSOR_CHANGED')
+            if current==previous and value['mode']=='publish':
+                if proposed['phase']!='DRAINING':
+                    fcntl.flock(dirfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                _replace_interlock_record(dirfd,sc.canonical(proposed).encode('utf-8'))
+                current=mc.validate_record(_read_record(dirfd))
+                require(current==proposed,'PILOT_INTERLOCK_WRITE_UNCONFIRMED')
+            if current==proposed:
+                # A previous publisher can have exited just after rename.
+                os.fsync(dirfd)
+            return {'position':'NEXT' if current==proposed else 'PREVIOUS',
+                    'phase':current['phase'],'digest':sc.digest(current)}
+        finally:
+            os.close(lock)
+    finally:
+        os.close(dirfd)
+
+
+def _replace_interlock_record(dirfd, data):
+    name='.record-'+uuid.uuid4().hex
+    fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=dirfd)
+    try:
+        with os.fdopen(fd,'wb') as record:
+            record.write(data)
+            record.flush()
+            os.fchmod(record.fileno(),0o444)
+            os.fsync(record.fileno())
+        os.replace(name,'record.json',src_dir_fd=dirfd,dst_dir_fd=dirfd)
+    except BaseException:
+        try:
+            os.unlink(name,dir_fd=dirfd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def successor_freeze_inspect(value):
+    # Python -I omits the image WORKDIR. This fixed image-owned path is
+    # added only for the successor action.
+    if __name__=='__main__':
+        sys.path.insert(0,'/opt/fortis')
+    from fortis_approvals.extensions.composite_preservation import sealed_companion
+    from fortis_approvals.extensions.maintenance_interlock_reader import (
+        InterlockReservations, read_owner_interlock)
+    from fortis_approvals.r7_registry_reader_mount import _check_owner_readonly_mount
+    from fortis_approvals.integrations.registry_contracts import maintenance_seal as seal
+
+    require(value['action'] in ('successor_freeze_inspect','successor_freeze_apply_verify'),
+            'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+    apply=value['action']=='successor_freeze_apply_verify'
+    fields={'action','instanceId','scopeDigest','generation','interlockDigest',
+            'registryDigest','stateDigest','companionDigest','coreSchemaDigest',
+            'workerAttestationDigest','preserveUncertainIds','preserveClaimedIds',
+            'attemptId','restrictionDigest','subject','targetSourceSha'}
+    fields.update({'checkSeal','draining','frozen'} if apply else {'drain'})
+    if apply and 'prepareStop' in value:
+        fields.add('prepareStop')
+    require(set(value)==fields,'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+    root=Path('/source')
+    _check_owner_readonly_mount(root)
+
+    def record():
+        return read_owner_interlock(instance_id=value['instanceId'],scope_digest=value['scopeDigest'],
+            generation=value['generation'],expected_digest=value['interlockDigest'])
+
+    with InterlockReservations().exclusive() as drained:
+        require(drained,'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
+        before=record()
+        require(before['phase']==('CHECK_SEALED' if apply else 'DRAINING'),
+                'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
+        require(before['attempt']['attemptId']==value['attemptId']
+                and before['attempt']['restrictionDigest']==value['restrictionDigest']
+                and before['attempt']['subject']==value['subject']
+                and before['attempt']['source']['sourceSha']==value['targetSourceSha'],
+                'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+        state=inspect_state(root,github=True,native=True,require_exact_uncertain=True,
+            preserve_uncertain_ids=value['preserveUncertainIds'],require_exact_claimed=True,
+            preserve_claimed_ids=value['preserveClaimedIds'],require_exact_approved=True)
+        companion=sealed_companion(root/'private/approvals.sqlite',
+            expected_schema_digest=value['coreSchemaDigest'],
+            expected_companion_digest=value['companionDigest'])
+        require(record()==before,'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
+        if apply:
+            binding=seal.verify_apply_binding(value['checkSeal'],value['draining'],
+                value['frozen'],before,state,companion,
+                expected_registry_digest=value['registryDigest'],
+                worker_attestation_digest=value['workerAttestationDigest'])
+        else:
+            binding=seal.freeze_binding(before,value['drain'],state,companion,
+                expected_registry_digest=value['registryDigest'],expected_state_digest=value['stateDigest'],
+                expected_companion_digest=value['companionDigest'],
+                worker_attestation_digest=value['workerAttestationDigest'],
+                preserved_uncertain_ids=value['preserveUncertainIds'],
+                preserved_claimed_ids=value['preserveClaimedIds'])
+        require(binding['stateReceiptDigest']==value['stateDigest']
+                and binding['companionDigest']==value['companionDigest'],
+                'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+        transitions=seal.checked_transitions(binding,value['draining'] if apply else before)
+        result={'sourceReceipt':state,'seal':binding,'transitions':transitions}
+        if 'prepareStop' in value:
+            result['stopIntent']=seal.apply_stop_plan(before,binding,value['prepareStop'])
+        return result
+
+
 def main():
     value = json.load(sys.stdin)
     action = value['action']
@@ -1243,6 +1390,10 @@ def main():
         require_exact_claimed=value.get('requireExactClaimed',False),
         preserve_approved_ids=value.get('preserveApprovedIds',[]),
         require_exact_approved=value.get('requireExactApproved',False))
+    elif action == 'successor_interlock_publish':
+        result=successor_interlock_publish(value)
+    elif action in ('successor_freeze_inspect','successor_freeze_apply_verify'):
+        result=successor_freeze_inspect(value)
     elif action == 'uncertain_growth_snapshot': result = uncertain_growth_snapshot(
         '/source',github=value.get('github',False),native=value.get('native',False),
         preserve_claimed_ids=value.get('preserveClaimedIds',[]),

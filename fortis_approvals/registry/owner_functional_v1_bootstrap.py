@@ -245,6 +245,62 @@ def run(action, *, spec_path=SPEC_PATH, expected_spec_sha256=None):
             'admissionAllowed': False, 'registryServiceStarted': False}
 
 
+def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=None, source_sha=None):
+    """Migrate the dedicated inactive clone mounted by the owner wrapper."""
+    from .local_candidate_read_service import (
+        _check_successor_profile, _load_owner_config, _readonly_owner_runtime)
+    from .release_event_journal import ReleaseEventJournal
+
+    _runtime_confinement()
+    uid, gid = os.geteuid(), os.getegid()
+    _need(uid > 1 and gid > 1 and os.getresuid() == (uid,) * 3
+          and os.getresgid() == (gid,) * 3 and os.getgroups() in ([], [gid]),
+          'REGISTRY_BOOTSTRAP_IDENTITY_DENIED')
+    config = _load_owner_config(str(CONFIG_PATH), allow_semantic=True)
+    root = _readonly_owner_runtime(str(CONFIG_PATH))
+    _check_successor_profile(config, expected_profile_sha256)
+    _need(config['registryStatePath'] == str(STATE_PATH)
+          and config['socketPath'] == str(SOCKET_PATH),
+          'REGISTRY_BOOTSTRAP_SUCCESSOR_PATH_CHANGED')
+    _private_directory(STATE_PATH.parent, uid, gid, 0o700)
+    pins = config['semantic']
+    _need(type(pins) is dict and 'legacyWitness' in pins and 'transitionDigest' in pins,
+          'REGISTRY_BOOTSTRAP_SUCCESSOR_PINS_REQUIRED')
+    stage = None
+    pending = transition_evidence_sha256 is None
+    if not pending:
+        from .protected_transition import reviewed_transition, account_on_clone, staged_domain
+
+        request = reviewed_transition(root, config, expected_evidence_sha256=transition_evidence_sha256,
+                                      expected_source_sha=source_sha)
+
+        def stage(journal, db):
+            nonlocal accepted
+            accepted = account_on_clone(staged_domain(journal,root,pins),db,request)
+
+    accepted = None
+    transitional = ReleaseEventJournal.migrate_clone(
+        FunctionalV1CandidateJournal(STATE_PATH, instance_id=config['instanceId'],
+                                     scope=config['scope'], plan_reader=_disabled),
+        expected_legacy=pins['legacyWitness'], transition_digest=pins['transitionDigest'],
+        stage=stage)
+    checkpoint = transitional.release_checkpoint()
+    _need(checkpoint['snapshotRevision'] == 0 and checkpoint['sourceTransitionPending'] is pending,
+          'REGISTRY_BOOTSTRAP_SUCCESSOR_READBACK_CHANGED')
+    receipt = {'result': 'SOURCE_ONLY_REGISTRY_SUCCESSOR_PREPARED',
+               'profileSha256': expected_profile_sha256,
+               'transitionDigest': transitional.transition_digest,
+               'legacyPrefixDigest': checkpoint['legacy']['prefixDigest'],
+               'sourceTransitionPending': pending, 'hostAccepted': False, 'admissionAllowed': False}
+    if not pending:
+        observed = staged_domain(transitional,root,pins).source_operation(request['operationId'])
+        _need(observed is not None and observed == accepted,
+              'REGISTRY_BOOTSTRAP_SUCCESSOR_READBACK_CHANGED')
+        receipt['sourceTransitionReceipt'] = observed
+        receipt['transitionEvidenceSha256'] = transition_evidence_sha256
+    return receipt
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', required=True,

@@ -7,7 +7,6 @@ for admission, actual state, restrictions or deployment.
 import hashlib
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess
 import sys
@@ -16,13 +15,13 @@ import tempfile
 from ....core import Denied, Stale, canonical, loads_strict
 from ....workflow.common import Git
 from ..publisher_source import materialize
+from ...registry_contracts.release_profile import resolve_components as _resolved
 from .forward_lineage import _baseline, observe_forward_lineage
 from .collector_snapshot import REPOSITORY
-from .review_capture import _hash, _hex, _need
 from .registry_review_policy import policy_reference
 from .selected_main_binding import _commit
+from .review_capture import _hash, _hex, _need
 
-_NAME=re.compile(r'[a-z0-9][a-z0-9._/-]{0,127}\Z')
 _SHIM="""
 import json,resource,sys
 from pathlib import Path
@@ -75,15 +74,6 @@ def _catalog(validator, sha, expected_digest):
         return catalog,node['treeSha']
 
 
-def _name(value):
-    return type(value) is str and _NAME.fullmatch(value) is not None and '//' not in value and '..' not in value
-
-
-def _names(values,*,empty=True):
-    return (type(values) is list and (empty or bool(values)) and len(values)<=256
-            and all(_name(v) for v in values) and values==sorted(set(values)))
-
-
 def _mapping(reader, baseline):
     try:
         ref=reader()
@@ -98,55 +88,6 @@ def _mapping(reader, baseline):
         raise
     except Exception:
         raise Denied('P5_COMPONENT_BINDING_UNAVAILABLE') from None
-
-
-def _resolved(ref,catalog):
-    """Validate all enrolled targets, not just those affected by one PR."""
-    targets={t['id']:t for t in catalog['targets']}
-    _need(0<len(targets)==len(catalog['targets'])<=200,'P5_COMPONENT_TARGET_SET')
-    components=ref['components'];bindings=ref['bindings']
-    _need(type(components) is list and 0<len(components)<=256
-          and type(bindings) is list and len(bindings)==len(targets),'P5_COMPONENT_BINDING_SET')
-    graph={}
-    for row in components:
-        _need(type(row) is dict and set(row)=={'id','resources','requires'} and _name(row['id'])
-              and row['id'] not in graph and _names(row['resources'],empty=False)
-              and _names(row['requires']),'P5_COMPONENT_GRAPH_INVALID')
-        graph[row['id']]=row
-    _need(list(graph)==sorted(graph),'P5_COMPONENT_GRAPH_ORDER')
-    visited=set();active=set()
-    def visit(ident):
-        _need(ident in graph and ident not in active,'P5_COMPONENT_GRAPH_CYCLE_OR_UNKNOWN')
-        if ident in visited:return
-        active.add(ident)
-        for dep in graph[ident]['requires']:visit(dep)
-        active.remove(ident);visited.add(ident)
-    for ident in graph:visit(ident)
-    by_target={};used=set()
-    for row in bindings:
-        _need(type(row) is dict and set(row)=={'targetId','environment','componentId'}
-              and _name(row['targetId']) and row['targetId'] in targets and row['targetId'] not in by_target
-              and _name(row['componentId']) and row['componentId'] in graph
-              and row['componentId'] not in used,'P5_COMPONENT_TARGET_BINDING_INVALID')
-        target=targets[row['targetId']]
-        _need(type(row['environment']) is str and row['environment'] in target['deployment']['environments'],
-              'P5_COMPONENT_ENVIRONMENT_MISMATCH')
-        by_target[row['targetId']]=row;used.add(row['componentId'])
-    _need(list(by_target)==sorted(targets) and used==set(graph),'P5_COMPONENT_BINDING_SET')
-    result=[]
-    for tid,row in by_target.items():
-        target=targets[tid];component=graph[row['componentId']]
-        required=set()
-        for dep in target.get('dependsOn',[]):
-            _need(dep['repository']=='fortis-approvals' and dep['target'] in by_target,
-                  'P5_COMPONENT_EXTERNAL_OR_UNKNOWN_DEPENDENCY')
-            required.add(by_target[dep['target']]['componentId'])
-        _need(required<=set(component['requires']),'P5_COMPONENT_DEPENDENCY_MAPPING_INCOMPLETE')
-        result.append({**row,'resourceIds':component['resources'],
-                       'requiresComponentIds':component['requires'],
-                       'deployment':target['deployment'],'buildUnit':target.get('buildUnit'),
-                       'verification':target['verification']})
-    return result
 
 
 def _observe_component_pair(*,adapter,journal,validator,baseline_reader,

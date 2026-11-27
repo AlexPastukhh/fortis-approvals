@@ -124,6 +124,50 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(Denied, 'EXISTING_STATE_STOP'):
             self.run_action('Preview')
 
+    def test_prepare_successor_replays_the_exact_prefix_and_leaves_accounting_pending(self):
+        from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+        from fortis_approvals.registry.transition_preservation import legacy_prefix_witness
+        from fortis_approvals.registry import local_candidate_read_service as entry
+
+        self.run_action('Provision', self.digest)
+        legacy = boot.FunctionalV1CandidateJournal(
+            self.state_path, instance_id=self.spec['instanceId'],
+            scope=self.spec['scope'], plan_reader=boot._disabled)
+        witness = legacy_prefix_witness(legacy)
+        profile = {**boot._config(self.spec), 'schemaVersion': 3,
+                   'semantic': {'legacyWitness':witness, 'transitionDigest':'a'*64},
+                   'sourceWrite':{}}
+        before = self.state_path.read_bytes()
+        with patch.object(entry, '_readonly_owner_runtime', return_value=self.config_parent):
+            altered = {**profile, 'semantic':{
+                **profile['semantic'], 'legacyWitness':{**witness, 'prefixDigest':'0'*64}}}
+            self.config_path.write_bytes(canonical(altered).encode())
+            with self.assertRaisesRegex(Denied, 'LEGACY_PREFIX_CHANGED'):
+                boot.prepare_successor(hashlib.sha256(self.config_path.read_bytes()).hexdigest())
+            self.assertEqual(self.state_path.read_bytes(), before)
+
+            self.config_path.write_bytes(canonical(profile).encode())
+            with self.assertRaisesRegex(Denied, 'SUCCESSOR_PROFILE_PIN_CHANGED'):
+                boot.prepare_successor('0'*64)
+            self.assertEqual(self.state_path.read_bytes(), before)
+
+            profile_pin = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
+            receipt = boot.prepare_successor(profile_pin)
+            self.assertEqual(receipt['profileSha256'], profile_pin)
+            self.assertEqual(receipt['legacyPrefixDigest'], witness['prefixDigest'])
+            self.assertTrue(receipt['sourceTransitionPending'])
+            self.assertFalse(receipt['admissionAllowed'])
+            self.assertFalse(receipt['hostAccepted'])
+            migrated_bytes = self.state_path.read_bytes()
+            with self.assertRaises(Denied):
+                boot.prepare_successor(profile_pin)
+            self.assertEqual(self.state_path.read_bytes(), migrated_bytes)
+        self.assertFalse(self.socket_path.exists())
+        reopened = ReleaseEventJournal(self.state_path, instance_id=self.spec['instanceId'],
+            scope=self.spec['scope'], expected_legacy=witness, transition_digest='a'*64)
+        self.assertEqual(reopened.release_checkpoint()['legacy'], witness)
+        self.assertTrue(reopened.release_checkpoint()['sourceTransitionPending'])
+
     def test_provision_pin_wrong_no_effect(self):
         with self.assertRaisesRegex(Denied, 'SPEC_PIN_CHANGED'):
             self.run_action('Provision', '0' * 64)

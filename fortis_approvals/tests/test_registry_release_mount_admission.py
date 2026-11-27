@@ -95,6 +95,38 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
                 with self.subTest(index=index,field=field),self.assertRaises(RuntimeError):
                     helper.admit(self.container,self.expected,pilot=True)
 
+    def test_successor_mounts_use_a_separate_socket_and_exact_roles(self):
+        self.activate()
+        suffix = _NONCE.replace('-', '')
+        self.expected['registrySuccessorDelivery'] = True
+        self.expected['registrySocketVolume'] = 'fortis-registry-read-'+suffix
+        self.container['Mounts'][-1] = _mount(self.expected['registrySocketVolume'], '/run/fortis-registry-read')
+        evidence = 'fortis-registry-source-evidence-'+suffix
+        self.container['Mounts'].extend((
+            _mount(evidence, '/run/fortis-registry-source-evidence', rw=True),
+            _mount('fortis-r7-maintenance-interlock', '/run/r7-maintenance')))
+        self.assertEqual(helper.admit(self.container,self.expected,pilot=True), {'admission':'PASS'})
+        for index in (-1,-2):
+            self.container['Mounts'][index]['RW'] = not self.container['Mounts'][index]['RW']
+            with self.assertRaisesRegex(RuntimeError,'MOUNT_CONFIGURATION_MISMATCH'):
+                helper.admit(self.container,self.expected,pilot=True)
+            self.container['Mounts'][index]['RW'] = not self.container['Mounts'][index]['RW']
+
+    def test_successor_recheck_and_companion_preparation_are_on_ordinary_path(self):
+        check = _PS.index("Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'")
+        save = _PS.index('Save-Checked-Image $Source $Report',check)
+        final = _PS.index("Step 'REGISTRY_SUCCESSOR_FINAL_PREFLIGHT'")
+        stop = _PS.index("Write-ReleaseTiming 'APPLY_STOP_REQUEST'",final)
+        self.assertIn('Read-RegistrySuccessorDelivery $SourceForOwnerShell',_PS[check:save])
+        self.assertIn('Read-RegistrySuccessorDelivery $Source',_PS[final:stop])
+        self.assertIn('Same-Json $FinalDelivery $script:RegistryDelivery',_PS[final:stop])
+        self.assertGreater(_PS.index('$SourceStopAttempted=$true',stop),stop)
+        self.assertIn('(-not $script:RegistryDelivery -or $SourceStopAttempted)',_PS[stop:])
+        clone = _PS.index("Step 'CLONE_STATE'",stop)
+        start = _PS.index("Step 'CREATE_STAGED'",clone)
+        self.assertIn('Initialize-StagedRegistryCollector $Runtime',_PS[clone:start])
+        self.assertIn("prepare_staged_companion('/state/private/approvals.sqlite'",_PS)
+
     def test_shared_pid_host_pid_or_other_privileged_access_still_denied(self):
         for field,value in (('PidMode','container:another'),('PidMode','host'),
                             ('UsernsMode','host'),('Privileged',True),
