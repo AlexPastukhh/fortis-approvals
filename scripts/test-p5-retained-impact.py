@@ -8,9 +8,10 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = '8c9abefdfbe4699aae97b9363a2a66c596680e62'
+PIN = '8b82564728c55807c57d1c9e1f0f974ea14fd6d6'
 TESTS = (
     'test_real_shared_validator_semantics',
+    'test_real_shared_validator_accepts_v2_maintenance',
     'test_real_validator_rejects_false_no_deployment',
     'test_real_validator_rejects_missing_local_dependency',
     'test_real_validator_rejects_duplicate_yaml_key',

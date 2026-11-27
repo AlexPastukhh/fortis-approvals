@@ -43,7 +43,7 @@ def validate_impact(data,catalog,paths):
     return dict(classification='deployment',affectedTargets=['app'],changedFiles=len(paths))
 """
 REAL_ROOT = os.environ.get('FORTIS_TEST_RELEASE_VALIDATOR_ROOT')
-REAL_PIN = '8c9abefdfbe4699aae97b9363a2a66c596680e62'
+REAL_PIN = '8b82564728c55807c57d1c9e1f0f974ea14fd6d6'
 
 
 class RetainedImpactTests(unittest.TestCase):
@@ -155,6 +155,25 @@ class RetainedImpactTests(unittest.TestCase):
     def test_stale_checkpoint_stops(self):
         self.capture();self.anchor={'revision':0,'eventDigest':'0'*64}
         with self.assertRaises(Denied):self.validate()
+
+    @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
+                         'Requires explicitly supplied shared validator repository and its pinned dependencies')
+    def test_real_shared_validator_accepts_v2_maintenance(self):
+        maintenance = dict(beginRequired=True, stateFreeze=True, blockedOperations=[], notes=[])
+        catalog = {**CATALOG, 'schemaVersion': 2,
+                   'targets': [{**CATALOG['targets'][0], 'maintenance': maintenance}]}
+        serialized = json.dumps(catalog)
+        self.git.run(['checkout', '--quiet', self.base], cwd=self.source)
+        self.write(self.source, 'release/targets.yaml', serialized)
+        self.base = self.commit(self.source)
+        (self.source / 'src/old.py').rename(self.source / 'src/new.py')
+        self.head = self.commit(self.source)
+        self.api.head = self.api.ci_head = self.head
+        self.api.base = self.base
+        self.api.sources['release/targets.yaml'] = serialized.encode()
+        self.capture()
+        result = self.validate(validator_repository=Path(REAL_ROOT), validator_revision=REAL_PIN)
+        self.assertEqual(result['observation']['validatedImpact']['affectedTargets'], ['app'])
 
     @unittest.skipUnless(REAL_ROOT and importlib.util.find_spec('yaml') and importlib.util.find_spec('jsonschema'),
                          'Requires explicitly supplied shared validator repository and its pinned dependencies')

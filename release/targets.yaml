@@ -2,7 +2,7 @@
 # Two independent target identities: Gateway image and owner Windows controller.
 # Image inputs are derived conservatively from active Manage-Integrations.ps1
 # (Dockerfile-Gateway-Modularized-Candidate), not historical pilot Dockerfiles.
-schemaVersion: 1
+schemaVersion: 2
 repository: fortis-approvals
 buildUnits:
   - id: primary-gateway-image
@@ -135,6 +135,12 @@ buildUnits:
       - fortis_approvals/integrations/registry/read_contract.py
 targets:
   - id: fortis-gateway
+    maintenance:
+      beginRequired: true
+      stateFreeze: true
+      blockedOperations: []
+      notes:
+        - Use the owner-controlled maintenance and State Freeze procedure.
     buildUnit: primary-gateway-image
     deployment:
       kind: owner-controlled
@@ -147,6 +153,12 @@ targets:
       - live-readback
       - backup-promote
   - id: fortis-registry-pilot
+    maintenance:
+      beginRequired: true
+      stateFreeze: true
+      blockedOperations: []
+      notes:
+        - Freeze writes to the enrolled Registry state during the protected transition.
     buildUnit: registry-candidate-reader-image
     deployment:
       kind: owner-controlled
@@ -159,6 +171,12 @@ targets:
       - private-schema3-backup-restore
       - owner-non-production-host-go
   - id: gateway-owner-controller
+    maintenance:
+      beginRequired: false
+      stateFreeze: false
+      blockedOperations: []
+      notes:
+        - Publishing this Windows source leaves runtime maintenance to the deployment target.
     inputs:
       - fortis_approvals/deploy/Manage-Integrations.ps1
       - fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1
@@ -174,6 +192,12 @@ targets:
       - owner-powershell-selftest
   # Separate, disabled P3.4 owner-controlled runner (not Primary Gateway).
   - id: release-label-publisher
+    maintenance:
+      beginRequired: false
+      stateFreeze: false
+      blockedOperations: []
+      notes:
+        - Separate owner-controlled runner with its own activation procedure.
     buildUnit: publisher-runner-image
     deployment:
       kind: owner-controlled

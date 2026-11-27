@@ -21,9 +21,14 @@ class BoundedReleaseRecordSourceTests(unittest.TestCase):
         self.assertIn("function Save {", MANAGER)
         self.assertIn("$JsonText=ConvertTo-BoundedReleaseJson $script:R", MANAGER)
         self.assertIn("Save-Record -SerializedJson $JsonText", MANAGER)
-        self.assertIn("param([string]$SerializedJson='')", PILOT)
-        self.assertIn("if(-not $JsonText){$JsonText=ConvertTo-Json -InputObject $script:R -Depth 25}", PILOT)
-        self.assertIn("try {$script:R=$Value;$script:RecordPath=$Path;Save-Record}", MANAGER)
+        save_record = PILOT.split("function Save-Record {", 1)[1].split("function Assert-PreparedResume {", 1)[0]
+        self.assertIn("[string]$SerializedJson=''", save_record.split("$JsonText=", 1)[0])
+        self.assertIn("$JsonText=$SerializedJson", save_record)
+        self.assertIn("if(-not $JsonText){$JsonText=ConvertTo-Json -InputObject $script:R -Depth 25}", save_record)
+        private_writer = MANAGER.split("function Write-Private {", 1)[1].split("\nfunction ", 1)[0]
+        bind = private_writer.index("$script:R=$Value;$script:RecordPath=$Path")
+        save = private_writer.index("if($FlushToDisk){Save-Record -FlushToDisk}else{Save-Record}")
+        self.assertLess(bind, save)
 
     def test_record_context_exists_before_selftest_and_auto_private_reads(self):
         # Parent profile/interactive Windows owner sessions can enable

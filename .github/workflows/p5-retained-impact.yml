@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: AlexPastukhh/fortis-release-impact-action
-          ref: 8c9abefdfbe4699aae97b9363a2a66c596680e62
+          ref: 8b82564728c55807c57d1c9e1f0f974ea14fd6d6
           fetch-depth: 1
           persist-credentials: false
           path: validator
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
-          test "$(git -C validator rev-parse HEAD)" = "8c9abefdfbe4699aae97b9363a2a66c596680e62"
+          test "$(git -C validator rev-parse HEAD)" = "8b82564728c55807c57d1c9e1f0f974ea14fd6d6"
           test "$(sha256sum validator/tools/release/requirements.txt | cut -d ' ' -f 1)" = "c6510e2d2bfbd08ae31ee9d1042c91e2d748cca5b1c58a6fd879ae32f5fb073c"
           python -m pip install --disable-pip-version-check -r validator/tools/release/requirements.txt
       - name: Run required retained Impact semantic cases (no skips)

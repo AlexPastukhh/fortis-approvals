@@ -47,7 +47,11 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertLess(save, finish)
         self.assertIn("$Path=Join-Path $Directory 'record.json'", SCRIPT)
         self.assertIn("Protect-Directory $Directory", SCRIPT)
-        self.assertIn("Write-Private $Path ([ordered]@", SCRIPT)
+        saver = SCRIPT.split("function Save-Checked-Image {", 1)[1].split("function Assert-Checked-Image-Binding {", 1)[0]
+        record = saver.index("$Record=[ordered]@")
+        write = saver.index("if($Maintenance){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}")
+        self.assertIn("sourceReceipt=$Receipt", saver[record:write])
+        self.assertLess(saver.index("Protect-Directory $Directory"), write)
         self.assertIn("checkedImageId", SCRIPT)
         self.assertIn("checkedImageRecord", SCRIPT)
 
@@ -99,8 +103,13 @@ class CheckedImageSourceTests(unittest.TestCase):
         verify = SCRIPT.split('function Verify-Checked-Image {', 1)[1].split('function Assert-CheckedImagePreflightSelfTest {', 1)[0]
         self.assertLess(verify.index('Assert-Checked-Image-Binding $Record.binding $Expected'),
                         verify.index('if($BindingOnly){return}'))
-        self.assertLess(verify.index('if($BindingOnly){return}'), verify.index('$Now=Receipt'))
-        self.assertLess(verify.index('RELEASE_GROWTH_SOURCE_STATE_CHANGED'), verify.index('if($ReturnReceipt){return $Now}'))
+        acquire = verify.index('$Now=if($Maintenance)')
+        frozen = verify.index('Read-SuccessorFreezeSeal $Maintenance', acquire)
+        receipt = verify.index('Receipt $Source.runtime.stateVolume -Exact:', frozen)
+        verify_state = verify.index('RELEASE_GROWTH_SOURCE_STATE_CHANGED', receipt)
+        self.assertLess(verify.index('if($BindingOnly){return}'), acquire)
+        self.assertIn('$Frozen.sourceReceipt', verify[frozen:receipt])
+        self.assertLess(verify_state, verify.index('if($ReturnReceipt){return $Now}'))
         self.assertLess(verify.index('RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'), verify.index('if($ReturnReceipt){return $Now}'))
         early = SCRIPT.index('Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto')
         admission = SCRIPT.index("Step 'SOURCE_ADMISSION'", early)

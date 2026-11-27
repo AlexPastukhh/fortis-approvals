@@ -32,7 +32,12 @@ code=Path(sys.argv[1]); root=Path(sys.argv[2])
 sys.path.insert(0,str(code/'tools/release'))
 from validate import load_data,validate_schema,validate_catalog
 catalog=load_data((root/'release/targets.yaml').read_text(encoding='utf-8'),'yaml')
-validate_schema(catalog,code/'docs/schemas/build-target-catalog-v1.schema.json')
+schemas=code/'docs/schemas'
+if type(catalog.get('schemaVersion')) is int and catalog['schemaVersion']==1:
+    validate_schema(catalog,schemas/'build-target-catalog-v1.schema.json')
+else:
+    from validate import catalog_schema_path
+    validate_schema(catalog,catalog_schema_path(catalog,schemas))
 validate_catalog(catalog,root,'fortis-approvals')
 print(json.dumps(catalog))
 """
@@ -69,7 +74,8 @@ def _catalog(validator, sha, expected_digest):
             except (ValueError,UnicodeError):
                 raise Denied('P5_COMPONENT_CATALOG_INVALID') from None
         _need(type(catalog) is dict and catalog.get('repository')=='fortis-approvals'
-              and catalog.get('schemaVersion')==1 and type(catalog.get('targets')) is list
+              and type(catalog.get('schemaVersion')) is int and catalog['schemaVersion'] in (1,2)
+              and type(catalog.get('targets')) is list
               and type(catalog.get('buildUnits')) is list,'P5_COMPONENT_CATALOG_INVALID')
         return catalog,node['treeSha']
 

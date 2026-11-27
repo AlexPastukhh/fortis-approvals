@@ -33,7 +33,11 @@ from validate import load_data,validate_schema,validate_catalog,validate_impact,
 v=json.load(sys.stdin)
 schemas=code/'docs/schemas'
 catalog=load_data(v['catalog'],'yaml')
-validate_schema(catalog,schemas/'build-target-catalog-v1.schema.json')
+if type(catalog.get('schemaVersion')) is int and catalog['schemaVersion']==1:
+    validate_schema(catalog,schemas/'build-target-catalog-v1.schema.json')
+else:
+    from validate import catalog_schema_path
+    validate_schema(catalog,catalog_schema_path(catalog,schemas))
 validate_catalog(catalog,root,v['repository'])
 impact=load_data(extract_pr_impact(v['body']),'yaml')
 validate_schema(impact,schemas/'release-impact-v1.schema.json')

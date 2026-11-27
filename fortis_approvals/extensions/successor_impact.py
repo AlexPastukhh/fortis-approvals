@@ -21,14 +21,10 @@ from ..integrations.registry_contracts import semantic_contract as sc
 from ..integrations.registry_contracts import source_lineage_contract as lc
 from ..integrations.registry_contracts.release_profile import from_resolved_catalog, resolve_components
 
-# Reuse the reviewed bounded graph/impact code, replacing only its v1 schema
-# selector. The validator itself comes from a separately pinned commit.
-_OLD="validate_schema(catalog,schemas/'build-target-catalog-v1.schema.json')"
-assert _SHIM.count(_OLD)==1
-_SUCCESSOR_SHIM=_SHIM.replace(_OLD,
-    "from validate import catalog_schema_path\nvalidate_schema(catalog,catalog_schema_path(catalog,schemas))")
-assert _SUCCESSOR_SHIM.count('dependencyGraph=graph)))')==1
-_SUCCESSOR_SHIM=_SUCCESSOR_SHIM.replace('dependencyGraph=graph)))',
+# Reuse bounded graph and versioned validation. Return the exact catalog
+# so the approved component and maintenance bindings can be verified.
+assert _SHIM.count('dependencyGraph=graph)))')==1
+_SUCCESSOR_SHIM=_SHIM.replace('dependencyGraph=graph)))',
     'dependencyGraph=graph,catalog=catalog)))')
 
 
