@@ -3,7 +3,7 @@
 # StartManaged adopts the existing pilot on the normal Docker restart policy.
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan','Preview','Provision','Verify','StartManaged')][string]$Action='Plan',
+    [ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','StartManaged')][string]$Action='Plan',
     [string]$SourceRoot='',
     [string]$SourceSha='',
     [string]$RegistryImageId='',
@@ -14,6 +14,8 @@ param(
     [string]$SocketVolume='fortis-registry-read',
     [switch]$ConfirmProvision,
     [string]$PlannerKeySha256='',
+    [string]$SuccessorReleaseNonce='', [string]$SuccessorProfileSha256='',
+    [string]$TransitionEvidenceSha256='',
     [switch]$ConfirmManagedStart
 )
 $ErrorActionPreference='Stop'
@@ -33,12 +35,16 @@ function Invoke-Registry-Bootstrap-DockerRead {
 
 function Test-Registry-Bootstrap-ReadOnlySocket {
     param([string]$MountJson,[string]$VolumeName)
+    return (Test-Registry-Bootstrap-ReadOnlyMount $MountJson $VolumeName '/run/fortis-registry-read')
+}
+function Test-Registry-Bootstrap-ReadOnlyMount {
+    param([string]$MountJson,[string]$VolumeName,[string]$Destination)
     # Windows PowerShell 5.1 emits the entire JSON array as one pipeline item.
     $Mounts=ConvertFrom-Json -InputObject $MountJson
     $SocketMount=@(foreach ($Mount in $Mounts) {
         if ($Mount.Type -ceq 'volume' -and $Mount.Name -ceq $VolumeName) { $Mount }
     })
-    if ($SocketMount.Count -ne 1 -or $SocketMount[0].Destination -cne '/run/fortis-registry-read' -or
+    if ($SocketMount.Count -ne 1 -or $SocketMount[0].Destination -cne $Destination -or
         $SocketMount[0].RW -isnot [bool] -or $SocketMount[0].RW -ne $false) {
         return $false
     }
@@ -46,12 +52,28 @@ function Test-Registry-Bootstrap-ReadOnlySocket {
 }
 
 $ManagedStart=$Action -ceq 'StartManaged'
+$PrepareSuccessor=$Action -ceq 'PrepareSuccessor'
+$SuccessorStart=$ManagedStart -and [bool]$SuccessorReleaseNonce
+$Successor=$PrepareSuccessor -or $SuccessorStart
+$AccountTransition=[bool]$TransitionEvidenceSha256
+if($AccountTransition){
+    if(-not $PrepareSuccessor){throw 'REGISTRY_BOOTSTRAP_TRANSITION_ACTION_DENIED'}
+    Assert-Registry-Bootstrap-Input 'TRANSITION_EVIDENCE_SHA256' $TransitionEvidenceSha256 '^[0-9a-f]{64}$'
+}
 if ($ManagedStart -ne [bool]$ConfirmManagedStart -or (-not $ManagedStart -and $PlannerKeySha256)) {
     throw 'REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED'
 }
-if ($ManagedStart) {
+if($Successor){
+    if($PlannerKeySha256){throw 'REGISTRY_BOOTSTRAP_SUCCESSOR_PROFILE_REQUIRED'}
+    Assert-Registry-Bootstrap-Input 'SUCCESSOR_NONCE' $SuccessorReleaseNonce '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    Assert-Registry-Bootstrap-Input 'SUCCESSOR_PROFILE_SHA256' $SuccessorProfileSha256 '^[0-9a-f]{64}$'
+} elseif($SuccessorReleaseNonce -or $SuccessorProfileSha256){
+    throw 'REGISTRY_BOOTSTRAP_SUCCESSOR_PROFILE_REQUIRED'
+} elseif($ManagedStart){
     Assert-Registry-Bootstrap-Input 'PLANNER_KEY_SHA256' $PlannerKeySha256 '^[0-9a-f]{64}$'
-    if ($SpecPath -or $ExpectedSpecSha256) { throw 'REGISTRY_BOOTSTRAP_MANAGED_START_SPEC_NOT_SUPPORTED' }
+}
+if (($ManagedStart -or $PrepareSuccessor) -and ($SpecPath -or $ExpectedSpecSha256)) {
+    throw 'REGISTRY_BOOTSTRAP_MANAGED_START_SPEC_NOT_SUPPORTED'
 }
 
 if ($Action -ceq 'Plan') {
@@ -62,10 +84,13 @@ if ($Action -ceq 'Plan') {
     Write-Host 'No Docker commands, host writes, volume creation or privileges performed by Plan.'
     return
 }
-if ($ConfirmProvision -and $Action -cne 'Provision') {
+if ($ConfirmProvision -and $Action -cne 'Provision' -and -not $PrepareSuccessor) {
     throw 'REGISTRY_BOOTSTRAP_PROVISION_FLAG_INVALID'
 }
 if ($Action -ceq 'Provision' -and -not $ConfirmProvision) {
+    throw 'REGISTRY_BOOTSTRAP_INDEPENDENT_PROVISION_GO_REQUIRED'
+}
+if ($PrepareSuccessor -and -not $ConfirmProvision) {
     throw 'REGISTRY_BOOTSTRAP_INDEPENDENT_PROVISION_GO_REQUIRED'
 }
 
@@ -73,7 +98,27 @@ Assert-Registry-Bootstrap-Input 'SOURCE_SHA' $SourceSha '^[0-9a-f]{40}$'
 Assert-Registry-Bootstrap-Input 'IMAGE_ID' $RegistryImageId '^sha256:[0-9a-f]{64}$'
 Assert-Registry-Bootstrap-Input 'STATE_VOLUME' $StateVolume '^fortis-registry-state-e13b-[0-9a-f]{8,32}$'
 Assert-Registry-Bootstrap-Input 'CONFIG_VOLUME' $ConfigVolume '^fortis-registry-config-e13b-[0-9a-f]{8,32}$'
-if ($SocketVolume -cne 'fortis-registry-read' -or $StateVolume -ceq $ConfigVolume) {
+$ExpectedSocket='fortis-registry-read'
+$VolumeNames=@($StateVolume,$ConfigVolume,$SocketVolume)
+if($Successor){
+    $Id=$SuccessorReleaseNonce.Replace('-','')
+    if($StateVolume -cne ('fortis-registry-state-e13b-'+$Id) -or
+       $ConfigVolume -cne ('fortis-registry-config-e13b-'+$Id)){
+        throw 'REGISTRY_BOOTSTRAP_SUCCESSOR_CLONE_VOLUME_REQUIRED'
+    }
+    $ExpectedSocket='fortis-registry-read-'+$Id
+    if($PrepareSuccessor){$VolumeNames=@($StateVolume,$ConfigVolume)}
+}
+if($SuccessorStart -or $AccountTransition){
+    $ValidatorVolume='fortis-registry-source-'+$Id
+    $VolumeNames+=@($ValidatorVolume)
+}
+if($SuccessorStart){
+    $EvidenceVolume='fortis-registry-source-evidence-'+$Id
+    $InterlockVolume='fortis-r7-maintenance-interlock'
+    $VolumeNames+=@($EvidenceVolume,$InterlockVolume)
+}
+if ($SocketVolume -cne $ExpectedSocket -or $StateVolume -ceq $ConfigVolume) {
     throw 'REGISTRY_BOOTSTRAP_VOLUME_NAME_INVALID'
 }
 $ExpectedRoot=[IO.Path]::GetFullPath((Join-Path $HOME 'Repos\fortis-approvals'))
@@ -88,7 +133,7 @@ if ([IO.Path]::GetFullPath($PSScriptRoot) -cne $ExpectedScriptRoot) {
 if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
     throw 'REGISTRY_BOOTSTRAP_SOURCE_GIT_MISSING'
 }
-if (-not $ManagedStart) {
+if (-not $ManagedStart -and -not $PrepareSuccessor) {
     Assert-Registry-Bootstrap-Input 'SPEC_SHA' $ExpectedSpecSha256 '^[0-9a-f]{64}$'
     if (-not $SpecPath -or -not (Test-Path -LiteralPath $SpecPath -PathType Leaf)) {
         throw 'REGISTRY_BOOTSTRAP_SPEC_UNAVAILABLE'
@@ -134,22 +179,26 @@ $Image=Invoke-Registry-Bootstrap-DockerRead -Arguments @('image','inspect','--fo
 if ($Image.Count -ne 1 -or $Image[0] -cne ($RegistryImageId+'|20002:20002|linux|amd64')) {
     throw 'REGISTRY_BOOTSTRAP_IMAGE_IDENTITY_INVALID'
 }
-foreach ($Name in @($StateVolume,$ConfigVolume,$SocketVolume)) {
+foreach ($Name in $VolumeNames) {
     $Volume=Invoke-Registry-Bootstrap-DockerRead -Arguments @('volume','inspect','--format','{{.Name}}|{{.Driver}}|{{.Scope}}',$Name)
     if ($Volume.Count -ne 1 -or $Volume[0] -cne ($Name+'|local|local')) {
         throw 'REGISTRY_BOOTSTRAP_VOLUME_NOT_OWNER_VERIFIED'
     }
     if ($ManagedStart) {
         $Users=Invoke-Registry-Bootstrap-DockerRead -Arguments @('ps','-aq','--no-trunc','--filter',('volume='+$Name))
-        foreach ($Id in $Users) {
-            Assert-Registry-Bootstrap-Input 'VOLUME_HOLDER' $Id '^[0-9a-f]{64}$'
+        foreach ($HolderId in $Users) {
+            Assert-Registry-Bootstrap-Input 'VOLUME_HOLDER' $HolderId '^[0-9a-f]{64}$'
             $Holder=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
-                'container','inspect','--format','{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}|{{json .Mounts}}',$Id)
+                'container','inspect','--format','{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}|{{json .Mounts}}',$HolderId)
             if ($Holder.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_MOUNT_READBACK_FAILED' }
             $Fields=$Holder[0] -split '\|',3
             if ($Fields.Count -ne 3) { throw 'REGISTRY_BOOTSTRAP_MOUNT_READBACK_FAILED' }
             $Dormant=($Fields[0] -cin @('created','exited') -and $Fields[1] -ceq 'no')
             if ($Dormant) { continue }
+            if($SuccessorStart -and $Name -ceq $InterlockVolume -and
+               (Test-Registry-Bootstrap-ReadOnlyMount $Fields[2] $Name '/run/r7-maintenance')){
+                continue
+            }
             # Existing Gateway may retain the private socket as a reader.
             if ($Name -cne $SocketVolume -or -not (Test-Registry-Bootstrap-ReadOnlySocket $Fields[2] $Name)) {
                 throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
@@ -164,17 +213,26 @@ foreach ($Name in @($StateVolume,$ConfigVolume,$SocketVolume)) {
 }
 
 if ($ManagedStart) {
+    $Name='fortis-registry-managed';$Memory='128m';$Extra=@()
+    $ProofArgs=@('--functional-planner-key-digest',$PlannerKeySha256,'--managed-startup')
+    if($SuccessorStart){
+        $Name='fortis-registry-successor-'+$Id
+        $Memory='512m'
+        $Extra=@('--tmpfs','/tmp:rw,nosuid,nodev,size=256m',
+            '--mount',('type=volume,src='+$EvidenceVolume+',dst=/run/fortis-registry-source-evidence,volume-nocopy,readonly'),
+            '--mount',('type=volume,src='+$ValidatorVolume+',dst=/run/fortis-registry-source,volume-nocopy,readonly'),
+            '--mount',('type=volume,src='+$InterlockVolume+',dst=/run/r7-maintenance,volume-nocopy,readonly'))
+        $ProofArgs=@('--expected-profile-sha256',$SuccessorProfileSha256)
+    }
     $StartArgs=@(
-        'run','-d','--pull=never','--name','fortis-registry-managed','--restart=unless-stopped',
+        'run','-d','--pull=never','--name',$Name,'--restart=unless-stopped',
         '--init','--network=none','--read-only','--user','20002:20002',
-        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','128m',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory',$Memory,
         '--mount',('type=volume,src='+$StateVolume+',dst=/run/fortis-registry-state,volume-nocopy'),
         '--mount',('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtime,volume-nocopy,readonly'),
-        '--mount',('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy'),
-        $RegistryImageId,'python','-m','fortis_approvals.registry.local_candidate_read_service',
-        '--owner-config','/run/fortis-registry-runtime/profile.json',
-        '--functional-planner-key-digest',$PlannerKeySha256,'--managed-startup'
-    )
+        '--mount',('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy')
+    ) + $Extra + @($RegistryImageId,'python','-m','fortis_approvals.registry.local_candidate_read_service',
+        '--owner-config','/run/fortis-registry-runtime/profile.json') + $ProofArgs
     $RegistryId=@(& docker @StartArgs)
     if ($LASTEXITCODE -ne 0 -or $RegistryId.Count -ne 1 -or $RegistryId[0] -cnotmatch '^[0-9a-f]{64}$') {
         throw 'REGISTRY_BOOTSTRAP_MANAGED_START_UNKNOWN_INSPECT_ORIGINAL'
@@ -214,6 +272,7 @@ print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 '@
 $StateFlag='readonly'
 $ConfigFlag='readonly'
+if($PrepareSuccessor){$StateFlag=''}
 if ($Action -ceq 'Provision') {
     $StateFlag=''
     $ConfigFlag=''
@@ -223,20 +282,49 @@ $ConfigMount=('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtim
 if ($StateFlag) { $StateMount+=',readonly' }
 if ($ConfigFlag) { $ConfigMount+=',readonly' }
 $SocketMount=('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy,readonly')
+$BootstrapMemory=if($AccountTransition){'512m'}else{'128m'}
 $DockerArgs=@(
     'run','-i','--rm','--pull=never','--network=none','--read-only',
     '--user','20002:20002','--cap-drop','ALL',
-    '--security-opt','no-new-privileges:true','--pids-limit','64','--memory','128m',
-    '--tmpfs','/run/fortis-registry-bootstrap:rw,nosuid,nodev,noexec,size=16k,uid=20002,gid=20002,mode=0700',
-    '--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=8m,uid=20002,gid=20002,mode=0700',
-    '--mount',$StateMount,'--mount',$ConfigMount,'--mount',$SocketMount,
-    '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,
-    $Action,$ExpectedSpecSha256
+    '--security-opt','no-new-privileges:true','--pids-limit','64','--memory',$BootstrapMemory
 )
+if($PrepareSuccessor){
+    # Reserve the managed name so preparation and startup cannot overlap.
+    $PythonRunner=@'
+import json, sys
+sys.path.insert(0, '/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import prepare_successor
+evidence = sys.argv[2] if len(sys.argv) > 2 else None
+source = sys.argv[3] if evidence is not None else None
+result = prepare_successor(sys.argv[1], transition_evidence_sha256=evidence, source_sha=source)
+print(json.dumps(result, sort_keys=True, separators=(',', ':')))
+'@
+    if($AccountTransition){
+        $DockerArgs+=@('--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=256m',
+            '--mount',('type=volume,src='+$ValidatorVolume+',dst=/run/fortis-registry-source,volume-nocopy,readonly'))
+    }
+    $DockerArgs+=@('--name',('fortis-registry-successor-'+$Id),
+        '--mount',$StateMount,'--mount',$ConfigMount,
+        '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,$SuccessorProfileSha256)
+    if($AccountTransition){$DockerArgs+=@($TransitionEvidenceSha256,$SourceSha)}
+    $SpecLine=''
+} else {
+    $DockerArgs+=@(
+        '--tmpfs','/run/fortis-registry-bootstrap:rw,nosuid,nodev,noexec,size=16k,uid=20002,gid=20002,mode=0700',
+        '--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=8m,uid=20002,gid=20002,mode=0700',
+        '--mount',$StateMount,'--mount',$ConfigMount,'--mount',$SocketMount,
+        '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,
+        $Action,$ExpectedSpecSha256
+    )
+}
 Write-Host ('REGISTRY_BOOTSTRAP_OWNER_ACTION='+$Action)
 Write-Host ('REGISTRY_BOOTSTRAP_SOURCE_SHA='+$SourceSha)
 Write-Host ('REGISTRY_BOOTSTRAP_IMAGE_ID='+$RegistryImageId)
-Write-Host ('REGISTRY_BOOTSTRAP_SPEC_SHA256='+$ExpectedSpecSha256)
+if($PrepareSuccessor){
+    Write-Host ('REGISTRY_BOOTSTRAP_SUCCESSOR_PROFILE_SHA256='+$SuccessorProfileSha256)
+} else {
+    Write-Host ('REGISTRY_BOOTSTRAP_SPEC_SHA256='+$ExpectedSpecSha256)
+}
 Write-Host 'REGISTRY_BOOTSTRAP_EXISTING_VOLUMES_REVIEWED'
 # This single native invocation is the ONLY docker run; no retry or cleanup
 # after a partial/unknown Provision effect. Native nonzero always STOP.
@@ -249,6 +337,27 @@ if ($Output.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_OUTPUT_NOT_EXACT' }
 try {
     $Receipt=$Output[0] | ConvertFrom-Json -ErrorAction Stop
 } catch { throw 'REGISTRY_BOOTSTRAP_OUTPUT_INVALID_JSON' }
+if($PrepareSuccessor){
+    if($Receipt.result -cne 'SOURCE_ONLY_REGISTRY_SUCCESSOR_PREPARED' -or
+       $Receipt.profileSha256 -cne $SuccessorProfileSha256 -or
+       $Receipt.transitionDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Receipt.legacyPrefixDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Receipt.sourceTransitionPending -isnot [bool] -or
+       $Receipt.sourceTransitionPending -ne (-not $AccountTransition) -or
+       $Receipt.hostAccepted -ne $false -or $Receipt.admissionAllowed -ne $false){
+        throw 'REGISTRY_BOOTSTRAP_RESULT_INVARIANT_FAILED_STOP'
+    }
+    if($AccountTransition -and ($Receipt.transitionEvidenceSha256 -cne $TransitionEvidenceSha256 -or
+       $Receipt.sourceTransitionReceipt.kind -cne 'TRANSITION' -or
+       $Receipt.sourceTransitionReceipt.sourceCursor -cne $SourceSha -or
+       $Receipt.sourceTransitionReceipt.sourceRevision -ne 1 -or
+       $Receipt.sourceTransitionReceipt.deploymentAuthorized -ne $false)){
+        throw 'REGISTRY_BOOTSTRAP_RESULT_INVARIANT_FAILED_STOP'
+    }
+    Write-Host $Output[0]
+    Write-Host 'REGISTRY_BOOTSTRAP_PREPARESUCCESSOR_SOURCE_ONLY_PASS'
+    return
+}
 $AllowedResult=@{
     Preview='SOURCE_ONLY_REGISTRY_BOOTSTRAP_PREVIEW'
     Provision='SOURCE_ONLY_REGISTRY_BOOTSTRAP_PROVISIONED'

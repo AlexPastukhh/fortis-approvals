@@ -828,13 +828,18 @@ class GitHubAdapter:
     def _before_release_label_write(self, request, snapshot, approved_preview):
         """Optional native server guard; caller payload never supplies approval."""
 
-    def apply(self, request, *, approved_preview=None):
+    def apply(self, request, *, approved_preview=None, before_reviewed_merge=None):
+        if before_reviewed_merge is not None and (
+                request['operation'] != 'merge_pull_request' or approved_preview is None):
+            raise Denied('GITHUB_REVIEWED_MERGE_CONTEXT_REQUIRED')
         request_id = request["requestId"]
         prior = self.receipt(request_id)
         if prior is not None:
             return prior
         operation = request["operation"]
-        if (approved_preview is not None and operation in ("create_release_label",
+        if before_reviewed_merge is not None:
+            snapshot = approved_preview
+        elif (approved_preview is not None and operation in ("create_release_label",
                 "add_pr_release_labels", "remove_pr_release_label")):
             snapshot = approved_preview
         elif operation == "create_pull_request":
@@ -990,9 +995,12 @@ class GitHubAdapter:
                       "headSha": pr["head"]["sha"],
                       "bodySha256": snapshot["nextBodySha256"], "url": pr["url"]}
         elif operation == "merge_pull_request":
-            latest = self.prepare(request)
+            latest = (self.prepare(request) if before_reviewed_merge is None
+                      else GitHubAdapter.prepare(self,request))
             if canonical(latest) != canonical(snapshot):
                 raise Stale("GITHUB_PR_CHANGED_BEFORE_MERGE")
+            if before_reviewed_merge is not None:
+                before_reviewed_merge()
             merged = self._api("PUT", base + "/pulls/" +
                                str(params["number"]) + "/merge",
                                body={"sha": params["expectedHeadSha"],

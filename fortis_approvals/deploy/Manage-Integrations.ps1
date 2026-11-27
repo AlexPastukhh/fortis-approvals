@@ -16,6 +16,7 @@ param(
     [string]$BackupIds='', [string]$RunIds='', [switch]$Preview
 )
 $script:ReleaseClock=[Diagnostics.Stopwatch]::StartNew()
+$script:RegistryDelivery=$null
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
 # Windows PowerShell 5.1 only. Strict JSON DTO for Gateway release records.
@@ -788,10 +789,12 @@ function Read-Private {
     finally {$script:RecordPath=$Saved}
 }
 function Write-Private {
-    param([string]$Path,$Value)
+    param([string]$Path,$Value,[switch]$FlushToDisk)
     $SavedR=$script:R;$SavedPath=$script:RecordPath
-    try {$script:R=$Value;$script:RecordPath=$Path;Save-Record}
-    finally {$script:R=$SavedR;$script:RecordPath=$SavedPath}
+    try {
+        $script:R=$Value;$script:RecordPath=$Path
+        if($FlushToDisk){Save-Record -FlushToDisk}else{Save-Record}
+    } finally {$script:R=$SavedR;$script:RecordPath=$SavedPath}
 }
 function Save {
     # Exact release records only: never recursively serialize the live
@@ -913,11 +916,18 @@ function State-Helper {
             throw 'RELEASE_STATE_MOUNT_PAIR_INVALID'
         }
     }
+    $PublishInterlock=$Payload.action -ceq 'successor_interlock_publish'
+    if($PublishInterlock -and (-not $Root -or $Mounts.Count -ne 2 -or
+       $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,volume-nocopy')){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_MOUNT_INVALID'
+    }
+    if($PublishInterlock){Assert-Volume 'fortis-r7-maintenance-interlock'}
     $Identity='10001:10001';if($Root){$Identity='0:0'}
     $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user',$Identity,
         '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
         '--tmpfs','/tmp:rw,noexec,nosuid,size=32m')
-    if($Root){$Arguments+=@('--cap-add','CHOWN','--cap-add','DAC_OVERRIDE')}
+    if($PublishInterlock){$Arguments+=@('--cap-add','DAC_OVERRIDE')}
+    elseif($Root){$Arguments+=@('--cap-add','CHOWN','--cap-add','DAC_OVERRIDE')}
     $Code="import runpy;runpy.run_path('/opt/fortis/operator/state_helpers.py',run_name='__main__')"
     $Encoded=Code64 $Code;$Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<state-helper>','exec'))"
     $Native=@{}
@@ -926,18 +936,369 @@ function State-Helper {
         # inspect + byte-preserved copy/fsync + before/after hash over native
         # artifacts (1.8 GiB observed). Finite 30m only for protected clone.
         $Native['WaitTimeoutMs']=1800000
-    } elseif($Payload.action -cin @('inspect','uncertain_growth_snapshot','uncertain_growth_review')){
+    } elseif($Payload.action -cin @('inspect','uncertain_growth_snapshot','uncertain_growth_review','successor_freeze_inspect','successor_freeze_apply_verify')){
         # SQLite integrity_check plus SHA256 of every retained artifact. The
         # general Docker/PowerShell helper limit remains 120s elsewhere.
         $Native['WaitTimeoutMs']=900000
     }
-    $TimedAction=$Payload.action -cin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review')
+    $TimedAction=$Payload.action -cin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review','successor_freeze_inspect','successor_freeze_apply_verify')
     if($TimedAction){Write-ReleaseTiming ('HELPER_'+$Payload.action.ToUpperInvariant()+'_BEGIN')}
     try {
         (Private-Process ($Arguments+$Mounts+@('--entrypoint','python',$script:Image,'-I','-B','-c',$Wrapper)) (ConvertTo-Json -InputObject $Payload -Depth 25 -Compress) @Native) | ConvertFrom-Json
     } finally {
         if($TimedAction){Write-ReleaseTiming ('HELPER_'+$Payload.action.ToUpperInvariant()+'_END')}
     }
+}
+function Read-SuccessorFreezeSeal {
+    param($Payload,[string]$StateVolume,[string]$InterlockVolume)
+    # The caller must already hold the controller lock and provide the
+    # authenticated latest record and witnesses for the current phase.
+    if($Payload.action -cnotin @('successor_freeze_inspect','successor_freeze_apply_verify') -or
+       $StateVolume -ceq $InterlockVolume -or
+       $InterlockVolume -cne 'fortis-r7-maintenance-interlock'){
+        throw 'RELEASE_SUCCESSOR_FREEZE_BINDING_INVALID'
+    }
+    Assert-Volume $StateVolume
+    Assert-Volume $InterlockVolume
+    $Frozen=State-Helper $Payload @(
+        '--mount',('type=volume,source='+$StateVolume+',target=/source,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$InterlockVolume+',target=/run/r7-maintenance,readonly,volume-nocopy'))
+    $Binding=$Frozen.seal
+    if($Binding.result -cne 'FREEZE_BINDINGS_MATCH_ONLY' -or
+       $Binding.attemptId -cne $Payload.attemptId -or
+       $Binding.restrictionDigest -cne $Payload.restrictionDigest -or
+       ($Payload.action -ceq 'successor_freeze_inspect' -and
+        $Binding.interlockDigest -cne $Payload.interlockDigest) -or
+       ($Payload.action -ceq 'successor_freeze_apply_verify' -and
+        -not (Same-Json $Binding $Payload.checkSeal)) -or
+       $Binding.registryDigest -cne $Payload.registryDigest -or
+       $Binding.stateReceiptDigest -cne $Payload.stateDigest -or
+       $Binding.companionDigest -cne $Payload.companionDigest -or
+       $Binding.workerAttestationDigest -cne $Payload.workerAttestationDigest -or
+       $null -eq $Frozen.sourceReceipt.sha256 -or $null -eq $Frozen.sourceReceipt.summary){
+        throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+    }
+    return $Frozen
+}
+function Read-SuccessorPublication {
+    param($Source)
+    if($Source.runtime.runId -cnotmatch '^[0-9a-f]{32}$' -or
+       $Source.runtime.maintenanceGeneration -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+    }
+    $Path=Join-Path $ReleaseBase ('maintenance-publication-'+$Source.runtime.runId+'.json')
+    $Anchor=Read-Private $Path
+    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v1' -or
+       $Anchor.sourceRecordHash -cne $Source.hash -or
+       $Anchor.state -cnotin @('Committed','Pending') -or
+       $Anchor.digest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Anchor.record.generation -cne $Source.runtime.maintenanceGeneration){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+    }
+    return @{path=$Path;anchor=$Anchor}
+}
+function Publish-SuccessorInterlock {
+    param($Source,$Next)
+    # The existing owner controller lock and phase admission cover this call.
+    $Loaded=Read-SuccessorPublication $Source
+    $Anchor=$Loaded.anchor
+    $AlreadyCommitted=($Anchor.state -ceq 'Committed' -and (Same-Json $Anchor.record $Next))
+    if($AlreadyCommitted){
+        $Previous=$Anchor.previous
+    } else {
+        $Previous=$Anchor.record
+        if($Next.previousDigest -cne $Anchor.digest -or
+           $Next.generation -cne $Source.runtime.maintenanceGeneration -or
+           $Next.phase -cnotin @('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP')){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'
+        }
+        if($Anchor.state -ceq 'Pending'){
+            if(-not (Same-Json $Anchor.next $Next)){throw 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'}
+        } else {
+            Write-Private $Loaded.path ([ordered]@{schema=$Anchor.schema;state='Pending'
+                sourceRecordHash=$Source.hash;record=$Previous;digest=$Anchor.digest;next=$Next}) -FlushToDisk
+        }
+    }
+    $Mounts=@('--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,volume-nocopy')
+    $Payload=@{action='successor_interlock_publish';mode='readback';previous=$Previous;next=$Next}
+    $Actual=State-Helper $Payload $Mounts -Root
+    if($Actual.position -ceq 'PREVIOUS' -and -not $AlreadyCommitted -and
+       $Actual.digest -ceq $Anchor.digest -and $Actual.phase -ceq $Previous.phase){
+        $Payload.mode='publish'
+        $Actual=State-Helper $Payload $Mounts -Root
+    }
+    if($Actual.position -cne 'NEXT' -or $Actual.phase -cne $Next.phase -or
+       $Actual.digest -cnotmatch '^[0-9a-f]{64}$' -or
+       ($AlreadyCommitted -and $Actual.digest -cne $Anchor.digest)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    if(-not $AlreadyCommitted){
+        Write-Private $Loaded.path ([ordered]@{schema=$Anchor.schema;state='Committed'
+            sourceRecordHash=$Source.hash;record=$Next;digest=$Actual.digest;previous=$Previous}) -FlushToDisk
+    }
+    return $Actual.digest
+}
+function Assert-SuccessorPublicationSelfTest {
+    $Generation='a'*64;$OldDigest='b'*64;$NewDigest='c'*64
+    $Source=@{hash=('d'*64);runtime=@{maintenanceGeneration=$Generation}}
+    $Old=[ordered]@{phase='NORMAL';generation=$Generation}
+    $Next=[ordered]@{phase='DRAINING';generation=$Generation;previousDigest=$OldDigest}
+    $Fixture=@{writes=0;position='PREVIOUS';saves=0;anchor=[ordered]@{
+        schema='fortis-successor-maintenance-publication-v1';state='Committed';record=$Old;digest=$OldDigest}}
+    function Read-SuccessorPublication {return @{path='fixture';anchor=$Fixture.anchor}}
+    function Write-Private {
+        param($Path,$Value,[switch]$FlushToDisk)
+        if($Path -cne 'fixture' -or -not $FlushToDisk){throw 'RELEASE_PUBLICATION_SELFTEST_SAVE_INVALID'}
+        $Fixture.saves++;$Fixture.anchor=$Value
+    }
+    function State-Helper {
+        param($Payload,$Mounts,[switch]$Root)
+        if(-not $Root -or -not (Same-Json $Payload.previous $Old) -or -not (Same-Json $Payload.next $Next)){
+            throw 'RELEASE_PUBLICATION_SELFTEST_BINDING_INVALID'
+        }
+        if($Payload.mode -ceq 'publish'){
+            if($Fixture.anchor.state -cne 'Pending'){throw 'RELEASE_PUBLICATION_SELFTEST_INTENT_REQUIRED'}
+            $Fixture.writes++;$Fixture.position='NEXT'
+            throw 'RELEASE_PUBLICATION_SELFTEST_ACK_LOST'
+        }
+        if($Fixture.position -ceq 'PREVIOUS'){return @{position='PREVIOUS';phase='NORMAL';digest=$OldDigest}}
+        return @{position='NEXT';phase='DRAINING';digest=$NewDigest}
+    }
+    try {
+        $null=Publish-SuccessorInterlock $Source $Next
+        throw 'RELEASE_PUBLICATION_SELFTEST_UNCONFIRMED_ACCEPTED'
+    } catch {if($_.Exception.Message -cne 'RELEASE_PUBLICATION_SELFTEST_ACK_LOST'){throw}}
+    if($Fixture.anchor.state -cne 'Pending'){throw 'RELEASE_PUBLICATION_SELFTEST_PENDING_LOST'}
+    if((Publish-SuccessorInterlock $Source $Next) -cne $NewDigest -or
+       (Publish-SuccessorInterlock $Source $Next) -cne $NewDigest -or
+       $Fixture.anchor.state -cne 'Committed' -or $Fixture.writes -ne 1 -or $Fixture.saves -ne 2){
+        throw 'RELEASE_PUBLICATION_SELFTEST_READBACK_FAILED'
+    }
+    Write-Host 'FORTIS_SUCCESSOR_PUBLICATION_SELFTEST_PASS'
+}
+function Read-SuccessorMaintenanceContext {
+    param($Source)
+    $Generation=$Source.runtime.PSObject.Properties['maintenanceGeneration']
+    if($null -eq $Generation){return}
+    # A protected source opts in at provisioning. The receipt is updated only
+    # by the owner controller under its lock, independently of source volume.
+    if($Generation.Value -cnotmatch '^[0-9a-f]{64}$' -or
+       $Source.runtime.runId -cnotmatch '^[0-9a-f]{32}$' -or
+       $Action -cnotin @('Check','Apply') -or $AllowUncertainGrowth -or
+       $script:RegistryReturn -or $EmergencyRequested -or $script:PreserveApprovedRequest -or
+       $RegistryReturnContainerId -or
+       ($Action -ceq 'Check' -and -not $script:RegistryPrebuiltCheck) -or
+       ($Action -ceq 'Apply' -and -not $CheckedImageRecord)){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CHECK_REQUIRED'
+    }
+    $Path=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+    $Protected=Read-Private $Path
+    $Payload=$Protected.payload
+    if($Protected.schema -cne 'fortis-successor-maintenance-check-v1' -or
+       $Protected.sourceRecordHash -cne $Source.hash -or $Protected.targetSourceSha -cne $SourceSha -or
+       $Protected.targetImageId -cne $script:Image -or
+       ($null -ne $Payload -and ($Payload.generation -cne $Generation.Value -or
+        $Payload.targetSourceSha -cne $SourceSha))){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+    }
+    if($null -ne $Payload){
+        $ExpectedUncertain=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests|Sort-Object)
+        $ExpectedClaimed=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs|Sort-Object)
+        if(($ExpectedUncertain -join ',') -cne (@($Payload.preserveUncertainIds) -join ',') -or
+           ($ExpectedClaimed -join ',') -cne (@($Payload.preserveClaimedIds) -join ',')){
+            throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+        }
+    }
+    $Drain=$Protected.draining
+    if($Drain.phase -cne 'DRAINING' -or $Drain.generation -cne $Generation.Value -or
+       $Drain.attempt.source.sourceSha -cne $SourceSha -or
+       ($null -ne $Payload -and ($Payload.action -cne 'successor_freeze_inspect' -or
+        $Payload.attemptId -cne $Drain.attempt.attemptId -or
+        $Payload.restrictionDigest -cne $Drain.attempt.restrictionDigest -or
+        -not (Same-Json $Payload.subject $Drain.attempt.subject)))){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+    }
+    $ExpectedPath=Successor-CheckRecordPath $Drain.attempt.attemptId
+    if($Action -ceq 'Check'){return $Protected}
+    if($null -eq $Payload -or
+       [IO.Path]::GetFullPath($ExpectedPath) -cne [IO.Path]::GetFullPath($CheckedImageRecord)){
+        throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+    }
+    $Stored=Read-Private $ExpectedPath
+    $Transitions=$Stored.maintenanceTransitions
+    if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready' -or
+       $null -eq $Stored.maintenanceSeal -or $null -eq $Transitions -or
+       -not (Same-Json $Transitions.draining $Drain)){
+        throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+    }
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    if($Publication.state -cne 'Committed' -or $Publication.record.phase -cne 'CHECK_SEALED' -or
+       -not (Same-Json $Publication.record $Transitions.checked)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    return (New-SuccessorApplyVerifyPayload $Payload $Stored.maintenanceSeal $Transitions $Publication.digest)
+}
+function New-SuccessorApplyVerifyPayload {
+    param($Payload,$Seal,$Transitions,[string]$Digest)
+    $Verify=@{}
+    foreach($Field in $Payload.PSObject.Properties){
+        if($Field.Name -cne 'drain'){$Verify[$Field.Name]=$Field.Value}
+    }
+    $Verify.action='successor_freeze_apply_verify'
+    $Verify.interlockDigest=$Digest
+    $Verify.checkSeal=$Seal
+    $Verify.draining=$Transitions.draining
+    $Verify.frozen=$Transitions.frozen
+    return $Verify
+}
+function Start-SuccessorMaintenanceCheck {
+    param($Source,$Context)
+    $Before=(Read-SuccessorPublication $Source).anchor
+    if($Before.record.phase -ceq 'DRAINING' -and -not (Same-Json $Before.record $Context.draining)){
+        throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'
+    }
+    if($Before.record.phase -cin @('FROZEN_BEFORE_CHECK','CHECK_SEALED') -or
+       ($Before.record.phase -ceq 'DRAINING' -and $Before.state -ceq 'Pending')){
+        if($null -eq $Context.payload){throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'}
+        return @{resume=$true;payload=$Context.payload}
+    }
+    if($Before.record.phase -cnotin @('NORMAL','DRAINING')){throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'}
+    # Re-entering a pending or completed DRAINING intent takes the same
+    # exact publisher readback path before the inspector is called.
+    $Digest=Publish-SuccessorInterlock $Source $Context.draining
+    if($null -ne $Context.payload -and $Context.payload.interlockDigest -cne $Digest){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    return @{resume=$false;digest=$Digest;payload=$Context.payload}
+}
+function Complete-SuccessorMaintenanceCheck {
+    param($Source,$Context,$Stored)
+    $Payload=$Context.payload
+    $Seal=$Stored.maintenanceSeal
+    $Transitions=$Stored.maintenanceTransitions
+    if($null -eq $Stored.sourceReceipt -or $null -eq $Seal -or $null -eq $Transitions -or
+       $Seal.result -cne 'FREEZE_BINDINGS_MATCH_ONLY' -or
+       $Seal.interlockDigest -cne $Payload.interlockDigest -or
+       $Seal.attemptId -cne $Payload.attemptId -or
+       $Seal.restrictionDigest -cne $Payload.restrictionDigest -or
+       $Seal.registryDigest -cne $Payload.registryDigest -or
+       $Seal.stateReceiptDigest -cne $Payload.stateDigest -or
+       $Seal.companionDigest -cne $Payload.companionDigest -or
+       $Seal.workerAttestationDigest -cne $Payload.workerAttestationDigest -or
+       -not (Same-Json $Transitions.draining $Context.draining)){
+        throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+    }
+    $Current=(Read-SuccessorPublication $Source).anchor
+    if($Current.record.phase -ceq 'DRAINING'){
+        if($Current.digest -cne $Payload.interlockDigest -or
+           -not (Same-Json $Current.record $Transitions.draining)){
+            throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'
+        }
+        $null=Publish-SuccessorInterlock $Source $Transitions.frozen
+        $Current=(Read-SuccessorPublication $Source).anchor
+    }
+    if(($Current.record.phase -ceq 'FROZEN_BEFORE_CHECK' -and
+        (Same-Json $Current.record $Transitions.frozen)) -or
+       ($Current.record.phase -ceq 'CHECK_SEALED' -and
+        (Same-Json $Current.record $Transitions.checked))){
+        $Digest=Publish-SuccessorInterlock $Source $Transitions.checked
+    } else {throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'}
+
+    # The same read-only verifier used by Apply compares the actual mounted
+    # CHECK_SEALED and state against what this Check stored.
+    $Verify=New-SuccessorApplyVerifyPayload $Payload $Seal $Transitions $Digest
+    $Final=Read-SuccessorFreezeSeal $Verify $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'
+    if(-not (Same-Json $Final.sourceReceipt $Stored.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+    }
+    return $Digest
+}
+function Assert-SuccessorCheckSealSelfTest {
+    $Draining=[ordered]@{phase='DRAINING'}
+    $Frozen=[ordered]@{phase='FROZEN_BEFORE_CHECK'}
+    $Checked=[ordered]@{phase='CHECK_SEALED'}
+    $Stages=[ordered]@{draining=$Draining;frozen=$Frozen;checked=$Checked}
+    $Payload=[pscustomobject]@{action='successor_freeze_inspect';interlockDigest='drain';drain='fixture'
+        attemptId='attempt';restrictionDigest='restriction';registryDigest='registry';stateDigest='state'
+        companionDigest='companion';workerAttestationDigest='worker'}
+    $Seal=[pscustomobject]@{result='FREEZE_BINDINGS_MATCH_ONLY';interlockDigest='drain';attemptId='attempt'
+        restrictionDigest='restriction';registryDigest='registry';stateReceiptDigest='state'
+        companionDigest='companion';workerAttestationDigest='worker'}
+    $Source=@{runtime=@{stateVolume='fixture'}}
+    $Context=@{payload=$Payload;draining=$Draining}
+    $Stored=@{sourceReceipt=@{sha256='fixture'};maintenanceSeal=$Seal;maintenanceTransitions=$Stages}
+    $Fixture=@{stage=$Draining;writes=0;reads=0}
+    function Read-SuccessorPublication {return @{anchor=@{record=$Fixture.stage;digest='drain'}}}
+    function Publish-SuccessorInterlock {
+        param($Source,$Next)
+        if(Same-Json $Fixture.stage $Next){return 'checked'}
+        if($Fixture.stage.phase -ceq 'DRAINING' -and (Same-Json $Next $Frozen)){
+            $Fixture.stage=$Next;$Fixture.writes++
+            throw 'RELEASE_CHECK_SEAL_SELFTEST_ACK_LOST'
+        }
+        if($Fixture.stage.phase -ceq 'FROZEN_BEFORE_CHECK' -and (Same-Json $Next $Checked)){
+            $Fixture.stage=$Next;$Fixture.writes++
+            return 'checked'
+        }
+        throw 'RELEASE_CHECK_SEAL_SELFTEST_TRANSITION_INVALID'
+    }
+    function Read-SuccessorFreezeSeal {
+        param($Verify,$Volume,$InterlockVolume)
+        if($Fixture.stage.phase -cne 'CHECK_SEALED' -or $Verify.action -cne 'successor_freeze_apply_verify' -or
+           $Verify.interlockDigest -cne 'checked' -or $Verify.ContainsKey('drain') -or
+           -not (Same-Json $Verify.draining $Draining) -or -not (Same-Json $Verify.frozen $Frozen) -or
+           -not (Same-Json $Verify.checkSeal $Seal)){
+            throw 'RELEASE_CHECK_SEAL_SELFTEST_READBACK_INVALID'
+        }
+        $Fixture.reads++
+        return @{sourceReceipt=$Stored.sourceReceipt}
+    }
+    try {
+        $null=Complete-SuccessorMaintenanceCheck $Source $Context $Stored
+        throw 'RELEASE_CHECK_SEAL_SELFTEST_MISSING_FAILURE'
+    } catch {if($_.Exception.Message -cne 'RELEASE_CHECK_SEAL_SELFTEST_ACK_LOST'){throw}}
+    if((Complete-SuccessorMaintenanceCheck $Source $Context $Stored) -cne 'checked' -or
+       (Complete-SuccessorMaintenanceCheck $Source $Context $Stored) -cne 'checked' -or
+       $Fixture.writes -ne 2 -or $Fixture.reads -ne 2){
+        throw 'RELEASE_CHECK_SEAL_SELFTEST_RESUME_FAILED'
+    }
+    Write-Host 'FORTIS_SUCCESSOR_CHECK_SEAL_SELFTEST_PASS'
+}
+function Assert-SuccessorCheckStartSelfTest {
+    $Draining=[ordered]@{phase='DRAINING';generation=('a'*64);previousDigest=('b'*64)}
+    $Fixture=@{phase='NORMAL';calls=0;digest=('c'*64)}
+    $Context=@{draining=$Draining;payload=$null}
+    function Read-SuccessorPublication {
+        return @{anchor=@{state='Committed';record=$(if($Fixture.phase -ceq 'DRAINING'){$Draining}else{@{phase=$Fixture.phase}})}}
+    }
+    function Publish-SuccessorInterlock {
+        param($Source,$Next)
+        if(-not (Same-Json $Next $Draining)){throw 'RELEASE_SUCCESSOR_CHECK_SELFTEST_CHANGED_INTENT'}
+        $Fixture.calls++;$Fixture.phase='DRAINING'
+        return $Fixture.digest
+    }
+    $Start=Start-SuccessorMaintenanceCheck $null $Context
+    if($Start.digest -cne $Fixture.digest -or $null -ne $Start.payload){
+        throw 'RELEASE_SUCCESSOR_CHECK_SELFTEST_DRAINING_RESULT'
+    }
+    $Context.payload=@{interlockDigest=$Fixture.digest}
+    $Ready=Start-SuccessorMaintenanceCheck $null $Context
+    if(-not (Same-Json $Ready.payload $Context.payload) -or $Fixture.calls -ne 2){
+        throw 'RELEASE_SUCCESSOR_CHECK_SELFTEST_READBACK'
+    }
+    $Context.payload=@{interlockDigest=('d'*64)}
+    try {
+        $null=Start-SuccessorMaintenanceCheck $null $Context
+        throw 'RELEASE_SUCCESSOR_CHECK_SELFTEST_WRONG_WITNESS_ACCEPTED'
+    } catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'){throw}}
+    Write-Host 'FORTIS_SUCCESSOR_CHECK_START_SELFTEST_PASS'
+}
+function Successor-CheckRecordPath {
+    param([string]$AttemptId)
+    if($AttemptId -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$'){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+    }
+    return (Join-Path (Join-Path $ReleaseBase ('image-check-'+$AttemptId.Replace('-',''))) 'record.json')
 }
 function Ensure-Vault {
     if($VaultVolume -cnotmatch '^fortis-review-secrets(?:-[a-z0-9-]{1,48})?$'){throw 'RELEASE_VAULT_NAME_INVALID'}
@@ -1402,7 +1763,8 @@ function Read-RegistryMountBinding {
     }
     if($Nonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
        $Volume -cne ('fortis-r7-registry-reader-'+$Nonce.Replace('-','')) -or
-       $Socket -cne 'fortis-registry-read' -or
+       ($Socket -cne 'fortis-registry-read' -and
+        $Socket -cne ('fortis-registry-read-'+$Nonce.Replace('-',''))) -or
        $Digest -cnotmatch '^[0-9a-f]{64}$'){
         throw 'RELEASE_REGISTRY_RECORD_INVALID'
     }
@@ -1488,12 +1850,19 @@ function Assert-Registry-Nonce-Fresh {
         }
         if($Entry.Name -cnotmatch '^(?:[0-9a-f]{32}|image-check-[0-9a-f]{32})$'){continue}
         $RecordPath=Join-Path $Entry.FullName 'record.json'
+        $SameOriginalCheck=($AllowedCheckRecord -and
+            [IO.Path]::GetFullPath($RecordPath) -ceq [IO.Path]::GetFullPath($AllowedCheckRecord))
         if(-not (Test-Path -LiteralPath $RecordPath -PathType Leaf)){
+            # An interrupted exact successor Check may have created its
+            # private attempt directory but not yet stored the receipt.
+            if($Action -ceq 'Check' -and $SuccessorContext -and $SameOriginalCheck -and
+               -not (Test-Path -LiteralPath $RecordPath)){
+                Assert-DirectoryAcl $Entry.FullName
+                continue
+            }
             throw 'RELEASE_REGISTRY_HISTORY_RECORD_MISSING'
         }
         $Record=Read-Private $RecordPath
-        $SameOriginalCheck=($AllowedCheckRecord -and
-            [IO.Path]::GetFullPath($RecordPath) -ceq [IO.Path]::GetFullPath($AllowedCheckRecord))
         Assert-Registry-HistoryRecord -Record $Record -Nonce $Nonce -AllowOriginalCheck ([bool]$SameOriginalCheck)
     }
 }
@@ -1533,13 +1902,14 @@ function Image-RegistryMount-Preflight {
     Assert-Volume 'fortis-registry-read'
     Assert-OnlyWriter $ReaderVolume
     $Code=@'
-import sys
+import inspect,sys
 sys.path.insert(0,'/opt/fortis')
 from fortis_approvals.r7_unified_server import _installed_policy_source_digest
 from fortis_approvals.r7_registry_reader_mount import reviewed_registry_reader_mount_digest
 nonce=sys.stdin.buffer.read(128).decode('ascii')
+options={'legacy_only':True} if 'legacy_only' in inspect.signature(reviewed_registry_reader_mount_digest).parameters else {}
 print('FORTIS_REGISTRY_READER_MOUNT_SHA256=' + reviewed_registry_reader_mount_digest(
-    expected_release_nonce=nonce, expected_source_digest=_installed_policy_source_digest()))
+    expected_release_nonce=nonce, expected_source_digest=_installed_policy_source_digest(), **options))
 '@
     $Encoded=Code64 $Code
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-owner-preflight>','exec'))"
@@ -1557,6 +1927,100 @@ print('FORTIS_REGISTRY_READER_MOUNT_SHA256=' + reviewed_registry_reader_mount_di
     return [string]$Matches[1]
 }
 
+function Read-RegistrySuccessorAnchor {
+    param($Source)
+    # The existing controller journal owns the committed phase. Target
+    # material is keyed by the owner-sealed release nonce, outside /state.
+    $Id=$script:RegistryBoundReleaseNonce.Replace('-','')
+    $Path=Join-Path $ReleaseBase ('maintenance-publication-'+$Id+'.json')
+    if(-not (Test-Path -LiteralPath $Path)){return}
+    $Anchor=Read-Private $Path
+    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v1' -or
+       $Anchor.state -cne 'Committed' -or $Anchor.sourceRecordHash -cne $Source.hash -or
+       $Anchor.digest -cnotmatch '^[0-9a-f]{64}$' -or $Anchor.record.phase -cne 'NORMAL' -or
+       $Anchor.record.generation -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_REGISTRY_SUCCESSOR_ANCHOR_CHANGED'
+    }
+    return $Anchor
+}
+function Image-RegistrySuccessor-Preflight {
+    param([string]$ImageId,[string]$ReleaseNonce,[string]$InterlockDigest,[string]$IncumbentVolume='')
+    if($ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       $ReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+       $InterlockDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       ($IncumbentVolume -and $IncumbentVolume -cnotmatch '^fortis-github-pilot-state-[0-9a-f]{32}$')){
+        throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_ARGUMENTS_INVALID'
+    }
+    $Id=$ReleaseNonce.Replace('-','')
+    $Reader='fortis-r7-registry-reader-'+$Id
+    $Socket='fortis-registry-read-'+$Id
+    $Evidence='fortis-registry-source-evidence-'+$Id
+    foreach($Volume in @($Reader,$Socket,$Evidence,'fortis-r7-maintenance-interlock')){
+        Assert-Volume $Volume
+    }
+    Assert-OnlyWriter $Reader
+    if($IncumbentVolume){Assert-OnlyWriter $Evidence}
+    $Code=@'
+import json,sys
+from pathlib import Path
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import reviewed_successor_delivery, _check_owner_readonly_mount
+p=json.load(sys.stdin)
+core=None
+if p['inspectIncumbent']:
+    root=Path('/source')
+    _check_owner_readonly_mount(root)
+    core=root/'private'/'approvals.sqlite'
+result=reviewed_successor_delivery(expected_release_nonce=p['nonce'],
+    expected_source_digest=_installed_policy_source_digest(),
+    expected_interlock_digest=p['interlockDigest'], incumbent_core=core,
+    scratch_root=Path('/run/fortis-copy-check') if core is not None else None)
+print(json.dumps(result,separators=(',',':'),sort_keys=True))
+'@
+    $Encoded=Code64 $Code
+    $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-successor-preflight>','exec'))"
+    $Memory=if($IncumbentVolume){'1536m'}else{'256m'}
+    $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user','10001:10001',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory',$Memory,
+        '--mount',('type=volume,source='+$Reader+',target=/run/r7-registry-reader,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$Socket+',target=/run/fortis-registry-read,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,readonly,volume-nocopy'),
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,readonly,volume-nocopy')
+    if($IncumbentVolume){
+        Assert-Volume $IncumbentVolume
+        $Args+=@('--mount',('type=volume,source='+$IncumbentVolume+',target=/source,readonly,volume-nocopy'),
+            '--tmpfs','/run/fortis-copy-check:rw,noexec,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700')
+    }
+    $Args+=@('--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
+    $Payload=ConvertTo-Json -Compress -InputObject @{nonce=$ReleaseNonce
+        interlockDigest=$InterlockDigest;inspectIncumbent=[bool]$IncumbentVolume}
+    $WaitMs=if($IncumbentVolume){300000}else{120000}
+    $Result=(Private-Process $Args $Payload -WaitTimeoutMs $WaitMs)|ConvertFrom-Json
+    if($Result.profileDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Result.companionDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Result.generation -cnotmatch '^[0-9a-f]{64}$' -or
+       $Result.sourceDelivery.interlockDigest -cne $InterlockDigest -or
+       ($IncumbentVolume -and ($Result.legacyCompanion.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
+        $Result.legacyCompanion.coreRowsDigest -cnotmatch '^[0-9a-f]{64}$'))){
+        throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
+    }
+    return $Result
+}
+function Read-RegistrySuccessorDelivery {
+    param($Source)
+    $Anchor=Read-RegistrySuccessorAnchor $Source
+    if($null -eq $Anchor){return}
+    $Inputs=@{ImageId=$script:Image;ReleaseNonce=$script:RegistryBoundReleaseNonce
+        InterlockDigest=$Anchor.digest;IncumbentVolume=$Source.runtime.stateVolume}
+    $Result=Image-RegistrySuccessor-Preflight @Inputs
+    $ReadBack=Read-RegistrySuccessorAnchor $Source
+    if($null -eq $ReadBack -or -not (Same-Json $Anchor $ReadBack) -or
+       $Result.generation -cne $Anchor.record.generation){
+        throw 'RELEASE_REGISTRY_SUCCESSOR_ANCHOR_CHANGED'
+    }
+    return $Result
+}
 function Initialize-StagedRegistryCollector {
     param($Runtime)
     if(-not $Runtime.registryReaderVolume){return}
@@ -1574,6 +2038,12 @@ p=json.load(sys.stdin);source=_installed_policy_source_digest()
 digest=reviewed_registry_reader_mount_digest(expected_release_nonce=p['nonce'],expected_source_digest=source)
 if digest!=p['profileDigest']:raise RuntimeError('REGISTRY_STAGED_SEAL_CHANGED')
 reader=load_owner_registry_reader(expected_release_nonce=p['nonce'],expected_source_digest=source)
+if 'delivery' in p:
+    from fortis_approvals.extensions.composite_preservation import prepare_staged_companion
+    delivery=p['delivery']
+    prepare_staged_companion('/state/private/approvals.sqlite',
+        legacy=delivery['legacyCompanion'], expected_digest=delivery['companionDigest'],
+        verify_history=reader._policy_history.verify_incumbent_storage)
 print(json.dumps(prepare_staged_functional_state(reader,'/state/private'),sort_keys=True,separators=(',',':')))
 '@
     $Encoded=Code64 $Code
@@ -1583,9 +2053,11 @@ print(json.dumps(prepare_staged_functional_state(reader,'/state/private'),sort_k
         '--pids-limit','64','--memory','256m',
         '--mount',('type=volume,source='+$Runtime.stateVolume+',target=/state,volume-nocopy'),
         '--mount',('type=volume,source='+$Runtime.registryReaderVolume+',target=/run/r7-registry-reader,readonly'),
-        '--mount','type=volume,source=fortis-registry-read,target=/run/fortis-registry-read,readonly',
+        '--mount',('type=volume,source='+$Runtime.registrySocketVolume+',target=/run/fortis-registry-read,readonly'),
         '--entrypoint','python',$Runtime.image,'-I','-B','-c',$Wrapper)
-    $Payload=ConvertTo-Json -Compress -InputObject @{nonce=$Runtime.registryReleaseNonce;profileDigest=$Runtime.registryProfileDigest}
+    $InputData=@{nonce=$Runtime.registryReleaseNonce;profileDigest=$Runtime.registryProfileDigest}
+    if($script:RegistryDelivery){$InputData.delivery=$script:RegistryDelivery}
+    $Payload=ConvertTo-Json -Compress -Depth 10 -InputObject $InputData
     $Result=(Private-Process $Args $Payload)|ConvertFrom-Json
     if($Result.result -cnotin @('P5_FUNCTIONAL_STATE_NOT_SELECTED',
         'P5_FUNCTIONAL_LOCAL_COLLECTOR_GENESIS','P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED')){
@@ -1624,6 +2096,12 @@ function Get-SourceRecord {
                $Primary.runtime.pilotName -cne 'fortis-gateway' -or
                $Primary.runtime.restartPolicy -cne 'unless-stopped'){
                 throw 'PRIMARY_POINTER_SOURCE_MISMATCH'
+            }
+            $OriginalGeneration=$P.PSObject.Properties['maintenanceGeneration']
+            $PrimaryGeneration=$Primary.runtime.PSObject.Properties['maintenanceGeneration']
+            if([bool]$OriginalGeneration -ne [bool]$PrimaryGeneration -or
+               ($OriginalGeneration -and $OriginalGeneration.Value -cne $PrimaryGeneration.Value)){
+                throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
             }
             $P=$Primary.runtime
         }
@@ -1668,7 +2146,7 @@ function Sha256-Utf8 {
 # Checked source SHA and protected receipt authorize reuse of the exact Check-built
 # Docker image, never a tag. Recheck source/inputs/state before stopping Gateway.
 function Checked-Image-Binding {
-    param($Source,$Report)
+    param($Source,$Report,$Maintenance)
     $ConfigHash='';$ProbeHash=''
     if($Auto -and $Action -cin @('Check','Apply')){
         $ConfigHash=Sha256-Utf8 $script:AutoConfigText
@@ -1728,22 +2206,44 @@ function Checked-Image-Binding {
         requireExactApproved=$script:PreserveApprovedExact
         confirmWorkerQuiescent=[bool]$ConfirmWorkerQuiescent
     }
+    if($script:RegistryDelivery){$Binding['registryDelivery']=$script:RegistryDelivery}
     if($script:RegistryReturn){$Binding['registryReturn']=$script:RegistryReturn}
     if($script:RegistryCrash){$Binding['registryCrash']=$script:RegistryCrash}
+    if($Maintenance){
+        $Binding['maintenance']=[ordered]@{attemptId=$Maintenance.attemptId;subject=$Maintenance.subject
+            restrictionDigest=$Maintenance.restrictionDigest;generation=$Maintenance.generation}
+    }
     return $Binding
 }
 function Save-Checked-Image {
-    param($Source,$Report,$Receipt)
+    param($Source,$Report,$Receipt,$Maintenance,$Seal,$Transitions)
     if((-not $Build -and -not $script:RegistryPrebuiltCheck) -or $Action -cne 'Check'){throw 'RELEASE_CHECKED_IMAGE_BUILD_REQUIRED'}
-    $Id=[Guid]::NewGuid().ToString('N')
-    $Directory=Join-Path $ReleaseBase ('image-check-'+$Id)
-    Protect-Directory $Directory
-    $Path=Join-Path $Directory 'record.json'
-    Write-Private $Path ([ordered]@{
-        schema='fortis-extension-image-check-v1';phase='Ready'
-        binding=(Checked-Image-Binding $Source $Report);sourceReceipt=$Receipt
-        growthWitness=$script:GrowthWitness
-    })
+    if($Maintenance -and ($null -eq $Seal -or $null -eq $Receipt -or $null -eq $Transitions)){
+        throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+    }
+    if($Maintenance){
+        $Path=Successor-CheckRecordPath $Maintenance.attemptId
+        $Directory=Split-Path $Path -Parent
+    } else {
+        $Id=[Guid]::NewGuid().ToString('N')
+        $Directory=Join-Path $ReleaseBase ('image-check-'+$Id)
+        $Path=Join-Path $Directory 'record.json'
+    }
+    $Record=[ordered]@{schema='fortis-extension-image-check-v1';phase='Ready'
+        binding=(Checked-Image-Binding $Source $Report $Maintenance);sourceReceipt=$Receipt
+        growthWitness=$script:GrowthWitness}
+    if($Maintenance){
+        $Record['maintenanceSeal']=$Seal
+        $Record['maintenanceTransitions']=$Transitions
+        if(Test-Path -LiteralPath $Path -PathType Leaf){
+            if(-not (Same-Json (Read-Private $Path) $Record)){throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'}
+            return $Path
+        }
+    }
+    if($Maintenance -and (Test-Path -LiteralPath $Directory -PathType Container)){
+        Assert-DirectoryAcl $Directory
+    } else {Protect-Directory $Directory}
+    if($Maintenance){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}
     return $Path
 }
 function Assert-Checked-Image-Binding {
@@ -1781,18 +2281,40 @@ function Get-Checked-Source-Changes {
     return ($Changed -join ',')
 }
 function Verify-Checked-Image {
-    param($Source,$Report,[switch]$BindingOnly,[switch]$ReturnReceipt)
-    if($BindingOnly -and $ReturnReceipt){throw 'RELEASE_CHECKED_IMAGE_VERIFICATION_MODE_INVALID'}
+    param($Source,$Report,[switch]$BindingOnly,[switch]$ReturnReceipt,[switch]$PrepareSuccessorStop)
+    if(($BindingOnly -and $ReturnReceipt) -or
+       ($PrepareSuccessorStop -and ($BindingOnly -or $ReturnReceipt -or -not $CheckedImageRecord))){
+        throw 'RELEASE_CHECKED_IMAGE_VERIFICATION_MODE_INVALID'
+    }
     if(-not $CheckedImageRecord){return}
+    $CheckDigest=''
+    if($PrepareSuccessorStop){$CheckDigest=(Get-FileHash -LiteralPath $CheckedImageRecord -Algorithm SHA256).Hash.ToLowerInvariant()}
     $Record=Read-Private $CheckedImageRecord
     if($Record.schema -cne 'fortis-extension-image-check-v1' -or $Record.phase -cne 'Ready' -or
        $null -eq $Record.binding -or $null -eq $Record.sourceReceipt){
         throw 'RELEASE_CHECKED_IMAGE_RECORD_INVALID'
     }
-    $Expected=Checked-Image-Binding $Source $Report
+    $Maintenance=Read-SuccessorMaintenanceContext $Source
+    $Expected=Checked-Image-Binding $Source $Report $Maintenance
     Assert-Checked-Image-Binding $Record.binding $Expected
     if($BindingOnly){return}
-    $Now=Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+    if($PrepareSuccessorStop){
+        if(-not $Maintenance){throw 'RELEASE_SUCCESSOR_MAINTENANCE_CHECK_REQUIRED'}
+        $Maintenance['prepareStop']=@{sourceRecordDigest=$Source.hash.ToLowerInvariant()
+            checkedRecordDigest=$CheckDigest;targetImageId=$script:Image}
+    }
+    $Now=if($Maintenance){
+        if(-not (Same-Json $Record.maintenanceSeal $Maintenance.checkSeal)){
+            throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+        }
+        $Frozen=Read-SuccessorFreezeSeal $Maintenance $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'
+        if(-not (Same-Json $Record.maintenanceTransitions $Frozen.transitions)){
+            throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+        }
+        $Frozen.sourceReceipt
+    } else {
+        Receipt $Source.runtime.stateVolume -Exact:$script:PreserveUncertainExact -ExactClaimed:$script:PreserveClaimedExact -ExactApproved:$script:PreserveApprovedExact
+    }
     if($AllowUncertainGrowth){
         # The original immutable Check receipt and prefix witness are
         # reviewed afresh; no replacement Check binding is ever written.
@@ -1803,7 +2325,36 @@ function Verify-Checked-Image {
         Write-Host ('FORTIS_CHECKED_SOURCE_CHANGED components='+(Get-Checked-Source-Changes $Record.sourceReceipt $Now))
         throw 'RELEASE_CHECKED_IMAGE_SOURCE_STATE_CHANGED'
     }
+    if($PrepareSuccessorStop){
+        $Intent=$Frozen.stopIntent
+        if($Intent.schemaVersion -ne 1 -or
+           $Intent.next.phase -cne 'APPLY_STOP' -or
+           $Intent.next.previousDigest -cne $Maintenance.interlockDigest -or
+           $Intent.attemptId -cne $Maintenance.attemptId -or
+           $Intent.restrictionDigest -cne $Maintenance.restrictionDigest -or
+           $Intent.checkedPhaseDigest -cne $Maintenance.interlockDigest -or
+           $Intent.checkedRecordDigest -cne $CheckDigest -or
+           $Intent.sourceRecordDigest -cne $Maintenance.prepareStop.sourceRecordDigest -or
+           $Intent.sourceReceiptDigest -cne $Maintenance.stateDigest -or
+           $Intent.targetImageId -cne $script:Image -or
+           (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -cne $Source.hash -or
+           (Get-FileHash -LiteralPath $CheckedImageRecord -Algorithm SHA256).Hash.ToLowerInvariant() -cne $CheckDigest){
+            throw 'RELEASE_SUCCESSOR_APPLY_STOP_BINDING_CHANGED'
+        }
+        return $Intent
+    }
     if($ReturnReceipt){return $Now}
+}
+function Save-SuccessorApplyStopIntent {
+    param($Intent)
+    $Directory=Split-Path (Successor-CheckRecordPath $Intent.attemptId) -Parent
+    $Path=Join-Path $Directory 'apply-stop.json'
+    Assert-DirectoryAcl $Directory
+    if(-not (Test-Path -LiteralPath $Path)){Write-Private $Path $Intent -FlushToDisk}
+    if(-not (Same-Json (Read-Private $Path) $Intent)){
+        throw 'RELEASE_SUCCESSOR_APPLY_STOP_BINDING_CHANGED'
+    }
+    return $Path
 }
 # Offline fixture: exercise the real verifier with a changing in-memory
 # binding and receipt. No Docker, protected records or owner state.
@@ -2013,6 +2564,15 @@ function Admit {
     $Expected.registryReaderVolume=$RegistryProtected.readerVolume
     $Expected.registrySocketVolume=$RegistryProtected.socketVolume
     $Expected.registryReleaseNonce=$RegistryProtected.releaseNonce
+    $Delivery=$null
+    if($RegistryProtected.readerVolume -and $RegistryProtected.socketVolume -cne 'fortis-registry-read'){
+        $Delivery=$P.registryDelivery
+        if($null -eq $Delivery -or $Delivery.profileDigest -cne $RegistryProtected.profileDigest -or
+           $Delivery.generation -cne $P.maintenanceGeneration){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+        }
+        $Expected.registrySuccessorDelivery=$true
+    }
     $Networks=Read-GatewayNetworks $P
     if($null -ne $Networks){$Expected.gatewayNetworks=$Networks}
     if($AllowPendingIngress){
@@ -2054,9 +2614,18 @@ function Admit {
     if($RegistryProtected.readerVolume -and -not $RegistryReturnSource){
         # At each existing source/candidate/rollback admission boundary,
         # recheck the exact read-only profile bytes and kernel live peer.
-        $Observed=Image-RegistryMount-Preflight -ImageId $MountImage `
-            -ReleaseNonce $RegistryProtected.releaseNonce `
-            -ReaderVolume $RegistryProtected.readerVolume
+        if($Delivery){
+            $Actual=Image-RegistrySuccessor-Preflight -ImageId $MountImage -ReleaseNonce $RegistryProtected.releaseNonce -InterlockDigest $Delivery.sourceDelivery.interlockDigest
+            if(-not (Same-Json $Actual.sourceDelivery $Delivery.sourceDelivery) -or
+               $Actual.companionDigest -cne $Delivery.companionDigest -or $Actual.generation -cne $Delivery.generation){
+                throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+            }
+            $Observed=$Actual.profileDigest
+        } else {
+            $Observed=Image-RegistryMount-Preflight -ImageId $MountImage `
+                -ReleaseNonce $RegistryProtected.releaseNonce `
+                -ReaderVolume $RegistryProtected.readerVolume
+        }
         if($Observed -cne $RegistryProtected.profileDigest){
             throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'
         }
@@ -3007,6 +3576,9 @@ if($Action -eq 'SelfTest'){
     Assert-BackupCleanupSelectionSelfTest
     Assert-ContainerInventorySelfTest
     Assert-CheckedImagePreflightSelfTest
+    Assert-SuccessorPublicationSelfTest
+    Assert-SuccessorCheckStartSelfTest
+    Assert-SuccessorCheckSealSelfTest
     Assert-ReleaseTimingSelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
     Assert-FormerPrimaryRetirementSelfTest
@@ -3838,6 +4410,9 @@ if($Action -eq 'Return' -or $AttemptRecord){
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
+$SuccessorContext=Read-SuccessorMaintenanceContext $SourceForOwnerShell
+$SuccessorMaintenance=$null
+if($Action -ceq 'Apply'){$SuccessorMaintenance=$SuccessorContext}
 if($AllowUncertainGrowth){
     $script:GrowthSourceVolume=$SourceForOwnerShell.runtime.stateVolume
 }
@@ -3859,7 +4434,9 @@ if($RegistryPrior.readerVolume -and $EnableRegistryMount -and
 Initialize-RegistryReleaseBinding -Enabled ([bool]$EnableRegistryMount) -RequestedNonce $RegistryReleaseNonce
 if($EnableRegistryMount){
     Step 'REGISTRY_NONCE_HISTORY_PREFLIGHT'
-    $AllowedRegistryCheck=$(if($Action -eq 'Apply'){$CheckedImageRecord}else{''})
+    $AllowedRegistryCheck=if($Action -eq 'Apply'){$CheckedImageRecord}
+        elseif($SuccessorContext){Successor-CheckRecordPath $SuccessorContext.draining.attempt.attemptId}
+        else{''}
     Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce -AllowedCheckRecord $AllowedRegistryCheck
     Step 'REGISTRY_SOURCE_DIGEST_IMAGE_PREFLIGHT'
     $script:RegistryGatewaySourceDigest=Image-Registry-Source-Digest -ImageId $script:Image
@@ -3867,9 +4444,18 @@ if($EnableRegistryMount){
         throw 'RELEASE_REGISTRY_SOURCE_DIGEST_MISMATCH'
     }
     Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'
-    $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
-        -ImageId $script:Image -ReleaseNonce $script:RegistryBoundReleaseNonce `
-        -ReaderVolume $script:RegistryReaderVolume
+    $script:RegistryDelivery=Read-RegistrySuccessorDelivery $SourceForOwnerShell
+    if($script:RegistryDelivery){
+        if($Auto -or $RegistryReturnContainerId -or $SuccessorContext -or -not $ConfirmWorkerQuiescent){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_FIRST_TRANSITION_REQUIRED'
+        }
+        $script:RegistrySocketVolume='fortis-registry-read-'+$script:RegistryBoundReleaseNonce.Replace('-','')
+        $script:RegistryProfileDigest=$script:RegistryDelivery.profileDigest
+    } else {
+        $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
+            -ImageId $script:Image -ReleaseNonce $script:RegistryBoundReleaseNonce `
+            -ReaderVolume $script:RegistryReaderVolume
+    }
 }
 $script:MachinePowerShellVolume=Read-MachinePowerShellVolume $SourceForOwnerShell.runtime
 $PreviousMachineDigest=Read-MachinePowerShellDigest $SourceForOwnerShell.runtime
@@ -3946,15 +4532,47 @@ if($RegistryReturnContainerId){
 # Ordinary Auto Apply can defer the full receipt to the read-only source
 # admission below. Reject a changed binding immediately; manual/recovery
 # paths retain their original full early audit.
+if($Action -ceq 'Apply' -and $SuccessorMaintenance){
+    $StopIntent=Verify-Checked-Image $SourceForOwnerShell $Report -PrepareSuccessorStop
+    $null=Save-SuccessorApplyStopIntent $StopIntent
+    # A prepared stop is not owner GO or a staged receiver. Keep the Gateway
+    # running until the new runtime and protected Return can consume the hold.
+    throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'
+}
 if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto}
 if($Action -eq 'Check'){
-    $CheckReceipt=$null
+    $CheckReceipt=$null;$MaintenanceSeal=$null;$MaintenanceTransitions=$null;$ResumeMaintenanceCheck=$false
     if($Build -or $script:RegistryPrebuiltCheck -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
         $Source=Get-SourceRecord
         if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
             -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
         Step 'SOURCE_STATE_PREFLIGHT_READ_ONLY'
-        if($AllowUncertainGrowth){
+        $CurrentMaintenance=Read-SuccessorMaintenanceContext $Source
+        if([bool]$SuccessorContext -ne [bool]$CurrentMaintenance -or
+           ($SuccessorContext -and -not (Same-Json $SuccessorContext $CurrentMaintenance))){
+            throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+        }
+        if($SuccessorContext){
+            $Incumbent=Container $Source.runtime.pilotId
+            if($Incumbent.State.Status -cne 'running'){throw 'RELEASE_SOURCE_NOT_RUNNING'}
+            Admit-Source $Incumbent $Source
+            Assert-OnlyWriter $Source.runtime.stateVolume $Incumbent.Id
+            $Drain=Start-SuccessorMaintenanceCheck $Source $CurrentMaintenance
+            $SuccessorMaintenance=$Drain.payload
+            if($null -eq $SuccessorMaintenance){
+                [ordered]@{status='MAINTENANCE_DRAINING';attemptId=$CurrentMaintenance.draining.attempt.attemptId
+                    restrictionDigest=$CurrentMaintenance.draining.attempt.restrictionDigest
+                    interlockDigest=$Drain.digest}|ConvertTo-Json -Depth 4
+                return
+            }
+            $ResumeMaintenanceCheck=$Drain.resume
+            if(-not $ResumeMaintenanceCheck){
+                $Frozen=Read-SuccessorFreezeSeal $SuccessorMaintenance $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'
+                $CheckReceipt=$Frozen.sourceReceipt
+                $MaintenanceSeal=$Frozen.seal
+                $MaintenanceTransitions=$Frozen.transitions
+            }
+        } elseif($AllowUncertainGrowth){
             $GrowthSnapshot=Snapshot-Uncertain-Growth $Source.runtime.stateVolume
             $script:PreserveUncertainRequests=@($GrowthSnapshot.uncertainIds) -join ','
             $script:PreserveUncertainExact=($script:PreserveUncertainRequests -ne '')
@@ -3972,7 +4590,22 @@ if($Action -eq 'Check'){
         # or the full owner-accepted UC-GW-013 rescue gate has passed.
         # Do not defer the missing-image error until Apply SOURCE_ADMISSION.
         Assert-Previous-Image-Retained $Source
-        $Path=Save-Checked-Image $Source $Report $CheckReceipt
+        if($ResumeMaintenanceCheck){
+            $Path=Successor-CheckRecordPath $SuccessorMaintenance.attemptId
+        } else {
+            $Path=Save-Checked-Image $Source $Report $CheckReceipt $SuccessorMaintenance $MaintenanceSeal $MaintenanceTransitions
+        }
+        if($SuccessorMaintenance){
+            $Stored=Read-Private $Path
+            if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready'){
+                throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+            }
+            Assert-Checked-Image-Binding $Stored.binding (Checked-Image-Binding $Source $Report $SuccessorMaintenance)
+            $Digest=Complete-SuccessorMaintenanceCheck $Source $CurrentMaintenance $Stored
+            $Report|Add-Member -NotePropertyName checkedMaintenance -NotePropertyValue (
+                [ordered]@{phase='CHECK_SEALED';attemptId=$SuccessorMaintenance.attemptId
+                    restrictionDigest=$SuccessorMaintenance.restrictionDigest;interlockDigest=$Digest})
+        }
         $Report|Add-Member -NotePropertyName checkedImageId -NotePropertyValue $script:Image
         $Report|Add-Member -NotePropertyName checkedImageRecord -NotePropertyValue $Path
         if($Auto){
@@ -4066,6 +4699,10 @@ $Runtime=[ordered]@{pilotId='';pilotName=('fortis-github-pilot-'+$RunId);image=$
     registryReleaseNonce=$script:RegistryBoundReleaseNonce
     registryProfileDigest=$script:RegistryProfileDigest
     ownerShell=$OwnerShellEnabled;runId=$RunId}
+if($script:RegistryDelivery){
+    $Runtime.registryDelivery=$script:RegistryDelivery
+    $Runtime.maintenanceGeneration=$script:RegistryDelivery.generation
+}
 if($EnableActionCoreNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 if($EnableObservatoryNetwork){$Runtime.gatewayNetworks=$script:ActionCoreNetworks}
 $script:R=[ordered]@{schema='fortis-extension-release-v1';phase='Prepared';source=$Source;runtime=$Runtime
@@ -4093,6 +4730,7 @@ Step 'PREPARED_RECORD_SAVED'
 # comparison. Its SHA256 is part of the Check binding; publishing our own
 # new attempt pointer first would invalidate that binding before docker stop.
 $RegistryStopAuthorized=$false
+$SourceStopAttempted=$false
 try {
     Step 'PUBLIC_ENV_PREFLIGHT'
     $EnvFile=Join-Path $Directory 'public.env'
@@ -4130,6 +4768,13 @@ try {
         Assert-RegistryCrashIncumbent $Source
         Assert-RegistryCrashIncumbentQuiescent
     }
+    if($script:RegistryDelivery){
+        Step 'REGISTRY_SUCCESSOR_FINAL_PREFLIGHT'
+        $FinalDelivery=Read-RegistrySuccessorDelivery $Source
+        if($null -eq $FinalDelivery -or -not (Same-Json $FinalDelivery $script:RegistryDelivery)){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+        }
+    }
     if($CheckedImageRecord){Verify-Checked-Image $Source $Report}
     Assert-Previous-Image-Retained $Source
     # Durable recovery pointer must exist before the first source effect,
@@ -4138,6 +4783,7 @@ try {
     Step 'ATTEMPT_POINTER_SAVED'
     $RegistryStopAuthorized=[bool]$script:RegistryReturn
     Write-ReleaseTiming 'APPLY_STOP_REQUEST'
+    $SourceStopAttempted=$true
     if($script:RegistryCrash){
         Step 'STOP_CRASH_INCUMBENT'
         $null=Docker-Text @('stop','--timeout','20',$script:RegistryCrash.incumbentId)
@@ -4204,6 +4850,12 @@ try {
         $Arguments+=@('--mount',('type=volume,source='+$Runtime.machinePowerShellVolume+
             ',target=/run/fortis-machine-powershell,readonly'))
     }
+    if($script:RegistryDelivery){
+        $Evidence='fortis-registry-source-evidence-'+$Runtime.registryReleaseNonce.Replace('-','')
+        Assert-Volume $Evidence;Assert-OnlyWriter $Evidence
+        $Arguments+=@('--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,volume-nocopy'),
+            '--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,readonly,volume-nocopy')
+    }
     if($Runtime.registryReaderVolume){
         $Arguments+=@('--mount',('type=volume,source='+$Runtime.registryReaderVolume+
             ',target=/run/r7-registry-reader,readonly'))
@@ -4218,7 +4870,9 @@ try {
     $Failure='step='+$script:Step+'; '+$_.Exception.Message
     $script:R.failureStep=$script:Step;$script:R.failureMessage=$Failure
     try{Save}catch{Write-Warning 'RELEASE_FAILURE_RECORD_NOT_SAVED'}
-    if(-not $script:RegistryReturn -or $RegistryStopAuthorized){
+    $CanReturnSource=(-not $script:RegistryReturn -or $RegistryStopAuthorized) -and
+        (-not $script:RegistryDelivery -or $SourceStopAttempted)
+    if($CanReturnSource){
         try{Return-Source}catch{Write-Warning ('RELEASE_RETURN_REQUIRES_REVIEW: '+$_.Exception.Message)}
     }
     throw ('RELEASE_FAILED: '+$Failure+'; record='+$script:RecordPath)

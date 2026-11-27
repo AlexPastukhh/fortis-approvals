@@ -141,11 +141,15 @@ def _runtime_policy_generation(*, owner, runtime, grant, sonar_token,
     return hashlib.sha256(canonical(material).encode()).hexdigest()
 
 
+_MAINTENANCE_INTERLOCK_MOUNT = Path('/run/r7-maintenance')
+
+
 def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                    key_path,region,organizations,project_key,
                    bind_host='0.0.0.0', github_pilot=None, analysis_review=None, extensions=None, release_nonce=None,
                    publisher_profile=None, publisher_grant=None,
-                   machine_shell=None, registry_candidate_reader=None):
+                   machine_shell=None, registry_candidate_reader=None,
+                   reviewed_registry_successor=None):
     # This trusted Python-only source composition never grants Registry via
     # another route, even if a caller supplied a reader without the matching
     # registered image-owned extension. Refuse before creating owner state.
@@ -153,6 +157,22 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
                           'registry' in extensions.value['providers'])
     if extension_registry != (registry_candidate_reader is not None):
         raise RuntimeError('R7_REGISTRY_RELEASE_MOUNT_MISMATCH')
+    successor_configuration = getattr(registry_candidate_reader, '_successor_config', None)
+    if (reviewed_registry_successor is None and successor_configuration is None
+            and getattr(registry_candidate_reader, '_semantic_transport', None) is not None):
+        raise RuntimeError('R7_REGISTRY_SUCCESSOR_REVIEWED_BINDING_REQUIRED')
+    if successor_configuration is not None and reviewed_registry_successor is not None:
+        raise RuntimeError('R7_REGISTRY_SUCCESSOR_MOUNT_OVERRIDE_DENIED')
+    if reviewed_registry_successor is not None:
+        from .extensions.composite_successor import ReviewedRegistrySuccessor
+        if release_nonce is None:
+            raise RuntimeError('R7_REGISTRY_SUCCESSOR_STAGED_RELEASE_REQUIRED')
+        if type(reviewed_registry_successor) is not ReviewedRegistrySuccessor:
+            raise RuntimeError('R7_REGISTRY_SUCCESSOR_REVIEWED_BINDING_REQUIRED')
+        reviewed_registry_successor.verify_startup(registry_candidate_reader)
+    if reviewed_registry_successor is None and successor_configuration is None and (
+            _MAINTENANCE_INTERLOCK_MOUNT.exists() or _MAINTENANCE_INTERLOCK_MOUNT.is_symlink()):
+        raise RuntimeError('R7_MAINTENANCE_REVIEWED_STARTUP_REQUIRED')
     # P1 requires exactly one owner-pinned project; no organization-wide fallback.
     if (type(project_key) is not str or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', project_key)):
@@ -179,6 +199,18 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
     if unified is not None and (github_pilot is not None or analysis_review is not None):
         from .integrations.github.gateway.transport import GitHubHTTPTransport
         github_transport = GitHubHTTPTransport.from_file()
+    if successor_configuration is not None:
+        from .extensions.successor_runtime import ProtectedRegistrySuccessor
+        if (type(successor_configuration) is not ProtectedRegistrySuccessor or unified is None
+                or not unified.allow_all_method_policy_upgrade or analysis_review is not None
+                or github_pilot is None or not github_pilot.native_worktree
+                or not github_pilot.ci_reads
+                or release_nonce != registry_candidate_reader._release_nonce):
+            raise RuntimeError('R7_REGISTRY_SUCCESSOR_REVIEWED_BINDING_REQUIRED')
+        reviewed_registry_successor = successor_configuration.compose(
+            registry_candidate_reader, state=state, project_key=project_key,
+            github_pilot=github_pilot, credential_generation=unified.credential_generation)
+        reviewed_registry_successor.verify_startup(registry_candidate_reader)
     _,owner_auth,portal,ingress = build_r7_unified_candidate(
         state=state,owner_origin=owner_origin,ingress_host=machine_host,
         ingress_grant=grant,sonar_transport=transport,
@@ -187,6 +219,7 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         extensions=extensions, publisher_profile=publisher_profile, publisher_grant=publisher_grant,
         machine_shell=machine_shell,github_transport=github_transport,
         registry_candidate_reader=registry_candidate_reader,
+        reviewed_registry_successor=reviewed_registry_successor,
         local_deny_source_opt_in=_owner_release_local_deny(
             extensions, release_nonce, grant, sonar_token),
         unified_policy_source_opt_in=unified)
@@ -198,7 +231,8 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
         if runtime is None: raise RuntimeError('RELEASE_EXTENSION_CONFIG_REQUIRED')
         base = ingress.base  # ExtensionIngress retains the original auth/TLS-contract base.
         gate = ReleaseGate(release_nonce, runtime.digest)
-        ingress = StagedMachine(ingress, base, runtime, gate)
+        ingress = StagedMachine(ingress, base, runtime, gate,
+                                block_staged_registry_reads=reviewed_registry_successor is not None)
         portal = StagedOwner(portal, gate)
     cert = Path(cert_path)
     if cert.is_symlink() or not cert.is_file():
@@ -212,6 +246,8 @@ def create_servers(*, state, grant_path, sonar_token_path, cert_path,
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.options |= ssl.OP_NO_COMPRESSION
     context.load_cert_chain(certfile=str(cert),keyfile=str(key))
+    if reviewed_registry_successor is not None:
+        reviewed_registry_successor.verify_startup(registry_candidate_reader)
     owner = make_server(bind_host,OWNER_PORT,portal,
                         server_class=OwnerHTTPServer,
                         handler_class=OwnerRequestHandler)

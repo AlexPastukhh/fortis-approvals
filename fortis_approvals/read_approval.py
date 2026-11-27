@@ -40,7 +40,18 @@ class OwnerReadApprovalAdapter:
                 set(payload['params']) != {'actor','query'} or
                 payload['params']['actor'] != actor):
             raise Denied("OWNER_READ_APPROVAL_SCOPE_DENIED")
-        query = validate_read_query(payload['params']['query'])
+        raw=payload['params']['query']
+        semantic=getattr(self,'semantic_access',None)
+        if semantic is not None:
+            from .extensions.semantic_access import READ, validate
+            if type(raw) is dict and all(type(raw.get(k)) is str for k in ('service','operation')) and (raw.get('service'),raw.get('operation')) in READ and not (raw.get('operation')=='get_operation' and type(raw.get('params')) is dict and set(raw['params'])=={'repository','operationId'}):
+                query=validate(raw,read=True)
+                if (payload.get('requestId')!=query['requestId'] or payload.get('target')!=query['target']
+                        or payload.get('reason')!=query['reason']
+                        or semantic.authorize(actor,query,read=True)!='ASK'):
+                    raise Denied('OWNER_READ_APPROVAL_SCOPE_DENIED')
+                return query
+        query = validate_read_query(raw)
         if (payload.get('requestId') != query['requestId'] or
                 payload.get('target') != query['target'] or
                 payload.get('reason') != query['reason'] or
@@ -107,8 +118,20 @@ class OwnerReadApprovalAdapter:
     def begin_or_consume(self, credential, actor, query):
         with self.core._db() as db:
             _assert_spent_schema(db)
+        if self.core.auth.authenticate(credential)!=actor:
+            raise Denied('OWNER_READ_APPROVAL_SCOPE_DENIED')
+        return self._begin_or_consume_actor(actor,query)
+
+    def _begin_or_consume_actor(self,actor,query):
+        # Trusted in-process caller: machine credential or actual owner session
+        # has already been authenticated, never a caller-selected actor.
+        if not self.core.auth.active(actor):
+            raise Denied('OWNER_READ_APPROVAL_SCOPE_DENIED')
+        with self.core._db() as db:
+            _assert_spent_schema(db)
         payload=self.request(actor,query)
-        row=self.core.client(credential,'submit',payload)
+        self._query(actor,payload)
+        row=self.core.submit(actor,payload)
         if row['state'] != 'EXECUTED':
             return row['state']
         with self.core._db() as db:

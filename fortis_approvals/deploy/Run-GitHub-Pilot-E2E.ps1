@@ -351,8 +351,14 @@ function Assert-RecordAcl {
         throw 'PILOT_RECORD_INHERITANCE_UNPROTECTED'
     }
 }
+function Sync-RecordFile {
+    param([string]$Path)
+    $Stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+    try {$Stream.Flush($true)}
+    finally {$Stream.Dispose()}
+}
 function Save-Record {
-    param([string]$SerializedJson='')
+    param([string]$SerializedJson='',[switch]$FlushToDisk)
     $JsonText=$SerializedJson
     if(-not $JsonText){$JsonText=ConvertTo-Json -InputObject $script:R -Depth 25}
     $Temporary=$script:RecordPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
@@ -361,9 +367,11 @@ function Save-Record {
     $Acl=Get-Acl -LiteralPath $Temporary
     $Acl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
     Set-Acl -LiteralPath $Temporary -AclObject $Acl
+    if($FlushToDisk){Sync-RecordFile $Temporary}
     if (Test-Path -LiteralPath $script:RecordPath) { [IO.File]::Replace($Temporary,$script:RecordPath,[System.Management.Automation.Language.NullString]::Value) }
     else { [IO.File]::Move($Temporary,$script:RecordPath) }
     Assert-RecordAcl
+    if($FlushToDisk){Sync-RecordFile $script:RecordPath}
 }
 function Assert-PreparedResume {
     # Only a failed build before credential/state/container creation can resume setup.

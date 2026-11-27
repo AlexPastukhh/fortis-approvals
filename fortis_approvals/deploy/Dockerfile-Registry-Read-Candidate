@@ -1,9 +1,14 @@
 # E1.3 SOURCE-ONLY. This image is NOT approved for build, host activation,
 # owner grant, CD, or Production; acceptance requires a separate owner GO.
-# Dedicated Registry READ process: no TLS/HTTP/API exposure, no SQLite WRITE.
+# Dedicated private Unix Registry process. Source accounting requires an explicit sealed profile.
 FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /opt/fortis
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+COPY fortis_approvals/requirements-owner.txt /opt/fortis/
+RUN sed -n '/^PyYAML==/p; /^jsonschema==/p' requirements-owner.txt > /tmp/registry-validator-requirements.txt && \
+    python -m pip install --disable-pip-version-check --no-cache-dir -r /tmp/registry-validator-requirements.txt && \
+    rm /tmp/registry-validator-requirements.txt requirements-owner.txt
 ARG REGISTRY_UID
 ARG REGISTRY_GID
 RUN test -n "$REGISTRY_UID" && test -n "$REGISTRY_GID" && \
@@ -12,11 +17,20 @@ RUN test -n "$REGISTRY_UID" && test -n "$REGISTRY_GID" && \
     test "$REGISTRY_UID" -ne 10001 && test "$REGISTRY_GID" -ne 10001
 RUN mkdir -p /opt/fortis/fortis_approvals/registry \
    /opt/fortis/fortis_approvals/integrations/registry
-COPY fortis_approvals/__init__.py fortis_approvals/core.py /opt/fortis/fortis_approvals/
+COPY fortis_approvals/__init__.py fortis_approvals/core.py fortis_approvals/r7_registry_reader_mount.py /opt/fortis/fortis_approvals/
 COPY fortis_approvals/registry/__init__.py fortis_approvals/registry/boundary.py \
   fortis_approvals/registry/state_journal.py \
   fortis_approvals/registry/state_journal_v2.py \
   fortis_approvals/registry/functional_v1_journal.py \
+  fortis_approvals/registry/transition_preservation.py \
+  fortis_approvals/registry/release_event_journal.py \
+  fortis_approvals/registry/source_event_journal.py \
+  fortis_approvals/registry/release_domain.py \
+  fortis_approvals/registry/release_planner.py \
+  fortis_approvals/registry/semantic_service.py \
+  fortis_approvals/registry/semantic_unix_service.py \
+  fortis_approvals/registry/protected_transition.py \
+  fortis_approvals/registry/protected_source_write.py \
   fortis_approvals/registry/owner_candidate_pidfd_observation.py \
   fortis_approvals/registry/local_candidate_read_service.py \
   fortis_approvals/registry/owner_functional_v1_bootstrap.py \
@@ -24,10 +38,40 @@ COPY fortis_approvals/registry/__init__.py fortis_approvals/registry/boundary.py
 COPY fortis_approvals/integrations/__init__.py /opt/fortis/fortis_approvals/integrations/
 COPY fortis_approvals/integrations/registry/__init__.py \
   fortis_approvals/integrations/registry/owner_pinned_pidfd.py \
+  fortis_approvals/integrations/registry/candidate_gateway.py \
   fortis_approvals/integrations/registry/read_contract.py \
   /opt/fortis/fortis_approvals/integrations/registry/
+COPY fortis_approvals/integrations/registry_contracts/__init__.py \
+  fortis_approvals/integrations/registry_contracts/semantic_contract.py \
+  fortis_approvals/integrations/registry_contracts/semantic_wire.py \
+  fortis_approvals/integrations/registry_contracts/transition_contract.py \
+  fortis_approvals/integrations/registry_contracts/source_lineage_contract.py \
+  fortis_approvals/integrations/registry_contracts/merge_evidence.py \
+  fortis_approvals/integrations/registry_contracts/release_profile.py \
+  fortis_approvals/integrations/registry_contracts/maintenance_contract.py \
+  fortis_approvals/integrations/registry_contracts/maintenance_evidence.py \
+  fortis_approvals/integrations/registry_contracts/maintenance_seal.py \
+  /opt/fortis/fortis_approvals/integrations/registry_contracts/
+COPY fortis_approvals/extensions/__init__.py \
+  fortis_approvals/extensions/maintenance_interlock_reader.py \
+  fortis_approvals/extensions/successor_impact.py \
+  /opt/fortis/fortis_approvals/extensions/
+COPY fortis_approvals/workflow/__init__.py \
+  fortis_approvals/workflow/common.py \
+  /opt/fortis/fortis_approvals/workflow/
+COPY fortis_approvals/integrations/github/__init__.py \
+  fortis_approvals/integrations/github/publisher_source.py \
+  fortis_approvals/integrations/github/publisher_profile.py \
+  fortis_approvals/integrations/github/post_merge_proof_bindings.py \
+  fortis_approvals/integrations/github/post_merge_registry_envelope.py \
+  /opt/fortis/fortis_approvals/integrations/github/
+COPY fortis_approvals/integrations/github/gateway/__init__.py \
+  fortis_approvals/integrations/github/gateway/retained_impact.py \
+  fortis_approvals/integrations/github/gateway/post_merge_reader.py \
+  fortis_approvals/integrations/github/gateway/review_capture.py \
+  /opt/fortis/fortis_approvals/integrations/github/gateway/
 # No default state, credentials, external network listener or Docker socket.
-# Owner must separately provision exact sealed config, schema-3 SQLite,
-# readonly volume and 2710 setgid Unix socket directory (real UID/GID/pins).
+# Host provisions exact config and state, protected evidence when selected,
+# and the 2710 setgid Unix socket directory with distinct runtime identities.
 USER ${REGISTRY_UID}:${REGISTRY_GID}
 CMD ["python", "-m", "fortis_approvals.registry.local_candidate_read_service", "--owner-config", "/run/fortis-registry-runtime/profile.json"]

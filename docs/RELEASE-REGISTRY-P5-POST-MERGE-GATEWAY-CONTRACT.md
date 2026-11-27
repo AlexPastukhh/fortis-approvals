@@ -424,6 +424,13 @@ CI action pin). Raw Git bytes of validate.py, requirements.txt and both
 v1 schemas match the container reference exactly. The deployment owner must
 separately accept the actual code/dependency pin and protected object stores.
 
+Registry Functional V1 uses the accepted action at
+`8b82564728c55807c57d1c9e1f0f974ea14fd6d6` for v2 catalog validation. The
+v1 schema remains available for historical evidence. Catalog declarations for
+Gateway and Registry require an owner-controlled maintenance window with
+State Freeze. The owner controller and the isolated publisher have separate
+delivery procedures.
+
 The adapter checks exact base and HEAD commits, the unique Git merge base
 and an independent bounded NUL-separated name/status diff including
 rename identities. It requires exact agreement with retained provider

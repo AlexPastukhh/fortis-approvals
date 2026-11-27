@@ -2,7 +2,7 @@
 # Two independent target identities: Gateway image and owner Windows controller.
 # Image inputs are derived conservatively from active Manage-Integrations.ps1
 # (Dockerfile-Gateway-Modularized-Candidate), not historical pilot Dockerfiles.
-schemaVersion: 1
+schemaVersion: 2
 repository: fortis-approvals
 buildUnits:
   - id: primary-gateway-image
@@ -63,6 +63,13 @@ buildUnits:
       - fortis_approvals/registry/state_journal.py
       - fortis_approvals/registry/state_journal_v2.py
       - fortis_approvals/registry/functional_v1_journal.py
+      - fortis_approvals/registry/transition_preservation.py
+      - fortis_approvals/registry/release_event_journal.py
+      - fortis_approvals/registry/source_event_journal.py
+      - fortis_approvals/registry/release_domain.py
+      - fortis_approvals/registry/release_planner.py
+      - fortis_approvals/registry/semantic_service.py
+      - fortis_approvals/registry/semantic_unix_service.py
       - fortis_approvals/registry/local_candidate_read_service.py
       - fortis_approvals/registry/owner_functional_v1_bootstrap.py
       - fortis_approvals/registry/owner_candidate_pidfd_observation.py
@@ -70,6 +77,35 @@ buildUnits:
       - fortis_approvals/integrations/registry/__init__.py
       - fortis_approvals/integrations/registry/owner_pinned_pidfd.py
       - fortis_approvals/integrations/registry/read_contract.py
+      - fortis_approvals/integrations/registry_contracts/__init__.py
+      - fortis_approvals/integrations/registry_contracts/semantic_contract.py
+      - fortis_approvals/integrations/registry_contracts/semantic_wire.py
+      - fortis_approvals/integrations/registry_contracts/transition_contract.py
+      - fortis_approvals/integrations/registry_contracts/source_lineage_contract.py
+      - fortis_approvals/integrations/registry_contracts/merge_evidence.py
+      - fortis_approvals/integrations/registry_contracts/release_profile.py
+      - fortis_approvals/integrations/registry_contracts/maintenance_contract.py
+      - fortis_approvals/integrations/registry_contracts/maintenance_evidence.py
+      - fortis_approvals/integrations/registry_contracts/maintenance_seal.py
+      - fortis_approvals/requirements-owner.txt
+      - fortis_approvals/r7_registry_reader_mount.py
+      - fortis_approvals/registry/protected_source_write.py
+      - fortis_approvals/registry/protected_transition.py
+      - fortis_approvals/integrations/registry/candidate_gateway.py
+      - fortis_approvals/extensions/__init__.py
+      - fortis_approvals/extensions/maintenance_interlock_reader.py
+      - fortis_approvals/extensions/successor_impact.py
+      - fortis_approvals/workflow/__init__.py
+      - fortis_approvals/workflow/common.py
+      - fortis_approvals/integrations/github/__init__.py
+      - fortis_approvals/integrations/github/publisher_source.py
+      - fortis_approvals/integrations/github/publisher_profile.py
+      - fortis_approvals/integrations/github/post_merge_proof_bindings.py
+      - fortis_approvals/integrations/github/post_merge_registry_envelope.py
+      - fortis_approvals/integrations/github/gateway/__init__.py
+      - fortis_approvals/integrations/github/gateway/retained_impact.py
+      - fortis_approvals/integrations/github/gateway/post_merge_reader.py
+      - fortis_approvals/integrations/github/gateway/review_capture.py
   # P3.4 source definition only; no publisher image is built or activated here.
   - id: publisher-runner-image
     artifactType: docker-image
@@ -99,6 +135,12 @@ buildUnits:
       - fortis_approvals/integrations/registry/read_contract.py
 targets:
   - id: fortis-gateway
+    maintenance:
+      beginRequired: true
+      stateFreeze: true
+      blockedOperations: []
+      notes:
+        - Use the owner-controlled maintenance and State Freeze procedure.
     buildUnit: primary-gateway-image
     deployment:
       kind: owner-controlled
@@ -111,6 +153,12 @@ targets:
       - live-readback
       - backup-promote
   - id: fortis-registry-pilot
+    maintenance:
+      beginRequired: true
+      stateFreeze: true
+      blockedOperations: []
+      notes:
+        - Freeze writes to the enrolled Registry state during the protected transition.
     buildUnit: registry-candidate-reader-image
     deployment:
       kind: owner-controlled
@@ -123,6 +171,12 @@ targets:
       - private-schema3-backup-restore
       - owner-non-production-host-go
   - id: gateway-owner-controller
+    maintenance:
+      beginRequired: false
+      stateFreeze: false
+      blockedOperations: []
+      notes:
+        - Publishing this Windows source leaves runtime maintenance to the deployment target.
     inputs:
       - fortis_approvals/deploy/Manage-Integrations.ps1
       - fortis_approvals/deploy/Run-GitHub-Pilot-E2E.ps1
@@ -138,6 +192,12 @@ targets:
       - owner-powershell-selftest
   # Separate, disabled P3.4 owner-controlled runner (not Primary Gateway).
   - id: release-label-publisher
+    maintenance:
+      beginRequired: false
+      stateFreeze: false
+      blockedOperations: []
+      notes:
+        - Separate owner-controlled runner with its own activation procedure.
     buildUnit: publisher-runner-image
     deployment:
       kind: owner-controlled

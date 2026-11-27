@@ -51,9 +51,10 @@ class ReleaseGate:
 
 
 class StagedMachine:
-    def __init__(self, delegate, base, runtime, gate):
+    def __init__(self, delegate, base, runtime, gate, *, block_staged_registry_reads=False):
         self.delegate, self.base, self.runtime, self.gate = delegate, base, runtime, gate
         self.broker = base.broker
+        self.block_staged_registry_reads = block_staged_registry_reads
 
     def __call__(self, env, start):
         if self.gate.ready(): return self.delegate(env, start)
@@ -63,7 +64,8 @@ class StagedMachine:
             if method == 'GET': return self.delegate(env, start)  # actor-owned status or ordinary 404
             credential, actor = self.base._credential(env)
             allowed = path in ('/v1/reads', '/v1/integrations/catalog', '/v1/workspace/capabilities', '/v1/workspace/details')
-            if path in ('/v1/integrations/call', '/v1/integrations/result'):
+            registry_read_check = self.block_staged_registry_reads and path == '/v1/reads'
+            if registry_read_check or path in ('/v1/integrations/call', '/v1/integrations/result'):
                 length = env.get('CONTENT_LENGTH', '')
                 check(type(length) is str and length.isdecimal() and not length.startswith('0') and
                       0 < int(length) <= self.base.max_bytes, 'RELEASE_BODY_LIMIT')
@@ -72,7 +74,11 @@ class StagedMachine:
                 copied = dict(env); copied['wsgi.input'] = io.BytesIO(raw)
                 body = self.base._body(copied)
                 env = dict(env); env['wsgi.input'] = io.BytesIO(raw)
-                if path.endswith('/result'):
+                if registry_read_check:
+                    # A semantic READ can enqueue an owner ASK. Wait for the
+                    # same activation record that admits other Core mutations.
+                    allowed = body.get('service') != 'registry'
+                elif path.endswith('/result'):
                     allowed = body.get('reconcile', False) is False
                 else:
                     key = (body.get('service'), body.get('operation'))

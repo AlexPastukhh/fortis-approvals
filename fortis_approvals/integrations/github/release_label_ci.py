@@ -33,7 +33,7 @@ WORKFLOWS = (
         'f5a5ae93f28673bc9c981ba5702565ba91f115f1fe52d60aca3324a0fbd9fab1'),
     Workflow('Fortis Release Impact', 414303977, '.github/workflows/release-impact.yml',
         ('release-impact',),
-        'e141908e8aeadf41088e7998842f72dea52ea4332346a5e3bd084e7de7d65218'),
+        'bf0cf64ee7c576335f1416b02c69ff5eb3c59bf68e031a6b0936dfbca0707d28'),
 )
 
 

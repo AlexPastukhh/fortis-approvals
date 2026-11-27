@@ -1,18 +1,15 @@
-"""Private Linux Unix-socket *candidate* Registry reader (no live authority).
+"""Private Unix Registry candidate and owner-sealed semantic service entrypoint.
 
-This is a runnable, non-deployed source cut for the FIRST functional runtime.
-The host, not a request, must select the immutable config, SQLite path,
-listener directory, reader UID/GID and process identity. The default process is READ-only. Explicit owner key opt-in adds a private
-planner CAS operation; never initializes/migrates the DB, invokes GitHub/Core,
-or claims owner/collector admission. A same-UID test is NOT cross-principal host proof.
-
-Do not package/deploy or grant this endpoint until a separate owner-approved
-non-Production host/provenance review. This is NOT registry.list_records.
+The protected host configuration binds state, socket and process identities.
+The legacy planner and semantic writer each require explicit provisioning.
+Startup uses already prepared state and leaves installation and migration
+to the owner release controller.
 """
 import argparse
 from contextlib import contextmanager
 import errno
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import socket
@@ -461,68 +458,101 @@ class PrivateCandidateReadService:
         return count
 
 
-def _load_owner_config(path):
-    """Single exact host-created file, not request-supplied credentials."""
-    value = _absolute_path(path)
+_OWNER_RUNTIME_CONFIG=Path('/run/fortis-registry-runtime/profile.json')
+
+
+def _owner_runtime_bytes(path, maximum):
+    location=_absolute_path(str(path))
     try:
-        parent = value.parent.lstat()
-        fd = os.open(value, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(fd, 'rb') as f:
-            row = os.fstat(f.fileno())
-            _need(stat.S_ISREG(row.st_mode) and row.st_nlink == 1
-                  and row.st_uid == os.geteuid()
-                  and stat.S_IMODE(row.st_mode) == 0o600
-                  and stat.S_ISDIR(parent.st_mode)
-                  and parent.st_uid == os.geteuid()
-                  and stat.S_IMODE(parent.st_mode) == 0o700,
+        parent=location.parent.lstat()
+        fd=os.open(location,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+        with os.fdopen(fd,'rb') as stream:
+            row=os.fstat(stream.fileno())
+            _need(stat.S_ISREG(row.st_mode) and row.st_nlink==1
+                  and row.st_uid==os.geteuid() and stat.S_IMODE(row.st_mode)==0o600
+                  and stat.S_ISDIR(parent.st_mode) and parent.st_uid==os.geteuid()
+                  and stat.S_IMODE(parent.st_mode)==0o700,
                   'REGISTRY_PRIVATE_READ_CONFIG_PERMISSIONS')
-            data = f.read(8193)
-        _need(0 < len(data) <= 8192,
-              'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
-        parsed = loads_strict(data)
-        _need(canonical(parsed).encode('utf-8') == data
-              and type(parsed) is dict and set(parsed) == {
-                  'schemaVersion', 'instanceId', 'scope', 'registryStatePath',
-                  'socketPath', 'readerUid', 'readerGid'}
-              and type(parsed['schemaVersion']) is int
-              and parsed['schemaVersion'] == 1
-              and _uuid(parsed['instanceId']),
-              'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
+            data=stream.read(maximum+1)
+        _need(0<len(data)<=maximum,'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
+        return data
+    except OSError:
+        raise Denied('REGISTRY_PRIVATE_READ_CONFIG_UNAVAILABLE') from None
+
+
+def _load_owner_config(path, *, allow_semantic=False):
+    """Single exact host-created file, not request-supplied credentials."""
+    try:
+        data=_owner_runtime_bytes(path,65536 if allow_semantic else 8192)
+        parsed=loads_strict(data)
+        fields={'schemaVersion','instanceId','scope','registryStatePath','socketPath',
+                'readerUid','readerGid'}
+        _need(type(parsed) is dict and canonical(parsed).encode('utf-8')==data
+              and type(parsed.get('schemaVersion')) is int
+              and (parsed['schemaVersion']==1 or (allow_semantic and parsed['schemaVersion'] in (2,3)))
+              and (parsed['schemaVersion']==3 or len(data)<=8192)
+              and set(parsed)==(fields|{'semantic', 'sourceWrite'} if parsed['schemaVersion']==3
+                               else fields|{'semantic'} if parsed['schemaVersion']==2 else fields)
+              and _uuid(parsed['instanceId']),'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
         _scope(parsed['scope'])
         _absolute_path(parsed['registryStatePath'])
-        _absolute_path(parsed['socketPath'], socket_name=True)
+        _absolute_path(parsed['socketPath'],socket_name=True)
         return parsed
     except Denied:
         raise
-    except (OSError, TypeError, ValueError, UnicodeError, RecursionError):
+    except (OSError,TypeError,ValueError,UnicodeError,RecursionError):
         raise Denied('REGISTRY_PRIVATE_READ_CONFIG_UNAVAILABLE') from None
+
+
+def _readonly_owner_runtime(path):
+    config=_OWNER_RUNTIME_CONFIG
+    _need(path==str(config) and config.parent.resolve()==config.parent
+          and os.statvfs(config.parent).f_flag & os.ST_RDONLY,
+          'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
+    mountinfo=Path('/proc/self/mountinfo').read_bytes()
+    mounts=[line.split(b' - ',1)[0].split() for line in mountinfo.splitlines()]
+    matches=[f for f in mounts if len(f)>5 and f[4]==os.fsencode(config.parent)]
+    _need(len(matches)==1 and b'ro' in matches[0][5].split(b','),
+          'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
+    return config.parent
+
+
+def _check_successor_profile(cfg, expected_profile_sha256):
+    _need(cfg['schemaVersion'] == 3 and
+          hashlib.sha256(canonical(cfg).encode()).hexdigest() == expected_profile_sha256,
+          'REGISTRY_SUCCESSOR_PROFILE_PIN_CHANGED')
 
 
 def main(argv=None):
     """Manual *non-Production* candidate run. No install or enrollment."""
     parser = argparse.ArgumentParser(
-        description='Inactive Registry candidate read-only private socket')
+        description='Owner-configured Registry candidate private Unix socket')
     parser.add_argument('--owner-config', required=True)
     parser.add_argument('--functional-planner-key-digest')
     parser.add_argument('--managed-startup', action='store_true')
+    parser.add_argument('--expected-profile-sha256')
     args = parser.parse_args(argv)
-    cfg = _load_owner_config(args.owner_config)
+    cfg = _load_owner_config(args.owner_config,allow_semantic=True)
+    if args.expected_profile_sha256 is not None:
+        _check_successor_profile(cfg, args.expected_profile_sha256)
+    if cfg['schemaVersion'] in (2,3):
+        _need(args.functional_planner_key_digest is None and not args.managed_startup,
+              'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
+        root=_readonly_owner_runtime(args.owner_config)
+        readonly = bool(os.statvfs(cfg['registryStatePath']).f_flag & os.ST_RDONLY)
+        if cfg['schemaVersion'] == 2:
+            _need(readonly, 'REGISTRY_SEMANTIC_READONLY_STATE_REQUIRED')
+        else:
+            _need(not readonly, 'REGISTRY_SEMANTIC_WRITE_STATE_REQUIRED')
+        from .semantic_unix_service import owner_semantic_reader
+        owner_semantic_reader(cfg,root).serve()
+        return 0
+
     planner_key=None
     if args.functional_planner_key_digest is not None:
-        # Default image command remains READ-only. Owner must launch the exact
-        # functional profile with its own scoped GO, fixed RO configuration
-        # volume and matching private key digest.
-        config=Path('/run/fortis-registry-runtime/profile.json')
-        _need(args.owner_config==str(config) and
-              os.statvfs(config.parent).f_flag & os.ST_RDONLY,
-              'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
-        mountinfo=Path('/proc/self/mountinfo').read_bytes()
-        mounts=[line.split(b' - ',1)[0].split() for line in mountinfo.splitlines()]
-        matches=[f for f in mounts if len(f)>5 and f[4]==os.fsencode(config.parent)]
-        _need(len(matches)==1 and b'ro' in matches[0][5].split(b','),
-              'REGISTRY_PLANNER_OWNER_CONFIG_REQUIRED')
-        planner_key=private_planner_key(config.parent/'planner.key',
-                                       args.functional_planner_key_digest)
+        # The owner chooses the exact pinned planner profile.
+        root=_readonly_owner_runtime(args.owner_config)
+        planner_key=private_planner_key(root/'planner.key',args.functional_planner_key_digest)
     def read_disabled(_):
         raise Denied('REGISTRY_PRIVATE_READ_WRITE_DISABLED')
     store = FunctionalV1CandidateJournal(

@@ -8,7 +8,7 @@ from .review_capture import _hash, _need
 
 P5_WORKFLOWS = WORKFLOWS + (
     Workflow('P5 Retained Impact', 425664934, '.github/workflows/p5-retained-impact.yml',
-             ('p5-retained-impact',), '432fd4be8191eb85eb6e9d3f11249dd33b8d192a233807adbdc1835811ea4e3d'),)
+             ('p5-retained-impact',), '546f1f641551cbf22e57458f548cc98152b7d840328632b4d736b6b1439c0062'),)
 APP_ID = 15368
 APP_SLUG = 'github-actions'
 

@@ -3,6 +3,7 @@
 The actual mountinfo/UID/device/peer checks MUST be rerun under separate
 non-Production host identities; local tests replace only those host seams.
 """
+import hashlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,45 @@ from fortis_approvals import r7_registry_reader_mount as mount
 from fortis_approvals import r7_unified_server as server
 from fortis_approvals.extensions.runtime import ExtensionConfig
 from fortis_approvals.integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
+
+
+def functional_mount_config(*, baseline_sha='a'*40, catalog_sha='b'*64, validator_revision='d'*40,
+                            instance_id=None):
+    from fortis_approvals.integrations.github.gateway.p5_ci_binding import policy
+    from fortis_approvals.integrations.registry.read_contract import REPOSITORY
+    common={'schemaVersion':1,'repository':REPOSITORY,'enrollmentId':str(uuid.uuid4()),
+            'baselineSha':baseline_sha}
+    def digest(v):return hashlib.sha256(canonical(v).encode()).hexdigest()
+    binding={**common,'catalogSha256':catalog_sha,'bindings':[],'components':[]}
+    baseline={**common,'catalogSha256':catalog_sha,'bindingDigest':digest(binding),
+              'acceptanceReceiptDigest':'c'*64}
+    reference={**common,'revision':1,'previousDigest':'0'*64,'acceptanceReceiptDigest':'c'*64,
+               'effectiveAt':1700000000,'maxReviewToMergeSeconds':3600,'clockToleranceSeconds':10,
+               'profile':policy()}
+    decision = None
+    if instance_id is not None:
+        decision = {'schemaVersion':1, 'decision':'OWNER_FUNCTIONAL_V1_BOUNDARY_APPROVED',
+                    'approvedAt':reference['effectiveAt'], 'proposalDigest':'e'*64,
+                    'enrollmentAccepted':False, 'admissionAllowed':False, 'activationRequired':True,
+                    'instanceId':instance_id, **{k:baseline[k] for k in (
+                        'enrollmentId','baselineSha','catalogSha256','bindingDigest')},
+                    'cutover':{'releaseNonce':str(uuid.uuid4()), 'validatorRevision':validator_revision,
+                        'registryImageId':'sha256:'+'b'*64, 'gatewayImageId':'sha256:'+'c'*64,
+                        'gatewaySourceDigest':'d'*64}}
+        baseline['acceptanceReceiptDigest'] = reference['acceptanceReceiptDigest'] = digest(decision)
+    scope={k:baseline[k] for k in ('repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
+    scope.update(baselineDigest=digest(baseline),policyReferenceDigest=digest(reference))
+    config={'schemaVersion':1,'collectorInstanceId':str(uuid.uuid4()),'validatorRevision':validator_revision,
+            'baseline':baseline,'binding':binding,'policyReference':reference}
+    if decision is not None:
+        receipt = {'result':'PILOT_SCHEMA3_GENESIS_BACKUP_RESTORE_PASS',
+            'instanceId':instance_id, 'scopeDigest':digest(scope), 'specSha256':'b'*64,
+            'sourceSha':baseline_sha, 'backupId':str(uuid.uuid4()),
+            'fileDigests':{k:'c'*64 for k in ('sqlite','manifest','config')},
+            **dict.fromkeys(('hostAccepted','enrollmentAccepted','admissionAllowed',
+                            'registryServiceStarted','rollbackProtected'),False)}
+        config.update(schemaVersion=2, boundaryDecision=decision, bootstrapReceipt=receipt)
+    return config, scope
 
 
 class RegistryTrustedMountTests(unittest.TestCase):
@@ -76,23 +116,9 @@ class RegistryTrustedMountTests(unittest.TestCase):
         self.assertEqual(reader._endpoint,(55,66))
 
     def test_functional_profile_seals_scope_and_private_planner_key(self):
-        import hashlib
-        from fortis_approvals.integrations.github.gateway.p5_ci_binding import policy
         from fortis_approvals.integrations.github.gateway.functional_review_runtime import FunctionalRegistryConfiguration
-        from fortis_approvals.integrations.registry.read_contract import REPOSITORY
-        common={'schemaVersion':1,'repository':REPOSITORY,'enrollmentId':str(uuid.uuid4()),
-                'baselineSha':'a'*40}
+        config, scope = functional_mount_config()
         def digest(v):return hashlib.sha256(canonical(v).encode()).hexdigest()
-        binding={**common,'catalogSha256':'b'*64,'bindings':[],'components':[]}
-        baseline={**common,'catalogSha256':'b'*64,'bindingDigest':digest(binding),
-                  'acceptanceReceiptDigest':'c'*64}
-        reference={**common,'revision':1,'previousDigest':'0'*64,'acceptanceReceiptDigest':'c'*64,
-                   'effectiveAt':1700000000,'maxReviewToMergeSeconds':3600,'clockToleranceSeconds':10,
-                   'profile':policy()}
-        scope={k:baseline[k] for k in ('repository','enrollmentId','baselineSha','catalogSha256','bindingDigest')}
-        scope.update(baselineDigest=digest(baseline),policyReferenceDigest=digest(reference))
-        config={'schemaVersion':1,'collectorInstanceId':str(uuid.uuid4()),'validatorRevision':'d'*40,
-                'baseline':baseline,'binding':binding,'policyReference':reference}
         raw=canonical(config).encode()
         key=os.urandom(32)
         for name,data in (('functional.json',raw),('planner.key',key)):
@@ -321,7 +347,7 @@ class RegistryTrustedMountTests(unittest.TestCase):
         with self.assertRaises(Denied):self.load(source='c'*64)
         with self.assertRaises(Denied):self.load(socket_ok=False)
 
-    def test_registry_image_is_separate_no_network_or_write_and_catalog_explicit(self):
+    def test_registry_image_is_private_and_catalog_explicit(self):
         root=Path(__file__).resolve().parents[2]
         recipe=(root/'fortis_approvals/deploy/Dockerfile-Registry-Read-Candidate').read_text()
         catalog=(root/'release/targets.yaml').read_text()
@@ -375,6 +401,10 @@ class RegistryTrustedMountTests(unittest.TestCase):
             cmd=[sys.executable,'-B','-I','-c',
                  'import sys;sys.path.insert(0,'+repr(str(destination))+');'
                  'from fortis_approvals.registry import local_candidate_read_service;'
+                 'from fortis_approvals.registry.semantic_unix_service import owner_semantic_reader;'
+                 'from fortis_approvals.registry.protected_source_write import ProtectedSourceWrite;'
+                 'from fortis_approvals.registry.release_domain import ReleaseDomain;'
+                 'from fortis_approvals.registry.release_event_journal import ReleaseEventJournal;'
                  'print("INACTIVE_REGISTRY_IMAGE_IMPORT_PASS")']
             result=subprocess.run(cmd, capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
@@ -393,6 +423,10 @@ class RegistryTrustedMountTests(unittest.TestCase):
             server.create_servers(**kw,extensions=config)
         with self.assertRaisesRegex(RuntimeError,'R7_REGISTRY_RELEASE_MOUNT_MISMATCH'):
             server.create_servers(**kw,registry_candidate_reader=object())
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(server,'_MAINTENANCE_INTERLOCK_MOUNT',Path(directory)):
+                with self.assertRaisesRegex(RuntimeError,'R7_MAINTENANCE_REVIEWED_STARTUP_REQUIRED'):
+                    server.create_servers(**kw)
         self.assertFalse(Path('/not-created').exists())
 
 

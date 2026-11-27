@@ -26,9 +26,17 @@ def _hex(value):
     return value
 
 
+def is_reviewed_group_coordinate(core, coord):
+    from .composite_successor import is_reviewed_successor
+    return (is_reviewed_successor(core) and len(coord)==4
+            and core._composite({"service":coord[1],"operation":coord[2]}) is not None)
+
+
 class OwnerPolicyEditor:
     def __init__(self, core, owner, *, source_digest, credential_generation):
-        if (type(core) is not UnifiedPolicyCore or core.authority is None or
+        from .composite_successor import is_reviewed_successor
+        if ((type(core) is not UnifiedPolicyCore and not is_reviewed_successor(core))
+                or core.authority is None or
                 not isinstance(owner,OwnerWebAuthn) or core.owner_verifier is not owner
                 or not callable(credential_generation)):
             raise Denied("OWNER_POLICY_EDITOR_BINDING_REQUIRED")
@@ -126,7 +134,20 @@ class OwnerPolicyEditor:
                 if len(coord)==4:
                     baseline=core.authority.baseline.get(
                         coord,core.authority.baseline.get(coord[:3]))
-                    if not callable(baseline):
+                    is_composite = (is_reviewed_group_coordinate(core, coord))
+                    from .semantic_access import READ,WRITE
+                    semantic=(coord[1],coord[2]) in READ|WRITE
+                    if is_composite:
+                        from .composite_contract import definition
+                        meta=definition(coord[1],coord[2]).metadata()
+                        row.update(operationKind='composite',version=meta['version'],kind='composite',
+                                   children=meta['children'],protectedOwnerGate=meta['protectedOwnerGate'])
+                    elif semantic:
+                        row.update(operationKind='read' if (coord[1],coord[2]) in READ else 'write',
+                                   version=1,kind='read' if (coord[1],coord[2]) in READ else 'write')
+                    if is_composite or semantic:
+                        effective = "DENY" if current == "DENY" else "UNKNOWN"
+                    elif not callable(baseline):
                         effective=core._inner_guard(row["actor"],dict(
                             service=row["provider"],operation=row["operation"],
                             target=row["target"],params={}),current)
