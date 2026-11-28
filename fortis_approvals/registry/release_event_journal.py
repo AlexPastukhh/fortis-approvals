@@ -39,13 +39,15 @@ _KINDS = {
 
 def _request(value, repo):
     fields = ('operationId', 'kind', 'actor', 'assertionSource', 'parentRequestId', 'params')
-    sc.need(type(value) is dict and set(value) in (set(fields), set(fields)|{'profileDigest'}))
+    sc.need(type(value) is dict and set(value) in (set(fields), set(fields)|{'profileDigest'},
+                set(fields)|{'profileDigest','pair'}))
+    sc.need(('pair' in value)==(value['kind'] in ('PROTECTED_PAIRED_BEGIN','PROTECTED_PAIRED_CLOSE')))
     if 'profileDigest' in value:
         sc.hex_id(value['profileDigest'], 64)
     sc.uuid_id(value['operationId'])
     if value['parentRequestId'] is not None:
         sc.uuid_id(value['parentRequestId'])
-    sc.need(type(value['kind']) is str and value['kind'] in (*_KINDS, 'TECHNICAL_OBSERVATION_ACCEPTED', 'RELEASE_HOLD_CLOSED'),
+    sc.need(type(value['kind']) is str and value['kind'] in (*_KINDS, 'TECHNICAL_OBSERVATION_ACCEPTED', 'RELEASE_HOLD_CLOSED', 'PROTECTED_PAIRED_BEGIN','PROTECTED_PAIRED_CLOSE'),
             'REGISTRY_RELEASE_EVENT_KIND')
     actor = value['actor']
     sc.need(type(actor) is str and 0 < len(actor) <= 128 and
@@ -59,7 +61,24 @@ def _request(value, repo):
         sc.need(value['assertionSource'] == 'PROTECTED_CONTROLLER'
                 and 'profileDigest' in value and value['parentRequestId'] is None,
                 'REGISTRY_PROTECTED_EVENT_REQUIRED')
-        params = protected_params(value['kind'], value['params'])
+        if value['kind'] in ('PROTECTED_PAIRED_BEGIN','PROTECTED_PAIRED_CLOSE'):
+            from ..integrations.registry_contracts.maintenance_contract import paired_begin, paired_operation_id
+            pair=paired_begin(value['pair'],repo)
+            closing=value['kind']=='PROTECTED_PAIRED_CLOSE'
+            role=next((r for r in pair['items'] if value['operationId']==paired_operation_id(pair['attemptId'],r,closing=closing)),None)
+            params=(protected_params('RELEASE_HOLD_CLOSED',value['params']) if closing else
+                    sc.validate_params('begin_release',value['params']))
+            sc.need(role is not None and value['profileDigest']==pair['checkpoint']['profileDigest'],
+                    'REGISTRY_PROTECTED_PAIR_CHANGED')
+            if closing:
+                sc.need(params['subject']==pair['items'][role]['subject']
+                        and params['attemptId']==paired_operation_id(pair['attemptId'],role)
+                        and params['source']=={**pair['items'][role]['source'],'artifactSha256':pair['artifacts'][role]},
+                        'REGISTRY_PROTECTED_PAIR_CHANGED')
+            else:
+                sc.need(params==pair['items'][role],'REGISTRY_PROTECTED_PAIR_CHANGED')
+        else:
+            params = protected_params(value['kind'], value['params'])
     sc.need(params['subject']['repository'] == repo, 'REGISTRY_RELEASE_SCOPE')
     clean = {**value, 'params': params}
     sc.need(len(canonical(clean).encode('utf-8')) <= _MAX_EVENT_BYTES,

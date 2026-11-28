@@ -3,7 +3,7 @@
 # StartManaged adopts the existing pilot on the normal Docker restart policy.
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','StartManaged')][string]$Action='Plan',
+    [ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','AccountBootstrapMigration','StartManaged')][string]$Action='Plan',
     [string]$SourceRoot='',
     [string]$SourceSha='',
     [string]$RegistryImageId='',
@@ -17,6 +17,7 @@ param(
     [string]$SuccessorReleaseNonce='', [string]$SuccessorProfileSha256='',
     [string]$TransitionEvidenceSha256='', [string]$RepairEvidenceSha256='',
     [ValidateSet('1','2')][int]$RepairPredecessorRevision=1,
+    [string]$BootstrapReviewSha256='', [string]$BootstrapEvidenceSha256='', [string]$BootstrapReviewProofRecord='',
     [switch]$ConfirmManagedStart, [switch]$CorrectivePreview, [switch]$CorrectiveWriter
 )
 $ErrorActionPreference='Stop'
@@ -55,7 +56,16 @@ function Test-Registry-Bootstrap-ReadOnlyMount {
 $ManagedStart=$Action -ceq 'StartManaged'
 $PrepareSuccessor=$Action -ceq 'PrepareSuccessor'
 $RepairDelivery=$Action -ceq 'AccountDeliveryRepair'
-$SuccessorWrite=$PrepareSuccessor -or $RepairDelivery
+$AccountBootstrap=$Action -ceq 'AccountBootstrapMigration'
+$SuccessorWrite=$PrepareSuccessor -or $RepairDelivery -or $AccountBootstrap
+if($AccountBootstrap -ne [bool]$BootstrapReviewSha256 -or $AccountBootstrap -ne [bool]$BootstrapEvidenceSha256 -or $AccountBootstrap -ne [bool]$BootstrapReviewProofRecord){
+    throw 'REGISTRY_BOOTSTRAP_MIGRATION_PINS_REQUIRED'
+}
+if($AccountBootstrap){
+    Assert-Registry-Bootstrap-Input 'MIGRATION_REVIEW_SHA256' $BootstrapReviewSha256 '^[0-9a-f]{64}$'
+    Assert-Registry-Bootstrap-Input 'MIGRATION_EVIDENCE_SHA256' $BootstrapEvidenceSha256 '^[0-9a-f]{64}$'
+    if($BootstrapReviewSha256 -ceq $BootstrapEvidenceSha256){throw 'REGISTRY_BOOTSTRAP_MIGRATION_PINS_REQUIRED'}
+}
 $SuccessorStart=$ManagedStart -and [bool]$SuccessorReleaseNonce
 $Successor=$SuccessorWrite -or $SuccessorStart
 if(($CorrectivePreview -and $CorrectiveWriter) -or
@@ -114,21 +124,30 @@ if ($SuccessorWrite -and -not $ConfirmProvision) {
 Assert-Registry-Bootstrap-Input 'SOURCE_SHA' $SourceSha '^[0-9a-f]{40}$'
 Assert-Registry-Bootstrap-Input 'IMAGE_ID' $RegistryImageId '^sha256:[0-9a-f]{64}$'
 Assert-Registry-Bootstrap-Input 'STATE_VOLUME' $StateVolume '^fortis-registry-state-e13b-[0-9a-f]{8,32}$'
-Assert-Registry-Bootstrap-Input 'CONFIG_VOLUME' $ConfigVolume '^fortis-registry-config-e13b-[0-9a-f]{8,32}$'
+$ConfigPattern=if($AccountBootstrap){'^fortis-registry-config-e13b-[0-9a-f]{32}-prepared$'}else{'^fortis-registry-config-e13b-[0-9a-f]{8,32}$'}
+Assert-Registry-Bootstrap-Input 'CONFIG_VOLUME' $ConfigVolume $ConfigPattern
 $ExpectedSocket='fortis-registry-read'
 $VolumeNames=@($StateVolume,$ConfigVolume,$SocketVolume)
 if($Successor){
     $Id=$SuccessorReleaseNonce.Replace('-','')
+    $ExpectedConfig='fortis-registry-config-e13b-'+$Id
+    if($AccountBootstrap){$ExpectedConfig+='-prepared'}
     if($StateVolume -cne ('fortis-registry-state-e13b-'+$Id) -or
-       $ConfigVolume -cne ('fortis-registry-config-e13b-'+$Id)){
+       $ConfigVolume -cne $ExpectedConfig){
         throw 'REGISTRY_BOOTSTRAP_SUCCESSOR_CLONE_VOLUME_REQUIRED'
     }
     $ExpectedSocket='fortis-registry-read-'+$Id
     if($SuccessorWrite){$VolumeNames=@($StateVolume,$ConfigVolume)}
 }
-if($SuccessorStart -or $AccountTransition -or $RepairDelivery){
+if($SuccessorStart -or $AccountTransition -or $RepairDelivery -or $AccountBootstrap){
     $ValidatorVolume='fortis-registry-source-'+$Id
     $VolumeNames+=@($ValidatorVolume)
+}
+if($AccountBootstrap){
+    $IncumbentNonce='4ec7d8b82b5144578b156559bcdeae94'
+    if($Id -ceq $IncumbentNonce){throw 'REGISTRY_BOOTSTRAP_MIGRATION_CLONE_ALIAS'}
+    $IncumbentState='fortis-registry-state-e13b-'+$IncumbentNonce
+    $IncumbentConfig='fortis-registry-config-e13b-'+$IncumbentNonce
 }
 if($SuccessorStart){
     $EvidenceVolume='fortis-registry-source-evidence-'+$Id
@@ -196,7 +215,7 @@ $Image=Invoke-Registry-Bootstrap-DockerRead -Arguments @('image','inspect','--fo
 if ($Image.Count -ne 1 -or $Image[0] -cne ($RegistryImageId+'|20002:20002|linux|amd64')) {
     throw 'REGISTRY_BOOTSTRAP_IMAGE_IDENTITY_INVALID'
 }
-if ($RepairDelivery -or $CorrectivePreview -or $CorrectiveWriter) {
+if ($RepairDelivery -or $AccountBootstrap -or $CorrectivePreview -or $CorrectiveWriter) {
     $Labels=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
         'image','inspect','--format','{{json .Config.Labels}}',$RegistryImageId)
     if ($Labels.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED' }
@@ -241,6 +260,41 @@ foreach ($Name in $VolumeNames) {
     }
 }
 
+if($AccountBootstrap){
+    # Authenticate the original pre-merge owner record before any clone
+    # write; its exact bytes are independently bound in the review digest.
+    . (Join-Path $SourceRoot 'fortis_approvals\deploy\Run-GitHub-Pilot-E2E.ps1') -Mode Functions
+    $ProofPath=[IO.Path]::GetFullPath($BootstrapReviewProofRecord)
+    $ProofRoot=[IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Fortis'))
+    if(-not $ProofPath.StartsWith($ProofRoot+'\',[StringComparison]::OrdinalIgnoreCase)){
+        throw 'REGISTRY_BOOTSTRAP_OWNER_REVIEW_PATH_INVALID'
+    }
+    foreach($Path in @($ProofPath,(Split-Path $ProofPath -Parent))){
+        if((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){
+            throw 'REGISTRY_BOOTSTRAP_OWNER_REVIEW_PATH_INVALID'
+        }
+    }
+    $script:RecordPath=$ProofPath
+    Assert-RecordAcl
+    $ProofBytes=[IO.File]::ReadAllBytes($ProofPath)
+    if($ProofBytes.Length -le 0 -or $ProofBytes.Length -gt 4096){
+        throw 'REGISTRY_BOOTSTRAP_OWNER_REVIEW_SIZE_INVALID'
+    }
+    $ProofLine=[Convert]::ToBase64String($ProofBytes)
+    # The source mounts are read-only even when the approved incumbent is
+    # still running. This only prepares a candidate; the controller must
+    # prove physical exclusion and the same prefix before cutover.
+    $IncumbentWriter='fb747224e917dc88653dac29961f2d11bebca6023c9f73317c4ce6ce7597ae18'
+    $IncumbentPreview='e0c1dcd7e587a5ebea7883b678578dbbedf8dedb607946fbf314cd77c83d0467'
+    foreach($Name in @($IncumbentState,$IncumbentConfig)){
+        $Volume=Invoke-Registry-Bootstrap-DockerRead -Arguments @('volume','inspect','--format','{{.Name}}|{{.Driver}}|{{.Scope}}',$Name)
+        if($Volume.Count -ne 1 -or $Volume[0] -cne ($Name+'|local|local')){throw 'REGISTRY_BOOTSTRAP_MIGRATION_INCUMBENT_VOLUME_CHANGED'}
+        $Users=Invoke-Registry-Bootstrap-DockerRead -Arguments @('ps','-aq','--no-trunc','--filter',('volume='+$Name))
+        if($IncumbentWriter -cnotin $Users -or @($Users|Where-Object{$_ -cnotin @($IncumbentWriter,$IncumbentPreview)}).Count){
+            throw 'REGISTRY_BOOTSTRAP_MIGRATION_INCUMBENT_HOLDER_CHANGED'
+        }
+    }
+}
 if ($ManagedStart) {
     $Name='fortis-registry-managed';$Memory='128m';$Extra=@()
     $ProofArgs=@('--functional-planner-key-digest',$PlannerKeySha256,'--managed-startup')
@@ -335,7 +389,7 @@ $ConfigMount=('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtim
 if ($StateFlag) { $StateMount+=',readonly' }
 if ($ConfigFlag) { $ConfigMount+=',readonly' }
 $SocketMount=('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy,readonly')
-$BootstrapMemory=if($AccountTransition -or $RepairDelivery){'512m'}else{'128m'}
+$BootstrapMemory=if($AccountTransition -or $RepairDelivery -or $AccountBootstrap){'512m'}else{'128m'}
 $DockerArgs=@(
     'run','-i','--rm','--pull=never','--network=none','--read-only',
     '--user','20002:20002','--cap-drop','ALL',
@@ -344,29 +398,41 @@ $DockerArgs=@(
 if($SuccessorWrite){
     # Reserve the managed name so accounting and startup cannot overlap.
     $PythonRunner=@'
-import json, sys
+import base64, json, sys
 sys.path.insert(0, '/opt/fortis')
-from fortis_approvals.registry.owner_functional_v1_bootstrap import account_delivery_repair, prepare_successor
+from fortis_approvals.registry.owner_functional_v1_bootstrap import account_delivery_repair, prepare_successor, account_bootstrap_migration
 profile, action = sys.argv[1:3]
 if action == 'AccountDeliveryRepair':
     evidence, source, revision = sys.argv[3:]
     result = account_delivery_repair(profile, repair_evidence_sha256=evidence,
                                      source_sha=source, predecessor_revision=int(revision))
-else:
+elif action == 'AccountBootstrapMigration':
+    review, evidence, source = sys.argv[3:]
+    result = account_bootstrap_migration(profile, review_sha256=review,
+                                         evidence_sha256=evidence, source_sha=source,
+                                         owner_review_raw=base64.b64decode(sys.stdin.buffer.read(5500).strip(),validate=True))
+elif action == 'PrepareSuccessor':
     evidence, source = sys.argv[3:] if len(sys.argv) > 3 else (None, None)
     result = prepare_successor(profile, transition_evidence_sha256=evidence, source_sha=source)
+else:
+    raise RuntimeError('REGISTRY_BOOTSTRAP_ACTION_DENIED')
 print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 '@
-    if($AccountTransition -or $RepairDelivery){
+    if($AccountTransition -or $RepairDelivery -or $AccountBootstrap){
         $DockerArgs+=@('--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=256m',
             '--mount',('type=volume,src='+$ValidatorVolume+',dst=/run/fortis-registry-source,volume-nocopy,readonly'))
+    }
+    if($AccountBootstrap){
+        $DockerArgs+=@('--mount',('type=volume,src='+$IncumbentState+',dst=/run/fortis-registry-incumbent-state,volume-nocopy,readonly'),
+            '--mount',('type=volume,src='+$IncumbentConfig+',dst=/run/fortis-registry-incumbent-runtime,volume-nocopy,readonly'))
     }
     $DockerArgs+=@('--name',('fortis-registry-successor-'+$Id),
         '--mount',$StateMount,'--mount',$ConfigMount,
         '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,$SuccessorProfileSha256,$Action)
     if($AccountTransition){$DockerArgs+=@($TransitionEvidenceSha256,$SourceSha)}
     if($RepairDelivery){$DockerArgs+=@($RepairEvidenceSha256,$SourceSha,[string]$RepairPredecessorRevision)}
-    $SpecLine=''
+    if($AccountBootstrap){$DockerArgs+=@($BootstrapReviewSha256,$BootstrapEvidenceSha256,$SourceSha)}
+    $SpecLine=if($AccountBootstrap){$ProofLine}else{''}
 } else {
     $DockerArgs+=@(
         '--tmpfs','/run/fortis-registry-bootstrap:rw,nosuid,nodev,noexec,size=16k,uid=20002,gid=20002,mode=0700',
@@ -414,6 +480,31 @@ if($RepairDelivery){
     }
     Write-Host $Output[0]
     Write-Host 'REGISTRY_BOOTSTRAP_DELIVERY_REPAIR_SOURCE_ONLY_PASS'
+    return
+}
+if($AccountBootstrap){
+    # This result accounts a source edge only, on an inactive clone. It
+    # never authorizes pair startup, a release or a host mutation.
+    if($Receipt.result -cne 'SOURCE_ONLY_REGISTRY_BOOTSTRAP_MIGRATION_ACCOUNTED' -or
+       $Receipt.profileSha256 -cne $SuccessorProfileSha256 -or
+       $Receipt.reviewSha256 -cne $BootstrapReviewSha256 -or
+       $Receipt.evidenceSha256 -cne $BootstrapEvidenceSha256 -or
+       $Receipt.hostAccepted -isnot [bool] -or $Receipt.hostAccepted -ne $false -or
+       $Receipt.admissionAllowed -isnot [bool] -or $Receipt.admissionAllowed -ne $false -or
+       $Receipt.prefix.predecessorReceipt.sourceRevision -ne 3 -or
+       $Receipt.prefix.predecessorReceipt.sourceCursor -cne '073d6f8701595e499eac5a1fa0cbe90accb05819' -or
+       $Receipt.sourceMigrationReceipt.kind -cne 'BOOTSTRAP_MIGRATION' -or
+       $Receipt.sourceMigrationReceipt.sourceRevision -ne 4 -or
+       $Receipt.sourceMigrationReceipt.sourceCursor -cne $SourceSha -or
+       $Receipt.sourceMigrationReceipt.deploymentAuthorized -isnot [bool] -or
+       $Receipt.sourceMigrationReceipt.deploymentAuthorized -ne $false -or
+       $Receipt.checkpoint.sourceRevision -ne 4 -or $Receipt.checkpoint.snapshotRevision -ne 4 -or
+       $Receipt.checkpoint.sourceCursor -cne $SourceSha -or
+       $Receipt.checkpoint.eventDigest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'REGISTRY_BOOTSTRAP_MIGRATION_RESULT_INVARIANT_FAILED_STOP'
+    }
+    Write-Host $Output[0]
+    Write-Host 'REGISTRY_BOOTSTRAP_MIGRATION_SOURCE_ONLY_PASS'
     return
 }
 if($PrepareSuccessor){

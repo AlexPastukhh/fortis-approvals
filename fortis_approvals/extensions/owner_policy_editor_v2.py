@@ -107,6 +107,35 @@ class OwnerPolicyEditor:
             if result["policyVersion"]!=core._version(revision):
                 raise Stale("OWNER_POLICY_INVENTORY_CHANGED")
             rows = result["operations"]
+            from .composite_successor import is_reviewed_successor
+            from .semantic_access import READ, WRITE
+            contextual = {}
+            if is_reviewed_successor(core):
+                enrolled, context = core.reviewed_inventory()
+                for child, parent in context:
+                    contextual.setdefault(child, []).append(dict(zip(
+                        ('service', 'operation', 'target'), parent)))
+                # Packaged extension operations and semantic operations can
+                # share a provider name. Preserve the existing rows, then
+                # project missing *already enrolled* exact coordinates once.
+                providers = {p['provider']: p for p in result['providers']}
+                present = {(r['actor'], r['provider'], r['operation'], r['target'])
+                           for r in rows if r['scope'] == 'exact'}
+                for coord in sorted(enrolled - present):
+                    actor, service, operation, target = coord
+                    baseline = core.authority.baseline.get(coord)
+                    if (coord not in core.authority.choices or coord not in core.policies
+                            or type(baseline) is not str or baseline not in ('DENY','ASK','ALLOW')
+                            or service not in providers or service not in core.adapters):
+                        raise Denied('OWNER_POLICY_INVENTORY_ENROLLMENT_CHANGED')
+                    provider = providers[service]
+                    rows.append({'provider':service, 'providerType':provider['type'],
+                                 'operation':operation, 'version':None, 'kind':'unknown',
+                                 'actor':actor, 'target':target, 'scope':'exact',
+                                 'configuredPolicy':baseline, 'effectivePolicy':'UNKNOWN',
+                                 'configured':True, 'active':provider['active'],
+                                 'handlerReady':None, 'credentialStatus':'UNVERIFIED',
+                                 'upstreamStatus':'UNVERIFIED'})
             existing = set()
             for row in rows:
                 if row["scope"] not in ("actor","exact"):
@@ -135,17 +164,19 @@ class OwnerPolicyEditor:
                     baseline=core.authority.baseline.get(
                         coord,core.authority.baseline.get(coord[:3]))
                     is_composite = (is_reviewed_group_coordinate(core, coord))
-                    from .semantic_access import READ,WRITE
                     semantic=(coord[1],coord[2]) in READ|WRITE
                     if is_composite:
                         from .composite_contract import definition
                         meta=definition(coord[1],coord[2]).metadata()
                         row.update(operationKind='composite',version=meta['version'],kind='composite',
                                    children=meta['children'],protectedOwnerGate=meta['protectedOwnerGate'])
+                    elif coord in contextual:
+                        row.update(operationKind='context-child', version=1, kind='write',
+                                   contextParents=contextual[coord])
                     elif semantic:
                         row.update(operationKind='read' if (coord[1],coord[2]) in READ else 'write',
                                    version=1,kind='read' if (coord[1],coord[2]) in READ else 'write')
-                    if is_composite or semantic:
+                    if is_composite or semantic or coord in contextual:
                         effective = "DENY" if current == "DENY" else "UNKNOWN"
                     elif not callable(baseline):
                         effective=core._inner_guard(row["actor"],dict(
@@ -174,6 +205,7 @@ class OwnerPolicyEditor:
                                  configuredPolicy=original,currentPolicy=current,
                                  effectivePolicy=effective,editablePolicies=sorted(permitted),
                                  localPolicyApplied=True))
+            rows.sort(key=lambda r: (r['provider'], r['operation'], str(r['actor']), str(r['target'])))
             result.update(policyEditorVersion=2,policyRevision=revision,
                           externalRollbackProof=False,localDenyOnly=False)
         return bounded(result,262144)

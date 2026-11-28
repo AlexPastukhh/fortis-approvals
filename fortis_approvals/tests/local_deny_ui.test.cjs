@@ -195,7 +195,24 @@ test('provider filter catalog counts and exact provider selection',()=>{
  inventory.operations.push({provider:'registry',operation:'begin_release_group',operationKind:'composite'});
  const composite=vm.runInContext("JSON.stringify({rows:visibleProviderRows(inventory,'@composite','').map(r=>r.operation),registry:visibleProviderRows(inventory,'registry','').length})",ctx);
  assert.deepEqual(JSON.parse(composite),{rows:['begin_release_group'],registry:1});
-
+ assert.match(html,/id="providers-policy"/);
+ inventory.operations.push(
+  {provider:'registry',operation:'list_components',currentPolicy:'DENY',configuredPolicy:'DENY'},
+  {provider:'registry',operation:'get_component',currentPolicy:'ASK',configuredPolicy:'DENY'},
+  {provider:'registry',operation:'register_merge',currentPolicy:'ASK',configuredPolicy:'DENY',operationKind:'context-child'},
+  {provider:'github',operation:'conditional',configuredPolicy:'CONDITIONAL'},
+  {provider:'github',operation:'unknown',configuredPolicy:'UNKNOWN'});
+ const filtered=(provider,query,policy)=>JSON.parse(vm.runInContext(
+  'JSON.stringify(visibleProviderRows(inventory,'+JSON.stringify(provider)+','+JSON.stringify(query)+','+JSON.stringify(policy)+').map(r=>r.operation))',ctx));
+ assert.deepEqual(filtered('','', 'ALLOW'),['create_pull_request','candidate_head']);
+ assert.deepEqual(filtered('registry','component','DENY'),['list_components']);
+ assert.deepEqual(filtered('registry','component','ASK'),['get_component']);
+ assert.deepEqual(filtered('registry','', 'ASK'),['get_component','register_merge']);
+ assert.deepEqual(filtered('github','', 'CONDITIONAL'),['conditional']);
+ assert.deepEqual(filtered('github','', 'UNKNOWN'),['unknown']);
+ inventory.operations.find(r=>r.operation==='list_components').currentPolicy='ALLOW';
+ assert.deepEqual(filtered('registry','component','DENY'),[]);
+ assert.deepEqual(filtered('registry','component','ALLOW'),['list_components']);
 });
 
 test('unified editor supports scoped transition, verifies descriptor and never retries finish',async()=>{
@@ -287,8 +304,9 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
   providerInventory:{policyEditorVersion:2,operations:rows,providers:[{provider:'github'},{provider:'workspace'}]},
   unifiedEnabled:true,unifiedRow:null,
   canSelectUnified:r=>context.unifiedEnabled&&Array.isArray(r.editablePolicies)&&r.editablePolicies.length>1,
-  chooseUnified:r=>selected.push(r.operation),
-  visibleProviderRows:()=>rows});
+  chooseUnified:r=>selected.push(r.operation)});
+ vm.runInContext(full.slice(full.indexOf('function isCompositeRow('),
+  full.indexOf('function resetProviderSelections(')),context);
  vm.runInContext(full.slice(begin,finish),context);
  context.$('providers-select').value='';
  context.$('providers-filter').value='';
@@ -318,6 +336,32 @@ test('V2 workbench groups rows by provider and selects via radio, not bottom-of-
  assert.equal(context.$('providers-results').children[0].tag,'section');
  assert.equal(context.$('providers-results').children[0].children[1].children[0].children[0].disabled,true);
  assert.match(context.$('providers-summary').textContent,/редактор V2/);
+ context.unifiedEnabled=true;
+ const child={provider:'github',operation:'merge_pull_request',actor:'owner',scope:'exact',
+  target:'repo-1',currentPolicy:'ASK',configuredPolicy:'DENY',editablePolicies:['DENY','ASK'],
+  operationKind:'context-child',contextParents:[{service:'release',operation:'merge_and_register',target:'repo-1'}],active:true};
+ rows.push(child);
+ context.$('providers-select').value='github';
+ context.$('providers-filter').value='owner';
+ context.$('providers-policy').value='ASK';
+ context.$('providers-editable-only').checked=true;
+ vm.runInContext('displayProviderInventory()',context);
+ const childCard=context.$('providers-results').children[0].children[1].children[0];
+ assert.match(childCard.children[1].children[1].textContent,/Дочерняя операция Composite: release.merge_and_register/);
+ assert.equal(context.$('providers-summary').textContent,'1 из 3 правил · github · ASK · редактор V2');
+ child.currentPolicy='DENY';
+ vm.runInContext('displayProviderInventory()',context);
+ assert.match(context.$('providers-summary').textContent,/^0 из 3/);
+ context.$('providers-policy').value='DENY';
+ vm.runInContext('displayProviderInventory()',context);
+ assert.match(context.$('providers-summary').textContent,/^1 из 3/);
+ context.$('providers-filter').value='';
+ context.$('providers-policy').value='CONDITIONAL';
+ vm.runInContext('displayProviderInventory()',context);
+ assert.match(context.$('providers-summary').textContent,/^0 из 3/);
+ context.$('providers-editable-only').checked=false;
+ vm.runInContext('displayProviderInventory()',context);
+ assert.match(context.$('providers-summary').textContent,/^1 из 3/);
 });
 test('ASK-only native control explains excluded ALLOW and permanent policy vs per-request approval',()=>{
  const begin=full.indexOf('function unifiedChoiceExplanation(');

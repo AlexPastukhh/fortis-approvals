@@ -112,6 +112,135 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
                 helper.admit(self.container,self.expected,pilot=True)
             self.container['Mounts'][index]['RW'] = not self.container['Mounts'][index]['RW']
 
+    def test_dynamic_successor_requires_both_exact_readonly_operational_mounts(self):
+        self.activate()
+        suffix=_NONCE.replace('-', '')
+        self.expected.update(registrySuccessorDelivery=True,registryLatestPin=True,
+                             registrySocketVolume='fortis-registry-read-'+suffix)
+        self.container['Mounts'][-1]=_mount(self.expected['registrySocketVolume'],'/run/fortis-registry-read')
+        self.container['Mounts'].extend((
+            _mount('fortis-registry-source-evidence-'+suffix,'/run/fortis-registry-source-evidence',True),
+            _mount('fortis-r7-maintenance-interlock-v2','/run/r7-maintenance'),
+            _mount('fortis-r7-maintenance-anchor','/run/r7-maintenance-anchor')))
+        self.assertEqual(helper.admit(self.container,self.expected,pilot=True),{'admission':'PASS'})
+        for index in (-1,-2):
+            original=copy.deepcopy(self.container['Mounts'][index])
+            for field,value in (('RW',True),('Source','/var/lib/host/private'),('Name','fortis-r7-maintenance-interlock')):
+                self.container['Mounts'][index]={**original,field:value}
+                with self.assertRaises(RuntimeError):helper.admit(self.container,self.expected,pilot=True)
+            self.container['Mounts'][index]=original
+        self.expected['registryLatestPin']=False
+        with self.assertRaisesRegex(RuntimeError,'MOUNT_CONFIGURATION_MISMATCH'):
+            helper.admit(self.container,self.expected,pilot=True)
+        self.expected.update(registryLatestPin=True,registrySuccessorDelivery=False)
+        with self.assertRaisesRegex(RuntimeError,'PILOT_REGISTRY_SUCCESSOR_VOLUME_DENIED'):
+            helper.admit(self.container,self.expected,pilot=True)
+
+    def test_bootstrap_check_is_offline_and_cannot_authorize_apply(self):
+        start=_PS.index('\nfunction Read-PairedGatewayMaterial {')
+        end=_PS.index('function Read-OrdinarySuccessorSource {',start)
+        check=_PS[start:end]
+        for marker in ('reviewed_bootstrap_gateway','inspect_bootstrap_pair','verify_bootstrap_backup',
+                       'bootstrap_compatibility_digest','--network','none','--read-only',
+                       'Assert-CorrectiveTargetHolders','Read-BootstrapSeedSource'):
+            self.assertIn(marker,check)
+        self.assertNotIn("target=/run/fortis-registry-read,",check)
+        self.assertNotIn('begin_bootstrap_pair',check)
+        # Python-Code supplies the entire executable and args (not an
+        # entrypoint override followed by a duplicate python argument).
+        self.assertNotIn("'--entrypoint','python'",check)
+        self.assertIn('Config.Entrypoint',check)
+        # Both actual Check invocations must mount the final empty root.
+        gateway_args=check.split('$GatewayArgs=@(',1)[1].split('$GatewayInput=',1)[0]
+        registry_args=check.split('$RegistryArgs=@(',1)[1].split('$Artifacts=',1)[0]
+        self.assertEqual(gateway_args.count('target=/target,'),1)
+        self.assertEqual(registry_args.count('target=/target,'),1)
+        self.assertIn("source='+$script:RegistryReaderVolume+',target=/target,readonly,volume-nocopy",gateway_args)
+        self.assertIn("source=fortis-registry-config-e13b-'+$Id+',target=/target,readonly,volume-nocopy",registry_args)
+        gate=_PS.index("if($Bootstrap289 -and $Action -ceq 'Apply'){")
+        block=_PS[gate:_PS.index("if($Action -eq 'Check' -and $OrdinaryPairRequested)",gate)]
+        self.assertIn('if(-not $CheckedImageRecord -or -not $script:BootstrapPair -or -not $BootstrapReviewProofRecord)',block)
+        self.assertNotIn('RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE',block)
+        self.assertIn("throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'",block)
+        dispatch=_PS[_PS.index("Step 'BOOTSTRAP_PREPARED_TRANSITION'"):]
+        self.assertLess(dispatch.index('Save-BootstrapPreparedAttempt'),dispatch.index('Invoke-BootstrapPreparedTransition'))
+        self.assertLess(dispatch.index('Save-BootstrapPreparedAttempt'),dispatch.index('$SourceStopAttempted=$true'))
+        self.assertLess(gate,_PS.index("Step 'PREPARED_RECORD_SAVED'"))
+        self.assertIn('Read-BootstrapOwnerReviewProof $BootstrapReviewProofRecord $Pair',check)
+        self.assertIn("$Binding['bootstrapPair']=$script:BootstrapPair",_PS)
+        self.assertIn("$FreshBootstrap=Read-BootstrapCompatibility $Source -Recheck",_PS)
+        self.assertIn("$Report.status='BOOTSTRAP_CHECKED_ONLY'",_PS)
+        self.assertIn('deploymentAuthorized -NotePropertyValue $false',_PS)
+        self.assertIn('RELEASE_SUCCESSOR_BOOTSTRAP_ALREADY_SEEDED',_PS)
+
+    def test_bootstrap_private_writer_binds_durable_go_and_frozen_source(self):
+        start=_PS.index('function Invoke-BootstrapFrozenPair {')
+        stop=_PS.index('function Save-BootstrapPreparedAttempt {',start)
+        writer=_PS[start:stop]
+        self.assertLess(writer.index('Read-BootstrapFrozenIntent'),writer.index('Initialize-SuccessorBootstrapInterlock'))
+        self.assertLess(writer.index('Initialize-SuccessorBootstrapInterlock'),writer.index('begin_bootstrap_pair'))
+        self.assertIn('bootstrap_pair_authorization',writer)
+        self.assertIn('sourceReceipt=$Intent.check.sourceReceipt',writer)
+        self.assertIn('Assert-CorrectiveTargetHolders',writer)
+        self.assertNotIn('target=/run/fortis-registry-read',writer)
+        self.assertIn('target=/run/r7-maintenance,readonly',writer)
+        self.assertIn('target=/run/r7-maintenance-anchor,readonly',writer)
+        self.assertIn('bootstrapBegin -NotePropertyValue $Result',writer)
+        self.assertIn('Save -FlushToDisk',writer)
+        self.assertNotIn('Publish-SuccessorInterlock',writer)
+        self.assertIn('read_bootstrap_pair',writer)
+        self.assertIn('target=/run/fortis-registry-state,readonly',writer)
+
+    def test_bootstrap_prepared_pair_uses_existing_attempt_and_protected_return(self):
+        start=_PS.index('function Save-BootstrapPreparedAttempt {')
+        stop=_PS.index('function Publish-BootstrapFrozenPhases {',start)
+        prepared=_PS[start:stop]
+        self.assertLess(prepared.index('New-BootstrapOwnerGo'),prepared.index('Verify-Checked-Image'))
+        self.assertLess(prepared.index('Save -FlushToDisk'),prepared.index('Write-Private $AttemptPointer'))
+        self.assertIn('Read-BootstrapFrozenIntent',prepared)
+        self.assertIn('Stop-BootstrapSourcePair $Source $Path $Hash',prepared)
+        self.assertIn('Invoke-BootstrapFrozenPair $Source $Path $Hash',prepared)
+        self.assertIn('Publish-BootstrapFrozenPhases $Source $Path $Hash',prepared)
+        self.assertIn('if($Bootstrap){Return-BootstrapPreparedPair;return}',_PS)
+        self.assertIn('Assert-BootstrapNoReceiver $Intent',_PS)
+        self.assertIn('Assert-CorrectiveGateAbsent $P',_PS)
+
+    def test_bootstrap_final_material_uses_two_exact_inactive_config_pairs(self):
+        start=_PS.index('\nfunction Invoke-BootstrapFinalMaterialHelper {')
+        stop=_PS.index('\nfunction Read-BootstrapReceiver {',start)
+        part=_PS[start:stop]
+        self.assertIn("target=/run/fortis-registry-state,readonly",part)
+        self.assertIn("-prepared,target=/run/fortis-registry-runtime,readonly",part)
+        self.assertIn("-prepared,target=/run/r7-registry-reader,readonly",part)
+        self.assertIn("targetRoot=$Pair.finalRoots.$Role",part)
+        self.assertNotIn("target=/run/fortis-registry-read,",part)
+        self.assertIn('seal_bootstrap_registry_material',part)
+        self.assertIn('seal_bootstrap_gateway_material',part)
+        self.assertIn(' -VerifyOnly',part)
+        self.assertIn('Save -FlushToDisk',part)
+        self.assertIn('$Actual.registryProfileDigest -cne $Results.Registry.profileDigest',part)
+        self.assertNotIn('Publish-SuccessorInterlock',part)
+
+    def test_bootstrap_connected_apply_and_receiver_order(self):
+        driver=_PS.split('\nfunction Invoke-BootstrapPreparedTransition {',1)[1].split('\nfunction Publish-BootstrapFrozenPhases {',1)[0]
+        self.assertLess(driver.index('Seal-BootstrapFinalProfiles'),driver.index('Start-BootstrapReceiver'))
+        self.assertIn('$script:RegistryDelivery=$Delivery',driver)
+        receiver=_PS.split('\nfunction Start-BootstrapReceiver {',1)[1].split('\nfunction Assert-BootstrapNoReceiver {',1)[0]
+        self.assertLess(receiver.index('bootstrapReceiver -NotePropertyValue'),receiver.index("Step 'BOOTSTRAP_CREATE_REGISTRY_RECEIVER'"))
+        self.assertLess(receiver.index('$Saved.id=$C.Id'),receiver.index('Publish-SuccessorInterlock'))
+        self.assertLess(receiver.index('Publish-SuccessorInterlock'),receiver.index('Set-BootstrapContainerState $C Start'))
+        self.assertLess(receiver.index('Image-RegistrySuccessor-Preflight'),receiver.index('bootstrapDelivery -NotePropertyValue'))
+        apply=_PS.split("Step 'BOOTSTRAP_PREPARED_TRANSITION'",1)[1]
+        self.assertLess(apply.index('Save-BootstrapPreparedAttempt'),apply.index('Invoke-BootstrapPreparedTransition'))
+        self.assertLess(apply.index('Invoke-BootstrapPreparedTransition'),apply.index("Step 'CLONE_STATE'"))
+        self.assertIn('Read-BootstrapGatewayCandidate $Intent',apply)
+        resume=_PS.split('\nfunction Resume-Target {',1)[1].split('\nfunction Read-RegistryReturnSourceDigest {',1)[0]
+        self.assertLess(resume.index('Read-BootstrapReceiver'),resume.index('Set-BootstrapContainerState $C Start'))
+        self.assertLess(resume.index('$ActualGate=Image-CLI'),resume.index('Set-BootstrapContainerState $Receiver RestoreRestart'))
+        returned=_PS.split('\nfunction Return-BootstrapPreparedPair {',1)[1].split('\nfunction Assert-BootstrapReceiverSelfTest {',1)[0]
+        self.assertLess(returned.index('Assert-CorrectiveGateAbsent'),returned.index('Set-BootstrapContainerState $Candidate Stop'))
+        self.assertLess(returned.index('Set-BootstrapContainerState $Candidate Stop'),returned.index('Set-BootstrapContainerState $Receiver Stop'))
+
     def test_successor_recheck_and_companion_preparation_are_on_ordinary_path(self):
         check = _PS.index("Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'")
         save = _PS.index('Save-Checked-Image $Source $Report',check)
@@ -168,7 +297,7 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertLess(apply.index("Switch-CorrectiveRegistryPair"),apply.index("Step 'CLONE_STATE'"))
 
     def test_check_binding_exact_profile_digest_and_nonce_in_runtime(self):
-        checked=_PS.split('function Checked-Image-Binding {',1)[1].split(
+        checked=_PS.split('\nfunction Checked-Image-Binding {',1)[1].split(
             'function Save-Checked-Image {',1)[0]
         for name in ('registryReaderVolume','registrySocketVolume',
                      'registryReleaseNonce','registryProfileDigest',
@@ -219,7 +348,7 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('Assert-SourceUnchanged',clone)
 
     def test_accepted_source_and_new_candidate_exact_recheck(self):
-        admission=_PS.split('function Admit {',1)[1].split('function Admit-Source {',1)[0]
+        admission=_PS.split('\nfunction Admit {',1)[1].split('\nfunction Admit-Source {',1)[0]
         self.assertIn('Read-RegistryMountBinding $P',admission)
         self.assertIn('$Expected.registryReaderVolume=$RegistryProtected.readerVolume',admission)
         self.assertIn('$Expected.registrySocketVolume=$RegistryProtected.socketVolume',admission)

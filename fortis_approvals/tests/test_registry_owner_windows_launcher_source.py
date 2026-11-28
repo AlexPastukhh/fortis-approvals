@@ -19,7 +19,7 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertIn('Registry-Owner-Bootstrap.ps1', CATALOG.read_text())
         self.assertIn('## Windows owner bootstrap launcher', RUNBOOK.read_text())
         self.assertIn('[CmdletBinding()]', self.source)
-        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','StartManaged')]", self.source)
+        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','AccountBootstrapMigration','StartManaged')]", self.source)
 
     def test_no_hidden_admin_or_second_service_effect(self):
         src='\n'.join(line for line in self.source.lower().splitlines() if not line.lstrip().startswith('#'))
@@ -69,16 +69,18 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
     def test_powershell_herestring_syntax_static_only(self):
         self.assertEqual(len(re.findall(r"^ *\$PythonRunner=@'$",self.source,re.M)),2)
         self.assertEqual(len(re.findall(r"^'@$",self.source,re.M)),2)
-        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),8)
+        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),10)
 
     def test_successor_preparation_is_bound_to_a_dedicated_inactive_clone(self):
         self.assertIn('$SuccessorWrite -and -not $ConfirmProvision', self.source)
         self.assertIn("('fortis-registry-state-e13b-'+$Id)", self.source)
-        self.assertIn("('fortis-registry-config-e13b-'+$Id)", self.source)
+        self.assertIn("$ExpectedConfig='fortis-registry-config-e13b-'+$Id", self.source)
+        self.assertIn("if($AccountBootstrap){$ExpectedConfig+='-prepared'}",self.source)
+        self.assertIn('$ConfigVolume -cne $ExpectedConfig',self.source)
         self.assertIn("if($SuccessorWrite){$VolumeNames=@($StateVolume,$ConfigVolume)}", self.source)
         self.assertIn("$Name='fortis-registry-successor-'+$Id", self.source)
         cmd = self.source.split("$DockerArgs+=@('--name',('fortis-registry-successor-'+$Id),", 1)[1]
-        cmd = cmd.split("$SpecLine=''", 1)[0]
+        cmd = cmd.split("$SpecLine=if($AccountBootstrap)", 1)[0]
         self.assertIn("'--mount',$StateMount,'--mount',$ConfigMount", cmd)
         self.assertNotIn('$SocketMount', cmd)
         self.assertIn("$Receipt.sourceTransitionPending -ne (-not $AccountTransition)", self.source)
@@ -93,6 +95,23 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertIn("$Receipt.predecessorReceipt.sourceRevision -ne $RepairPredecessorRevision", self.source)
         self.assertIn("$Receipt.sourceRepairReceipt.sourceRevision -ne ($RepairPredecessorRevision+1)", self.source)
         self.assertIn("$Receipt.sourceRepairReceipt.deploymentAuthorized -ne $false", self.source)
+
+    def test_bootstrap_migration_is_distinct_inactive_accounting(self):
+        for marker in ('REGISTRY_BOOTSTRAP_MIGRATION_PINS_REQUIRED',
+                       '$SuccessorWrite=$PrepareSuccessor -or $RepairDelivery -or $AccountBootstrap',
+                       '$RepairDelivery -or $AccountBootstrap -or $CorrectivePreview',
+                       'account_bootstrap_migration(profile, review_sha256=review',
+                       '$DockerArgs+=@($BootstrapReviewSha256,$BootstrapEvidenceSha256,$SourceSha)',
+                       "$Receipt.sourceMigrationReceipt.kind -cne 'BOOTSTRAP_MIGRATION'",
+                       '$Receipt.prefix.predecessorReceipt.sourceRevision -ne 3',
+                       '$Receipt.checkpoint.snapshotRevision -ne 4',
+                       '$Receipt.sourceMigrationReceipt.deploymentAuthorized -ne $false',
+                       'REGISTRY_BOOTSTRAP_MIGRATION_RESULT_INVARIANT_FAILED_STOP',
+                       'REGISTRY_BOOTSTRAP_MIGRATION_INCUMBENT_HOLDER_CHANGED',
+                       'dst=/run/fortis-registry-incumbent-state,volume-nocopy,readonly',
+                       'dst=/run/fortis-registry-incumbent-runtime,volume-nocopy,readonly'):
+            self.assertIn(marker,self.source)
+        self.assertIn('if($SuccessorWrite){$VolumeNames=@($StateVolume,$ConfigVolume)}',self.source)
 
     def test_corrective_preview_is_readonly_no_restart_and_explicit(self):
         self.assertIn('REGISTRY_BOOTSTRAP_CORRECTIVE_PREVIEW_DENIED',self.source)

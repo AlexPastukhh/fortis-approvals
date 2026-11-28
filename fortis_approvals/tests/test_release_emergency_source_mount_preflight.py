@@ -14,7 +14,7 @@ RECOVERY = (ROOT / "docs/use-cases/recovery.md").read_text()
 
 
 def section(start, end):
-    return PS.split(start, 1)[1].split(end, 1)[0]
+    return PS.split("\n"+start, 1)[1].split("\n"+end, 1)[0]
 
 
 class EmergencyMountAdmissionSourceTests(unittest.TestCase):

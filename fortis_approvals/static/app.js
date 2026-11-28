@@ -836,7 +836,7 @@ $('local-deny-prepare').onclick=action(prepareLocalDeny);
 $('local-deny-confirm').onclick=action(confirmLocalDeny);
 $('local-deny-readback').onclick=action(readbackLocalDeny);
 
-let selectedProviderFilter='';
+let selectedProviderFilter='',selectedPolicyFilter='';
 function isCompositeRow(row){return row.operationKind==='composite'||(row.provider==='registry'&&['begin_release_group','report_release_results'].includes(row.operation))||(row.provider==='release'&&row.operation==='merge_and_register');}
 function providerCategory(row){return isCompositeRow(row)?'@composite':row.provider;}
 function providerFilterOptions(inventory){
@@ -858,9 +858,10 @@ function syncProviderFilter(){
  select.value=options.some(([provider])=>provider===previous)?previous:'';
  selectedProviderFilter=select.value;
 }
-function visibleProviderRows(inventory,provider,query){
+function visibleProviderRows(inventory,provider,query,policy=''){
  const search=query.trim().toLowerCase();
- return inventory.operations.filter(row=>(!provider||providerCategory(row)===provider)&&[
+ return inventory.operations.filter(row=>(!provider||providerCategory(row)===provider)&&
+  (!policy||(row.currentPolicy??row.configuredPolicy??'UNKNOWN')===policy)&&[
   row.provider,row.operation,row.actor,row.target,row.currentPolicy??row.configuredPolicy,row.effectivePolicy
  ].some(value=>String(value??'').toLowerCase().includes(search)));
 }
@@ -925,6 +926,11 @@ function renderUnifiedProviderCards(target,rows){
     const children=document.createElement('small');children.textContent=(row.children??[]).map(c=>c.service+'.'+c.operation+' v'+c.version).join(' → ')+(row.protectedOwnerGate?' · обязательное ASK':'');info.append(children);
    }
 
+   if(row.operationKind==='context-child'){
+    const context=document.createElement('small');
+    context.textContent='Дочерняя операция Composite: '+(row.contextParents??[]).map(p=>p.service+'.'+p.operation).join(', ');
+    info.append(context);
+   }
    const scope=document.createElement('small');
    scope.textContent=(row.actor?'Actor: '+row.actor:'Общее правило')+
     (row.target?' · Target: '+row.target:' · Все target');
@@ -943,7 +949,8 @@ function displayProviderInventory(){
  const target=$('providers-results');target.replaceChildren();
  if(!providerInventory)return;
  const provider=$('providers-select').value??'';
- const matching=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'');
+ const policy=$('providers-policy').value??'';
+ const matching=visibleProviderRows(providerInventory,provider,$('providers-filter').value??'',policy);
  const total=providerInventory.operations.filter(row=>!provider||providerCategory(row)===provider).length;
  // Capability controls WRITE permissions, not the presentation of a V2
  // inventory. Never switch to the legacy table during a capability refresh.
@@ -952,7 +959,7 @@ function displayProviderInventory(){
   matching.filter(canSelectUnified):matching;
  $('providers-summary').textContent=rows.length+' из '+total+' правил · '+
   (provider==='@composite'?'Composite Actions':provider||providerInventory.providers.length+' провайдеров')+
-  (v2Inventory?' · редактор V2':' · инвентаризация');
+  (policy?' · '+policy:'')+(v2Inventory?' · редактор V2':' · инвентаризация');
  if(!rows.length){
   const empty=document.createElement('p');empty.textContent=
    v2Inventory&&unifiedEnabled&&$('providers-editable-only').checked?
@@ -1122,6 +1129,11 @@ $('providers-select').addEventListener('change',()=>{
  const select=$('providers-select');
  if(!resetProviderSelections()){select.value=selectedProviderFilter;return;}
  selectedProviderFilter=select.value;displayProviderInventory();
+});
+$('providers-policy').addEventListener('change',()=>{
+ const select=$('providers-policy');
+ if(!resetProviderSelections()){select.value=selectedPolicyFilter;return;}
+ selectedPolicyFilter=select.value;displayProviderInventory();
 });
 $('providers-filter').addEventListener('input',displayProviderInventory);
 $('providers-editable-only').addEventListener('change',()=>{

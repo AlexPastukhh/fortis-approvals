@@ -9,6 +9,13 @@ from . import semantic_contract as sc
 from .maintenance_contract import validate_record, validate_transition
 
 
+def require_quiescent_companion(companion):
+    sc.need(companion['schemaVersion']==1 and type(companion['parentStates']) is dict
+            and not any(companion['parentStates'].get(k,0) for k in
+                        ('PENDING','APPROVED','DISPATCHED','UNCERTAIN','CLOSED_UNCONFIRMED')),
+            'MAINTENANCE_COMPOSITE_NOT_QUIESCENT')
+
+
 def freeze_binding(record, drain, state_receipt, companion, *, expected_registry_digest,
                    expected_state_digest, expected_companion_digest,
                    worker_attestation_digest, preserved_uncertain_ids,
@@ -48,10 +55,7 @@ def freeze_binding(record, drain, state_receipt, companion, *, expected_registry
             and native['preservedClaimedIds']==preserved_claimed_ids
             and jobs.get('CLAIMED',0)==len(preserved_claimed_ids),
             'MAINTENANCE_WORKER_NOT_QUIESCENT')
-    sc.need(companion['schemaVersion']==1 and type(companion['parentStates']) is dict
-            and not any(companion['parentStates'].get(k,0) for k in
-                        ('PENDING','APPROVED','DISPATCHED','UNCERTAIN','CLOSED_UNCONFIRMED')),
-            'MAINTENANCE_COMPOSITE_NOT_QUIESCENT')
+    require_quiescent_companion(companion)
     return {'result':'FREEZE_BINDINGS_MATCH_ONLY','interlockDigest':sc.digest(rec),
             'registryDigest':expected_registry_digest,'stateReceiptDigest':expected_state_digest,
             'companionDigest':expected_companion_digest,'workerAttestationDigest':worker_attestation_digest,
@@ -122,3 +126,89 @@ def same_seal(before,after,*,expected_digest):
     sc.need(sc.digest(before)==expected_digest and sc.digest(after)==expected_digest,
             'MAINTENANCE_SEALED_STATE_CHANGED')
     return 'SEALED_STATE_MATCH_ONLY'
+
+def _ordinary_chain(intent, begin, check, source_receipt, stop):
+    """Reuse the actual checked phase chain, not bootstrap physical proof.
+
+    The host independently verifies container exclusion and the original
+    Check/Apply record hashes. This projection does not authorize either.
+    """
+    from .maintenance_contract import ordinary_pair_intent, paired_draining_record, matching_holds
+    pair=ordinary_pair_intent(intent)
+    auth=intent['authorization']
+    sc.fields(begin,('result','intentDigest','pair','receipts','checkpoint','holdSnapshot','draining','registryDigest'))
+    sc.need(begin['result']=='PROTECTED_PAIR_BEGIN_READBACK_ONLY'
+            and begin['intentDigest']==sc.digest(intent) and begin['pair']==pair
+            and begin['registryDigest']==sc.digest(begin['holdSnapshot'])
+            and begin['draining']==paired_draining_record(intent['normal'],pair,begin['receipts'],
+                begin['holdSnapshot'],target_generation=auth['targetGeneration'],recorded_at=auth['recordedAt'])
+            and begin['checkpoint']['snapshotRevision']==begin['holdSnapshot']['snapshotRevision']
+            and begin['checkpoint']['eventDigest']==begin['holdSnapshot']['eventDigest']
+            and all(begin['checkpoint'][k]==pair['checkpoint'][k] for k in ('sourceCursor','sourceRevision','profileDigest')),
+            'MAINTENANCE_ORDINARY_HANDOVER_CHANGED')
+    transitions=checked_transitions(check,begin['draining'])
+    checked=transitions['checked']
+    prepared={k:stop[k] for k in ('sourceRecordDigest','checkedRecordDigest','targetImageId')}
+    sc.need(stop==apply_stop_plan(checked,check,prepared)
+            and prepared['sourceRecordDigest']==auth['sourceRecordDigest']
+            and prepared['targetImageId']=='sha256:'+pair['artifacts']['gateway']
+            and check['stateReceiptDigest']==sc.digest(source_receipt)
+            and check['registryDigest']==begin['registryDigest']
+            and check['companionDigest']==intent['compatibility']['gateway']['companion']['companionDigest'],
+            'MAINTENANCE_ORDINARY_HANDOVER_CHANGED')
+    current=stop['next']
+    sc.need(matching_holds(begin['holdSnapshot']['holds'],current['attempt']),
+            'MAINTENANCE_ORDINARY_HANDOVER_CHANGED')
+    staged=validate_transition(current,{**current,'phase':'STAGED_TARGET_FROZEN',
+        'generation':auth['targetGeneration'],'sequence':current['sequence']+1,
+        'previousDigest':sc.digest(current),'proofDigest':sc.digest({'stop':stop,'begin':begin,'check':check})})
+    return checked, staged, {'record':staged,'handoff':{'role':'staged_target','attemptId':pair['attemptId'],
+        'restrictionDigest':current['attempt']['restrictionDigest'],'interlockDigest':sc.digest(staged),
+        'registryDigest':begin['registryDigest']}}
+
+def ordinary_handover(intent, begin, check, source_receipt, stop, publication):
+    checked,_,final=_ordinary_chain(intent,begin,check,source_receipt,stop)
+    auth=intent['authorization']
+    sc.fields(publication,('schema','state','sourceRecordHash','record','digest',
+                           'registryDigest','previous','previousRegistryDigest'))
+    current=stop['next']
+    sc.need(publication['schema']=='fortis-successor-maintenance-publication-v2'
+            and publication['state']=='Committed'
+            and publication['sourceRecordHash'].lower()==auth['sourceRecordDigest']
+            and publication['record']==current and publication['digest']==sc.digest(current)
+            and publication['previous']==checked
+            and publication['previousRegistryDigest']==publication['registryDigest']==begin['registryDigest'],
+            'MAINTENANCE_ORDINARY_HANDOVER_CHANGED')
+    return final
+
+
+def ordinary_return_record(intent,begin,check,source_receipt,stop,publication,actual):
+    """Project a source-generation hold, never a successful closure.
+
+    Caller proves both pairs are excluded, target activation absent, and
+    original Gateway receipt exact. Actual Registry replay is independent.
+    """
+    checked,staged,_=_ordinary_chain(intent,begin,check,source_receipt,stop)
+    sc.fields(actual,('receipts','checkpoint','holdSnapshot'))
+    sc.need(all(actual[k]==begin[k] for k in actual),
+            'MAINTENANCE_ORDINARY_RETURN_CHANGED')
+    sc.fields(publication,('schema','state','sourceRecordHash','record','digest',
+                          'registryDigest','previous','previousRegistryDigest'))
+    rec=validate_record(publication['record'])
+    sc.need(publication['schema']=='fortis-successor-maintenance-publication-v2'
+            and publication['state']=='Committed'
+            and publication['sourceRecordHash'].lower()==intent['authorization']['sourceRecordDigest']
+            and publication['digest']==sc.digest(rec)
+            and publication['previousRegistryDigest']==publication['registryDigest']==begin['registryDigest'],
+            'MAINTENANCE_ORDINARY_RETURN_CHANGED')
+    prior=publication['previous'] if rec['phase']=='RECOVERY_HOLD' else rec
+    chain=(checked_transitions(check,begin['draining'])['frozen'],checked,stop['next'],staged)
+    sc.need(prior in chain[1:] and (rec['phase']=='RECOVERY_HOLD'
+            or publication['previous']==chain[chain.index(prior)-1]),
+            'MAINTENANCE_ORDINARY_RETURN_CHANGED')
+    recovery=validate_transition(prior,{**prior,'phase':'RECOVERY_HOLD',
+        'generation':intent['normal']['generation'],'sequence':prior['sequence']+1,
+        'previousDigest':sc.digest(prior),'proofDigest':sc.digest({'kind':'ORDINARY_RETURN',
+            'stop':stop,'begin':actual,'sourceReceiptDigest':check['stateReceiptDigest']})})
+    sc.need(rec['phase']!='RECOVERY_HOLD' or rec==recovery,'MAINTENANCE_ORDINARY_RETURN_CHANGED')
+    return recovery

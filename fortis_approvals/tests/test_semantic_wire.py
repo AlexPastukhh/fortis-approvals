@@ -191,6 +191,78 @@ class WireTests(fixture.LineageFixture,unittest.TestCase):
         self.assertEqual(self.client.maintenance_snapshot(),self.domain.maintenance_snapshot())
         self.assertEqual(self.client.profile_digest(),self.domain.snapshot()['profileDigest'])
 
+    def test_profile_source_checkpoint_is_internal_and_uses_one_replay(self):
+        from unittest.mock import patch
+
+        self.domain.register_source(self.merge())
+        view = self.domain.snapshot()
+        self.assertNotIn('sourceCheckpoint', self.client.profile())
+        with patch.object(self.domain, 'snapshot', wraps=self.domain.snapshot) as snapshot:
+            profile = self.client.profile(source_checkpoint=True)
+        snapshot.assert_called_once_with()
+        self.assertEqual(profile, {
+            'profileDigest': view['profileDigest'],
+            'sourceRevision': view['sourceRevision'],
+            'sourceCheckpoint': {
+                'sourceCursor': view['sourceCursor'],
+                'snapshotRevision': view['snapshotRevision'],
+                'eventDigest': view['eventDigest'],
+                'registryDigest': sc.digest(self.domain.maintenance_snapshot()),
+            },
+        })
+        req = self.request('PROFILE', {'sourceCheckpoint': True})
+        with self.assertRaisesRegex(Denied, 'SEMANTIC_WIRE_INTERNAL_ONLY'):
+            self.frames.dispatch(wire.seal(self.frames.key, req))
+        for body in ({'sourceCheckpoint': False}, {'sourceCheckpoint': 1},
+                     {'sourceCheckpoint': True, 'extra': True}):
+            with self.subTest(body=body), self.assertRaises(Denied):
+                self.request('PROFILE', body, actor='internal')
+
+    def test_frozen_delivery_accepts_accounted_cursor_ahead_of_desired(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from fortis_approvals.extensions.successor_runtime import ProtectedRegistrySuccessor
+
+        deployment = self.merge()
+        self.domain.register_source(deployment)
+        desired_source = deployment['observation']['mergeSha']
+        metadata_only = self.merge(number=289, targets=[])
+        self.domain.register_source(metadata_only)
+        self.assertEqual(self.component()['desired']['source']['sourceSha'], desired_source)
+        profile = self.client.profile(source_checkpoint=True)
+        checkpoint = profile['sourceCheckpoint']
+        self.assertEqual(checkpoint['sourceCursor'], metadata_only['observation']['mergeSha'])
+        self.assertNotEqual(checkpoint['sourceCursor'], desired_source)
+        pin = 'b'*64
+        handoff = {'registryDigest': checkpoint['registryDigest']}
+        successor = object.__new__(ProtectedRegistrySuccessor)
+        successor._raw = sc.canonical({
+            'interlockDigest': pin, 'companionDigest': 'c'*64, 'frozenHandoff': handoff,
+        })
+        reader = SimpleNamespace(
+            _successor_config=successor, _semantic_transport=self.client,
+            _semantic_profile_digest=profile['profileDigest'],
+        )
+        # Isolate the check after startup admission and the evidence mount
+        # check. The peer frame and journal replay are exercised as normal.
+        gate = SimpleNamespace(verify_startup=lambda _: None)
+        with patch.object(successor, '_maintenance_gate', return_value=gate), \
+             patch.object(successor, '_delivery', return_value={'interlockDigest': pin}):
+            receipt = successor.checked_delivery(reader, expected_interlock_digest=pin)
+            self.assertEqual(receipt['registryCheckpoint'], {
+                **checkpoint, 'sourceRevision': profile['sourceRevision'],
+                'profileDigest': profile['profileDigest'],
+            })
+            reader._semantic_profile_digest = 'f'*64
+            with self.assertRaisesRegex(Denied, 'R7_REGISTRY_SUCCESSOR_CHECKPOINT_CHANGED'):
+                successor.checked_delivery(reader, expected_interlock_digest=pin)
+            reader._semantic_profile_digest = profile['profileDigest']
+            self.domain.owner_event('report_release_result', self.report(),
+                actor='agent-1', assertion_source='OWNER_TRANSCRIBED',
+                operation_id=uid(), recorded_at=100)
+            with self.assertRaisesRegex(Denied, 'R7_REGISTRY_SUCCESSOR_CHECKPOINT_CHANGED'):
+                successor.checked_delivery(reader, expected_interlock_digest=pin)
+
     def test_lost_reply_original_receipt_without_repeat(self):
         op=uid();p=self.report();calls=[]
         def lost(frame,**kw):

@@ -309,7 +309,20 @@ class CompositeUnifiedCore(MaintenanceCoreMixin, CompositeCoreMixin, UnifiedPoli
         # Revalidate the companion and actual policy replay before serving.
         self._read_only(lambda db: history.verify_prefix(db, candidate.sha))
         self._read_only(inspect_companion)
+        # Read-model metadata comes only from the same verified enrollment.
+        # It is not a new policy authority or a provider readiness decision.
+        context = enrollment.metadata()['grants']
+        self._inventory_coordinates = frozenset(
+            tuple(row[key]) for row in context for key in ('parent', 'child')
+        ) | (frozenset(semantic_enrollment.coordinates()) if semantic_enrollment else frozenset())
+        self._inventory_context = tuple(sorted({
+            (tuple(row['child']), tuple(row['parent'][1:])) for row in context
+        }))
         self._successor_ready = True
+
+    def reviewed_inventory(self):
+        need(self._successor_ready, 'COMPOSITE_SUCCESSOR_NOT_READY')
+        return self._inventory_coordinates, self._inventory_context
 
     def submit(self, actor, payload):
         need(self._successor_ready, 'COMPOSITE_SUCCESSOR_NOT_READY')
@@ -397,12 +410,12 @@ class ReviewedRegistrySuccessor:
         self.provider_guard,self.effect_guard,self.ready=provider_guard,effect_guard,ready
         self._verify_delivery = verify_delivery
 
-    def verify_startup(self,reader):
+    def verify_startup(self,reader,*,release_active=None):
         need(reader is self.transport.peer and
              getattr(reader,'_semantic_transport',self.transport) is self.transport and
              getattr(reader, '_policy_history', self.history) is self.history,
              'R7_REGISTRY_SUCCESSOR_PEER_BINDING_CHANGED')
-        self.gate.verify_startup(self.frozen_handoff)
+        self.gate.verify_startup(self.frozen_handoff,release_active=release_active)
         need(self.transport.profile_digest()==self.profile_digest,
              'R7_REGISTRY_SUCCESSOR_PEER_BINDING_CHANGED')
         if self._verify_delivery is not None:
@@ -441,7 +454,7 @@ class ReviewedRegistrySuccessor:
              and native is not None
              and self.transport.peer is reader,
              'R7_REGISTRY_SUCCESSOR_PEER_BINDING_CHANGED')
-        self.verify_startup(reader)
+        self.verify_startup(reader,release_active=release_active)
         provider=self.build_native_provider(native['adapter'])
         need(type(provider) is NativeMergeProvider and provider.reader.adapter is native['adapter']
              and provider.discovery.repository==self.repository,
@@ -544,7 +557,7 @@ class ReviewedRegistrySuccessor:
             from ..core import ApprovalError
 
             path=env.get('PATH_INFO')
-            if path not in ('/v1/reads','/v1/actions') or env.get('REQUEST_METHOD')!='POST':
+            if path not in ('/v1/reads','/v1/actions','/v1/integrations/catalog') or env.get('REQUEST_METHOD')!='POST':
                 return RouteAdmission(False)
             # Validate the existing listener boundary before interpreting
             # any operation coordinate or disclosing maintenance state.
@@ -558,6 +571,19 @@ class ReviewedRegistrySuccessor:
                 raw=env['wsgi.input'].read(int(length))
                 env['wsgi.input']=BytesIO(raw)
                 query=machine_base._body({**env,'wsgi.input':BytesIO(raw)})
+                if path=='/v1/integrations/catalog':
+                    # The exact authenticated catalog projects current
+                    # policy/credential readiness, not Core requests.
+                    return RouteAdmission(query=={})
+                if (path=='/v1/reads' and type(query) is dict
+                        and (query.get('service'),query.get('operation'))==('github','list_branches')):
+                    from ..workflow.adapters import NativeGitHubAdapter
+                    from ..repo_action_contract import validate_read_query
+                    if type(machine_base.broker.base.read_adapters.get('github')) is NativeGitHubAdapter:
+                        validate_read_query(query)
+                        # SemanticRepoBroker rechecks ALLOW and passive
+                        # restrictions at execution; ASK is still reserved.
+                        return RouteAdmission(True)
                 if path=='/v1/reads' and type(query) is dict and query.get('service')=='registry':
                     try:
                         validate(query,read=True)

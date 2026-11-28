@@ -200,3 +200,34 @@ activation; each first owner-controlled V3 release needs protected Check,
 full-state clone/readback, Apply, Owner Portal acceptance, Backup and Promote.
 After release the owner may separately choose a new policy. The source
 candidate must not be advertised as deployed until this is completed.
+
+## Reviewed successor inventory correction (source candidate, 2026-11-28)
+
+The actual #289 owner screenshot showed missing Registry semantic methods even
+with the editable-only filter disabled. The legacy extension and reviewed
+successor share the Registry service name: the extension inventory enumerated
+only its packaged candidate READs. The V2 projection now includes missing
+exact coordinates from the already verified semantic/context enrollment,
+using the existing admitted baseline and policy snapshot. Existing extension
+rows and exact actor/target distinctions are retained; contextual child rows
+identify their parent Composite, and do not claim independent effect readiness.
+No new admission, grant, handler, credential, policy event or state schema.
+
+The independent Policy filter matches the displayed current/configured policy
+(ALLOW, ASK, DENY, CONDITIONAL, UNKNOWN) together with provider, search and
+editable-only filters. It does not change policy or perform a bulk edit.
+Focused Python regression passed 24 cases, including actual owner HTTP
+inventory with the packaged Registry extension and successor, exact row
+uniqueness, existing DENY, policy edit/readback and isolated revision 3→4
+product flow. UI fixtures cover filtering and contextual display.
+A focused follow-up models three exact owner policy edits (merge_and_register
+ASK, GitHub merge_pull_request ASK and list_pull_requests ALLOW) before the
+separate staged copy. The compiled authority, policy revision, full Core and
+policy history and inventory values remain identical across reopening, then
+only the remaining fixture policies are edited before the ordinary product
+flow. PASS in 24.887s. The prior fixture assumed no owner edits before copying;
+this is not a readback of the owner's actual policy state.
+The real GitHub/host effects remain fixtures; source delivery and live Portal
+acceptance are not established. Do not merge this Gateway change outside
+an approved source-lineage and maintenance handover, or use it to bypass the
+first E2 scope. The #290 Registry-only PR is still unmerged.

@@ -182,11 +182,13 @@ class RepoIntentBroker:
                          else 'REPO_READ_POLICY_DENIED')
         return request
 
-    def read(self, ingress_credential, query):
+    def read(self, ingress_credential, query, *, passive_only=False):
         """Authenticated, policy-bound provider READ through a typed adapter."""
         request = self.authorize_read(ingress_credential, query)
         actor=self.core.auth.authenticate(ingress_credential)
         policy=self.core._policy(actor,request)
+        if passive_only and policy!='ALLOW':
+            raise Denied('REPO_READ_ALLOW_REQUIRED')
         if policy=='ASK':
             approval=getattr(self,'read_approval',None)
             if approval is None:

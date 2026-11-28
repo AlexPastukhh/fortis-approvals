@@ -88,6 +88,136 @@ def _check_owner_readonly_mount(root):
         _stop('MOUNTINFO_UNAVAILABLE')
 
 
+
+def inspect_bootstrap_empty_profile_target(root=Path('/target')):
+    """Pre-effect Check: exact pre-owned RO final root, not provisioned here."""
+    from .integrations.registry_contracts import semantic_contract as sc
+    _check_owner_readonly_mount(root)
+    sc.need(root.is_absolute() and root.resolve()==root,
+            'R7_REGISTRY_BOOTSTRAP_MATERIAL_MOUNT')
+    fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        row=os.fstat(fd)
+        sc.need((row.st_uid,row.st_gid)==(os.geteuid(),os.getegid())
+                and stat.S_IMODE(row.st_mode)==0o700 and not os.listdir(fd),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_TARGET_NOT_FRESH')
+        after=root.stat(follow_symlinks=False)
+        sc.need((row.st_dev,row.st_ino)==(after.st_dev,after.st_ino),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_MOUNT')
+        return {'device':row.st_dev,'inode':row.st_ino}
+    finally:os.close(fd)
+
+
+def _bootstrap_material_bytes(dirfd, name, maximum, *, empty=False):
+    """Read one bounded, private regular file without following aliases."""
+    fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=dirfd)
+    with os.fdopen(fd,'rb') as stream:
+        row=os.fstat(stream.fileno())
+        if (not stat.S_ISREG(row.st_mode) or row.st_uid!=os.geteuid()
+                or row.st_gid!=os.getegid() or row.st_nlink!=1
+                or stat.S_IMODE(row.st_mode)!=0o600
+                or not int(not empty)<=row.st_size<=maximum):
+            _stop('BOOTSTRAP_MATERIAL_FILE')
+        raw=stream.read(maximum+1)
+        after=os.fstat(stream.fileno())
+        if (len(raw)!=row.st_size or
+            (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)!=
+            (row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_ctime_ns)):
+            _stop('BOOTSTRAP_MATERIAL_FILE_CHANGED')
+        return raw
+
+
+def _seal_bootstrap_material(source, target, limits, source_pins, replacements, *, verify_only, expected_target):
+    """Copy exact inactive profile material; return only file digests.
+
+    Fixed role callers supply the allowlist and final projected files.
+    The host independently fences holders and owns the same durable intent.
+    Prepared material remains RO; only a separate pre-owned target may be
+    written. An interrupted prefix of our exact pending file can resume;
+    unrelated files, changed bytes and aliases never get overwritten.
+    """
+    from .integrations.registry_contracts import semantic_contract as sc
+    sc.need(type(verify_only) is bool and type(limits) is dict and type(replacements) is dict
+            and 0<len(limits)<=32 and set(replacements)<=set(limits) and set(source_pins)==set(limits)
+            and all(re.fullmatch(r'[a-z0-9._-]{1,128}',n) and not n.startswith('.')
+                    for n in limits),'R7_REGISTRY_BOOTSTRAP_MATERIAL_SCOPE')
+    _check_owner_readonly_mount(source)
+    mode=b'ro' if verify_only else b'rw'
+    sc.need(_exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),target,mode)
+            and bool(os.statvfs(target).f_flag & os.ST_RDONLY)==verify_only,
+            'R7_REGISTRY_BOOTSTRAP_MATERIAL_MOUNT')
+    fds=[]
+    try:
+        for root in (source,target):
+            sc.need(root.is_absolute() and root.resolve()==root,
+                    'R7_REGISTRY_BOOTSTRAP_MATERIAL_MOUNT')
+            fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            fds.append(fd)
+            row=os.fstat(fd)
+            sc.need((row.st_uid,row.st_gid)==(os.geteuid(),os.getegid())
+                    and stat.S_IMODE(row.st_mode)==0o700,
+                    'R7_REGISTRY_BOOTSTRAP_MATERIAL_DIRECTORY')
+        src,dst=fds
+        def ident(row):return row.st_dev,row.st_ino
+        sc.need(ident(os.fstat(src))!=ident(os.fstat(dst)),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_ALIAS')
+        sc.fields(expected_target,('device','inode'))
+        sc.need(all(type(expected_target[k]) is int and 0<=expected_target[k]<2**64
+                    for k in ('device','inode'))
+                and ident(os.fstat(dst))==(expected_target['device'],expected_target['inode']),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_TARGET_CHANGED')
+        sc.need(set(os.listdir(src))==set(limits),'R7_REGISTRY_BOOTSTRAP_MATERIAL_FILES')
+        original={n:_bootstrap_material_bytes(src,n,size) for n,size in limits.items()}
+        sc.need(all(hashlib.sha256(raw).hexdigest()==source_pins[n] for n,raw in original.items()),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_SOURCE_CHANGED')
+        expected={**original,**replacements}
+        sc.need(all(type(raw) is bytes and 0<len(raw)<=limits[n] for n,raw in expected.items()),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_FILES')
+        pending={n:'.'+n+'.pending' for n in limits}
+        existing=set(os.listdir(dst))
+        sc.need(existing<=set(limits)|set(pending.values()),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_FILES')
+        # Validate the ENTIRE target before writing any missing file.
+        partial={}
+        for name,raw in expected.items():
+            temp=pending[name]
+            if name in existing:
+                sc.need(temp not in existing and _bootstrap_material_bytes(dst,name,limits[name])==raw,
+                        'R7_REGISTRY_BOOTSTRAP_MATERIAL_CHANGED')
+            elif temp in existing:
+                part=_bootstrap_material_bytes(dst,temp,limits[name],empty=True)
+                sc.need(raw.startswith(part),'R7_REGISTRY_BOOTSTRAP_MATERIAL_CHANGED')
+                partial[name]=len(part)
+        if verify_only:
+            sc.need(existing==set(limits),'R7_REGISTRY_BOOTSTRAP_MATERIAL_INCOMPLETE')
+        else:
+            for name,raw in expected.items():
+                if name in existing:continue
+                temp=pending[name]
+                flags=os.O_WRONLY|os.O_NOFOLLOW|os.O_CLOEXEC
+                flags|=os.O_APPEND if name in partial else os.O_CREAT|os.O_EXCL
+                fd=os.open(temp,flags,0o600,dir_fd=dst)
+                with os.fdopen(fd,'ab' if name in partial else 'wb') as stream:
+                    sc.need(os.fstat(stream.fileno()).st_size==partial.get(name,0),
+                            'R7_REGISTRY_BOOTSTRAP_MATERIAL_CHANGED')
+                    stream.write(raw[partial.get(name,0):])
+                    stream.flush();os.fsync(stream.fileno())
+                sc.need(_bootstrap_material_bytes(dst,temp,limits[name])==raw
+                        and name not in os.listdir(dst),'R7_REGISTRY_BOOTSTRAP_MATERIAL_CHANGED')
+                os.replace(temp,name,src_dir_fd=dst,dst_dir_fd=dst)
+            os.fsync(dst)
+        sc.need(set(os.listdir(dst))==set(limits) and set(os.listdir(src))==set(limits)
+                and all(_bootstrap_material_bytes(dst,n,limits[n])==raw for n,raw in expected.items())
+                and all(_bootstrap_material_bytes(src,n,limits[n])==raw for n,raw in original.items())
+                and all(ident(os.fstat(fd))==ident(root.stat(follow_symlinks=False))
+                        for root,fd in zip((source,target),fds)),
+                'R7_REGISTRY_BOOTSTRAP_MATERIAL_CHANGED')
+        return {n:hashlib.sha256(raw).hexdigest() for n,raw in expected.items()}
+    finally:
+        for fd in fds:os.close(fd)
+
+
+
 def load_owner_registry_reader(*, expected_release_nonce,
                                expected_source_digest, root=MOUNT):
     """Only a reviewed, mount-sealed Registry READ profile may bind R7.
@@ -278,7 +408,8 @@ def reviewed_registry_reader_mount_digest(*, expected_release_nonce,
 
 
 def reviewed_successor_delivery(*, expected_release_nonce, expected_source_digest,
-                                expected_interlock_digest, incumbent_core=None, scratch_root=None, root=MOUNT):
+                                expected_interlock_digest, incumbent_core=None, scratch_root=None,
+                                root=MOUNT, running_source=False):
     """Read both packages' exact delivery pins and optionally preview the clone."""
     result = _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest)
     if result is None or result[1]['schemaVersion'] != 5:
@@ -287,13 +418,129 @@ def reviewed_successor_delivery(*, expected_release_nonce, expected_source_diges
     _check_live_peer(reader)
     receipt = reader._successor_config.checked_delivery(
         reader, expected_interlock_digest=expected_interlock_digest,
-        incumbent_core=incumbent_core, scratch_root=scratch_root)
+        incumbent_core=incumbent_core, scratch_root=scratch_root, running_source=running_source)
     if reviewed_registry_reader_mount_digest(
             expected_release_nonce=expected_release_nonce, expected_source_digest=expected_source_digest,
             root=root) != digest:
         _stop('PROFILE_CHANGED')
     return {**receipt, 'profileDigest':digest}
 
+
+def reviewed_bootstrap_gateway(*, expected_release_nonce, expected_source_digest,
+                               incumbent_nonce, incumbent_source_digest, incumbent_profile_digest,
+                               incumbent_core, root=MOUNT,
+                               incumbent_root=Path('/run/r7-registry-incumbent-reader'),ordinary=False):
+    """Inspect two sealed profiles and the existing companion, without a listener.
+
+    Both bootstrap and ordinary successor controllers use this pre-effect
+    comparison. The target is preliminary material, not a phase-bound
+    receiver or permission to start. The host pins both package identities.
+    """
+    from .integrations.registry_contracts import semantic_contract as sc
+    from .extensions.composite_preservation import inspect_staged_successor
+
+    current = _load_sealed_registry_reader(incumbent_root, incumbent_nonce, incumbent_source_digest)
+    target = _load_sealed_registry_reader(root, expected_release_nonce, expected_source_digest)
+    sc.need(current is not None and target is not None and current[2]==incumbent_profile_digest
+            and current[1]['schemaVersion']==target[1]['schemaVersion']==5,
+            'R7_REGISTRY_BOOTSTRAP_PROFILE_CHANGED')
+    old, candidate = current[1],target[1]
+    old_composition=sc.loads_strict(current[0]._successor_config._raw)
+    composition=sc.loads_strict(target[0]._successor_config._raw)
+    sc.need(type(ordinary) is bool
+            and old_composition['schemaVersion']==composition['schemaVersion']==(3 if ordinary else 2)
+            and (ordinary or (old_composition['frozenHandoff'] is None and composition['frozenHandoff'] is None))
+            and old_composition['transition'] is False
+            and composition=={**old_composition,'companionDigest':composition['companionDigest']}
+            and candidate=={**old,'releaseNonce':expected_release_nonce,
+                'gatewaySourceDigest':expected_source_digest,'plannerKeySha256':candidate['plannerKeySha256'],
+                'semanticFrameKeySha256':candidate['semanticFrameKeySha256'],
+                'successorSha256':sc.digest(composition)}
+            and expected_release_nonce!=incumbent_nonce and expected_source_digest!=incumbent_source_digest
+            and len({candidate['plannerKeySha256'],candidate['semanticFrameKeySha256'],
+                     old['plannerKeySha256'],old['semanticFrameKeySha256']})==4,
+            'R7_REGISTRY_BOOTSTRAP_PROFILE_CHANGED')
+    _check_owner_readonly_mount(Path(incumbent_core).parent.parent)
+    witness=inspect_staged_successor(incumbent_core,expected_digest=composition['companionDigest'],
+        verify_history=lambda db:target[0]._policy_history.verify_successor_storage(db,composition['successorDigest']),
+        require_empty=False,require_quiescent=True)
+    sc.need(_load_sealed_registry_reader(root,expected_release_nonce,expected_source_digest)[2]==target[2]
+            and _load_sealed_registry_reader(incumbent_root,incumbent_nonce,incumbent_source_digest)[2]==current[2],
+            'R7_REGISTRY_BOOTSTRAP_PROFILE_CHANGED')
+    return {'result':'ORDINARY_GATEWAY_MATERIAL_ONLY' if ordinary else 'BOOTSTRAP_GATEWAY_MATERIAL_ONLY','profileDigest':target[2],
+            'sourceDigest':expected_source_digest,'releaseNonce':expected_release_nonce,
+            'incumbentProfileDigest':current[2],'companion':witness,
+            'binding':{'instanceId':candidate['instanceId'],'scopeDigest':candidate['scopeDigest'],
+                'profileDigest':candidate['semanticProfileDigest'],'generation':candidate['semanticGeneration'],
+                'internalActor':candidate['semanticInternalActor'],'peerKeyDigest':candidate['plannerKeySha256'],
+                'frameKeyDigest':candidate['semanticFrameKeySha256'],'socketPath':candidate['socketPath'],
+                'readerUid':candidate['readerUid'],'readerGid':candidate['readerGid'],
+                'authorityDigest':composition['successorDigest'],'interlockDigest':composition['interlockDigest']}}
+
+
+
+def seal_bootstrap_gateway_material(*, checked, authorization, seed, begin, publication,
+                                     registry_profile, verify_only, expected_target, incumbent_core,
+                                     root=MOUNT, target=Path('/target'),ordinary=None):
+    """Prepare or independently verify only the final Gateway profile volume.
+
+    The preliminary seal and frozen companion are separately checked again;
+    keys never leave their private UID's mounts. The phase record is checked
+    against both operational RO mounts before any target write and afterwards.
+    """
+    from .extensions.successor_runtime import project_bootstrap_final_profiles
+    from .extensions.composite_preservation import inspect_staged_successor
+    from .extensions.maintenance_interlock_reader import read_latest_interlock
+    from .integrations.registry_contracts import semantic_contract as sc
+    g=checked['gateway']
+    loaded=_load_sealed_registry_reader(root,g['releaseNonce'],g['sourceDigest'])
+    sc.need(loaded is not None and loaded[2]==g['profileDigest'],
+            'R7_REGISTRY_BOOTSTRAP_FINAL_PROFILE_CHANGED')
+    reader,profile,_=loaded
+    composition=sc.loads_strict(reader._successor_config._raw)
+    _check_owner_readonly_mount(Path(incumbent_core).parent.parent)
+    witness=inspect_staged_successor(incumbent_core,expected_digest=composition['companionDigest'],
+        verify_history=lambda db:reader._policy_history.verify_successor_storage(db,composition['successorDigest']),
+        require_empty=False,require_quiescent=True)
+    sc.need(witness==g['companion'],'R7_REGISTRY_BOOTSTRAP_FINAL_PROFILE_CHANGED')
+    def phase():
+        actual,projection=read_latest_interlock(instance_id=profile['instanceId'],
+            scope_digest=profile['scopeDigest'],generation=profile['semanticGeneration'])
+        sc.need(actual==publication['record'] and projection['interlockDigest']==publication['digest']
+                and projection['registryDigest']==publication['registryDigest'],
+                'SOURCE_BOOTSTRAP_FINAL_PUBLICATION_CHANGED')
+    phase()
+    if ordinary is None:
+        final=project_bootstrap_final_profiles(profile,registry_profile,composition,checked=checked,
+            authorization=authorization,seed=seed,begin=begin,publication=publication)
+    else:
+        from .integrations.registry_contracts.maintenance_seal import ordinary_handover
+        from .extensions.successor_runtime import _project_prepared_profiles
+        from .extensions.maintenance_interlock_reader import read_controller_begin
+        sc.fields(ordinary,('intent','check','sourceReceipt','stop'))
+        intent=ordinary['intent']
+        sc.need(checked==intent['compatibility'] and authorization==intent['authorization']
+                and seed==intent['normal'] and expected_target==checked['roots']['gateway']
+                and read_controller_begin(expected_digest=sc.digest(intent))['intent']==intent,
+                'R7_REGISTRY_ORDINARY_FINAL_PROOF_CHANGED')
+        proof=ordinary_handover(intent,begin,ordinary['check'],ordinary['sourceReceipt'],ordinary['stop'],publication)
+        final=_project_prepared_profiles(profile,registry_profile,composition,checked=checked,final=proof,ordinary=True)
+    limits={'profile.json':_MAX_BYTES,'functional.json':65536,'planner.key':32,
+            'semantic-frame.key':32,'policy-history.json':8192,'successor.json':262144}
+    pins={'profile.json':g['profileDigest'],'functional.json':profile['functionalConfigSha256'],
+          'planner.key':profile['plannerKeySha256'],'semantic-frame.key':profile['semanticFrameKeySha256'],
+          'policy-history.json':profile['policyHistorySha256'],'successor.json':profile['successorSha256']}
+    hashes=_seal_bootstrap_material(root,target,limits,pins,
+        {'profile.json':sc.canonical(final['gateway']).encode(),
+         'successor.json':sc.canonical(final['successor']).encode()},verify_only=verify_only,expected_target=expected_target)
+    phase()
+    if verify_only:
+        received=_load_sealed_registry_reader(target,g['releaseNonce'],g['sourceDigest'])
+        sc.need(received is not None and received[1]==final['gateway'] and
+                received[2]==hashes['profile.json'],'R7_REGISTRY_BOOTSTRAP_FINAL_PROFILE_CHANGED')
+    return {'profileDigest':hashes['profile.json'],'registryProfileDigest':sc.digest(final['registry']),
+            'generation':final['gateway']['semanticGeneration'],'fileHashes':hashes,
+            'handoff':final['successor']['frozenHandoff']}
 
 def _check_live_peer(reader):
     semantic = getattr(reader, '_semantic_transport', None)

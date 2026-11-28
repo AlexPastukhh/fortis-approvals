@@ -13,51 +13,316 @@ function Release-Production-Baseline {
 function Assert-Release-Production {
     if((Release-Production-Baseline) -cne $script:R.productionBaseline){throw 'PILOT_PRODUCTION_CHANGED'}
 }
+function Read-BootstrapPostContext {
+    param($Source)
+    $Release=Read-Private $Source.path
+    if(-not $Release.PSObject.Properties['bootstrapOwnerGo']){return}
+    if($Release.phase -cne 'Complete' -or
+       $Release.activated -ne $true -or $Release.probesPassed -ne $true -or
+       (Read-Private $Pointer).record -cne $Source.path -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+    }
+    # A completed bootstrap is an ordinary current release, not a
+    # permanent post-activation attempt. Require exact durable NORMAL and
+    # live peer admission before leaving the one-time completion route.
+    $P=$Source.runtime
+    $Anchor=Read-Private (Join-Path $ReleaseBase 'maintenance-publication-v2.json')
+    if($Anchor.state -ceq 'Committed' -and $Anchor.record.phase -ceq 'NORMAL' -and
+       $Anchor.sourceRecordHash -ceq $Source.hash){
+        $Actual=Read-SuccessorRuntimePublication $P
+        $Completion=Read-Private (Join-Path (Split-Path $Source.path -Parent) 'bootstrap-completion.json')
+        if(-not (Same-Json $Actual $Anchor) -or
+           $Completion.schema -cne 'fortis-bootstrap-completion-v1' -or
+           $Completion.sourceHash -ine $Source.hash -or
+           $Completion.primaryDigest -ine (Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash -or
+           -not $Completion.close -or -not (Same-Json $Completion.close.normal $Actual.record) -or
+           $P.pilotName -cne 'fortis-gateway' -or $P.restartPolicy -cne 'unless-stopped'){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+        $Gateway=Container $P.pilotId
+        $Registry=Container $Release.bootstrapReceiver.id
+        if($Registry.Id -cne $Release.bootstrapReceiver.id -or $Registry.Image -cne $Release.bootstrapReceiver.image){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+        if($Gateway.State.Status -ceq 'running' -and $Gateway.HostConfig.RestartPolicy.Name -ceq 'unless-stopped' -and
+           $Registry.State.Status -ceq 'running' -and $Registry.HostConfig.RestartPolicy.Name -ceq 'unless-stopped'){
+            Admit $Gateway $P
+            return
+        }
+        # A lost NORMAL/start ACK still needs the original Promote recovery;
+        # Backup must not start a new backup over an incomplete restart.
+        if($Action -cne 'Promote'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_RECOVERY_REQUIRED'}
+    }
+    if(-not $ConfirmWorkerQuiescent){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'}
+    $script:R=$Release;$script:RecordPath=$Source.path
+    $Intent=Read-BootstrapFrozenIntent $Release.source $Release.bootstrapCheckRecord $Release.bootstrapCheckHash -Runtime
+    $P=$Source.runtime
+    if($P.pilotId -cne $Release.runtime.pilotId -or $P.image -cne $Release.runtime.image -or
+       -not (Same-Json $P.registryDelivery $Release.bootstrapDelivery)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+    }
+    $Gateway=Container $P.pilotId
+    $Registry=Read-BootstrapReceiver $Intent -GatewayId $Gateway.Id -Accepted
+    if(-not $Registry -or $Gateway.State.Status -cnotin @('running','exited')){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+    }
+    Assert-Release-Production
+    $Ordinary=$Intent.ContainsKey('ordinary')
+    $OriginalRecord=Read-Private $Release.source.path
+    if($Ordinary){
+        $Original=$OriginalRecord.bootstrapReceiver
+        $OldR=Container $Original.id
+    }else{
+        $Original=$OriginalRecord.correctivePair
+        $OldR=Container $Original.targetRegistryId
+    }
+    $OldG=Container $Release.source.runtime.pilotId
+    if($OldG.Id -cne $Release.source.runtime.pilotId -or $OldG.Image -cne $Release.source.runtime.image -or
+       $OldG.State.Status -cne 'exited' -or $OldG.HostConfig.RestartPolicy.Name -cne 'no' -or
+       $OldR.State.Status -cne 'exited' -or $OldR.HostConfig.RestartPolicy.Name -cne 'no'){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_NOT_FROZEN'
+    }
+    if($Ordinary){
+        $OldRuntime=$Release.source.runtime
+        $Commit=@(Docker-Json @('image','inspect',$OldRuntime.image))[0].Config.Labels.'org.opencontainers.image.revision'
+        if($OldR.Id -cne $Original.id -or $Original.profileDigest -cne $OriginalRecord.bootstrapMaterials.registryProfileDigest -or
+           $Original.generation -cne $OldRuntime.maintenanceGeneration -or $Commit -cnotmatch '^[0-9a-f]{40}$'){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+        }
+        Assert-CorrectiveRegistryContainer $OldR $OldRuntime.registryReleaseNonce $Original.image $Original.profileDigest 'writer' $Commit -Status exited -LatestPin
+        Assert-CorrectiveTargetHolders $OldRuntime.registryReleaseNonce @($OldG.Id,$OldR.Id)
+        Assert-OnlyWriter $OldRuntime.stateVolume
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$OldRuntime.registryReleaseNonce.Replace('-',''))
+    }else{
+        Assert-CorrectiveRegistryContainer $OldR $Release.source.runtime.registryReleaseNonce $Original.targetRegistryImage $Original.targetRegistryProfile 'writer' '073d6f8701595e499eac5a1fa0cbe90accb05819' -Status exited -BootstrapRetained
+    }
+    $Anchor=Read-Private (Join-Path $ReleaseBase 'maintenance-publication-v2.json')
+    $Owner=if($Anchor.sourceRecordHash -ieq $Source.hash){$Source}
+        elseif($Anchor.sourceRecordHash -ieq $Release.source.hash){$Release.source}
+        else{throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'}
+    $Publication=(Read-SuccessorPublication $Owner).anchor
+    $Begin=$Release.bootstrapBegin
+    if($Publication.record.generation -cne $P.maintenanceGeneration -or
+       $Publication.record.attempt.attemptId -cne $Begin.pair.attemptId -or
+       ($Publication.record.phase -cne 'NORMAL' -and $Publication.registryDigest -cne $Begin.registryDigest)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+    }
+    $GateInput=ConvertTo-Json -Compress @{nonce=$P.releaseNonce;configurationDigest=$Release.configurationDigest}
+    $Gate=Image-CLI @('gate-record-status') $GateInput -StateVolume $P.stateVolume
+    if($Gate.active -ne $true -or $Gate.markerPresent -ne $true){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ACTIVATION_CHANGED'}
+    return @{source=$Source;release=$Release;intent=$Intent;owner=$Owner;publication=$Publication;
+        gateway=$Gateway;registry=$Registry;begin=$Begin;oldGateway=$OldG;oldRegistry=$OldR}
+}
+function Enter-BootstrapPostPhase {
+    param($Context,[ValidateSet('BACKUP_FROZEN','PROMOTE_FROZEN')][string]$Phase,[string]$Proof)
+    if($Proof -cnotmatch '^[0-9a-f]{64}$'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_PHASE_CHANGED'}
+    $Current=(Read-SuccessorPublication $Context.owner).anchor
+    $Before=if($Phase -ceq 'BACKUP_FROZEN'){'STAGED_TARGET_FROZEN'}else{'BACKUP_FROZEN'}
+    if($Current.record.phase -ceq $Phase){
+        if($Current.state -cne 'Committed' -or $Current.record.proofDigest -cne $Proof){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_PHASE_CHANGED'
+        }
+        $Next=$Current.record
+    } else {
+        if($Current.record.phase -cne $Before){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_PHASE_CHANGED'}
+        $Next=$Current.record|ConvertTo-Json -Compress -Depth 20|ConvertFrom-Json
+        $Next.phase=$Phase;$Next.sequence++;$Next.previousDigest=$Current.digest;$Next.proofDigest=$Proof
+        if($Current.state -ceq 'Pending' -and -not (Same-Json $Current.next $Next)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_PHASE_CHANGED'
+        }
+        if($Current.state -ceq 'Committed'){
+            if($Context.gateway.State.Status -cne 'running' -or $Context.registry.State.Status -cne 'running'){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+            }
+            Admit $Context.gateway $Context.source.runtime
+        }
+    }
+    $Digest=Publish-SuccessorInterlock $Context.owner $Next $Context.begin.registryDigest
+    $Actual=(Read-SuccessorPublication $Context.owner).anchor
+    if($Actual.state -cne 'Committed' -or $Actual.digest -cne $Digest -or
+       $Actual.registryDigest -cne $Context.begin.registryDigest -or -not (Same-Json $Actual.record $Next)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    $Context.publication=$Actual
+    return $Actual
+}
+function Invoke-BootstrapRegistryOffline {
+    param($Context,[ValidateSet('Reserve','Close')][string]$Operation,[switch]$VerifyOnly,$Completion=$null)
+    $P=$Context.source.runtime;$Id=$P.registryReleaseNonce.Replace('-','')
+    $State='fortis-registry-state-e13b-'+$Id;$Config='fortis-registry-config-e13b-'+$Id
+    $Volume='fortis-registry-bootstrap-backup-'+$Id
+    foreach($V in @($State,$Config,$Volume)){Assert-Volume $V}
+    Assert-OnlyWriter $State;Assert-OnlyWriter $Config
+    Assert-ReleaseVolumeHolders @($Volume) @() 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_HOLDER_CHANGED'
+    foreach($C in @((Container $Context.gateway.Id),(Container $Context.registry.Id))){
+        if($C.State.Status -cne 'exited' -or $C.HostConfig.RestartPolicy.Name -cne 'no'){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_NOT_FROZEN'
+        }
+    }
+    $StateAccess=if($Operation -ceq 'Close' -and -not $VerifyOnly){''}else{',readonly'}
+    $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','20002:20002','--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','1024m',
+        '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+        '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,volume-nocopy'+$StateAccess),
+        '--mount',('type=volume,source='+$Config+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    $Payload=@{profile=$Context.release.bootstrapMaterials.registryProfileDigest;pair=$Context.begin.pair
+        holds=$Context.begin.holdSnapshot;record=$Context.publication.record;verify=[bool]$VerifyOnly}
+    if($Operation -ceq 'Reserve'){
+        $Access=if($VerifyOnly){',readonly'}else{''}
+        $Arguments+=@('--mount',('type=volume,source='+$Volume+',target=/target,volume-nocopy'+$Access))
+        $Payload.target=$Context.intent.pair.backupRoot
+        $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import frozen_pair_backup
+p=json.load(sys.stdin)
+r=frozen_pair_backup(p['profile'],pair=p['pair'],holds=p['holds'],phase_record=p['record'],
+                     verify_only=p['verify'],expected_target=p['target'])
+print(json.dumps(r,sort_keys=True,separators=(',',':')))
+'@
+    } else {
+        $Payload.evidence=$Completion.evidence;$Payload.recordedAt=$Completion.recordedAt
+        $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import complete_frozen_pair
+p=json.load(sys.stdin)
+r=complete_frozen_pair(p['profile'],pair=p['pair'],holds=p['holds'],pending=p['record'],
+    evidence=p['evidence'],recorded_at=p['recordedAt'],readback=p['verify'])
+print(json.dumps(r,sort_keys=True,separators=(',',':')))
+'@
+    }
+    $Arguments+=@($Context.intent.pair.registryImage)
+    $Actual=(Python-Code $Arguments $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json
+    if($Operation -ceq 'Reserve' -and ($Actual.result -cne 'PAIRED_FROZEN_LOCAL_STATE_RESERVE_ONLY' -or
+       $Actual.profileDigest -cne $Payload.profile -or -not (Same-Json $Actual.holdSnapshot $Payload.holds))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_CHANGED'
+    }
+    Assert-OnlyWriter $State
+    Assert-ReleaseVolumeHolders @($Volume) @() 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_HOLDER_CHANGED'
+    return $Actual
+}
+
 function Backup-Primary {
     if(-not (Test-Path -LiteralPath $Pointer)){throw 'PRIMARY_CURRENT_RELEASE_REQUIRED'}
     $Source=Get-SourceRecord;$P=$Source.runtime;$C=Container $P.pilotId
-    Admit $C $P
-    if($C.State.Status -cne 'running' -or $C.State.Health.Status -cne 'healthy'){
+    $Post=Read-BootstrapPostContext $Source
+    if($Post){
+        $null=Enter-BootstrapPostPhase $Post 'BACKUP_FROZEN' $Source.hash.ToLowerInvariant()
+        $C=Container $P.pilotId;$Registry=Container $Post.registry.Id
+        Admit $C $P -AllowUnhealthy -RegistryReturnSource
+        if($C.State.Status -ceq 'running' -and $Registry.State.Status -cne 'running'){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_ORDER_CHANGED'
+        }
+        if($C.State.Status -ceq 'running'){Admit $C $P}
+    }else{Admit $C $P}
+    if(-not $Post -and ($C.State.Status -cne 'running' -or $C.State.Health.Status -cne 'healthy')){
         throw 'PRIMARY_BACKUP_NOT_HEALTHY'
     }
     Assert-OnlyWriter $P.stateVolume $C.Id
-    $Id=[Guid]::NewGuid().ToString('N')
+    $Id=if($Post){$P.runId}else{[Guid]::NewGuid().ToString('N')}
     $Name='fortis-gateway-backup-'+$Id
     $Directory=Join-Path $ReleaseBase ('primary-backup-'+$Id)
+    $RecordPath=Join-Path $Directory 'record.json'
+    $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
+    if($Post -and (Test-Path -LiteralPath $RecordPath) -and $C.State.Status -ceq 'running' -and $Registry.State.Status -ceq 'running'){
+        $PriorBackup=Read-Private $RecordPath
+        if($PriorBackup.schema -cne 'fortis-primary-backup-v1' -or $PriorBackup.phase -cne 'Complete' -or
+           $PriorBackup.sourceRecord -cne $Source.path -or $PriorBackup.sourceHash -ine $Source.hash -or
+           $PriorBackup.containerId -cne $C.Id -or $PriorBackup.image -cne $P.image -or
+           $PriorBackup.stateVolume -cne $P.stateVolume -or $PriorBackup.backupVolume -cne $Name -or
+           -not $PriorBackup.registryReserve -or
+           -not (Same-Json $PriorBackup.registryReserve.holdSnapshot $Post.begin.holdSnapshot) -or
+           -not (Same-Json (Receipt $Name) $PriorBackup.receipt)){
+            throw 'PRIMARY_BACKUP_RECEIPT_INVALID'
+        }
+        if((Read-Private $BackupPointer).record -cne $RecordPath){
+            Write-Private $BackupPointer @{schema=1;record=$RecordPath} -FlushToDisk
+        }
+        Write-Host ('FORTIS_PRIMARY_BACKUP_PASS '+$Name);return
+    }
     $Stopped=$false;$Pass=$false
     try {
         Write-ReleaseTiming 'BACKUP_STOP_REQUEST'
-        $null=Docker-Text @('stop','--timeout','20',$C.Id);$Stopped=$true
+        if($Post){
+            # Set recovery intent before the first effect. Read back actual
+            # state on ACK loss, retaining the current pair throughout.
+            $Stopped=$true
+            $C=Set-BootstrapContainerState $C DisableRestart
+            $C=Set-BootstrapContainerState $C Stop
+            $Registry=Set-BootstrapContainerState $Registry DisableRestart
+            $Registry=Set-BootstrapContainerState $Registry Stop
+        }else{$null=Docker-Text @('stop','--timeout','20',$C.Id);$Stopped=$true}
         if((Container $C.Id).State.Status -cne 'exited'){throw 'PRIMARY_BACKUP_STOP_UNCONFIRMED'}
         Write-ReleaseTiming 'BACKUP_SOURCE_EXITED'
         Assert-OnlyWriter $P.stateVolume
         $Before=Receipt $P.stateVolume
         Write-ReleaseTiming 'BACKUP_SOURCE_RECEIPT_READY'
-        $null=Docker-Text @('volume','create','--label',('io.fortis.primary-backup='+$Id),$Name)
+        $Existing=$Post -and @((Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n') -ccontains $Name
+        if(-not $Existing){$null=Docker-Text @('volume','create','--label',('io.fortis.primary-backup='+$Id),$Name)}
         Assert-Volume $Name
-        $Clone=State-Helper @{action='clone';github=$true;native=$true;
+        if($Post){
+            Assert-ReleaseVolumeHolders @($Name) @() 'PRIMARY_BACKUP_VOLUME_HOLDER_CHANGED'
+            if(@(Docker-Json @('volume','inspect',$Name))[0].Labels.'io.fortis.primary-backup' -cne $Id){
+                throw 'PRIMARY_BACKUP_VOLUME_PROVENANCE_INVALID'
+            }
+        }
+        $Clone=$null
+        if($Existing){
+            try{$Clone=Receipt $Name}catch{Write-Warning 'PRIMARY_BACKUP_READBACK_INCOMPLETE'}
+        }
+        if(-not $Clone){
+            # Existing clone helper refuses any nonempty target. Only an
+            # independently empty reserve can resume a lost volume-create ACK.
+            $Clone=State-Helper @{action='clone';github=$true;native=$true;
             preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests);
             preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs);
             preserveApprovedIds=@(Approved-Ids)} @('--mount',
             ('type=volume,source='+$P.stateVolume+',target=/source,readonly'),
-            '--mount',('type=volume,source='+$Name+',target=/target')) -Root
+            '--mount',('type=volume,source='+$Name+',target=/target')) -Root}
         if(-not (Same-Json $Clone $Before) -or -not (Same-Json (Receipt $P.stateVolume) $Before)){
             throw 'PRIMARY_BACKUP_CLONE_MISMATCH'
         }
         Write-ReleaseTiming 'BACKUP_CLONE_VERIFIED'
-        Protect-Directory $Directory
-        Write-Private (Join-Path $Directory 'record.json') ([ordered]@{
-            schema='fortis-primary-backup-v1';phase='Complete';sourceRecord=$Source.path
+        $Record=[ordered]@{schema='fortis-primary-backup-v1';phase='Complete';sourceRecord=$Source.path
             sourceHash=$Source.hash;containerId=$C.Id;image=$P.image;stateVolume=$P.stateVolume
-            backupVolume=$Name;receipt=$Before})
-        Write-Private (Join-Path $ReleaseBase 'primary-backup.json') @{schema=1;record=(Join-Path $Directory 'record.json')}
+            backupVolume=$Name;receipt=$Before}
+        if($Post){
+            $Written=$null
+            try{$Written=Invoke-BootstrapRegistryOffline $Post Reserve}
+            catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_READBACK'}
+            $Actual=Invoke-BootstrapRegistryOffline $Post Reserve -VerifyOnly
+            if($Written -and -not (Same-Json $Written $Actual)){throw 'PRIMARY_BACKUP_CLONE_MISMATCH'}
+            $Record.registryReserve=$Actual
+        }
+        if(Test-Path -LiteralPath $RecordPath){
+            if(-not (Same-Json (Read-Private $RecordPath) $Record)){throw 'PRIMARY_BACKUP_RECEIPT_INVALID'}
+        }else{
+            Protect-Directory $Directory
+            Write-Private $RecordPath $Record -FlushToDisk:([bool]$Post)
+        }
+        Write-Private $BackupPointer @{schema=1;record=$RecordPath} -FlushToDisk:([bool]$Post)
         $Pass=$true
         Write-ReleaseTiming 'BACKUP_RECORD_COMMITTED'
     } finally {
         if($Stopped){
             $Old=Container $C.Id
             Write-ReleaseTiming 'BACKUP_RESTART_BEGIN'
-            if($Old.State.Status -ceq 'exited'){$null=Docker-Text @('start',$C.Id)}
+            if($Post){
+                $Registry=Container $Post.registry.Id
+                if($Registry.State.Status -ceq 'exited'){$Registry=Set-BootstrapContainerState $Registry Start}
+                Wait-CorrectiveRegistryListener $Registry.Id
+                $Publication=(Read-SuccessorPublication $Post.owner).anchor
+                if($Publication.state -cne 'Committed' -or $Publication.record.phase -cne 'BACKUP_FROZEN' -or
+                   $Publication.registryDigest -cne $Post.begin.registryDigest){throw 'PRIMARY_BACKUP_RESTART_PHASE_CHANGED'}
+                $Delivery=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Publication.digest -LatestPin
+                Assert-SuccessorRuntimeDelivery $Delivery $P.registryDelivery $Publication
+                $null=Set-BootstrapContainerState $Registry RestoreRestart
+                if($Old.State.Status -ceq 'exited'){$Old=Set-BootstrapContainerState $Old Start}
+            }elseif($Old.State.Status -ceq 'exited'){$null=Docker-Text @('start',$C.Id)}
             Wait-Healthy $C.Id;Admit (Container $C.Id) $P
             Write-ReleaseTiming 'BACKUP_HEALTH_ADMITTED'
         }
@@ -1324,6 +1589,594 @@ function Assert-FormerPrimaryRetirementSelfTest {
     Write-Host 'FORTIS_RELEASE_STATE_CLEANUP_FORMER_PRIMARY_SELFTEST_PASS'
 }
 
+function Project-BootstrapCompletion {
+    param($Context,$Backup,$ActualGateway,$ActualRegistry,$Live,$Completion=$null)
+    $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.integrations.registry_contracts.maintenance_evidence import project_paired_completion,paired_normal_record
+p=json.load(sys.stdin)
+if p['completion'] is not None:
+    c=p['completion']
+    r=paired_normal_record(c['pending'],p['pair'],c['evidence'],c['readback'])
+else:
+    r=project_paired_completion(p['record'],p['pair'],p['holds'],
+        apply_digest=p['applyDigest'],backup_digest=p['backupDigest'],primary_digest=p['primaryDigest'],
+        backup_gateway=p['backup']['receipt'],actual_gateway=p['actualGateway'],
+        backup_registry=p['backup']['registryReserve'],actual_registry=p['actualRegistry'],
+        live=p['live'],now=p['now'])
+print(json.dumps(r,sort_keys=True,separators=(',',':')))
+'@
+    $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','20002:20002','--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','128m',
+        $Context.intent.pair.registryImage)
+    $Payload=@{pair=$Context.begin.pair;holds=$Context.begin.holdSnapshot;record=$Context.publication.record
+        completion=$Completion;backup=$Backup;actualGateway=$ActualGateway;actualRegistry=$ActualRegistry;live=$Live
+        applyDigest=$Context.source.hash.ToLowerInvariant();backupDigest=$Context.backupDigest;primaryDigest=$Context.primaryDigest
+        now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}
+    return ((Python-Code $Arguments $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json)
+}
+function Admit-BootstrapPromotedGateway {
+    param($Context,$C,[switch]$Offline)
+    $P=$Context.source.runtime
+    if($C.Id -cne $P.pilotId -or $C.Image -cne $P.image -or $C.Name -cne '/fortis-gateway' -or
+       $P.pilotName -cne 'fortis-gateway' -or $P.restartPolicy -cne 'unless-stopped'){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'
+    }
+    if($C.HostConfig.RestartPolicy.Name -ceq 'no'){
+        $Copy=$C|ConvertTo-Json -Depth 50 -Compress|ConvertFrom-Json
+        $Copy.Name='/'+$Context.release.runtime.pilotName
+        Admit $Copy $Context.release.runtime -AllowUnhealthy -RegistryReturnSource:$Offline
+    }else{
+        Admit $C $P -AllowUnhealthy -RegistryReturnSource:$Offline
+    }
+}
+function Restart-BootstrapPrimaryPair {
+    param($Context,$Publication,$ExpectedCheckpoint=$null)
+    $P=$Context.source.runtime
+    $G=Container $P.pilotId;$R=Read-BootstrapReceiver $Context.intent -GatewayId $G.Id -Accepted
+    if(-not $R){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'}
+    Admit-BootstrapPromotedGateway $Context $G -Offline
+    if($G.State.Status -ceq 'running' -and $R.State.Status -cne 'running'){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_POST_ACTIVATION_CHANGED'
+    }
+    # Do not admit a stopped Gateway via a stale live peer or enable its
+    # restart policy before the independently bound Registry can serve.
+    if($R.State.Status -ceq 'exited'){$R=Set-BootstrapContainerState $R Start}
+    Wait-CorrectiveRegistryListener $R.Id
+    if($G.State.Status -ceq 'exited'){
+        $Actual=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Publication.digest -LatestPin
+        Assert-SuccessorRuntimeDelivery $Actual $P.registryDelivery $Publication
+        if($ExpectedCheckpoint){
+            foreach($Field in @('sourceRevision','sourceCursor','snapshotRevision','eventDigest','profileDigest')){
+                if($Actual.registryCheckpoint.$Field -cne $ExpectedCheckpoint.$Field){
+                    throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+                }
+            }
+        }
+        $null=Set-BootstrapContainerState $R RestoreRestart
+        $G=Set-BootstrapContainerState $G Start
+    } else {$null=Set-BootstrapContainerState $R RestoreRestart}
+    $null=Set-BootstrapContainerState (Container $G.Id) RestoreRestart
+    Wait-Healthy $G.Id;Admit (Container $G.Id) $P
+    Assert-Release-Production
+}
+function Complete-BootstrapPrimary {
+    param($Context,[string]$BackupPath,$Backup,$Primary,[switch]$Refreshed)
+    $Source=$Context.source
+    $Source.runtime=$Primary.runtime
+    $P=$Source.runtime
+    $Context.backupDigest=(Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Context.primaryDigest=(Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash.ToLowerInvariant()
+    if(-not (Same-Json (Read-Private $PrimaryPointer) $Primary)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'}
+    $Path=Join-Path (Split-Path $Source.path -Parent) 'bootstrap-completion.json'
+    $Publication=(Read-SuccessorPublication $Context.owner).anchor
+    if($Publication.state -ceq 'Committed' -and $Publication.record.phase -cin @('PROMOTE_FROZEN','COMPLETION_PENDING','RECOVERY_HOLD')){
+        $null=Publish-SuccessorInterlock $Context.owner $Publication.record $Publication.registryDigest
+        $Publication=(Read-SuccessorPublication $Context.owner).anchor
+    }
+    $Context.publication=$Publication
+    $Record=$null
+    if(Test-Path -LiteralPath $Path){
+        $Record=Read-Private $Path
+        if($Record.schema -cne 'fortis-bootstrap-completion-v1' -or
+           $Record.sourceHash -ine $Source.hash -or $Record.backupDigest -cne $Context.backupDigest -or
+           $Record.primaryDigest -cne $Context.primaryDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+    }
+    if($Publication.state -ceq 'Pending' -and $Publication.record.phase -ceq 'COMPLETION_PENDING' -and
+       $Publication.next.phase -ceq 'RECOVERY_HOLD'){
+        if(-not $Record -or -not $Record.PSObject.Properties['recovery'] -or
+           -not $Record.PSObject.Properties['recoveryReadback'] -or
+           $Record.recoveryReadback.pendingDigest -cne $Publication.digest -or
+           -not (Same-Json $Record.recovery $Publication.next)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+        $null=Publish-SuccessorInterlock $Context.owner $Record.recovery $Context.begin.registryDigest
+        $Publication=(Read-SuccessorPublication $Context.owner).anchor
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Record.recovery)){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+        }
+        $Context.publication=$Publication
+    }
+    if($Publication.record.phase -cin @('PROMOTE_FROZEN','RECOVERY_HOLD') -and $Publication.state -ceq 'Committed'){
+        if($Record -and ($Record.live.delivery.sourceDelivery.interlockDigest -cne $Publication.digest -or
+           [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-$Record.live.observedAt -gt 300)){
+            if($Record.PSObject.Properties['close']){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+            Restart-BootstrapPrimaryPair $Context $Publication $Backup.registryReserve.checkpoint
+            $OldProofHash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $History=Join-Path (Split-Path $Path -Parent) ('bootstrap-completion-unused-'+$OldProofHash+'.json')
+            if(-not (Test-Path -LiteralPath $History)){Write-Private $History $Record -FlushToDisk}
+            elseif(-not (Same-Json (Read-Private $History) $Record)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+            $Record=$null
+        }
+        if(-not $Record){
+            $G=Container $P.pilotId;$R=Container $Context.registry.Id
+            Wait-Healthy $G.Id;Wait-CorrectiveRegistryListener $R.Id
+            Admit (Container $G.Id) $P
+            $G=Container $G.Id;$R=Container $R.Id
+            if($G.State.Status -cne 'running' -or $G.State.Health.Status -cne 'healthy' -or $R.State.Status -cne 'running'){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            $LiveDelivery=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Publication.digest -LatestPin
+            Assert-SuccessorRuntimeDelivery $LiveDelivery $P.registryDelivery $Publication
+            $Record=[pscustomobject][ordered]@{schema='fortis-bootstrap-completion-v1';sourceHash=$Source.hash
+                backupDigest=$Context.backupDigest;primaryDigest=$Context.primaryDigest;live=[ordered]@{
+                    gatewayId=$G.Id;registryId=$R.Id;gatewayImage=$G.Image;registryImage=$R.Image
+                    gatewayHealth=$G.State.Health.Status;registryStatus=$R.State.Status
+                    delivery=$LiveDelivery;observedAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}}
+            Write-Private $Path $Record -FlushToDisk
+            $Record=Read-Private $Path
+        }
+        if($Record.live.gatewayId -cne $P.pilotId -or $Record.live.registryId -cne $Context.registry.Id -or
+           $Record.live.delivery.sourceDelivery.interlockDigest -cne $Publication.digest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+        try {
+            # No effects on the retained #289 pair. Stop only the exact
+            # activated target pair, under the same global freeze.
+            $G=Container $P.pilotId
+            Admit-BootstrapPromotedGateway $Context $G -Offline
+            $R=Read-BootstrapReceiver $Context.intent -GatewayId $G.Id -Accepted
+            if(-not $R){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'}
+            $G=Set-BootstrapContainerState $G DisableRestart
+            $null=Set-BootstrapContainerState $G Stop
+            $R=Set-BootstrapContainerState $R DisableRestart
+            $null=Set-BootstrapContainerState $R Stop
+            Assert-OnlyWriter $P.stateVolume
+            $ActualGateway=Receipt $P.stateVolume
+            $ActualRegistry=Invoke-BootstrapRegistryOffline $Context Reserve -VerifyOnly
+            if(-not (Same-Json $ActualGateway $Backup.receipt) -or -not (Same-Json $ActualRegistry $Backup.registryReserve)){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            if(-not $Record.PSObject.Properties['proof']){
+                $Proof=Project-BootstrapCompletion $Context $Backup $ActualGateway $ActualRegistry $Record.live
+                $Record|Add-Member -NotePropertyName proof -NotePropertyValue $Proof
+                Write-Private $Path $Record -FlushToDisk
+                $Record=Read-Private $Path
+            }
+        } catch {
+            # Only before a pending completion intent exists can the held
+            # NEW pair restart. Do not return old state or clear any hold.
+            $Actual=(Read-SuccessorPublication $Context.owner).anchor
+            if($Actual.state -ceq 'Committed' -and (Same-Json $Actual $Publication)){
+                try{Restart-BootstrapPrimaryPair $Context $Actual $Backup.registryReserve.checkpoint}
+                catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_RECOVERY_REQUIRED'}
+            }
+            throw
+        }
+    }
+    if(-not $Record -or -not $Record.PSObject.Properties['proof']){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+    }
+    $Proof=$Record.proof
+    foreach($Role in @('gateway','registry')){
+        $Evidence=$Proof.evidence.controllers.$Role
+        if($Evidence.applyRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+           $Evidence.backupRecordDigest -cne $Context.backupDigest -or
+           $Evidence.primaryRecordDigest -cne $Context.primaryDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+    }
+    if($Publication.record.phase -cin @('PROMOTE_FROZEN','RECOVERY_HOLD')){
+        # Exact protected completion intent precedes all journal effects.
+        $null=Publish-SuccessorInterlock $Context.owner $Proof.pending $Context.begin.registryDigest
+        $Publication=(Read-SuccessorPublication $Context.owner).anchor
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Proof.pending)){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+        }
+    }
+    if($Publication.record.phase -ceq 'COMPLETION_PENDING' -and
+       ($Publication.state -ceq 'Committed' -or -not $Record.PSObject.Properties['close'])){
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Proof.pending)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+        }
+        $Context.publication=$Publication
+        $Actual=Invoke-BootstrapRegistryOffline $Context Close -VerifyOnly -Completion $Proof
+        if($Actual.PSObject.Properties['notApplied'] -and -not $Actual.recovery){
+            if($Record.PSObject.Properties['close'] -or $Record.PSObject.Properties['recovery']){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            $Written=$null
+            try{$Written=Invoke-BootstrapRegistryOffline $Context Close -Completion $Proof}
+            catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_READBACK'}
+            $Actual=Invoke-BootstrapRegistryOffline $Context Close -VerifyOnly -Completion $Proof
+            if($Written -and -not (Same-Json $Written $Actual)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+        }
+        if($Actual.PSObject.Properties['notApplied']){
+            if($Record.PSObject.Properties['close'] -or
+               $Actual.notApplied.result -cne 'PROTECTED_PAIR_COMPLETION_NOT_APPLIED' -or
+               $Actual.notApplied.pendingDigest -cne $Publication.digest -or
+               -not (Same-Json $Actual.notApplied.holdSnapshot $Context.begin.holdSnapshot) -or
+               -not (Same-Json $Actual.notApplied.checkpoint $Backup.registryReserve.checkpoint)){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            if(-not $Actual.recovery){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_NOT_APPLIED_RETRY'}
+            # The RO journal replay proves all four operation IDs absent,
+            # exact unchanged holds and expired original proof. Preserve
+            # that proof before entering the same target's RECOVERY_HOLD.
+            if($Actual.recovery.phase -cne 'RECOVERY_HOLD' -or
+               $Actual.recovery.generation -cne $Publication.record.generation -or
+               $Actual.recovery.previousDigest -cne $Publication.digest -or
+               -not (Same-Json $Actual.recovery.attempt $Publication.record.attempt)){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            if($Record.PSObject.Properties['recovery']){
+                if(-not (Same-Json $Record.recovery $Actual.recovery) -or
+                   -not $Record.PSObject.Properties['recoveryReadback'] -or
+                   -not (Same-Json $Record.recoveryReadback $Actual.notApplied)){
+                    throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+                }
+            }else{
+                $Record|Add-Member -NotePropertyName recovery -NotePropertyValue $Actual.recovery
+                $Record|Add-Member -NotePropertyName recoveryReadback -NotePropertyValue $Actual.notApplied
+                Write-Private $Path $Record -FlushToDisk
+                $Record=Read-Private $Path
+            }
+            $null=Publish-SuccessorInterlock $Context.owner $Record.recovery $Context.begin.registryDigest
+            $Publication=(Read-SuccessorPublication $Context.owner).anchor
+            if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Record.recovery)){
+                throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+            }
+            if($Refreshed){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_RECOVERY_REQUIRED'}
+            Complete-BootstrapPrimary $Context $BackupPath $Backup $Primary -Refreshed
+            return
+        }
+        if(-not $Actual.readback -or -not $Actual.normal){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+        if($Record.PSObject.Properties['close']){
+            if(-not (Same-Json $Record.close $Actual)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+        } else {
+            $Record|Add-Member -NotePropertyName close -NotePropertyValue $Actual
+            Write-Private $Path $Record -FlushToDisk
+            $Record=Read-Private $Path
+        }
+        # The single operational host anchor now belongs to the exact
+        # current immutable release. Never recreate the projection/sequence.
+        if($Context.owner.hash -cne $Source.hash){
+            $Loaded=Read-SuccessorPublication $Context.owner
+            if($Loaded.anchor.state -cne 'Committed' -or -not (Same-Json $Loaded.anchor $Publication)){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+            }
+            $Rebound=$Publication|ConvertTo-Json -Compress -Depth 25|ConvertFrom-Json
+            $Rebound.sourceRecordHash=$Source.hash
+            Write-Private $Loaded.path $Rebound -FlushToDisk
+            if(-not (Same-Json (Read-Private $Loaded.path) $Rebound)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+            $Context.owner=$Source
+        }
+    }
+    if(-not $Record.PSObject.Properties['close'] -or $Context.owner.hash -cne $Source.hash){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+    }
+    $Normal=Project-BootstrapCompletion $Context $null $null $null $null -Completion @{
+        pending=$Proof.pending;evidence=$Proof.evidence;readback=$Record.close.readback}
+    if(-not (Same-Json $Normal $Record.close.normal)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'}
+    $Digest=Publish-SuccessorInterlock $Context.owner $Normal $null
+    $Actual=(Read-SuccessorPublication $Context.owner).anchor
+    if($Actual.state -cne 'Committed' -or $Actual.digest -cne $Digest -or
+       $null -ne $Actual.registryDigest -or -not (Same-Json $Actual.record $Normal)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'
+    }
+    Restart-BootstrapPrimaryPair $Context $Actual $Record.close.readback.checkpoint
+    Write-Host 'FORTIS_SUCCESSOR_PAIR_NORMAL'
+    Write-Host 'FORTIS_PRIMARY_PROMOTED'
+}
+
+function Promote-BootstrapPair {
+    param($Context,[string]$BackupPath,$Backup)
+    $Source=$Context.source;$Release=$Context.release;$P=$Release.runtime
+    $Digest=(Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if(-not $Backup.registryReserve -or
+       -not (Same-Json $Backup.registryReserve.holdSnapshot $Context.begin.holdSnapshot) -or
+       $Backup.registryReserve.profileDigest -cne $Release.bootstrapMaterials.registryProfileDigest){
+        throw 'PRIMARY_BACKUP_RECEIPT_INVALID'
+    }
+    $Ordinary=$Context.intent.ContainsKey('ordinary')
+    $PriorPin=if($Ordinary){$Context.intent.check.binding.primaryPointerHash.ToLowerInvariant()}
+        else{$Context.intent.pair.checked.registry.review.primaryRecordDigest}
+    $Path=Join-Path (Split-Path $Source.path -Parent) 'bootstrap-primary-intent.json'
+    $Current=Read-Private $PrimaryPointer
+    if(Test-Path -LiteralPath $Path){
+        $Intent=Read-Private $Path
+    } else {
+        $PriorDigest=(Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash.ToLowerInvariant()
+        if($PriorDigest -cne $PriorPin -or
+           $Current.sourceRecord -cne $Release.source.path -or $Current.sourceHash -ine $Release.source.hash -or
+           -not (Same-Json $Current.runtime $Release.source.runtime)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'
+        }
+        $null=Enter-BootstrapPostPhase $Context 'PROMOTE_FROZEN' $Digest
+        $Runtime=$P|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json
+        $Runtime|Add-Member -NotePropertyName originalPilotName -NotePropertyValue $P.pilotName
+        $Runtime|Add-Member -NotePropertyName restartPolicy -NotePropertyValue 'unless-stopped'
+        $Runtime.pilotName='fortis-gateway'
+        $Primary=[ordered]@{schema='fortis-primary-v1';phase='Complete';sourceRecord=$Source.path
+            sourceHash=$Source.hash;runtime=$Runtime;previousPrimaryRecord=$Current.sourceRecord}
+        $Intent=[ordered]@{schema='fortis-bootstrap-primary-intent-v1';sourceHash=$Source.hash
+            backupDigest=$Digest;prior=$Current;priorDigest=$PriorDigest;primary=$Primary}
+        Write-Private $Path $Intent -FlushToDisk
+        $Intent=Read-Private $Path
+    }
+    if($Intent.schema -cne 'fortis-bootstrap-primary-intent-v1' -or
+       $Intent.sourceHash -ine $Source.hash -or $Intent.backupDigest -cne $Digest -or
+       $Intent.priorDigest -cne $PriorPin -or
+       $Intent.prior.sourceRecord -cne $Release.source.path -or
+       $Intent.prior.sourceHash -ine $Release.source.hash -or
+       -not (Same-Json $Intent.prior.runtime $Release.source.runtime) -or
+       $Intent.primary.sourceRecord -cne $Source.path -or $Intent.primary.sourceHash -ine $Source.hash -or
+       $Intent.primary.runtime.pilotId -cne $P.pilotId -or $Intent.primary.runtime.image -cne $P.image -or
+       $Intent.primary.runtime.originalPilotName -cne $P.pilotName -or
+       $Intent.primary.runtime.pilotName -cne 'fortis-gateway' -or
+       $Intent.primary.runtime.restartPolicy -cne 'unless-stopped' -or
+       (-not (Same-Json $Current $Intent.prior) -and -not (Same-Json $Current $Intent.primary))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'
+    }
+    # Bind the full target runtime, not only the new name and restart flag.
+    $Projected=$Intent.primary.runtime|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json
+    $Projected.PSObject.Properties.Remove('originalPilotName');$Projected.PSObject.Properties.Remove('restartPolicy')
+    $Projected.pilotName=$P.pilotName
+    if(-not (Same-Json $Projected $P)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'}
+    if(Same-Json $Current $Intent.primary){
+        # A committed primary pointer is not proof of completed maintenance.
+        # Recovery must still finish the same paired completion, not rename.
+        Complete-BootstrapPrimary $Context $BackupPath $Backup $Intent.primary
+        return
+    }
+    if((Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash -ine $Intent.priorDigest){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'
+    }
+    $null=Enter-BootstrapPostPhase $Context 'PROMOTE_FROZEN' $Digest
+    $Old=Container $Context.oldGateway.Id;$Target=Container $P.pilotId
+    $OldName=$Intent.prior.runtime.originalPilotName
+    if($Old.State.Status -cne 'exited' -or $Old.HostConfig.RestartPolicy.Name -cne 'no' -or
+       $Old.Name -cnotin @('/fortis-gateway',('/'+$OldName)) -or
+       $Target.State.Status -cne 'running' -or $Target.Name -cnotin @('/fortis-gateway',('/'+$P.pilotName))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'
+    }
+    if($Old.Name -ceq '/fortis-gateway'){
+        if($Ordinary){Admit $Old $Intent.prior.runtime -AllowUnhealthy -RegistryReturnSource -RetainedMaintenance}
+        else{Admit $Old $Intent.prior.runtime -AllowUnhealthy -RegistryReturnSource -BootstrapRetained}
+    } else {
+        $OldRuntime=$Intent.prior.runtime|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json
+        $OldRuntime.pilotName=$OldName;$OldRuntime.restartPolicy=''
+        Admit $Old $OldRuntime -AllowUnhealthy -RegistryReturnSource
+    }
+    if($Target.Name -ceq ('/'+$P.pilotName)){Admit $Target $P}
+    elseif($Target.HostConfig.RestartPolicy.Name -ceq 'no'){
+        # Exact already-renamed target under durable intent. Admit only an
+        # in-memory name projection; no startup or peer check is skipped.
+        $Copy=$Target|ConvertTo-Json -Depth 50 -Compress|ConvertFrom-Json
+        $Copy.Name='/'+$P.pilotName;Admit $Copy $P
+    } else {Admit $Target $Intent.primary.runtime}
+    foreach($Row in @(@($Old,$OldName),@($Target,'fortis-gateway'))){
+        $C=$Row[0];$Name=$Row[1]
+        if($C.Name -cne ('/'+$Name)){
+            try{$null=Docker-Text @('rename',$C.Id,$Name)}
+            catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_RENAME_READBACK'}
+        }
+        $Actual=Container $C.Id
+        if($Actual.Id -cne $C.Id -or $Actual.Image -cne $C.Image -or $Actual.Name -cne ('/'+$Name)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RENAME_UNCONFIRMED'
+        }
+    }
+    $null=Set-BootstrapContainerState (Container $P.pilotId) RestoreRestart
+    Wait-Healthy $P.pilotId;Admit (Container $P.pilotId) $Intent.primary.runtime
+    Write-Private $PrimaryPointer $Intent.primary -FlushToDisk
+    if(-not (Same-Json (Read-Private $PrimaryPointer) $Intent.primary)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PRIMARY_CHANGED'}
+    Complete-BootstrapPrimary $Context $BackupPath $Backup $Intent.primary
+}
+
+function Assert-BootstrapPostLifecycleSelfTest {
+    param([switch]$Ordinary)
+    # Host orchestration fixture only. Real SQLite proof/replay is exercised
+    # separately by test_registry_source_lineage.
+    $ActualPostContext=(Get-Command Read-BootstrapPostContext -CommandType Function).ScriptBlock
+    $Fixture=@{files=@{};containers=@{};effects=[System.Collections.Generic.List[string]]::new();closed=$false;loseNormal=$true;expire=$true;loseRecovery=$true;writes=0;reserveWrites=0;clones=0;volume=$false}
+    $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-post-lifecycle-fixture'
+    $PrimaryPointer=Join-Path $ReleaseBase 'primary.json';$AnchorPath=Join-Path $ReleaseBase 'maintenance-publication-v2.json'
+    $BackupPath=Join-Path $ReleaseBase 'backup.json';$Path=Join-Path (Join-Path $ReleaseBase 'new') 'record.json'
+    $CompletionPath=Join-Path (Split-Path $Path -Parent) 'bootstrap-completion.json'
+    $Fixture.newPath=$Path;$Fixture.intentPath=Join-Path (Split-Path $Path -Parent) 'bootstrap-primary-intent.json'
+    $OldHash='a'*64;$NewHash='b'*64;$BackupHash='c'*64;$PriorHash='d'*64;$PrimaryHash='e'*64
+    $Gid='1'*64;$Rid='2'*64;$OldId='3'*64;$OldRid='4'*64
+    $GImage='sha256:'+('5'*64);$RImage='sha256:'+('6'*64)
+    $Run='7'*32
+    $Pointer=Join-Path $ReleaseBase 'current.json'
+    $BackupPath=Join-Path (Join-Path $ReleaseBase ('primary-backup-'+$Run)) 'record.json'
+    $Fixture.backupPath=$BackupPath;$Fixture.backupName='fortis-gateway-backup-'+$Run
+    $Fixture.files[$Pointer]=@{record=$Path}
+    $Generation='8'*64;$RegistryDigest='9'*64
+    $GReceipt=[pscustomobject]@{sha256='f'*64}
+    $Checkpoint=[pscustomobject]@{sourceRevision='s';sourceCursor=4;snapshotRevision='r';eventDigest='0'*64;profileDigest='1'*64}
+    $Holds=@('hold')
+    $Reserve=[pscustomobject]@{holdSnapshot=$Holds;profileDigest='2'*64;checkpoint=$Checkpoint}
+    $Backup=[pscustomobject]@{receipt=$GReceipt;registryReserve=$Reserve}
+    $Runtime=[pscustomobject][ordered]@{pilotId=$Gid;pilotName=('fortis-github-pilot-'+$Run);image=$GImage;stateVolume='new-state';registryReleaseNonce='fixture';registryDelivery='delivery';runId=$Run}
+    $PriorRuntime=[pscustomobject][ordered]@{pilotId=$OldId;pilotName='fortis-gateway';originalPilotName='fortis-old';restartPolicy='unless-stopped';image=$GImage}
+    $OldSource=@{path=(Join-Path (Join-Path $ReleaseBase 'old') 'record.json');hash=$OldHash;runtime=$PriorRuntime}
+    $Source=@{path=$Path;hash=$NewHash;runtime=$Runtime}
+    $Release=@{runtime=$Runtime;source=$OldSource;bootstrapMaterials=@{registryProfileDigest=$Reserve.profileDigest}}
+    $Fixture.files[$PrimaryPointer]=@{schema='fortis-primary-v1';phase='Complete';sourceRecord=$OldSource.path;sourceHash=$OldHash;runtime=$PriorRuntime}
+    $Fixture.files[$AnchorPath]=[pscustomobject]@{sourceRecordHash=$OldHash;state='Committed';record=[pscustomobject]@{phase='STAGED_TARGET_FROZEN';sequence=3;generation=$Generation;attempt=@{attemptId='fixture'};previousDigest='0'*64;proofDigest=$NewHash};digest='1'*64;registryDigest=$RegistryDigest}
+    foreach($Item in @(@($Gid,$Runtime.pilotName,$GImage,'running','no'),@($Rid,'registry',$RImage,'running','unless-stopped'),@($OldId,'fortis-gateway',$GImage,'exited','no'),@($OldRid,'old-registry',$RImage,'exited','no'))){
+        $Fixture.containers[$Item[0]]=[pscustomobject]@{Id=$Item[0];Name='/'+$Item[1];Image=$Item[2];State=[pscustomobject]@{Status=$Item[3];Health=@{Status='healthy'}};HostConfig=@{RestartPolicy=[pscustomobject]@{Name=$Item[4];MaximumRetryCount=0}}}
+    }
+    function Copy-Fixture($Value){$Value|ConvertTo-Json -Depth 50 -Compress|ConvertFrom-Json}
+    function Test-Path {param($LiteralPath) return $Fixture.files.ContainsKey($LiteralPath)}
+    function Read-Private {param($P) if(-not $Fixture.files.ContainsKey($P)){throw 'FIXTURE_MISSING_FILE'};Copy-Fixture $Fixture.files[$P]}
+    function Write-Private {param($P,$Value,[switch]$FlushToDisk)
+        if(-not $FlushToDisk){throw 'FIXTURE_MISSING_FLUSH'}
+        if($P -ceq $AnchorPath -and (-not $Fixture.closed -or -not $Fixture.files[$CompletionPath].close)){throw 'FIXTURE_EARLY_REBIND'}
+        $Fixture.files[$P]=Copy-Fixture $Value
+    }
+    function Get-FileHash {param($LiteralPath,$Algorithm)
+        $H=if($LiteralPath -ceq $Fixture.backupPath){$BackupHash}elseif($LiteralPath -ceq $PrimaryPointer){if($Fixture.files[$PrimaryPointer].sourceRecord -ceq $Fixture.newPath){$PrimaryHash}else{$PriorHash}}else{$NewHash}
+        @{Hash=$H}
+    }
+    function Container {param($Id) Copy-Fixture $Fixture.containers[$Id]}
+    function Admit {param($C,$P,[switch]$AllowUnhealthy,[switch]$RegistryReturnSource,[switch]$BootstrapRetained,[switch]$RetainedMaintenance)
+        if($C.Id -ceq $OldId -and ($RetainedMaintenance -ne $Ordinary -or $BootstrapRetained -eq $Ordinary)){throw 'FIXTURE_WRONG_RETAINED_MODE'}
+        if($C.Id -cne $P.pilotId -or $C.Image -cne $P.image -or $C.Name -cne ('/'+$P.pilotName)){throw 'FIXTURE_ADMISSION_CHANGED'}
+    }
+    function Read-BootstrapReceiver {param($Intent,$GatewayId,[switch]$Accepted) Container $Rid}
+    function Wait-Healthy {param($Id) if($Fixture.containers[$Id].State.Status -cne 'running'){throw 'FIXTURE_NOT_RUNNING'}}
+    function Wait-CorrectiveRegistryListener {param($Id) Wait-Healthy $Id}
+    function Assert-Release-Production {}
+    function Assert-OnlyWriter {param($Volume,$Id)}
+    function Get-SourceRecord {return $Source}
+    function Read-BootstrapPostContext {param($S) $Context.gateway=Container $Gid;$Context.registry=Container $Rid;return $Context}
+    function Assert-Volume {}
+    function Assert-ReleaseVolumeHolders {}
+    function Protect-Directory {}
+    function Write-ReleaseTiming {}
+    function Parse-PreservedUncertainRequests {}
+    function Approved-Ids {}
+    function Docker-Json {return ,@{Labels=@{'io.fortis.primary-backup'=$Run}}}
+    function State-Helper {param($Payload,$Mounts,[switch]$Root)
+        if($Payload.action -cne 'clone' -or -not $Fixture.volume -or $Fixture.clones -or
+           $Fixture.containers[$Gid].State.Status -cne 'exited' -or $Fixture.containers[$Rid].State.Status -cne 'exited'){throw 'FIXTURE_BACKUP_CLONE'}
+        $Fixture.clones++;return $GReceipt
+    }
+    function Receipt {param($Volume) $GReceipt}
+    function Read-SuccessorPublication {param($Owner)
+        $A=Read-Private $AnchorPath
+        if($A.sourceRecordHash -cne $Owner.hash){throw 'FIXTURE_WRONG_ANCHOR_OWNER'}
+        @{path=$AnchorPath;anchor=$A}
+    }
+    function Publish-SuccessorInterlock {param($Owner,$Next,$Digest)
+        $A=(Read-SuccessorPublication $Owner).anchor
+        if(Same-Json $A.record $Next){return $A.digest}
+        if($Next.previousDigest -cne $A.digest -or $Next.sequence -ne ($A.record.sequence+1)){throw 'FIXTURE_PHASE_CHAIN'}
+        if($Next.phase -ceq 'NORMAL' -and (-not $Fixture.closed -or $Owner.hash -cne $NewHash -or $null -ne $Digest -or -not $Fixture.files[$CompletionPath].close)){throw 'FIXTURE_EARLY_NORMAL'}
+        $A.record=Copy-Fixture $Next;$A.digest=([string]$Next.sequence)*64;$A.registryDigest=$Digest
+        $Fixture.files[$AnchorPath]=$A
+        $Fixture.effects.Add('phase:'+$Next.phase)
+        if($Next.phase -ceq 'RECOVERY_HOLD' -and $Fixture.loseRecovery){
+            $Fixture.loseRecovery=$false;throw 'FIXTURE_RECOVERY_ACK_LOST'
+        }
+        if($Next.phase -ceq 'NORMAL' -and $Fixture.loseNormal){$Fixture.loseNormal=$false;throw 'FIXTURE_NORMAL_ACK_LOST'}
+        return $A.digest
+    }
+    function Docker-Text {param($Arguments)
+        if($Arguments[0] -ceq 'volume'){
+            if($Arguments[1] -ceq 'ls'){if($Fixture.volume){return $Fixture.backupName};return ''}
+            if($Arguments[1] -ceq 'create' -and -not $Fixture.volume -and $Arguments[-1] -ceq $Fixture.backupName){$Fixture.volume=$true;return}
+            throw 'FIXTURE_UNEXPECTED_VOLUME'
+        }
+        $Id=if($Arguments[0] -ceq 'rename'){$Arguments[1]}else{$Arguments[-1]}
+        $C=$Fixture.containers[$Id];$Op=$Arguments[0]
+        if($Id -ceq $OldRid -or ($Id -ceq $OldId -and $Op -cne 'rename')){throw 'FIXTURE_OLD_EFFECT'}
+        if($Op -ceq 'rename'){
+            if(-not $Fixture.files.ContainsKey($Fixture.intentPath)){throw 'FIXTURE_RENAME_WITHOUT_INTENT'}
+            $C.Name='/'+$Arguments[2];$Fixture.effects.Add('rename:'+$Id);throw 'FIXTURE_RENAME_ACK_LOST'
+        }
+        if($Op -ceq 'update'){$C.HostConfig.RestartPolicy.Name=$Arguments[1].Substring(10);return}
+        if($Op -ceq 'stop'){
+            if($Id -ceq $Rid -and $Fixture.containers[$Gid].State.Status -cne 'exited'){throw 'FIXTURE_STOP_ORDER'}
+            $C.State.Status='exited';$Fixture.effects.Add('stop:'+$Id);return
+        }
+        if($Op -ceq 'start'){
+            if($Fixture.files[$AnchorPath].record.phase -cnotin @('BACKUP_FROZEN','RECOVERY_HOLD','NORMAL') -or ($Id -ceq $Gid -and $Fixture.containers[$Rid].State.Status -cne 'running')){throw 'FIXTURE_START_ORDER'}
+            $C.State.Status='running';$Fixture.effects.Add('start:'+$Id);return
+        }
+        throw 'FIXTURE_UNEXPECTED_DOCKER'
+    }
+    function Image-RegistrySuccessor-Preflight {param($ImageId,$ReleaseNonce,$InterlockDigest,[switch]$LatestPin)
+        @{sourceDelivery=@{interlockDigest=$InterlockDigest};registryCheckpoint=$Checkpoint}
+    }
+    function Assert-SuccessorRuntimeDelivery {param($Actual,$Expected,$Publication)
+        if($Actual.sourceDelivery.interlockDigest -cne $Publication.digest){throw 'FIXTURE_DELIVERY_CHANGED'}
+    }
+    function Project-BootstrapCompletion {param($Context,$Backup,$ActualGateway,$ActualRegistry,$Live,$Completion)
+        if($Completion){
+            if(-not $Fixture.closed){throw 'FIXTURE_NO_CLOSE'}
+            $N=Copy-Fixture $Completion.pending;$N.phase='NORMAL';$N.sequence++;$N.previousDigest=([string]$Completion.pending.sequence)*64;$N.proofDigest='f'*64;return $N
+        }
+        $P=Copy-Fixture $Context.publication.record;$P.phase='COMPLETION_PENDING';$P.sequence++;$P.previousDigest=$Context.publication.digest;$P.proofDigest='e'*64
+        $E=@{applyRecordDigest=$NewHash;backupRecordDigest=$BackupHash;primaryRecordDigest=$PrimaryHash}
+        @{pending=$P;evidence=@{controllers=@{gateway=$E;registry=$E}};recordedAt=1}
+    }
+    function Invoke-BootstrapRegistryOffline {param($Context,$Operation,[switch]$VerifyOnly,$Completion)
+        if($Fixture.containers[$Gid].State.Status -cne 'exited' -or $Fixture.containers[$Rid].State.Status -cne 'exited'){throw 'FIXTURE_OFFLINE_REQUIRED'}
+        if($Operation -ceq 'Reserve'){
+            if(-not $VerifyOnly){if($Fixture.reserveWrites){throw 'FIXTURE_DUPLICATE_RESERVE'};$Fixture.reserveWrites++;throw 'FIXTURE_RESERVE_ACK_LOST'}
+            if($Fixture.reserveWrites -ne 1){throw 'FIXTURE_MISSING_RESERVE'};return $Reserve
+        }
+        if($Fixture.files[$AnchorPath].record.phase -cne 'COMPLETION_PENDING'){throw 'FIXTURE_CLOSE_BEFORE_PENDING'}
+        if(-not $VerifyOnly){if($Fixture.closed){throw 'FIXTURE_DUPLICATE_CLOSE'};$Fixture.closed=$true;$Fixture.writes++;throw 'FIXTURE_CLOSE_ACK_LOST'}
+        if(-not $Fixture.closed){
+            $Witness=@{result='PROTECTED_PAIR_COMPLETION_NOT_APPLIED';holdSnapshot=$Holds;checkpoint=$Checkpoint
+                pendingDigest=$Fixture.files[$AnchorPath].digest}
+            $Recovery=$null
+            if($Fixture.expire){
+                $Fixture.expire=$false
+                $Recovery=Copy-Fixture $Completion.pending
+                $Recovery.phase='RECOVERY_HOLD';$Recovery.sequence++;$Recovery.previousDigest=$Witness.pendingDigest
+                $Recovery.proofDigest='a'*64
+            }
+            return [pscustomobject]@{notApplied=$Witness;recovery=$Recovery}
+        }
+        @{readback=@{checkpoint=$Checkpoint};normal=(Project-BootstrapCompletion $Context $null $null $null $null -Completion @{pending=$Completion.pending})}
+    }
+    $Context=@{source=$Source;release=$Release;owner=$OldSource;publication=(Read-SuccessorPublication $OldSource).anchor
+        gateway=(Container $Gid);registry=(Container $Rid);oldGateway=(Container $OldId)
+        begin=@{registryDigest=$RegistryDigest;holdSnapshot=$Holds;pair=@{}}
+        intent=@{pair=@{checked=@{registry=@{review=@{primaryRecordDigest=$PriorHash}}}}}}
+    if($Ordinary){$Context.intent=@{ordinary=@{};check=@{binding=@{primaryPointerHash=$PriorHash}}}}
+    Backup-Primary
+    Backup-Primary
+    if($Fixture.clones -ne 1 -or $Fixture.reserveWrites -ne 1){throw 'FIXTURE_DUPLICATE_BACKUP'}
+    $Backup=Read-Private $Fixture.backupPath
+    try{Promote-BootstrapPair $Context $BackupPath $Backup;throw 'FIXTURE_EXPECTED_LOST_RECOVERY'}
+    catch{if($_.Exception.Message -cne 'FIXTURE_RECOVERY_ACK_LOST'){throw}}
+    if($Fixture.writes -ne 0 -or $Fixture.files[$AnchorPath].record.phase -cne 'RECOVERY_HOLD'){
+        throw 'FIXTURE_STALE_COMPLETION_WROTE'
+    }
+    try{Promote-BootstrapPair $Context $BackupPath $Backup;throw 'FIXTURE_EXPECTED_LOST_NORMAL'}catch{if($_.Exception.Message -cne 'FIXTURE_NORMAL_ACK_LOST'){throw}}
+    if($Fixture.writes -ne 1 -or $Fixture.containers[$Gid].State.Status -cne 'exited' -or $Fixture.containers[$Rid].State.Status -cne 'exited'){throw 'FIXTURE_CLOSE_RECOVERY_STATE'}
+    $Context.owner=$Source
+    Promote-BootstrapPair $Context $BackupPath $Backup
+    Promote-BootstrapPair $Context $BackupPath $Backup
+    $Expected=@('phase:BACKUP_FROZEN',('stop:'+$Gid),('stop:'+$Rid),('start:'+$Rid),('start:'+$Gid),'phase:PROMOTE_FROZEN',('rename:'+$OldId),('rename:'+$Gid),('stop:'+$Gid),('stop:'+$Rid),'phase:COMPLETION_PENDING','phase:RECOVERY_HOLD',('start:'+$Rid),('start:'+$Gid),('stop:'+$Gid),('stop:'+$Rid),'phase:COMPLETION_PENDING','phase:NORMAL',('start:'+$Rid),('start:'+$Gid))
+    if(-not (Same-Json @($Fixture.effects.ToArray()) $Expected) -or $Fixture.writes -ne 1){throw ('FIXTURE_EFFECTS '+($Fixture.effects -join ','))}
+    $Release.bootstrapOwnerGo=@{};$Release.phase='Complete';$Release.activated=$true;$Release.probesPassed=$true
+    $Release.bootstrapReceiver=@{id=$Rid;image=$RImage}
+    $Fixture.files[$Path]=$Release
+    function Read-SuccessorRuntimePublication {param($Runtime) Read-Private $AnchorPath}
+    $Action='Backup';$ConfirmWorkerQuiescent=$false
+    $NormalSource=@{path=$Path;hash=$NewHash;runtime=(Read-Private $PrimaryPointer).runtime}
+    if(& $ActualPostContext $NormalSource){throw 'FIXTURE_NORMAL_STILL_BOOTSTRAP'}
+    $Fixture.containers[$Gid].State.Status='exited'
+    try {& $ActualPostContext $NormalSource;throw 'FIXTURE_INCOMPLETE_NORMAL_BACKUP_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_RECOVERY_REQUIRED'){throw}}
+    $Fixture.containers[$Gid].State.Status='running'
+    $Fixture.files[$CompletionPath].primaryDigest='0'*64
+    try {& $ActualPostContext $NormalSource;throw 'FIXTURE_WRONG_NORMAL_PROOF_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPLETION_CHANGED'){throw}}
+    if($Ordinary){Write-Host 'FORTIS_ORDINARY_POST_LIFECYCLE_SELFTEST_PASS'}
+    else{Write-Host 'FORTIS_BOOTSTRAP_POST_LIFECYCLE_SELFTEST_PASS'}
+}
+
 function Promote-Primary {
     if(-not (Test-Path -LiteralPath $Pointer)){throw 'PRIMARY_CURRENT_RELEASE_REQUIRED'}
     $Current=(Read-Private $Pointer).record
@@ -1332,7 +2185,8 @@ function Promote-Primary {
     $P=$Source.runtime;$C=Container $P.pilotId
     $BackupPointer=Join-Path $ReleaseBase 'primary-backup.json'
     if(-not (Test-Path -LiteralPath $BackupPointer)){throw 'PRIMARY_VERIFIED_BACKUP_REQUIRED'}
-    $Backup=Read-Private ((Read-Private $BackupPointer).record)
+    $BackupPath=(Read-Private $BackupPointer).record
+    $Backup=Read-Private $BackupPath
     if($Backup.schema -cne 'fortis-primary-backup-v1' -or $Backup.phase -cne 'Complete' -or
        $Backup.sourceRecord -cne $Source.path -or $Backup.sourceHash -cne $Source.hash -or
        $Backup.containerId -cne $C.Id -or $Backup.image -cne $P.image -or
@@ -1340,6 +2194,8 @@ function Promote-Primary {
        -not (Same-Json (Receipt $Backup.backupVolume) $Backup.receipt)){
         throw 'PRIMARY_BACKUP_RECEIPT_INVALID'
     }
+    $Post=Read-BootstrapPostContext $Source
+    if($Post){Promote-BootstrapPair $Post $BackupPath $Backup;return}
     Admit $C $P
     if($C.State.Status -cne 'running' -or $C.State.Health.Status -cne 'healthy'){
         throw 'PRIMARY_NOT_HEALTHY'

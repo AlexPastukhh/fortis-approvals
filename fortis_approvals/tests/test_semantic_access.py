@@ -72,6 +72,7 @@ class SemanticAccessTests(fixture.LineageFixture,unittest.TestCase):
             policies[(a,'registry','report_release_result','scope')]='ALLOW'
             policies[(a,'registry','get_component','scope')]='ASK'
             policies[(a,'github','list_pull_requests','fortis-approvals')]='ALLOW'
+            policies[(a,'github','list_branches','fortis-approvals')]='ALLOW' if a=='agent-1' else 'ASK'
         self.core=LocalCore(self.root/'core.sqlite',adapters={'registry':self.adapter,'release':self.mergeadapter,
               'github':SyntheticAdapter(self.root/'github-fixture.sqlite')},policies=policies,authenticator=self.auth,owner_verifier=self.owner,clock=lambda:100)
         self.core.bind_maintenance(self.gate)
@@ -121,6 +122,40 @@ class SemanticAccessTests(fixture.LineageFixture,unittest.TestCase):
         self.assertEqual(a[1]['data'],b[1]['data'])
         self.assertEqual(before,self.core.owner_list())
         self.assertEqual(self.core.owner_list(pending=False),[])
+
+    def test_frozen_native_branch_read_is_passive_but_ask_is_not(self):
+        from unittest.mock import Mock
+        from fortis_approvals.workflow.adapters import NativeGitHubAdapter
+        from fortis_approvals.integrations.github.pilot import GitHubPilotConfig
+        from fortis_approvals.tests.test_maintenance_boundaries import blocked_fixture,gate_for
+        ctrl,holds=blocked_fixture()
+        self.access.gate=gate_for(ctrl,holds)
+        transport=Mock()
+        transport.request.return_value=[{'name':'main','commit':{'sha':'a'*40},'protected':True}]
+        self.base.read_adapters['github']=NativeGitHubAdapter(transport,
+            config=GitHubPilotConfig('Owner','fortis-approvals'),root=self.root,
+            actor='agent-1',backend=None,store=None,observation_core=self.core)
+        self.base.actor_read_operations.update({a:frozenset({('github','list_branches')})
+            for a in ('agent-1','owner-actor')})
+        q={**self.query('list_branches',{'page':1,'perPage':1},service='github'),
+           'target':'fortis-approvals'}
+        before={p.name:p.read_bytes() for p in self.root.glob('*.sqlite')}
+        status,out=self.http('/v1/reads',q)
+        self.assertEqual(status,200,out)
+        self.assertEqual(out['data']['items'][0]['name'],'main')
+        self.assertEqual(transport.request.call_args.args[0],'GET')
+        self.assertEqual(self.http('/v1/reads',q,extra={
+            'HTTP_AUTHORIZATION':'Bearer owner-fixture-secret'})[0],403)
+        self.assertEqual(self.http('/v1/reads',q,extra={
+            'HTTP_AUTHORIZATION':'Bearer other-secret'})[0],403)
+        with self.assertRaises(Denied):
+            self.base.read('owner-fixture-secret',q,passive_only=True)
+        holds['snapshotRevision']+=1
+        holds['holds'][0]['blockedOperations']=[{'service':'github','operation':'list_branches'}]
+        self.assertEqual(self.http('/v1/reads',q)[0],403)
+        self.assertEqual(transport.request.call_count,1)
+        self.assertEqual(before,{p.name:p.read_bytes() for p in self.root.glob('*.sqlite')})
+        self.assertEqual(self.core.owner_list(),[])
 
     def test_wrong_scope_wrong_route_and_csrf(self):
         q=self.query()

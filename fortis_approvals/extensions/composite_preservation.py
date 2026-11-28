@@ -213,10 +213,11 @@ def projection_copy(source, *, scratch_root=None):
             yield copy
 
 
-def inspect_staged_successor(path, *, expected_digest, verify_history):
-    """Exact read-only witness for a pre-product, already-migrated source."""
+def inspect_staged_successor(path, *, expected_digest, verify_history, require_empty=True, require_quiescent=False):
+    """Replay the exact staged witness; the initial cutover requires no parents."""
     hex_id(expected_digest, 64)
-    need(callable(verify_history), 'COMPOSITE_PRESERVATION_PIN_INVALID')
+    need(callable(verify_history) and type(require_empty) is bool and type(require_quiescent) is bool,
+         'COMPOSITE_PRESERVATION_PIN_INVALID')
     path = _companion_path(path)
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
@@ -224,8 +225,11 @@ def inspect_staged_successor(path, *, expected_digest, verify_history):
         db.execute('BEGIN')
         authority = verify_history(db)
         companion = inspect_companion(db)
-        need(companion['parents'] == 0 and digest(companion) == expected_digest,
-             'COMPOSITE_PRESERVATION_PIN_CHANGED')
+        need((not require_empty or companion['parents'] == 0)
+             and digest(companion) == expected_digest, 'COMPOSITE_PRESERVATION_PIN_CHANGED')
+        if require_quiescent:
+            from ..integrations.registry_contracts.maintenance_seal import require_quiescent_companion
+            require_quiescent_companion(companion)
         return {'schemaDigest':companion['schemaDigest'], 'companionDigest':expected_digest,
                 'authorityWitnessDigest':digest(authority)}
 

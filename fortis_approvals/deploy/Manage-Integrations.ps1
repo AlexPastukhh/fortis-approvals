@@ -14,11 +14,15 @@ param(
     [string]$RegistryReturnContainerId='', [string]$RegistryReturnNonce='', [switch]$RegistryCrashRecovery,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto,
     [string]$BackupIds='', [string]$RunIds='', [switch]$Preview, [switch]$Corrective288,
-    [string]$CorrectiveRegistryImage='', [string]$CorrectiveRegistryProfileSha256=''
+    [string]$CorrectiveRegistryImage='', [string]$CorrectiveRegistryProfileSha256='',
+    [switch]$Bootstrap289, [string]$BootstrapRegistryImage='', [string]$BootstrapRegistryProfileSha256='',
+    [string]$BootstrapReviewSha256='', [string]$BootstrapEvidenceSha256='', [string]$BootstrapReviewProofRecord='',
+    [string]$SuccessorRegistryImage='', [string]$SuccessorRegistryProfileSha256=''
 )
 $script:ReleaseClock=[Diagnostics.Stopwatch]::StartNew()
 $script:RegistryDelivery=$null
 $script:CorrectivePair=$null
+$script:BootstrapPair=$null
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
 # Windows PowerShell 5.1 only. Strict JSON DTO for Gateway release records.
@@ -891,6 +895,31 @@ function Repo-JSON {
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<repo-integrations>','exec'))"
     (Private-Process @('exec','--user','1000:1000','fortis-repo-test','python3','-I','-B','-c',$Wrapper) '')|ConvertFrom-Json
 }
+function Assert-NativeRepoRead {
+    $Code=@'
+import json
+from fortis_approvals.workflow.client import default_client
+c=default_client(); assert c.github.list_branches('fortis-approvals',per_page=1)['items']
+print(json.dumps({'nativeCapabilities':True,'githubRead':True}))
+'@
+    $Readback=Repo-JSON $Code
+    if($Readback.nativeCapabilities -ne $true -or $Readback.githubRead -ne $true){
+        throw 'RELEASE_REPO_CLIENT_PREFLIGHT_FAILED'
+    }
+}
+function Assert-PairedReleaseProbes {
+    param($Source,[string]$Requested)
+    $Release=Read-Private $Source.path
+    if($Release.probesPassed -ne $true -or $Release.probes -isnot [string] -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash){
+        throw 'RELEASE_FROZEN_PROBE_SOURCE_CHANGED'
+    }
+    $Result=Image-CLI @('check-frozen-probes') (ConvertTo-Json -Compress @{
+        retained=$Release.probes;requested=$Requested})
+    if($Result.status -cne 'FROZEN_PROBE_SET_MATCH_ONLY'){
+        throw 'RELEASE_FROZEN_PROBE_SET_CHANGED'
+    }
+}
 function Assert-ApprovedScopeForwarded {
     param($Payload)
     if($Payload.action -cnotin @('inspect','clone','uncertain_growth_snapshot','uncertain_growth_review')){return}
@@ -920,16 +949,52 @@ function State-Helper {
         }
     }
     $PublishInterlock=$Payload.action -ceq 'successor_interlock_publish'
-    if($PublishInterlock -and (-not $Root -or $Mounts.Count -ne 2 -or
-       $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,volume-nocopy')){
-        throw 'RELEASE_SUCCESSOR_PUBLICATION_MOUNT_INVALID'
+    $SeedInterlock=$Payload.action -ceq 'successor_interlock_seed'
+    $BeginIntent=$Payload.action -ceq 'successor_begin_intent'
+    $LatestPublication=$PublishInterlock -and $Payload -is [Collections.IDictionary] -and $Payload.Contains('latest')
+    if($SeedInterlock){
+        if(-not $Root -or $Mounts.Count -ne 6 -or
+           $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance-source,readonly,volume-nocopy' -or
+           $Mounts[3] -cne 'type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,volume-nocopy' -or
+           $Mounts[5] -cne 'type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy'){
+            throw 'RELEASE_SUCCESSOR_SEED_MOUNT_INVALID'
+        }
+        foreach($Volume in @('fortis-r7-maintenance-interlock','fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+            Assert-Volume $Volume
+        }
+        Assert-OnlyWriter 'fortis-r7-maintenance-interlock'
+        Assert-ReleaseVolumeHolders @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') @() 'RELEASE_SUCCESSOR_SEED_HOLDER_CHANGED'
+    } elseif($BeginIntent){
+        if(-not $Root -or $Mounts.Count -ne 4 -or
+           $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy' -or
+           $Mounts[3] -cne 'type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy'){
+            throw 'RELEASE_SUCCESSOR_BEGIN_INTENT_MOUNT_INVALID'
+        }
+        foreach($Volume in @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+            Assert-Volume $Volume;Assert-OnlyWriter $Volume
+        }
+    } elseif($LatestPublication){
+        if(-not $Root -or $Mounts.Count -ne 4 -or
+           $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,volume-nocopy' -or
+           $Mounts[3] -cne 'type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy'){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_MOUNT_INVALID'
+        }
+        foreach($Volume in @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+            Assert-Volume $Volume
+            Assert-OnlyWriter $Volume
+        }
+    } elseif($PublishInterlock){
+        if(-not $Root -or $Mounts.Count -ne 2 -or
+           $Mounts[1] -cne 'type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,volume-nocopy'){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_MOUNT_INVALID'
+        }
+        Assert-Volume 'fortis-r7-maintenance-interlock'
     }
-    if($PublishInterlock){Assert-Volume 'fortis-r7-maintenance-interlock'}
     $Identity='10001:10001';if($Root){$Identity='0:0'}
     $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user',$Identity,
         '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','256m',
         '--tmpfs','/tmp:rw,noexec,nosuid,size=32m')
-    if($PublishInterlock){$Arguments+=@('--cap-add','DAC_OVERRIDE')}
+    if($PublishInterlock -or $SeedInterlock -or $BeginIntent){$Arguments+=@('--cap-add','DAC_OVERRIDE')}
     elseif($Root){$Arguments+=@('--cap-add','CHOWN','--cap-add','DAC_OVERRIDE')}
     $Code="import runpy;runpy.run_path('/opt/fortis/operator/state_helpers.py',run_name='__main__')"
     $Encoded=Code64 $Code;$Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<state-helper>','exec'))"
@@ -961,11 +1026,35 @@ function Read-SuccessorFreezeSeal {
        $InterlockVolume -cne 'fortis-r7-maintenance-interlock'){
         throw 'RELEASE_SUCCESSOR_FREEZE_BINDING_INVALID'
     }
+    # v2 is a closed mode of the protected Check payload, not a caller path.
+    $Latest=if($Payload -is [Collections.IDictionary]){$Payload['latestPin']}
+        else{$Field=$Payload.PSObject.Properties['latestPin'];if($Field){$Field.Value}}
+    if($null -ne $Latest -and ($Latest -isnot [bool] -or -not $Latest)){
+        throw 'RELEASE_SUCCESSOR_FREEZE_BINDING_INVALID'
+    }
+    if($Latest){$InterlockVolume='fortis-r7-maintenance-interlock-v2'}
     Assert-Volume $StateVolume
     Assert-Volume $InterlockVolume
-    $Frozen=State-Helper $Payload @(
-        '--mount',('type=volume,source='+$StateVolume+',target=/source,readonly,volume-nocopy'),
+    $Mounts=@('--mount',('type=volume,source='+$StateVolume+',target=/source,readonly,volume-nocopy'),
         '--mount',('type=volume,source='+$InterlockVolume+',target=/run/r7-maintenance,readonly,volume-nocopy'))
+    if($Latest){
+        Assert-Volume 'fortis-r7-maintenance-anchor'
+        $Mounts+=@('--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    }
+    $Frozen=State-Helper $Payload $Mounts
+    if($Payload -is [Collections.IDictionary] -and $Payload.Contains('prepare')){
+        $Produced=$Frozen.payload
+        if(-not $Produced -or $Produced.PSObject.Properties['prepare'] -or
+           $Produced.stateDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           $Produced.workerAttestationDigest -cnotmatch '^[0-9a-f]{64}$'){
+            throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+        }
+        foreach($Field in $Payload.Keys){
+            if($Field -cne 'prepare' -and (-not $Produced.PSObject.Properties[$Field] -or
+                -not (Same-Json $Produced.$Field $Payload[$Field]))){throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'}
+        }
+        $Payload=$Produced
+    }
     $Binding=$Frozen.seal
     if($Binding.result -cne 'FREEZE_BINDINGS_MATCH_ONLY' -or
        $Binding.attemptId -cne $Payload.attemptId -or
@@ -983,28 +1072,2801 @@ function Read-SuccessorFreezeSeal {
     }
     return $Frozen
 }
+function Read-BootstrapSeedSource {
+    param($Source,[switch]$Live,[switch]$Transition)
+    if($Live -and $Transition){throw 'RELEASE_SUCCESSOR_SEED_MODE_INVALID'}
+    # This one-time seed is NOT ordinary deployment admission. The enclosing
+    # controller must already own the lock and authenticate the owner review,
+    # complete source state/backup proof and pre-effect Return.
+    $Commit='073d6f8701595e499eac5a1fa0cbe90accb05819'
+    $Run='cd6d3d97350e4f5590d9c3e9ece69580'
+    $Nonce='4ec7d8b8-2b51-4457-8b15-6559bcdeae94'
+    $Digest='9dd0e18b2f10e5180fccd5831ff6528e973813d0fe0cf29a826bc20c750a18a3'
+    $Generation='906410832e42b5f8dc835e20c75fe79bfebbcbf9d149793111a3d67992f377aa'
+    if(-not $ConfirmWorkerQuiescent -or $Source.runtime.runId -cne $Run -or
+       $Source.runtime.registryReleaseNonce -cne $Nonce -or
+       $Source.runtime.maintenanceGeneration -cne $Generation -or
+       $Source.runtime.registryDelivery.sourceDelivery.interlockDigest -cne $Digest -or
+       $Source.path -cne (Join-Path $ReleaseBase ($Run+'\record.json')) -or
+       $Source.hash -ine 'a8e717f425982036530aa04115d56720eb81a095e443e9c1023979d562d5fa4e' -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -cne $Source.hash -or
+       (Read-Private $Pointer).record -cne $Source.path -or
+       (Get-FileHash -LiteralPath $PrimaryPointer -Algorithm SHA256).Hash -ine '1a4a83906c54f878f21f7acec0c999d4ecfa09e9efa5e2c65be70679a30f2e2d'){
+        throw 'RELEASE_SUCCESSOR_SEED_SOURCE_CHANGED'
+    }
+    $Primary=Read-Private $PrimaryPointer
+    $Original=Read-Private $Source.path
+    $Pair=$Original.correctivePair
+    if($Primary.sourceRecord -cne $Source.path -or $Primary.sourceHash -cne $Source.hash -or
+       -not (Same-Json $Primary.runtime $Source.runtime) -or
+       $Source.runtime.pilotId -cne '2a6e198d6356ed225e61cad93938e1f40f4f13fe99450e782c93ddbfc6cba417' -or
+       $Pair.targetRegistryId -cne 'fb747224e917dc88653dac29961f2d11bebca6023c9f73317c4ce6ce7597ae18'){
+        throw 'RELEASE_SUCCESSOR_SEED_SOURCE_CHANGED'
+    }
+    $Old=Container $Source.runtime.pilotId
+    $Status=if($Live){'running'}else{'exited'}
+    $Restart=if($Live){'unless-stopped'}else{'no'}
+    if($Old.Id -cne $Source.runtime.pilotId -or $Old.Image -cne $Source.runtime.image -or
+       ($Transition -and ($Old.State.Status -cnotin @('running','exited') -or
+        $Old.HostConfig.RestartPolicy.Name -cnotin @('no','unless-stopped'))) -or
+       (-not $Transition -and ($Old.State.Status -cne $Status -or $Old.HostConfig.RestartPolicy.Name -cne $Restart))){
+        throw 'RELEASE_SUCCESSOR_SEED_SOURCE_NOT_FROZEN'
+    }
+    $OldMount=@($Old.Mounts|Where-Object{$_.Type -ceq 'volume' -and $_.Name -ceq 'fortis-r7-maintenance-interlock' -and
+        $_.Source -ceq '/var/lib/docker/volumes/fortis-r7-maintenance-interlock/_data' -and
+        $_.Destination -ceq '/run/r7-maintenance' -and $_.RW -is [bool] -and -not $_.RW})
+    if($OldMount.Count -ne 1){throw 'RELEASE_SUCCESSOR_SEED_SOURCE_CHANGED'}
+    $OldRegistry=Container $Pair.targetRegistryId
+    if($Transition){
+        Assert-CorrectiveRegistryContainer $OldRegistry $Nonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Commit -Status $OldRegistry.State.Status -BootstrapRetained
+        # A stopped Registry cannot answer a peer challenge. Use the same
+        # complete Docker/mount guard, and repeat the live proof on Return
+        # after restoring the Registry first. No normalization of source DB.
+        Admit $Old $Source.runtime -AllowUnhealthy -RegistryReturnSource -BootstrapRetained
+        if($Old.State.Status -ceq 'running' -and $OldRegistry.State.Status -cne 'running'){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_ORDER_CHANGED'
+        }
+    } else {
+        Assert-CorrectiveRegistryContainer $OldRegistry $Nonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Commit -Status $Status -Accepted:$Live
+    }
+    Assert-CorrectiveRegistryContainer (Container $Pair.targetPreviewId) $Nonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'preview' $Commit -Status 'exited'
+    Assert-CorrectiveTargetHolders $Nonce @($Old.Id,$Pair.targetRegistryId,$Pair.targetPreviewId)
+    if($Live){
+        if(Test-Path -LiteralPath (Join-Path $ReleaseBase 'maintenance-publication-v2.json')){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ALREADY_SEEDED'
+        }
+        $Actual=Read-CorrectiveCheckpoint $Pair.targetRegistryId $Nonce $Pair.targetRegistryProfile $Pair.targetRegistryImage 3 $Commit
+        if(-not (Same-Json $Actual $Pair.checkpoints.target)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_CHECKPOINT_CHANGED'}
+        Admit-Source $Old $Source
+        Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$Nonce.Replace('-','')) $Pair.targetRegistryId
+    } elseif($Transition){
+        Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$Nonce.Replace('-','')) $OldRegistry.Id
+    } else {
+        Assert-OnlyWriter $Source.runtime.stateVolume
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$Nonce.Replace('-',''))
+    }
+    # Read the original #288 retained publication, not a new genesis.
+    $Anchor=Read-Private (Join-Path $ReleaseBase 'maintenance-publication-3ac0e38d26184b51890097107f727785.json')
+    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v1' -or
+       $Anchor.state -cne 'Committed' -or $Anchor.digest -cne $Digest -or
+       $Anchor.record.generation -cne $Generation -or $Anchor.record.phase -cne 'NORMAL' -or $Anchor.record.sequence -ne 0){
+        throw 'RELEASE_SUCCESSOR_SEED_SOURCE_CHANGED'
+    }
+    return $Anchor
+}
+function Assert-BootstrapFrozenCheck {
+    param($Source,$CheckPath,$CheckHash)
+    # This is the first physical freeze boundary, not a live DRAINING
+    # attestation. The original owner Check must already be durably bound
+    # to the pre-effect attempt; never derive it from a later stopped state.
+    if($CheckHash -cnotmatch '^[0-9a-fA-F]{64}$' -or
+       (Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+    $AttemptPath=(Read-Private $AttemptPointer).record
+    if($AttemptPath -cne $script:RecordPath){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'}
+    $Attempt=Read-Private $AttemptPath
+    $Check=Read-Private $CheckPath
+    $Binding=$Check.binding
+    if($Attempt.schema -cne 'fortis-extension-release-v1' -or $Attempt.phase -cne 'Prepared' -or
+       $Attempt.activated -ne $false -or $Attempt.probesPassed -ne $false -or
+       $Attempt.bootstrapCheckRecord -cne $CheckPath -or $Attempt.bootstrapCheckHash -ine $CheckHash -or
+       $Attempt.source.path -cne $Source.path -or $Attempt.source.hash -cne $Source.hash -or
+       $Check.schema -cne 'fortis-extension-image-check-v1' -or $Check.phase -cne 'Ready' -or
+       $Binding.sourceRecord -cne $Source.path -or $Binding.sourceHash -cne $Source.hash -or
+       $Binding.sourceContainerId -cne $Source.runtime.pilotId -or $Binding.sourceImage -cne $Source.runtime.image -or
+       $Binding.sourceStateVolume -cne $Source.runtime.stateVolume -or $Binding.sourceRunId -cne $Source.runtime.runId -or
+       $Binding.image -cne $Attempt.runtime.image -or $Binding.registryReleaseNonce -cne $Attempt.runtime.registryReleaseNonce -or
+       $Binding.confirmWorkerQuiescent -ne $true -or $Binding.allowUncertainGrowth -ne $false -or
+       $Binding.acceptUnverifiedRestore -ne $false -or $Binding.preserveApprovedRequest -or
+       $null -eq $Check.sourceReceipt -or -not (Same-Json $Attempt.sourceReceipt $Check.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+    foreach($Pin in @(@($Pointer,$Binding.currentPointerHash),@($PrimaryPointer,$Binding.primaryPointerHash),
+        @((Join-Path $ReleaseBase 'primary-backup.json'),$Binding.backupPointerHash))){
+        if((Get-FileHash -LiteralPath $Pin[0] -Algorithm SHA256).Hash -cne $Pin[1]){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+        }
+    }
+    Assert-OnlyWriter $Source.runtime.stateVolume
+    if(-not (Same-Json (Receipt $Source.runtime.stateVolume -Exact:$Binding.requireExactUncertain -ExactClaimed:$Binding.requireExactClaimed -ExactApproved:$Binding.requireExactApproved) $Check.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_GATEWAY_CHANGED'
+    }
+    $Pair=(Read-Private $Source.path).correctivePair
+    $Frozen=Read-CorrectiveCheckpoint $Pair.targetRegistryId $Source.runtime.registryReleaseNonce $Pair.targetRegistryProfile $Pair.targetRegistryImage 3 '073d6f8701595e499eac5a1fa0cbe90accb05819' -Frozen
+    if(-not (Same-Json $Frozen $Pair.checkpoints.target)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_REGISTRY_CHANGED'
+    }
+    if((Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -cne $Source.hash -or
+       (Read-Private $AttemptPointer).record -cne $AttemptPath){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+}
+function Assert-BootstrapFrozenCheckSelfTest {
+    $PreviousPath=$script:RecordPath
+    try {
+        $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-frozen-fixture'
+        $script:RecordPath=Join-Path $ReleaseBase 'attempt.json'
+        $AttemptPointer=Join-Path $ReleaseBase 'attempt-pointer.json'
+        $Pointer=Join-Path $ReleaseBase 'current.json'
+        $PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
+        $CheckPath=Join-Path $ReleaseBase 'check.json'
+        $CheckHash='a'*64;$SourceHash='b'*64;$Pin='c'*64
+        $Source=@{path=(Join-Path $ReleaseBase 'source.json');hash=$SourceHash;runtime=@{
+            pilotId=('d'*64);image=('sha256:'+('e'*64));stateVolume='fixture';runId=('f'*32)
+            registryReleaseNonce='fixture-old-nonce'}}
+        $Gateway=@{sha256=@{fixture='original'};summary=@{}}
+        $Registry=@{sourceRevision=3;eventDigest=('1'*64)}
+        $Binding=@{sourceRecord=$Source.path;sourceHash=$SourceHash;sourceContainerId=$Source.runtime.pilotId
+            sourceImage=$Source.runtime.image;sourceStateVolume=$Source.runtime.stateVolume;sourceRunId=$Source.runtime.runId
+            image=('sha256:'+('2'*64));registryReleaseNonce='fixture-new-nonce';confirmWorkerQuiescent=$true
+            allowUncertainGrowth=$false;acceptUnverifiedRestore=$false;preserveApprovedRequest=''
+            currentPointerHash=$Pin;primaryPointerHash=$Pin;backupPointerHash=$Pin
+            requireExactUncertain=$true;requireExactClaimed=$true;requireExactApproved=$true}
+        $Fixture=@{gateway=$Gateway;registry=$Registry;reads=0;hashes=@{};records=@{}}
+        $Fixture.records[$AttemptPointer]=@{record=$script:RecordPath}
+        $Fixture.records[$script:RecordPath]=@{schema='fortis-extension-release-v1';phase='Prepared';activated=$false
+            probesPassed=$false;source=$Source;runtime=@{image=$Binding.image;registryReleaseNonce=$Binding.registryReleaseNonce}
+            bootstrapCheckRecord=$CheckPath;bootstrapCheckHash=$CheckHash;sourceReceipt=$Gateway}
+        $Fixture.records[$CheckPath]=@{schema='fortis-extension-image-check-v1';phase='Ready';binding=$Binding;sourceReceipt=$Gateway}
+        $Fixture.records[$Source.path]=@{correctivePair=@{targetRegistryId='fixture';targetRegistryProfile='profile'
+            targetRegistryImage='image';checkpoints=@{target=$Registry}}}
+        $Fixture.hashes[$CheckPath]=$CheckHash;$Fixture.hashes[$Source.path]=$SourceHash
+        foreach($Path in @($Pointer,$PrimaryPointer,(Join-Path $ReleaseBase 'primary-backup.json'))){$Fixture.hashes[$Path]=$Pin}
+        function Read-Private {param($Path) return $Fixture.records[$Path]}
+        function Get-FileHash {param($LiteralPath,$Algorithm) return @{Hash=$Fixture.hashes[$LiteralPath]}}
+        function Assert-OnlyWriter {param($Volume) if($Volume -cne 'fixture'){throw 'FROZEN_SELFTEST_VOLUME'}}
+        function Receipt {param($Volume,[switch]$Exact,[switch]$ExactClaimed,[switch]$ExactApproved)
+            if($Volume -cne 'fixture' -or -not $Exact -or -not $ExactClaimed -or -not $ExactApproved){throw 'FROZEN_SELFTEST_SCOPE'}
+            return $Fixture.gateway}
+        function Read-CorrectiveCheckpoint {param($Id,$Nonce,$Profile,$Image,$Revision,$Commit,[switch]$Frozen)
+            if($Id -cne 'fixture' -or $Nonce -cne 'fixture-old-nonce' -or $Revision -ne 3 -or -not $Frozen){
+                throw 'FROZEN_SELFTEST_REGISTRY_BINDING'}
+            $Fixture.reads++;return $Fixture.registry}
+        Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash
+        $Fixture.gateway=@{sha256=@{fixture='changed'};summary=@{}}
+        try {Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash;throw 'FROZEN_SELFTEST_GATEWAY_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_GATEWAY_CHANGED'){throw}}
+        $Fixture.gateway=$Gateway;$Fixture.registry=@{sourceRevision=3;eventDigest=('0'*64)}
+        try {Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash;throw 'FROZEN_SELFTEST_REGISTRY_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_REGISTRY_CHANGED'){throw}}
+        $Fixture.registry=$Registry;$Fixture.hashes[$PrimaryPointer]='0'*64
+        try {Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash;throw 'FROZEN_SELFTEST_POINTER_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'){throw}}
+        if($Fixture.reads -ne 2){throw 'FROZEN_SELFTEST_READBACK'}
+    } finally {$script:RecordPath=$PreviousPath}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_FROZEN_CHECK_SELFTEST_PASS'
+}
+function Initialize-SuccessorBootstrapInterlock {
+    param($Source,[string]$CheckPath,[string]$CheckHash)
+    $Old=Read-BootstrapSeedSource $Source
+    Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash
+    if(-not (Same-Json (Read-BootstrapSeedSource $Source) $Old)){throw 'RELEASE_SUCCESSOR_SEED_SOURCE_CHANGED'}
+    $Path=Join-Path $ReleaseBase 'maintenance-publication-v2.json'
+    $Intent=[ordered]@{schema='fortis-successor-maintenance-publication-v2';state='Pending'
+        sourceRecordHash=$Source.hash;record=$Old.record;digest=$Old.digest;registryDigest=$null}
+    $Committed=[ordered]@{schema=$Intent.schema;state='Committed';sourceRecordHash=$Source.hash
+        record=$Old.record;digest=$Old.digest;registryDigest=$null}
+    $Mounts=@('--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance-source,readonly,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy')
+    $Payload=@{action='successor_interlock_seed';mode='readback';record=$Old.record;digest=$Old.digest}
+    $Existing=if(Test-Path -LiteralPath $Path){Read-Private $Path}
+    $Actual=State-Helper $Payload $Mounts -Root
+    if($null -eq $Existing){
+        if($Actual.position -cne 'EMPTY' -or $null -ne $Actual.latest){
+            throw 'RELEASE_SUCCESSOR_SEED_UNOWNED_STATE'
+        }
+        Write-Private $Path $Intent -FlushToDisk
+        $Existing=Read-Private $Path
+    }
+    $WasCommitted=Same-Json $Existing $Committed
+    if(-not $WasCommitted -and -not (Same-Json $Existing $Intent)){
+        throw 'RELEASE_SUCCESSOR_SEED_INTENT_CHANGED'
+    }
+    if($Actual.position -ceq 'EMPTY' -and -not $WasCommitted){
+        $Payload.mode='seed'
+        $Actual=State-Helper $Payload $Mounts -Root
+    }
+    if($Actual.position -cne 'SEEDED' -or $Actual.digest -cne $Old.digest -or
+       $Actual.latest.interlockDigest -cne $Old.digest -or
+       $Actual.latest.generation -cne $Old.record.generation -or
+       $Actual.latest.phase -cne 'NORMAL' -or $Actual.latest.sequence -ne 0 -or
+       $Actual.latest.instanceId -cne $Old.record.registryInstanceId -or
+       $Actual.latest.scopeDigest -cne $Old.record.scopeDigest -or $null -ne $Actual.latest.registryDigest -or
+       $Actual.latest.state -cnotin @('Pending','Committed') -or
+       (-not $WasCommitted -and $Actual.latest.state -cne 'Pending') -or
+       -not (Same-Json (Read-BootstrapSeedSource $Source) $Old)){
+        throw 'RELEASE_SUCCESSOR_SEED_UNCONFIRMED'
+    }
+    if(-not $WasCommitted){
+        Write-Private $Path $Committed -FlushToDisk
+    }
+    if(-not (Same-Json (Read-Private $Path) $Committed)){throw 'RELEASE_SUCCESSOR_SEED_UNCONFIRMED'}
+    $Payload.mode='commit'
+    $Final=State-Helper $Payload $Mounts -Root
+    $Expected=[ordered]@{schemaVersion=1;state='Committed';instanceId=$Old.record.registryInstanceId
+        scopeDigest=$Old.record.scopeDigest;sequence=0;generation=$Old.record.generation;phase='NORMAL'
+        interlockDigest=$Old.digest;registryDigest=$null}
+    # Compare every field; JSON member order is not authority.
+    if($Final.position -cne 'SEEDED' -or $Final.digest -cne $Old.digest -or
+       @($Final.latest.PSObject.Properties).Count -ne 9 -or
+       @($Expected.Keys|Where-Object{$Final.latest.$_ -cne $Expected[$_]}).Count -ne 0 -or
+       -not (Same-Json (Read-BootstrapSeedSource $Source) $Old)){
+        throw 'RELEASE_SUCCESSOR_SEED_UNCONFIRMED'
+    }
+    return $Committed
+}
+
+
+function Read-BootstrapOwnerReviewProof {
+    param([string]$Path,$Pair)
+    # This is the separately retained owner review of the exact proposal
+    # and predecessor, not a document produced by the post-merge Check.
+    # Existing owner ACL/reparse checks authenticate the protected local
+    # record; the file hash binds it to the Registry's replayed review.
+    if(-not $Path){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'}
+    $Witness=$Pair.checked.registry.review
+    $Proof=Read-Private $Path
+    if($Proof.schema -cne 'fortis-registry-bootstrap-review-v1' -or
+       $Proof.decision -cne 'APPROVE_BOOTSTRAP_MERGE' -or
+       $Proof.reviewContentDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Proof.reviewContentDigest -cne $Witness.reviewContentDigest -or
+       ($Proof.reviewedAt -isnot [long] -and $Proof.reviewedAt -isnot [int]) -or
+       $Proof.reviewedAt -le 0 -or
+       @($Proof.PSObject.Properties).Count -ne 4 -or
+       (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Witness.ownerReviewProofDigest){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'
+    }
+    return $Proof
+}
+function New-BootstrapOwnerGo {
+    param($Source,[string]$CheckPath,[string]$CheckHash,[string]$ReviewProofPath)
+    # Caller owns the existing release controller lock, verifies the same
+    # image Check and performs final live admission before publishing attempt.
+    $Check=Read-Private $CheckPath
+    $Pair=$Check.binding.bootstrapPair
+    if($Check.schema -cne 'fortis-extension-image-check-v1' -or $Check.phase -cne 'Ready' -or
+       $null -eq $Pair -or -not (Same-Json $Pair $script:BootstrapPair) -or
+       $Check.binding.sourceHash -ine $Source.hash -or $Check.binding.sourceRecord -cne $Source.path -or
+       (Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       $null -eq $Check.sourceReceipt){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+    # The independent pre-merge review reference is explicitly acknowledged,
+    # not manufactured by the controller from the post-merge observation.
+    $Proof=Read-BootstrapOwnerReviewProof $ReviewProofPath $Pair
+    $ReviewProof=$Pair.checked.registry.review.ownerReviewProofDigest
+    if($ReviewProof -cnotmatch '^[0-9a-f]{64}$' -or $Pair.compatibilityDigest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'
+    }
+    Write-Host ('FORTIS_BOOTSTRAP_REVIEW_SHA256='+$Pair.reviewSha256)
+    Write-Host ('FORTIS_BOOTSTRAP_REVIEW_PROOF_SHA256='+$ReviewProof)
+    Write-Host ('FORTIS_BOOTSTRAP_EVIDENCE_SHA256='+$Pair.evidenceSha256)
+    Write-Host ('FORTIS_BOOTSTRAP_COMPATIBILITY_SHA256='+$Pair.compatibilityDigest)
+    $Confirm='APPLY BOOTSTRAP '+$CheckHash.ToLowerInvariant()
+    if((Read-Host ('Confirm the independently reviewed merge and exact frozen-pair Check; type '+$Confirm)) -cne $Confirm){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_REQUIRED'
+    }
+    if((Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash -or
+       -not (Same-Json (Read-BootstrapOwnerReviewProof $ReviewProofPath $Pair) $Proof)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+    # Stable identity/time/generation are saved in the protected attempt
+    # before any stop. Recovery must never create a second owner intent.
+    return [ordered]@{schemaVersion=1;attemptId=[Guid]::NewGuid().ToString('D')
+        checkDigest=$CheckHash.ToLowerInvariant();compatibilityDigest=$Pair.compatibilityDigest
+        sourceRecordDigest=$Source.hash.ToLowerInvariant();reviewDigest=$Pair.reviewSha256
+        evidenceDigest=$Pair.evidenceSha256;reviewProofDigest=$ReviewProof
+        targetGeneration=(Sha256-Utf8 ([Guid]::NewGuid().ToString('D')+[Guid]::NewGuid().ToString('D'))).ToLowerInvariant()
+        recordedAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}
+}
+function Read-BootstrapFrozenIntent {
+    param($Source,[string]$CheckPath,[string]$CheckHash,[switch]$Returning,[switch]$Runtime)
+    # Every effect consumes the original protected Check and durable owner
+    # attempt pointer, never mutable arguments or a fresh synthetic GO.
+    $Attempt=Read-Private $script:RecordPath
+    $Check=Read-Private $CheckPath
+    if($Attempt.PSObject.Properties['ordinaryHandover']){
+        return (Read-OrdinaryFrozenIntent $Source $CheckPath $CheckHash $Attempt $Check -Returning:$Returning -Runtime:$Runtime)
+    }
+    $Pair=$Check.binding.bootstrapPair
+    $Go=$Attempt.bootstrapOwnerGo
+    $DeliveryField=$Attempt.PSObject.Properties['bootstrapDelivery']
+    $RuntimeBound=$Attempt.runtime.PSObject.Properties['registryDelivery']
+    if(($Runtime -or $Attempt.phase -cin @('Created','Staged','Complete')) -and -not $RuntimeBound){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+    }
+    if($RuntimeBound){
+        if(-not $DeliveryField -or -not (Same-Json $RuntimeBound.Value $DeliveryField.Value) -or
+           $Attempt.runtime.maintenanceGeneration -cne $Go.targetGeneration -or
+           $Attempt.runtime.registryProfileDigest -cne $Attempt.bootstrapMaterials.gatewayProfileDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+        }
+    }
+    $AllowedPhases=if($Returning){@('Prepared','Created','Staged','Returned')}
+        elseif($Runtime){@('Created','Staged','Complete')}else{@('Prepared')}
+    if($Check.schema -cne 'fortis-extension-image-check-v1' -or $Check.phase -cne 'Ready' -or
+       $null -eq $Check.sourceReceipt -or $null -eq $Pair -or $null -eq $Go -or $Go.schemaVersion -ne 1 -or
+       $Check.binding.sourceRecord -cne $Source.path -or $Check.binding.sourceHash -ine $Source.hash -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash -or
+       $Attempt.schema -cne 'fortis-extension-release-v1' -or $Attempt.phase -cnotin $AllowedPhases -or
+       (-not $Runtime -and $Attempt.activated -ne $false) -or
+       (-not ($Runtime -or $Returning) -and $Attempt.probesPassed -ne $false) -or
+       $Attempt.bootstrapCheckRecord -cne $CheckPath -or $Attempt.bootstrapCheckHash -ine $CheckHash -or
+       $Attempt.bootstrapReviewProofRecord -cne $Check.binding.bootstrapReviewProofRecord -or
+       (Read-Private $AttemptPointer).record -cne $script:RecordPath -or
+       (Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       $Attempt.source.hash -ine $Source.hash -or $Attempt.source.path -cne $Source.path -or
+       $Go.checkDigest -cne $CheckHash.ToLowerInvariant() -or $Go.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+       $Go.compatibilityDigest -cne $Pair.compatibilityDigest -or $Go.reviewDigest -cne $Pair.reviewSha256 -or
+       $Go.evidenceDigest -cne $Pair.evidenceSha256 -or
+       $Go.reviewProofDigest -cne $Pair.checked.registry.review.ownerReviewProofDigest -or
+       $Go.targetGeneration -cnotmatch '^[0-9a-f]{64}$' -or
+       $Go.targetGeneration -ceq $Pair.checked.registry.binding.generation -or
+       $Go.attemptId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+       $Attempt.runtime.image -cne ('sha256:'+$Pair.checked.artifacts.gateway) -or
+       $Pair.registryImage -cne ('sha256:'+$Pair.checked.artifacts.registry) -or
+       $Attempt.runtime.registryReleaseNonce -cne $Pair.checked.gateway.releaseNonce -or
+       (-not $RuntimeBound -and $Attempt.runtime.registryProfileDigest -cne $Pair.checked.gateway.profileDigest) -or
+       -not (Same-Json $Attempt.sourceReceipt $Check.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_CHANGED'
+    }
+    $Proof=Read-BootstrapOwnerReviewProof $Attempt.bootstrapReviewProofRecord $Pair
+    if($Proof.reviewedAt -gt $Go.recordedAt){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'}
+    return @{attempt=$Attempt;check=$Check;pair=$Pair;go=$Go}
+}
+function Read-OrdinaryFrozenIntent {
+    param($Source,$CheckPath,$CheckHash,$Attempt,$Check,[switch]$Returning,[switch]$Runtime)
+    $Ref=$Attempt.ordinaryHandover
+    $ContextPath=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+    $StopPath=Join-Path (Split-Path $CheckPath -Parent) 'apply-stop.json'
+    if($Ref.contextRecord -cne $ContextPath -or $Ref.stopRecord -cne $StopPath -or
+       (Get-FileHash -LiteralPath $ContextPath -Algorithm SHA256).Hash -ine $Ref.contextHash -or
+       (Get-FileHash -LiteralPath $StopPath -Algorithm SHA256).Hash -ine $Ref.stopHash -or
+       (Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash -or
+       $Attempt.bootstrapCheckRecord -cne $CheckPath -or $Attempt.bootstrapCheckHash -ine $CheckHash -or
+       (Read-Private $AttemptPointer).record -cne $script:RecordPath){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $Context=Read-Private $ContextPath;$Stop=Read-Private $StopPath
+    $Checked=$Context.intent.compatibility;$Auth=$Context.intent.authorization;$Go=$Attempt.bootstrapOwnerGo
+    $Allowed=if($Returning){@('Prepared','Created','Staged','Returned')}elseif($Runtime){@('Created','Staged','Complete')}else{@('Prepared')}
+    if($Attempt.schema -cne 'fortis-extension-release-v1' -or $Attempt.phase -cnotin $Allowed -or
+       (-not $Returning -and $Attempt.PSObject.Properties['ordinaryReturn']) -or
+       (-not $Runtime -and $Attempt.activated -ne $false) -or $Attempt.source.hash -ine $Source.hash -or
+       $Attempt.source.path -cne $Source.path -or $Check.schema -cne 'fortis-extension-image-check-v1' -or
+       $Check.phase -cne 'Ready' -or $Check.binding.sourceRecord -cne $Source.path -or
+       $Check.binding.sourceHash -ine $Source.hash -or $Check.binding.ordinaryIntentDigest -cne $Context.intentDigest -or
+       $Context.nativeRead.githubRead -ne $true -or
+       $Context.nativeRead.intentDigest -cne $Context.intentDigest -or
+       -not (Same-Json $Check.binding.ordinaryNativeRead $Context.nativeRead) -or
+       $Check.binding.confirmWorkerQuiescent -ne $true -or $Check.binding.allowUncertainGrowth -ne $false -or
+       $Check.binding.acceptUnverifiedRestore -ne $false -or $Check.binding.preserveApprovedRequest -or
+       $Check.binding.image -cne $Attempt.runtime.image -or $Check.binding.registryReleaseNonce -cne $Auth.targetNonce -or
+       $Context.sourceRecordHash -ine $Source.hash -or $Context.intentDigest -cne $Context.begin.intentDigest -or
+       $Context.targetNonce -cne $Attempt.runtime.registryReleaseNonce -or
+       $Context.targetSourceSha -cne $Check.binding.sourceSha -or
+       $Context.targetImageId -cne ('sha256:'+$Checked.artifacts.gateway) -or
+       $Context.targetRegistryImage -cne ('sha256:'+$Checked.artifacts.registry) -or
+       $Stop.checkedRecordDigest -cne $CheckHash.ToLowerInvariant() -or
+       $Stop.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+       $Stop.targetImageId -cne $Attempt.runtime.image -or $Stop.next.phase -cne 'APPLY_STOP' -or
+       $Go.schemaVersion -ne 1 -or $Go.intentDigest -cne $Context.intentDigest -or
+       $Go.checkDigest -cne $CheckHash.ToLowerInvariant() -or $Go.attemptId -cne $Auth.attemptId -or
+       $Go.targetGeneration -cne $Auth.targetGeneration -or $Go.sourceRecordDigest -cne $Auth.sourceRecordDigest -or
+       -not (Same-Json $Attempt.sourceReceipt $Check.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    if($Attempt.runtime.PSObject.Properties['registryDelivery']){
+        if(-not $Attempt.PSObject.Properties['bootstrapDelivery'] -or -not $Attempt.PSObject.Properties['bootstrapMaterials'] -or
+           -not (Same-Json $Attempt.runtime.registryDelivery $Attempt.bootstrapDelivery) -or
+           $Attempt.runtime.maintenanceGeneration -cne $Auth.targetGeneration -or
+           $Attempt.runtime.registryProfileDigest -cne $Attempt.bootstrapMaterials.gatewayProfileDigest){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+        }
+    }elseif($Runtime -or $Attempt.phase -cin @('Created','Staged','Complete') -or
+        $Attempt.runtime.registryProfileDigest -cne $Checked.gateway.profileDigest){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $Pair=@{registryImage=$Context.targetRegistryImage;registryProfileSha256=$Checked.registry.profileDigest
+        checked=$Checked;compatibilityDigest=$Auth.compatibilityDigest
+        finalRoots=@{Gateway=$Checked.roots.gateway;Registry=$Checked.roots.registry}
+        backupRoot=$Checked.roots.backup}
+    return @{attempt=$Attempt;check=$Check;pair=$Pair;go=$Go;ordinary=@{
+        intent=$Context.intent;begin=$Context.begin;check=$Check.maintenanceSeal;sourceReceipt=$Check.sourceReceipt;stop=$Stop}
+        context=$Context}
+}
+
+function Save-OrdinaryPreparedAttempt {
+    param($Source,$Report,$Stop)
+    $Path=[IO.Path]::GetFullPath($CheckedImageRecord)
+    $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $Check=Read-Private $Path
+    $ContextPath=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+    $Context=Read-Private $ContextPath
+    if($script:R.phase -cne 'Prepared' -or $script:R.activated -or $script:R.probesPassed -or
+       $script:R.runtime.pilotId -or $Check.binding.ordinaryIntentDigest -cne $Context.intentDigest -or
+       $Stop.checkedRecordDigest -cne $Hash.ToLowerInvariant() -or
+       $Stop.sourceRecordDigest -cne $Source.hash.ToLowerInvariant()){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $Confirm='APPLY SUCCESSOR '+$Hash.ToLowerInvariant()
+    if((Read-Host ('Type '+$Confirm)) -cne $Confirm){throw 'RELEASE_SUCCESSOR_ORDINARY_OWNER_GO_REQUIRED'}
+    $Fresh=Verify-Checked-Image $Source $Report -PrepareSuccessorStop
+    if(-not (Same-Json $Fresh $Stop)){throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'}
+    $StopPath=Save-SuccessorApplyStopIntent $Stop
+    $script:R['ordinaryHandover']=[ordered]@{contextRecord=$ContextPath
+        contextHash=(Get-FileHash -LiteralPath $ContextPath -Algorithm SHA256).Hash
+        stopRecord=$StopPath;stopHash=(Get-FileHash -LiteralPath $StopPath -Algorithm SHA256).Hash}
+    $Auth=$Context.intent.authorization
+    $script:R['bootstrapCheckRecord']=$Path;$script:R['bootstrapCheckHash']=$Hash
+    $script:R['bootstrapOwnerGo']=[ordered]@{schemaVersion=1;intentDigest=$Context.intentDigest
+        checkDigest=$Hash.ToLowerInvariant();sourceRecordDigest=$Auth.sourceRecordDigest
+        attemptId=$Auth.attemptId;targetGeneration=$Auth.targetGeneration}
+    $script:R.sourceReceipt=$Check.sourceReceipt
+    Assert-Release-Production
+    Save -FlushToDisk
+    Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath} -FlushToDisk
+    $null=Read-BootstrapFrozenIntent $Source $Path $Hash
+    $script:R=Read-Private $script:RecordPath
+}
+
+function Invoke-BootstrapFrozenPair {
+    param($Source,[string]$CheckPath,[string]$CheckHash,[switch]$Readback)
+    # Private bridge: no listener, no socket mount, no effect on old DB.
+    # Initialize performs the full final stopped-source proof and reconciles
+    # a lost seed ACK. Once publication advances, use only RO readback.
+    $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    $Pair=$Intent.pair
+    $Nonce=$Intent.attempt.runtime.registryReleaseNonce
+    $Id=$Nonce.Replace('-','')
+    Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+    $State='fortis-registry-state-e13b-'+$Id
+    $ConfigVolume='fortis-registry-config-e13b-'+$Id+'-prepared'
+    foreach($Volume in @($State,$ConfigVolume,'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+        Assert-Volume $Volume
+    }
+    $RegistryInfo=@(Docker-Json @('image','inspect',$Pair.registryImage))[0]
+    if($RegistryInfo.Id -cne $Pair.registryImage -or $RegistryInfo.Config.User -cne '20002:20002' -or
+       $RegistryInfo.Config.Labels.'org.opencontainers.image.revision' -cne $Intent.check.binding.sourceSha -or
+       @($RegistryInfo.Config.Entrypoint|Where-Object{$_}).Count){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_IMAGE_CHANGED'
+    }
+    $Seed=Read-BootstrapSeedSource $Source
+    if($Readback -or $Intent.attempt.PSObject.Properties['bootstrapBegin']){
+        $Readback=$true
+        Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash
+    } else {
+        $Published=Initialize-SuccessorBootstrapInterlock $Source $CheckPath $CheckHash
+        if($Published.digest -cne $Seed.digest){throw 'RELEASE_SUCCESSOR_SEED_UNCONFIRMED'}
+    }
+    Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+    Assert-ReleaseVolumeHolders @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') @() 'RELEASE_SUCCESSOR_SEED_HOLDER_CHANGED'
+    $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import bootstrap_pair_authorization,begin_bootstrap_pair,read_bootstrap_pair
+p=json.load(sys.stdin)
+authorization=bootstrap_pair_authorization(p['checked'],p['go'],p['sourceReceipt'],
+    review_sha256=p['review'],evidence_sha256=p['evidence'],seed_digest=p['seed'])
+args=dict(review_sha256=p['review'],evidence_sha256=p['evidence'],
+    source_sha=p['source'],checked=p['checked'],authorization=authorization)
+result=(read_bootstrap_pair(p['profile'],seed=p['seedRecord'],**args) if p['readback']
+        else begin_bootstrap_pair(p['profile'],**args))
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
+'@
+    $ReadArgs=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--name',('fortis-registry-successor-'+$Id),'--user','20002:20002',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','1024m',
+        '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+        '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$ConfigVolume+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+        $Pair.registryImage)
+    $WriteArgs=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--name',('fortis-registry-successor-'+$Id),'--user','20002:20002',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','512m',
+        '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,volume-nocopy'),
+        '--mount',('type=volume,source='+$ConfigVolume+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy',
+        $Pair.registryImage)
+    $Payload=@{profile=$Pair.registryProfileSha256
+        review=$Pair.reviewSha256;evidence=$Pair.evidenceSha256;source=$Intent.check.binding.sourceSha
+        checked=$Pair.checked;go=$Intent.go;sourceReceipt=$Intent.check.sourceReceipt
+        seed=$Seed.digest;seedRecord=$Seed.record;readback=[bool]$Readback}
+    if($Readback){
+        $Result=(Python-Code $ReadArgs $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json
+    } else {
+        try {
+            $Result=(Python-Code $WriteArgs $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json
+        } catch {
+            # Never repeat a writer blindly. Prove original receipts on a
+            # stable RO copy, including surviving WAL after process failure.
+            Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_READBACK'
+            Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+            $Payload.readback=$true
+            $Result=(Python-Code $ReadArgs $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json
+        }
+    }
+    $Plan=$Result.phasePlan
+    if($Result.result -cne 'BOOTSTRAP_PAIR_BEGIN_ACCOUNTED_ONLY' -or $Result.hostAccepted -ne $false -or
+       $Result.admissionAllowed -ne $false -or $Result.pair.attemptId -cne $Intent.go.attemptId -or
+       $Result.pair.compatibilityReadbackDigest -cne $Pair.compatibilityDigest -or
+       @($Result.receipts).Count -ne 2 -or @($Result.holdSnapshot.holds).Count -ne 2 -or
+       $Plan.proofKind -cne 'BOOTSTRAP_PHYSICAL_FREEZE' -or $Plan.registryDigest -cne $Result.registryDigest -or
+       (@($Plan.records|ForEach-Object{$_.phase}) -join ',') -cne 'DRAINING,FROZEN_BEFORE_CHECK,CHECK_SEALED,APPLY_STOP,STAGED_TARGET_FROZEN' -or
+       $Plan.records[0].previousDigest -cne $Seed.digest -or $Plan.records[-1].generation -cne $Intent.go.targetGeneration -or
+       $Plan.handoff.attemptId -cne $Intent.go.attemptId -or $Plan.handoff.registryDigest -cne $Result.registryDigest){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_UNCONFIRMED'
+    }
+    Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+    $null=Read-BootstrapSeedSource $Source
+    $Fresh=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    if(-not (Same-Json $Fresh.go $Intent.go) -or -not (Same-Json $Fresh.pair $Pair) -or
+       -not (Same-Json $Fresh.check $Intent.check)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_CHANGED'
+    }
+    $Previous=$Fresh.attempt.PSObject.Properties['bootstrapBegin']
+    if($Previous){
+        if(-not (Same-Json $Previous.Value $Result)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_CHANGED'}
+    } else {
+        # Save original readback before publishing any phase. Lost ACK
+        # before this save is recovered by the same exact writer intent.
+        $Fresh.attempt|Add-Member -NotePropertyName bootstrapBegin -NotePropertyValue $Result
+        $script:R=$Fresh.attempt
+        Save -FlushToDisk
+    }
+    $Stored=Read-Private $script:RecordPath
+    if(-not (Same-Json $Stored.bootstrapBegin $Result)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_CHANGED'}
+    $script:R=$Stored
+    return $Result
+}
+
+function Save-BootstrapPreparedAttempt {
+    param($Source,$Report,[string]$CheckPath,[string]$ReviewProofPath)
+    if($script:R.phase -cne 'Prepared' -or $script:R.activated -or $script:R.probesPassed -or
+       $script:R -isnot [Collections.IDictionary] -or $script:R.runtime.pilotId -or
+       [IO.Path]::GetFullPath($CheckPath) -cne [IO.Path]::GetFullPath($CheckedImageRecord)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ATTEMPT_CHANGED'
+    }
+    # The original Check binds the previous attempt pointer. Do not write
+    # our new pointer until after the final exact read-only verification.
+    $CheckPath=[IO.Path]::GetFullPath($CheckPath)
+    $ReviewProofPath=[IO.Path]::GetFullPath($ReviewProofPath)
+    $CheckHash=(Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash
+    $Check=Read-Private $CheckPath
+    if($Check.binding.bootstrapReviewProofRecord -cne $ReviewProofPath){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'
+    }
+    $Go=New-BootstrapOwnerGo $Source $CheckPath $CheckHash $ReviewProofPath
+    $Fresh=Read-BootstrapCompatibility $Source -Recheck
+    if(-not (Same-Json $Fresh $script:BootstrapPair)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPATIBILITY_CHANGED'}
+    $Receipt=Verify-Checked-Image $Source $Report -ReturnReceipt
+    if((Get-FileHash -LiteralPath $CheckPath -Algorithm SHA256).Hash -ine $CheckHash -or
+       -not (Same-Json $Receipt $Check.sourceReceipt)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'
+    }
+    $script:R['bootstrapCheckRecord']=$CheckPath
+    $script:R['bootstrapCheckHash']=$CheckHash
+    $script:R['bootstrapReviewProofRecord']=$ReviewProofPath
+    $script:R['bootstrapOwnerGo']=$Go
+    $script:R.sourceReceipt=$Receipt
+    Assert-BootstrapNoReceiver @{attempt=$script:R}
+    Assert-Release-Production
+    Save -FlushToDisk
+    $Stored=Read-Private $script:RecordPath
+    if(-not (Same-Json $Stored $script:R)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ATTEMPT_CHANGED'}
+    Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath} -FlushToDisk
+    $null=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    $script:R=Read-Private $script:RecordPath
+}
+function Invoke-BootstrapPreparedTransition {
+    # Caller already owns the existing controller lock and protected
+    # Prepared attempt. This block returns a verified passive Registry;
+    # the existing Gateway controller must consume the returned delivery.
+    $Source=$script:R.source;$Path=$script:R.bootstrapCheckRecord;$Hash=$script:R.bootstrapCheckHash
+    $Sealed=$null
+    if(-not $script:R.PSObject.Properties['bootstrapMaterials']){
+        Stop-BootstrapSourcePair $Source $Path $Hash
+        if(-not $script:R.PSObject.Properties['ordinaryHandover']){
+            $null=Invoke-BootstrapFrozenPair $Source $Path $Hash
+            $null=Publish-BootstrapFrozenPhases $Source $Path $Hash
+        }
+        $Material=Seal-BootstrapFinalProfiles $Source $Path $Hash
+        $Sealed=$Material
+    } else {$Material=$script:R.bootstrapMaterials}
+    $Delivery=Start-BootstrapReceiver $Source $Path $Hash -Sealed $Sealed
+    $P=$script:R.runtime
+    if($P.PSObject.Properties['registryDelivery']){
+        if(-not (Same-Json $P.registryDelivery $Delivery)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'}
+    } else {
+        $P|Add-Member -NotePropertyName registryDelivery -NotePropertyValue $Delivery
+        $P|Add-Member -NotePropertyName maintenanceGeneration -NotePropertyValue $Delivery.generation
+        $P.registryProfileDigest=$Delivery.profileDigest
+        Save -FlushToDisk
+    }
+    $script:RegistryDelivery=$Delivery
+    return @{publication=(Read-SuccessorPublication $Source).anchor;material=$Material;delivery=$Delivery}
+}
+
+function Publish-BootstrapFrozenPhases {
+    param($Source,[string]$CheckPath,[string]$CheckHash)
+    # This is the physical bootstrap proof, not live DRAINING. No target
+    # receiver may exist yet; STAGED_TARGET_FROZEN requires final material
+    # proof separately. Re-read the exact persisted pair, not a phase hash
+    # supplied by the caller or another invocation of the writer.
+    $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    Assert-Release-Production
+    Assert-BootstrapNoReceiver $Intent
+    $Stored=$Intent.attempt.PSObject.Properties['bootstrapBegin']
+    if(-not $Stored){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_UNCONFIRMED'}
+    $Actual=Invoke-BootstrapFrozenPair $Source $CheckPath $CheckHash -Readback
+    if(-not (Same-Json $Actual $Stored.Value)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_CHANGED'}
+    $Plan=$Actual.phasePlan
+    $Seed=Read-BootstrapSeedSource $Source
+    $Loaded=Read-SuccessorPublication $Source
+    $Anchor=$Loaded.anchor
+    $Records=@($Seed.record)+@($Plan.records)
+    $Sequence=$Anchor.record.sequence
+    if($Sequence -isnot [int] -and $Sequence -isnot [long]){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'}
+    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v2' -or
+       $Sequence -lt 0 -or $Sequence -gt 4 -or
+       -not (Same-Json $Anchor.record $Records[$Sequence]) -or
+       ($Sequence -eq 0 -and $Anchor.digest -cne $Seed.digest) -or
+       ($Sequence -gt 0 -and ($Anchor.registryDigest -cne $Actual.registryDigest -or
+         -not (Same-Json $Anchor.previous $Records[$Sequence-1]))) -or
+       ($Anchor.state -ceq 'Pending' -and ($Sequence -eq 4 -or
+         -not (Same-Json $Anchor.next $Records[$Sequence+1]) -or $Anchor.nextRegistryDigest -cne $Actual.registryDigest))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'
+    }
+    # Publish only the missing suffix. The existing publisher reconciles
+    # committed predecessor projection / Pending intent before the next
+    # exact transition. No reset, replay of earlier phases or new digest.
+    if($Sequence -eq 4){
+        if($Anchor.state -cne 'Committed' -or
+           (Publish-SuccessorInterlock $Source $Records[4] $Actual.registryDigest) -cne $Anchor.digest){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+        }
+    } else {
+        for($Index=$Sequence+1;$Index -le 4;$Index++){
+            $Digest=Publish-SuccessorInterlock $Source $Records[$Index] $Actual.registryDigest
+            if($Digest -cne $Records[$Index+1].previousDigest){
+                throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+            }
+        }
+    }
+    $Final=(Read-SuccessorPublication $Source).anchor
+    if($Final.state -cne 'Committed' -or $Final.digest -cne $Records[5].previousDigest -or
+       $Final.registryDigest -cne $Actual.registryDigest -or -not (Same-Json $Final.record $Records[4])){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    $null=Read-BootstrapSeedSource $Source
+    Assert-BootstrapNoReceiver $Intent
+    Assert-Release-Production
+    return $Final
+}
+
+function Assert-PairedFrozenSource {
+    param($Intent,$Source,[string[]]$CandidateIds=@())
+    if($Intent.ContainsKey('ordinary')){
+        $null=Read-OrdinarySuccessorSource $Source -Frozen -CandidateIds $CandidateIds
+    }else{$null=Read-BootstrapSeedSource $Source}
+}
+function Invoke-BootstrapFinalMaterialHelper {
+    param($Intent,$Source,$Publication,$Seed,[ValidateSet('State','Registry','Gateway')][string]$Role,
+          $RegistryProfile,[switch]$VerifyOnly)
+    $Pair=$Intent.pair;$Nonce=$Intent.attempt.runtime.registryReleaseNonce;$Id=$Nonce.Replace('-','')
+    Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+    $Ordinary=$Intent.ContainsKey('ordinary')
+    if($Ordinary){
+        Assert-OperationalMaintenanceHolders $Source @() 'RELEASE_SUCCESSOR_SEED_HOLDER_CHANGED'
+        $O=$Intent.ordinary
+        $InputValue=@{checked=$Pair.checked;go=$O.intent.authorization;sourceReceipt=$Intent.check.sourceReceipt
+            review=$null;evidence=$null;seed=$O.intent.normal;seedDigest=$null;begin=$O.begin
+            publication=$Publication;verifyOnly=[bool]$VerifyOnly;source=$Intent.check.binding.sourceSha
+            registryProfile=$RegistryProfile;ordinary=@{intent=$O.intent;check=$O.check;sourceReceipt=$O.sourceReceipt;stop=$O.stop}
+            targetRoot=$(if($Role -ceq 'State'){$Pair.checked.roots.state}else{$Pair.finalRoots.$Role})}
+    }else{
+        if($Role -ceq 'State'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'}
+        Assert-ReleaseVolumeHolders @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') @() 'RELEASE_SUCCESSOR_SEED_HOLDER_CHANGED'
+        $InputValue=@{checked=$Pair.checked;go=$Intent.go;sourceReceipt=$Intent.check.sourceReceipt
+            review=$Pair.reviewSha256;evidence=$Pair.evidenceSha256;seed=$Seed.record;seedDigest=$Seed.digest
+            begin=$Intent.attempt.bootstrapBegin;publication=$Publication;verifyOnly=[bool]$VerifyOnly
+            source=$Intent.check.binding.sourceSha;registryProfile=$RegistryProfile
+            targetRoot=$Pair.finalRoots.$Role;ordinary=$null}
+    }
+    $Access=if($VerifyOnly){',readonly'}else{''}
+    $Common=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--name',('fortis-registry-seal-'+$Role.ToLowerInvariant()+'-'+$Id),
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32',
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    if($Role -ceq 'State'){
+        $OldState='fortis-registry-state-e13b-'+$Source.runtime.registryReleaseNonce.Replace('-','')
+        $State='fortis-registry-state-e13b-'+$Id;$Config='fortis-registry-config-e13b-'+$Id+'-prepared'
+        foreach($Volume in @($OldState,$State,$Config)){Assert-Volume $Volume;Assert-OnlyWriter $Volume}
+        $Arguments=$Common+@('--user','20002:20002','--memory','1024m',
+            '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+            '--mount',('type=volume,source='+$OldState+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$Config+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$State+',target=/target,volume-nocopy'+$Access),$Pair.registryImage)
+        $InputValue.profile=$Pair.registryProfileSha256
+        $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import frozen_pair_backup
+p=json.load(sys.stdin)
+proof={**p['ordinary'],'begin':p['begin'],'publication':p['publication']}
+r=frozen_pair_backup(p['profile'],pair=p['begin']['pair'],holds=p['begin']['holdSnapshot'],
+    phase_record=p['publication']['record'],verify_only=p['verifyOnly'],expected_target=p['targetRoot'],ordinary=proof)
+print(json.dumps(r,sort_keys=True,separators=(',',':')))
+'@
+    } elseif($Role -ceq 'Registry'){
+        $State='fortis-registry-state-e13b-'+$Id;$Config='fortis-registry-config-e13b-'+$Id
+        foreach($Volume in @($State,$Config,($Config+'-prepared'))){Assert-Volume $Volume}
+        $Arguments=$Common+@('--user','20002:20002','--memory','1024m',
+            '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+            '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$Config+'-prepared,target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$Config+',target=/target,volume-nocopy'+$Access),$Pair.registryImage)
+        $InputValue.profile=$Pair.registryProfileSha256
+        $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import seal_bootstrap_registry_material
+from fortis_approvals.integrations.registry_contracts.maintenance_contract import bootstrap_pair_authorization
+p=json.load(sys.stdin)
+auth=(p['go'] if p['ordinary'] is not None else bootstrap_pair_authorization(p['checked'],p['go'],p['sourceReceipt'],
+    review_sha256=p['review'],evidence_sha256=p['evidence'],seed_digest=p['seedDigest']))
+result=seal_bootstrap_registry_material(p['profile'],review_sha256=p['review'],
+    evidence_sha256=p['evidence'],source_sha=p['source'],checked=p['checked'],authorization=auth,
+    seed=p['seed'],begin=p['begin'],publication=p['publication'],verify_only=p['verifyOnly'],expected_target=p['targetRoot'],ordinary=p['ordinary'])
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
+'@
+    } else {
+        $Reader='fortis-r7-registry-reader-'+$Id
+        foreach($Volume in @($Reader,($Reader+'-prepared'),$Source.runtime.stateVolume)){Assert-Volume $Volume}
+        $Arguments=$Common+@('--user','10001:10001','--memory','512m',
+            '--mount',('type=volume,source='+$Reader+'-prepared,target=/run/r7-registry-reader,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$Reader+',target=/target,volume-nocopy'+$Access),
+            '--mount',('type=volume,source='+$Source.runtime.stateVolume+',target=/source,readonly,volume-nocopy'),
+            $Intent.attempt.runtime.image)
+        $Code=@'
+import json,sys
+from pathlib import Path
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import seal_bootstrap_gateway_material
+from fortis_approvals.integrations.registry_contracts.maintenance_contract import bootstrap_pair_authorization
+p=json.load(sys.stdin)
+if _installed_policy_source_digest()!=p['checked']['gateway']['sourceDigest']:
+    raise RuntimeError('BOOTSTRAP_GATEWAY_SOURCE_CHANGED')
+auth=(p['go'] if p['ordinary'] is not None else bootstrap_pair_authorization(p['checked'],p['go'],p['sourceReceipt'],
+    review_sha256=p['review'],evidence_sha256=p['evidence'],seed_digest=p['seedDigest']))
+result=seal_bootstrap_gateway_material(checked=p['checked'],authorization=auth,seed=p['seed'],
+    begin=p['begin'],publication=p['publication'],registry_profile=p['registryProfile'],
+    verify_only=p['verifyOnly'],expected_target=p['targetRoot'],incumbent_core=Path('/source/private/approvals.sqlite'),ordinary=p['ordinary'])
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
+'@
+    }
+    $Actual=(Python-Code $Arguments $Code (ConvertTo-Json -Compress -Depth 25 $InputValue))|ConvertFrom-Json
+    Assert-CorrectiveTargetHolders $Nonce @() -PreparedProfiles
+    return $Actual
+}
+function Seal-BootstrapFinalProfiles {
+    param($Source,[string]$CheckPath,[string]$CheckHash)
+    # Exact current APPLY_STOP only. No listener or STAGED_TARGET_FROZEN
+    # publication is performed here. Original Prepared materials and state
+    # are retained, so every final seal has independent RO recovery.
+    $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    Assert-BootstrapNoReceiver $Intent
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    if($Intent.ContainsKey('ordinary')){
+        Assert-PairedFrozenSource $Intent $Source
+        $O=$Intent.ordinary
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $O.stop.next) -or
+           $Publication.registryDigest -cne $O.begin.registryDigest){throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'}
+        $Seed=$null;$Written=$null
+        if(-not $Intent.attempt.PSObject.Properties['bootstrapBegin']){
+            try{$Written=Invoke-BootstrapFinalMaterialHelper $Intent $Source $Publication $Seed State $null}
+            catch{Write-Warning 'RELEASE_SUCCESSOR_ORDINARY_STATE_READBACK'}
+        }
+        $State=Invoke-BootstrapFinalMaterialHelper $Intent $Source $Publication $Seed State $null -VerifyOnly
+        if(($Written -and -not (Same-Json $Written $State)) -or $State.result -cne 'PAIRED_STAGED_STATE_COPY_ONLY' -or
+           -not (Same-Json $State.checkpoint $O.begin.checkpoint) -or -not (Same-Json $State.holdSnapshot $O.begin.holdSnapshot) -or
+           $State.final.record.phase -cne 'STAGED_TARGET_FROZEN' -or $State.final.record.previousDigest -cne $Publication.digest -or
+           $State.final.handoff.registryDigest -cne $O.begin.registryDigest){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_STATE_CHANGED'
+        }
+        $Begin=$O.begin|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json
+        $Begin|Add-Member -NotePropertyName phasePlan -NotePropertyValue @{
+            records=@($O.begin.draining,$Intent.check.maintenanceTransitions.frozen,$Intent.check.maintenanceTransitions.checked,$O.stop.next,$State.final.record)
+            handoff=$State.final.handoff}
+        $Previous=$Intent.attempt.PSObject.Properties['bootstrapBegin']
+        if($Previous){
+            if(-not (Same-Json $Previous.Value $Begin) -or -not (Same-Json $Intent.attempt.ordinaryStateCopy $State)){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_STATE_CHANGED'
+            }
+        }else{
+            $Intent.attempt|Add-Member -NotePropertyName bootstrapBegin -NotePropertyValue $Begin
+            $Intent.attempt|Add-Member -NotePropertyName ordinaryStateCopy -NotePropertyValue $State
+            $script:R=$Intent.attempt;Save -FlushToDisk
+        }
+        $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    }else{
+        $Begin=$Intent.attempt.bootstrapBegin
+        if(-not $Begin -or $Publication.state -cne 'Committed' -or
+           -not (Same-Json $Publication.record $Begin.phasePlan.records[3]) -or
+           $Publication.digest -cne $Begin.phasePlan.records[4].previousDigest -or
+           $Publication.registryDigest -cne $Begin.registryDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'
+        }
+        $Seed=Read-BootstrapSeedSource $Source
+        Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash
+    }
+    $Results=@{};$RegistryProfile=$null
+    foreach($Role in @('Registry','Gateway')){
+        $Written=$null
+        if(-not $Intent.attempt.PSObject.Properties['bootstrapMaterials']){
+            try {
+                $Written=Invoke-BootstrapFinalMaterialHelper $Intent $Source $Publication $Seed $Role $RegistryProfile
+            } catch {Write-Warning ('RELEASE_SUCCESSOR_BOOTSTRAP_MATERIAL_READBACK '+$Role)}
+        }
+        # Even a successful writer is not independent proof. Never use its
+        # own output as admission or blindly repeat after uncertain ACK.
+        $Actual=Invoke-BootstrapFinalMaterialHelper $Intent $Source $Publication $Seed $Role $RegistryProfile -VerifyOnly
+        if(($Written -and -not (Same-Json $Written $Actual)) -or
+           $Actual.profileDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           $Actual.fileHashes.'profile.json' -cne $Actual.profileDigest -or
+           $Actual.generation -cne $Intent.go.targetGeneration -or
+           -not (Same-Json $Actual.handoff $Begin.phasePlan.handoff)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'
+        }
+        if($Role -ceq 'Registry'){$RegistryProfile=$Actual.profile}
+        elseif($Actual.registryProfileDigest -cne $Results.Registry.profileDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'
+        }
+        $Results[$Role]=$Actual
+    }
+    Assert-PairedFrozenSource $Intent $Source
+    Assert-BootstrapNoReceiver $Intent
+    if(-not (Same-Json (Read-SuccessorPublication $Source).anchor $Publication)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'
+    }
+    $Fresh=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    if(-not (Same-Json $Fresh.go $Intent.go) -or -not (Same-Json $Fresh.attempt.bootstrapBegin $Begin)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_CHANGED'
+    }
+    $Material=[ordered]@{gatewayProfileDigest=$Results.Gateway.profileDigest
+        registryProfileDigest=$Results.Registry.profileDigest;generation=$Intent.go.targetGeneration
+        handoff=$Begin.phasePlan.handoff;gatewayHashes=$Results.Gateway.fileHashes;registryHashes=$Results.Registry.fileHashes}
+    $Previous=$Fresh.attempt.PSObject.Properties['bootstrapMaterials']
+    if($Previous){
+        if(-not (Same-Json $Previous.Value $Material)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'}
+    } else {
+        $Fresh.attempt|Add-Member -NotePropertyName bootstrapMaterials -NotePropertyValue $Material
+        $script:R=$Fresh.attempt;Save -FlushToDisk
+    }
+    $script:R=Read-Private $script:RecordPath
+    if(-not (Same-Json $script:R.bootstrapMaterials $Material)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'}
+    return $Material
+}
+
+function Read-BootstrapReceiver {
+    param($Intent,[string]$GatewayId='',[switch]$Accepted,[switch]$Returning)
+    $Field=$Intent.attempt.PSObject.Properties['bootstrapReceiver']
+    if(-not $Field){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_INTENT_MISSING'}
+    $Saved=$Field.Value;$P=$Intent.attempt.runtime;$M=$Intent.attempt.bootstrapMaterials
+    $Name='fortis-registry-successor-'+$P.registryReleaseNonce.Replace('-','')
+    if(-not $M -or $Saved.name -cne $Name -or $Saved.image -cne $Intent.pair.registryImage -or
+       $Saved.profileDigest -cne $M.registryProfileDigest -or $Saved.generation -cne $M.generation -or
+       $Saved.attemptId -cne $Intent.go.attemptId -or
+       ($Saved.id -and $Saved.id -cnotmatch '^[0-9a-f]{64}$')){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+    }
+    $Names=@((Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n')
+    if($Names -cnotcontains $Name){
+        if($Saved.id){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'}
+        return
+    }
+    $C=Container $Name
+    if(($Saved.id -and $Saved.id -cne $C.Id) -or
+       $C.Config.Labels.'io.fortis.bootstrap-attempt' -cne $Intent.go.attemptId -or
+       $C.State.Status -cnotin @('created','running','exited')){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+    }
+    $AlreadyAccepted=($Accepted -and $C.HostConfig.RestartPolicy.Name -ceq 'unless-stopped')
+    Assert-CorrectiveRegistryContainer $C $P.registryReleaseNonce $Saved.image $Saved.profileDigest 'writer' $Intent.check.binding.sourceSha -Status $C.State.Status -LatestPin -Accepted:$AlreadyAccepted
+    $Allowed=@($C.Id)
+    if($GatewayId){
+        if($GatewayId -cnotmatch '^[0-9a-f]{64}$' -or $GatewayId -cne $P.pilotId){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+        }
+        $Allowed+=@($GatewayId)
+    }
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce $Allowed -PreparedProfiles
+    if($Intent.ContainsKey('ordinary')){
+        if($Returning){
+            $Original=Read-Private $Intent.attempt.source.path
+            $Allowed+=@($Intent.attempt.source.runtime.pilotId,$Original.bootstrapReceiver.id)
+        }
+        Assert-OperationalMaintenanceHolders $Intent.attempt.source $Allowed 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+    }else{Assert-ReleaseVolumeHolders @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') $Allowed 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'}
+    return $C
+}
+function Start-BootstrapReceiver {
+    param($Source,[string]$CheckPath,[string]$CheckHash,$Sealed=$null)
+    $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    $M=$Intent.attempt.bootstrapMaterials;$B=$Intent.attempt.bootstrapBegin;$P=$Intent.attempt.runtime
+    if(-not $M -or -not $B -or $M.generation -cne $Intent.go.targetGeneration -or
+       -not (Same-Json $M.handoff $B.phasePlan.handoff)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'}
+    Assert-Release-Production
+    if(-not $Intent.ContainsKey('ordinary')){$null=Read-BootstrapSeedSource $Source}
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    $Stop=$B.phasePlan.records[3];$Next=$B.phasePlan.records[4]
+    if($Publication.registryDigest -cne $B.registryDigest -or
+       (-not (Same-Json $Publication.record $Stop) -and -not (Same-Json $Publication.record $Next)) -or
+       ($Publication.state -ceq 'Pending' -and -not (Same-Json $Publication.next $Next))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'
+    }
+    if(-not $Intent.attempt.PSObject.Properties['bootstrapReceiver']){
+        Assert-BootstrapNoReceiver $Intent
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Stop)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'
+        }
+        # In a fresh Prepared driver the independent RO seal was just
+        # verified under this same controller lock, with no intervening
+        # writer or holder. Re-entry must re-read both roots instead.
+        if($Sealed){
+            if(-not (Same-Json $Sealed $M)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'}
+        } else {$null=Seal-BootstrapFinalProfiles $Source $CheckPath $CheckHash}
+        $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+        $Saved=[pscustomobject][ordered]@{name=('fortis-registry-successor-'+$P.registryReleaseNonce.Replace('-',''))
+            image=$Intent.pair.registryImage;profileDigest=$M.registryProfileDigest;generation=$M.generation
+            attemptId=$Intent.go.attemptId;id=''}
+        $Intent.attempt|Add-Member -NotePropertyName bootstrapReceiver -NotePropertyValue $Saved
+        $script:R=$Intent.attempt;Save -FlushToDisk
+        $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    }
+    $C=Read-BootstrapReceiver $Intent
+    if($Intent.ContainsKey('ordinary')){
+        $Ids=if($C){@($C.Id)}else{@()}
+        Assert-PairedFrozenSource $Intent $Source -CandidateIds $Ids
+    }
+    $Saved=$Intent.attempt.bootstrapReceiver
+    if(-not $C){
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Stop)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'
+        }
+        Assert-BootstrapNoReceiver $Intent
+        $Id=$P.registryReleaseNonce.Replace('-','')
+        $Mounts=@(
+            @(('fortis-registry-state-e13b-'+$Id),'/run/fortis-registry-state',''),
+            @(('fortis-registry-config-e13b-'+$Id),'/run/fortis-registry-runtime',',readonly'),
+            @(('fortis-registry-read-'+$Id),'/run/fortis-registry-read',''),
+            @(('fortis-registry-source-evidence-'+$Id),'/run/fortis-registry-source-evidence',',readonly'),
+            @(('fortis-registry-source-'+$Id),'/run/fortis-registry-source',',readonly'),
+            @('fortis-r7-maintenance-interlock-v2','/run/r7-maintenance',',readonly'),
+            @('fortis-r7-maintenance-anchor','/run/r7-maintenance-anchor',',readonly'))
+        $Arguments=@('create','--pull=never','--name',$Saved.name,'--label',('io.fortis.bootstrap-attempt='+$Saved.attemptId),
+            '--restart=no','--init','--network=none','--read-only','--user','20002:20002',
+            '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory','512m',
+            '--tmpfs','/tmp:rw,nosuid,nodev,size=256m')
+        foreach($Mount in $Mounts){
+            Assert-Volume $Mount[0]
+            $Arguments+=@('--mount',('type=volume,source='+$Mount[0]+',target='+$Mount[1]+',volume-nocopy'+$Mount[2]))
+        }
+        $Arguments+=@($Saved.image,'python','-m','fortis_approvals.registry.local_candidate_read_service',
+            '--owner-config','/run/fortis-registry-runtime/profile.json','--expected-profile-sha256',$Saved.profileDigest)
+        Step 'BOOTSTRAP_CREATE_REGISTRY_RECEIVER'
+        $Ack=''
+        try {$Ack=Docker-Text $Arguments}catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CREATE_READBACK'}
+        $C=Read-BootstrapReceiver $Intent
+        if(-not $C -or $C.State.Status -cne 'created' -or ($Ack -and $Ack -cne $C.Id)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CREATE_UNCONFIRMED'
+        }
+    }
+    if(-not $Saved.id){
+        if($C.State.Status -cne 'created' -or $Publication.state -cne 'Committed' -or
+           -not (Same-Json $Publication.record $Stop)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'}
+        $Saved.id=$C.Id
+        $script:R=$Intent.attempt;Save -FlushToDisk
+        $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+        $C=Read-BootstrapReceiver $Intent
+    }
+    # The receiver cannot start against APPLY_STOP or a Pending projection.
+    if($C.State.Status -cne 'created' -and -not (Same-Json $Publication.record $Next)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+    }
+    $Digest=Publish-SuccessorInterlock $Source $Next $B.registryDigest
+    $Published=(Read-SuccessorPublication $Source).anchor
+    if($Digest -cne $M.handoff.interlockDigest -or $Published.state -cne 'Committed' -or
+       $Published.digest -cne $Digest -or $Published.registryDigest -cne $B.registryDigest -or
+       -not (Same-Json $Published.record $Next)){throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'}
+    Step 'BOOTSTRAP_START_REGISTRY_RECEIVER'
+    $C=Set-BootstrapContainerState $C Start
+    Wait-CorrectiveRegistryListener $C.Id
+    if($Source.runtime.runId -cnotmatch '^[0-9a-f]{32}$' -or
+       $Source.runtime.stateVolume -cne ('fortis-github-pilot-state-'+$Source.runtime.runId) -or
+       -not $Intent.pair.checked.gateway.companion){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+    }
+    Assert-OnlyWriter $Source.runtime.stateVolume
+    $Delivery=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Digest -LatestPin -IncumbentVolume $Source.runtime.stateVolume -ExpectedExisting $Intent.pair.checked.gateway.companion
+    $Checkpoint=$Delivery.registryCheckpoint;$Checked=$Intent.pair.checked.registry.checkpoint
+    if($Delivery.profileDigest -cne $M.gatewayProfileDigest -or
+       $Delivery.generation -cne $M.generation -or $Delivery.maintenancePhase -cne 'STAGED_TARGET_FROZEN' -or
+       $Delivery.sourceDelivery.policyAuthorityDigest -cne $Intent.pair.checked.registry.binding.authorityDigest -or
+       $Checkpoint.registryDigest -cne $B.registryDigest -or $Checkpoint.profileDigest -cne $Checked.profileDigest -or
+       $Checkpoint.sourceRevision -ne $Checked.sourceRevision -or $Checkpoint.sourceCursor -cne $Checked.sourceCursor -or
+       $Checkpoint.snapshotRevision -ne $B.holdSnapshot.snapshotRevision -or $Checkpoint.eventDigest -cne $B.holdSnapshot.eventDigest -or
+       -not (Same-Json $Delivery.existingCompanion $Intent.pair.checked.gateway.companion) -or
+       -not (Same-Json (Read-SuccessorPublication $Source).anchor $Published)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+    }
+    $null=Read-BootstrapReceiver $Intent
+    Assert-PairedFrozenSource $Intent $Source -CandidateIds @($C.Id)
+    $Fresh=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    $Previous=$Fresh.attempt.PSObject.Properties['bootstrapDelivery']
+    if($Previous){
+        if(-not (Same-Json $Previous.Value $Delivery)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'}
+    } else {
+        $Fresh.attempt|Add-Member -NotePropertyName bootstrapDelivery -NotePropertyValue $Delivery
+        $script:R=$Fresh.attempt;Save -FlushToDisk
+    }
+    $script:R=Read-Private $script:RecordPath
+    if(-not (Same-Json $script:R.bootstrapDelivery $Delivery)){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'}
+    return $Delivery
+}
+
+function Assert-BootstrapNoReceiver {
+    param($Intent,[switch]$Returning)
+    $P=$Intent.attempt.runtime
+    if(($Intent.attempt.phase -cne 'Prepared' -and -not ($Returning -and $Intent.attempt.phase -ceq 'Returned')) -or $Intent.attempt.activated -or
+       $Intent.attempt.probesPassed -or $P.pilotId){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+    }
+    # This Return is only for the pre-receiver boundary. Never guess a
+    # candidate identity after a lost create/start ACK, or discard a marker.
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce @() -PreparedProfiles
+    if($Intent.ContainsKey('ordinary')){
+        $Source=$Intent.attempt.source;$Original=Read-Private $Source.path
+        Assert-ReleaseVolumeHolders @($P.stateVolume) @() 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+        Assert-OperationalMaintenanceHolders $Source @($Source.runtime.pilotId,$Original.bootstrapReceiver.id) 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+    }else{
+        Assert-ReleaseVolumeHolders @($P.stateVolume,'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') @() 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+    }
+    $Names=@((Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n')
+    if($Names -ccontains $P.pilotName -or $Names -ccontains ('fortis-registry-successor-'+$P.registryReleaseNonce.Replace('-',''))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+    }
+    Assert-CorrectiveGateAbsent $P
+}
+function Set-BootstrapContainerState {
+    param($C,[ValidateSet('DisableRestart','Stop','Start','RestoreRestart')][string]$Effect)
+    # Caller has just proved exact retained identity and owns the controller
+    # lock. Read actual state after command failure: a lost ACK is not a
+    # new intent, and a satisfied postcondition needs no second Docker call.
+    $Id=$C.Id;$ImageId=$C.Image
+    $State=$C.State.Status;$Restart=$C.HostConfig.RestartPolicy.Name
+    if($Id -cnotmatch '^[0-9a-f]{64}$' -or $State -cnotin @('created','running','exited') -or
+       ($State -ceq 'created' -and ($Effect -cne 'Start' -or $Restart -cne 'no')) -or
+       $Restart -cnotin @('no','unless-stopped')){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_CHANGED'}
+    switch -CaseSensitive ($Effect){
+        'DisableRestart' {$WantedState=$State;$WantedRestart='no';$Arguments=@('update','--restart=no',$Id)}
+        'Stop' {
+            if($Restart -cne 'no'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RESTART_NOT_DISABLED'}
+            $WantedState='exited';$WantedRestart='no';$Arguments=@('stop','--timeout','20',$Id)}
+        'Start' {
+            if($Restart -cne 'no' -and $State -cne 'running'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RESTART_NOT_DISABLED'}
+            $WantedState='running';$WantedRestart=$Restart;$Arguments=@('start',$Id)}
+        'RestoreRestart' {
+            if($State -cne 'running'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_NOT_RUNNING'}
+            $WantedState='running';$WantedRestart='unless-stopped';$Arguments=@('update','--restart=unless-stopped',$Id)}
+    }
+    if($State -cne $WantedState -or $Restart -cne $WantedRestart){
+        try {$null=Docker-Text $Arguments}
+        catch {
+            # No retry. Independent readback below distinguishes an applied
+            # effect from an unresolved outcome; retain the attempt either way.
+            Write-Warning ('RELEASE_SUCCESSOR_BOOTSTRAP_EFFECT_READBACK '+$Effect)
+        }
+    }
+    $Actual=Container $Id
+    if($Actual.Id -cne $Id -or $Actual.Image -cne $ImageId -or
+       $Actual.State.Status -cne $WantedState -or $Actual.HostConfig.RestartPolicy.Name -cne $WantedRestart -or
+       $Actual.HostConfig.RestartPolicy.MaximumRetryCount -ne 0){
+        throw ('RELEASE_SUCCESSOR_BOOTSTRAP_EFFECT_UNCONFIRMED '+$Effect)
+    }
+    return $Actual
+}
+function Stop-BootstrapSourcePair {
+    param($Source,[string]$CheckPath,[string]$CheckHash)
+    $Intent=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash
+    Assert-Release-Production
+    Assert-BootstrapNoReceiver $Intent
+    if($Intent.ContainsKey('ordinary')){
+        $O=$Intent.ordinary;$Check=$Intent.check
+        $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery
+        $Publication=(Read-SuccessorPublication $Source).anchor
+        if($Publication.record.phase -ceq 'CHECK_SEALED' -and $Publication.state -ceq 'Committed'){
+            $Verify=New-SuccessorApplyVerifyPayload $Intent.context.payload $O.check $Check.maintenanceTransitions $Publication.digest
+            $Verify.prepareStop=@{sourceRecordDigest=$O.stop.sourceRecordDigest;checkedRecordDigest=$O.stop.checkedRecordDigest;targetImageId=$O.stop.targetImageId}
+            $Fresh=Read-SuccessorFreezeSeal $Verify $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'
+            if(-not (Same-Json $Fresh.stopIntent $O.stop) -or -not (Same-Json $Fresh.sourceReceipt $Check.sourceReceipt)){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+            }
+        }elseif(-not (Same-Json $Publication.record $O.stop.next) -and
+            -not ($Publication.state -ceq 'Pending' -and (Same-Json $Publication.next $O.stop.next))){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+        }
+        $Digest=Publish-SuccessorInterlock $Source $O.stop.next $O.begin.registryDigest
+        $Published=(Read-SuccessorPublication $Source).anchor
+        if($Published.state -cne 'Committed' -or $Published.digest -cne $Digest -or
+           -not (Same-Json $Published.record $O.stop.next)){throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'}
+        $null=Set-BootstrapContainerState (Set-BootstrapContainerState $Rows.gateway DisableRestart) Stop
+        $null=Set-BootstrapContainerState (Set-BootstrapContainerState $Rows.registry DisableRestart) Stop
+        Assert-PairedFrozenSource $Intent $Source
+        $Verify=New-SuccessorApplyVerifyPayload $Intent.context.payload $O.check $Check.maintenanceTransitions $Digest
+        $Verify.stoppedIntent=$O.stop
+        $Fresh=Read-SuccessorFreezeSeal $Verify $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'
+        if(-not (Same-Json $Fresh.sourceReceipt $Check.sourceReceipt)){throw 'RELEASE_SUCCESSOR_ORDINARY_STATE_CHANGED'}
+        Assert-Release-Production
+        return
+    }
+    $null=Read-BootstrapSeedSource $Source -Transition
+    $Original=(Read-Private $Source.path).correctivePair
+    $Gateway=Container $Source.runtime.pilotId
+    $Registry=Container $Original.targetRegistryId
+    # Both original policies are recorded in the accepted primary/Registry
+    # record. Disable restart before stopping; never mutate those records.
+    # Gateway first (no new ingress), then Registry, and both are retained.
+    Step 'BOOTSTRAP_DISABLE_GATEWAY_RESTART'
+    $Gateway=Set-BootstrapContainerState $Gateway DisableRestart
+    Step 'BOOTSTRAP_STOP_GATEWAY'
+    $null=Set-BootstrapContainerState $Gateway Stop
+    Step 'BOOTSTRAP_DISABLE_REGISTRY_RESTART'
+    $Registry=Set-BootstrapContainerState $Registry DisableRestart
+    Step 'BOOTSTRAP_STOP_REGISTRY'
+    $null=Set-BootstrapContainerState $Registry Stop
+    $null=Read-BootstrapSeedSource $Source
+    Assert-BootstrapFrozenCheck $Source $CheckPath $CheckHash
+    Assert-Release-Production
+}
+function Read-BootstrapGatewayCandidate {
+    param($Intent)
+    $P=$Intent.attempt.runtime
+    $Names=@((Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n')
+    if($Names -cnotcontains $P.pilotName){
+        if($P.pilotId){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_GATEWAY_MISSING'}
+        return
+    }
+    if(-not $Intent.attempt.bootstrapDelivery -or -not (Same-Json $P.registryDelivery $Intent.attempt.bootstrapDelivery)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+    }
+    $C=Container $P.pilotName
+    if($C.Id -cnotmatch '^[0-9a-f]{64}$' -or ($P.pilotId -and $P.pilotId -cne $C.Id) -or
+       $C.State.Status -cnotin @('created','running','exited')){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_GATEWAY_CHANGED'
+    }
+    $Networks=Read-GatewayNetworks $P
+    $Pending=$false
+    if($Networks -and $C.State.Status -ceq 'created'){
+        $Attached=@($C.NetworkSettings.Networks.PSObject.Properties.Name)
+        $Expected=@(Get-RecordedGatewayNetworkNames $Networks)
+        $Pending=($Attached -ccontains 'fortis-gateway-egress' -and
+                  @($Attached|Where-Object{$Expected -cnotcontains $_}).Count -eq 0 -and
+                  $Attached.Count -lt $Expected.Count)
+    }
+    if(-not $P.pilotId){
+        if($C.State.Status -cne 'created' -or $C.State.StartedAt -cne '0001-01-01T00:00:00Z' -or
+           $Intent.attempt.phase -cne 'Prepared'){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_GATEWAY_CHANGED'
+        }
+        # The exact runId, image, mount set and public config are verified
+        # before adopting a lost create ACK. No live peer bypass on start.
+        $Intent.attempt.phase='Created'
+        $script:R=$Intent.attempt
+        try {
+            Admit $C $P -AllowUnhealthy -RegistryReturnSource -AllowPendingIngress:$Pending
+        } catch {$Intent.attempt.phase='Prepared';throw}
+        $P.pilotId=$C.Id;Save -FlushToDisk
+    } else {
+        Admit $C $P -AllowUnhealthy -RegistryReturnSource -AllowPendingIngress:$Pending
+    }
+    return $C
+}
+
+
+function Restore-OrdinarySourcePair {
+    param($Intent,$Rows,[string[]]$CandidateIds)
+    $Source=$Intent.attempt.source;$P=$Source.runtime;$O=$Intent.ordinary
+    $Published=(Read-SuccessorPublication $Source).anchor
+    $Saved=$Intent.attempt.PSObject.Properties['ordinaryReturn']
+    $Returning=$Intent.attempt.phase -ceq 'Returned'
+    if($Returning -and (-not $Saved -or $Rows.gateway.State.Status -cne 'running' -or
+       $Rows.registry.State.Status -cne 'running' -or
+       $Rows.gateway.HostConfig.RestartPolicy.Name -cne 'unless-stopped' -or
+       $Rows.registry.HostConfig.RestartPolicy.Name -cne 'unless-stopped')){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+    }
+    if(-not $Saved){
+        # Reconcile only the already persisted stop/staged transition. No
+        # new target start. Original source must remain the current pointer.
+        if($Published.state -ceq 'Pending'){
+            $Next=$Published.next
+            $Stage=$Intent.attempt.PSObject.Properties['bootstrapBegin']
+            if(-not (Same-Json $Next $O.stop.next) -and
+               (-not $Stage -or -not (Same-Json $Next $Stage.Value.phasePlan.records[4]))){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+            }
+        }else{$Next=$Published.record}
+        if($Next.phase -cnotin @('CHECK_SEALED','APPLY_STOP','STAGED_TARGET_FROZEN')){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+        }
+        $null=Publish-SuccessorInterlock $Source $Next $O.begin.registryDigest
+        $Published=(Read-SuccessorPublication $Source).anchor
+        $null=Set-BootstrapContainerState (Set-BootstrapContainerState $Rows.gateway DisableRestart) Stop
+        $null=Set-BootstrapContainerState (Set-BootstrapContainerState $Rows.registry DisableRestart) Stop
+        $null=Read-OrdinarySuccessorSource $Source -Frozen -CandidateIds $CandidateIds
+        Assert-CorrectiveGateAbsent $Intent.attempt.runtime
+        $B=$Intent.check.binding
+        $Receipt=Receipt $P.stateVolume -Exact:$B.requireExactUncertain -ExactClaimed:$B.requireExactClaimed -ExactApproved:$B.requireExactApproved
+        if(-not (Same-Json $Receipt $O.sourceReceipt)){throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_STATE_CHANGED'}
+        $Id=$P.registryReleaseNonce.Replace('-','')
+        $State='fortis-registry-state-e13b-'+$Id;$Config='fortis-registry-config-e13b-'+$Id
+        foreach($V in @($State,$Config,'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){Assert-Volume $V}
+        $Arguments=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+            '--name',('fortis-registry-return-'+$Id),'--user','20002:20002',
+            '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','1024m',
+            '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+            '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$Config+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+            '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+            '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy',
+            $Intent.pair.registryImage)
+        $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import read_ordinary_return
+p=json.load(sys.stdin)
+r=read_ordinary_return(p['profile'],intent=p['intent'],begin=p['begin'],check=p['check'],
+    source_receipt=p['sourceReceipt'],stop=p['stop'],publication=p['publication'])
+print(json.dumps(r,sort_keys=True,separators=(',',':')))
+'@
+        $Payload=@{profile=$Rows.receiver.profileDigest;intent=$O.intent;begin=$O.begin
+            check=$O.check;sourceReceipt=$Receipt;stop=$O.stop;publication=$Published}
+        $Proof=(Python-Code $Arguments $Code (ConvertTo-Json -Compress -Depth 25 $Payload))|ConvertFrom-Json
+        if($Proof.record.phase -cne 'RECOVERY_HOLD' -or $Proof.record.generation -cne $P.maintenanceGeneration -or
+           $Proof.record.previousDigest -cne $Published.digest -or $Proof.registryDigest -cne $O.begin.registryDigest -or
+           -not (Same-Json $Proof.checkpoint $O.begin.checkpoint) -or
+           -not (Same-Json (Read-SuccessorPublication $Source).anchor $Published)){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+        }
+        $null=Read-OrdinarySuccessorSource $Source -Frozen -CandidateIds $CandidateIds
+        Assert-CorrectiveGateAbsent $Intent.attempt.runtime
+        $Intent.attempt|Add-Member -NotePropertyName ordinaryReturn -NotePropertyValue $Proof
+        $script:R=$Intent.attempt;Save -FlushToDisk
+        $Intent=Read-BootstrapFrozenIntent $Source $Intent.attempt.bootstrapCheckRecord $Intent.attempt.bootstrapCheckHash -Returning
+        if(-not (Same-Json $Intent.attempt.ordinaryReturn $Proof)){throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'}
+    }else{$Proof=$Saved.Value}
+    if($Proof.record.phase -cne 'RECOVERY_HOLD' -or $Proof.record.generation -cne $P.maintenanceGeneration -or
+       $Proof.registryDigest -cne $O.begin.registryDigest -or -not (Same-Json $Proof.checkpoint $O.begin.checkpoint)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+    }
+    if($Saved -and $Published.record.phase -cne 'RECOVERY_HOLD'){
+        $null=Read-OrdinarySuccessorSource $Source -Frozen -CandidateIds $CandidateIds
+    }
+    $Digest=Publish-SuccessorInterlock $Source $Proof.record $Proof.registryDigest
+    $Published=(Read-SuccessorPublication $Source).anchor
+    if($Published.state -cne 'Committed' -or $Published.digest -cne $Digest -or
+       -not (Same-Json $Published.record $Proof.record) -or $Published.registryDigest -cne $Proof.registryDigest){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+    }
+    $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery -CandidateIds $CandidateIds
+    if(-not $Returning -and $Rows.registry.State.Status -ceq 'exited'){
+        $null=Set-BootstrapContainerState $Rows.registry Start
+    }
+    Wait-CorrectiveRegistryListener $Rows.registry.Id
+    $Delivery=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Digest -LatestPin
+    Assert-SuccessorRuntimeDelivery $Delivery $P.registryDelivery $Published
+    foreach($Field in @('sourceRevision','sourceCursor','snapshotRevision','eventDigest','profileDigest')){
+        if($Delivery.registryCheckpoint.$Field -cne $Proof.checkpoint.$Field){throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'}
+    }
+    if(-not $Returning){
+        $null=Set-BootstrapContainerState (Container $Rows.registry.Id) RestoreRestart
+        if($Rows.gateway.State.Status -ceq 'exited'){
+            $null=Set-BootstrapContainerState $Rows.gateway Start
+        }
+        Wait-Healthy $Rows.gateway.Id
+        $null=Set-BootstrapContainerState (Container $Rows.gateway.Id) RestoreRestart
+    }
+    Admit-Source (Container $Rows.gateway.Id) $Source
+    if(-not (Same-Json (Read-SuccessorPublication $Source).anchor $Published)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_RETURN_CHANGED'
+    }
+    # Keep both holds, old generation, and every copy. No completion or NORMAL.
+}
+
+function Return-BootstrapPreparedPair {
+    # Pre-activation Return restores the retained ORIGINAL, not a copied
+    # database. Stop any exact new Gateway before its Registry, after
+    # proving no activation marker. Retain every clone/hold/anchor. No
+    # successful closure, reseed, cleanup or restart of a new generation.
+    $Source=$script:R.source
+    $Intent=Read-BootstrapFrozenIntent $Source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash -Returning
+    Assert-Release-Production
+    $Ordinary=$Intent.ContainsKey('ordinary')
+    if(-not $Ordinary){
+    $null=Read-BootstrapSeedSource $Source -Transition
+    $Original=(Read-Private $Source.path).correctivePair
+    $Gateway=Container $Source.runtime.pilotId
+    $Registry=Container $Original.targetRegistryId
+    if($Registry.State.Status -ceq 'exited'){
+        $Frozen=Read-CorrectiveCheckpoint $Registry.Id $Source.runtime.registryReleaseNonce $Original.targetRegistryProfile $Original.targetRegistryImage 3 '073d6f8701595e499eac5a1fa0cbe90accb05819' -Frozen
+        if(-not (Same-Json $Frozen $Original.checkpoints.target)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_REGISTRY_CHANGED'
+        }
+    }
+    }
+    $Candidate=Read-BootstrapGatewayCandidate $Intent
+    $GatewayId=if($Candidate){$Candidate.Id}else{''}
+    $Receiver=$null
+    if($Intent.attempt.PSObject.Properties['bootstrapReceiver']){
+        if($Ordinary){$Receiver=Read-BootstrapReceiver $Intent -GatewayId $GatewayId -Returning}
+        else{$Receiver=Read-BootstrapReceiver $Intent -GatewayId $GatewayId}
+    }
+    if($Ordinary){
+        $Ids=@($GatewayId);if($Receiver){$Ids+=@($Receiver.Id)}
+        $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery -CandidateIds $Ids
+        $Gateway=$Rows.gateway;$Registry=$Rows.registry
+    }
+    if($Candidate -and -not $Receiver){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'}
+    if($Receiver){
+        Assert-CorrectiveGateAbsent $Intent.attempt.runtime
+        if(-not $Intent.attempt.bootstrapReceiver.id){
+            if($Receiver.State.Status -cne 'created' -or $Candidate){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'}
+            $Intent.attempt.bootstrapReceiver.id=$Receiver.Id
+            $script:R=$Intent.attempt;Save -FlushToDisk
+        }
+        Assert-ReleaseVolumeHolders @($Intent.attempt.runtime.stateVolume) @($GatewayId) 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_REQUIRES_REVIEW'
+        if($Candidate -and $Candidate.State.Status -ceq 'running'){
+            if($Intent.attempt.phase -ceq 'Returned'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RETURN_READBACK_CHANGED'}
+            $Candidate=Set-BootstrapContainerState $Candidate Stop
+        }
+        Assert-CorrectiveGateAbsent $Intent.attempt.runtime
+        if($Receiver.State.Status -ceq 'running'){
+            if($Intent.attempt.phase -ceq 'Returned'){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RETURN_READBACK_CHANGED'}
+            $Receiver=Set-BootstrapContainerState $Receiver Stop
+        }
+        if($Receiver.State.Status -cnotin @('created','exited')){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'}
+    } else {Assert-BootstrapNoReceiver $Intent -Returning}
+    if($Ordinary){
+        Restore-OrdinarySourcePair $Intent $Rows $Ids
+    }elseif($Intent.attempt.phase -ceq 'Returned'){
+        # A lost final record ACK needs readback, not a second Return
+        # operation. A later source failure is not part of this old attempt.
+        foreach($C in @($Gateway,$Registry)){
+            if($C.State.Status -cne 'running' -or $C.HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RETURN_READBACK_CHANGED'
+            }
+        }
+        Admit-Source $Gateway $Source
+        Assert-Release-Production
+        Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_RETURNED_SOURCE_ONLY'
+        return
+    }else{
+    if($Registry.State.Status -ceq 'exited'){
+        $Registry=Set-BootstrapContainerState $Registry DisableRestart
+        Step 'BOOTSTRAP_RETURN_REGISTRY'
+        $Registry=Set-BootstrapContainerState $Registry Start
+    }
+    Wait-CorrectiveRegistryListener $Registry.Id
+    $Actual=Read-CorrectiveCheckpoint $Registry.Id $Source.runtime.registryReleaseNonce $Original.targetRegistryProfile $Original.targetRegistryImage 3 '073d6f8701595e499eac5a1fa0cbe90accb05819'
+    if(-not (Same-Json $Actual $Original.checkpoints.target)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_FROZEN_REGISTRY_CHANGED'
+    }
+    $null=Set-BootstrapContainerState $Registry RestoreRestart
+    # A late source-state change can invalidate Check. Before any receiver
+    # effect it does not justify discarding that newer ORIGINAL state.
+    # Read-only live peer admission is mandatory before starting Gateway.
+    Admit $Gateway $Source.runtime -AllowUnhealthy -BootstrapRetained
+    if($Gateway.State.Status -ceq 'exited'){
+        $Gateway=Set-BootstrapContainerState $Gateway DisableRestart
+        Step 'BOOTSTRAP_RETURN_GATEWAY'
+        $Gateway=Set-BootstrapContainerState $Gateway Start
+    }
+    Wait-Healthy $Gateway.Id
+    Admit (Container $Gateway.Id) $Source.runtime -BootstrapRetained
+    $null=Set-BootstrapContainerState (Container $Gateway.Id) RestoreRestart
+    Admit-Source (Container $Gateway.Id) $Source
+    }
+    Assert-Release-Production
+    if($Receiver){
+        $Retained=if($Ordinary){Read-BootstrapReceiver $Intent -GatewayId $GatewayId -Returning}
+            else{Read-BootstrapReceiver $Intent -GatewayId $GatewayId}
+        if($Retained.Id -cne $Receiver.Id -or $Retained.State.Status -cnotin @('created','exited')){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_CHANGED'
+        }
+        if($Candidate -and (Container $Candidate.Id).State.Status -cnotin @('created','exited')){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_GATEWAY_CHANGED'
+        }
+        Assert-CorrectiveGateAbsent $Intent.attempt.runtime
+    } else {Assert-BootstrapNoReceiver $Intent -Returning}
+    # Never rewrite Check/owner GO/paired receipts to claim a successful
+    # release. The retained operational anchor may still block a new
+    # bootstrap; exact review/resolution is required, not blind re-seed.
+    $script:R=Read-Private $script:RecordPath
+    if($script:R.phase -cne 'Returned'){$script:R.phase='Returned';Save -FlushToDisk}
+    if($Ordinary){Write-Host 'FORTIS_SUCCESSOR_ORDINARY_RETURNED_RECOVERY_HOLD'}
+    else{Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_RETURNED_SOURCE_ONLY'}
+}
+
+function Assert-OrdinaryReturnSelfTest {
+    $PreviousR=$script:R;$PreviousPath=$script:RecordPath
+    try {
+        $script:RecordPath='fixture-return'
+        $Gid='a'*64;$Rid='b'*64;$NewG='c'*64;$NewR='d'*64;$ImageId='sha256:'+('e'*64)
+        $Generation='1'*64;$Pin='2'*64;$BeforeDigest='3'*64;$AfterDigest='4'*64
+        $Nonce='11111111-1111-4111-8111-111111111111'
+        $Checkpoint=@{sourceRevision=5;sourceCursor=('5'*40);snapshotRevision=12;eventDigest=('6'*64);profileDigest=('7'*64)}
+        $Source=@{runtime=@{pilotId=$Gid;image=$ImageId;stateVolume='old-state';registryReleaseNonce=$Nonce
+            maintenanceGeneration=$Generation;registryDelivery=@{latestPin=$true}}}
+        $Before=@{phase='STAGED_TARGET_FROZEN';generation=('8'*64)}
+        $Recovery=@{phase='RECOVERY_HOLD';generation=$Generation;previousDigest=$BeforeDigest}
+        $Receipt=@{sha256=@{fixture='fixture'};summary=@{}}
+        $Fixture=@{rows=@{};events=[Collections.Generic.List[string]]::new();proofs=0;phaseWrites=0;losePublish=$true;loseStart=$true;gate=$false;drift=$false}
+        function Reset-ReturnFixture {
+            foreach($Id in @($Gid,$Rid,$NewG,$NewR)){
+                $Fixture.rows[$Id]=[pscustomobject]@{Id=$Id;Image=$ImageId
+                    State=[pscustomobject]@{Status=$(if($Id -cin @($NewG,$NewR)){'running'}else{'exited'})}
+                    HostConfig=[pscustomobject]@{RestartPolicy=[pscustomobject]@{Name='no';MaximumRetryCount=0}}}
+            }
+            $script:R=[pscustomobject]@{phase='Staged';activated=$false;source=$Source
+                bootstrapCheckRecord='fixture-check';bootstrapCheckHash=('9'*64)
+                bootstrapReceiver=[pscustomobject]@{id=$NewR}
+                runtime=[pscustomobject]@{stateVolume='new-state';pilotId=$NewG}}
+            $Fixture.events.Clear();$Fixture.proofs=0;$Fixture.phaseWrites=0;$Fixture.gate=$false;$Fixture.drift=$false
+            $Fixture.anchor=@{state='Committed';record=$Before;digest=$BeforeDigest;registryDigest=$Pin}
+        }
+        function Read-BootstrapFrozenIntent {param($Source,$CheckPath,$CheckHash,[switch]$Returning)
+            if(-not $Returning){throw 'FIXTURE_RETURN_INTENT'}
+            return @{attempt=$script:R;check=@{binding=@{requireExactUncertain=$true;requireExactClaimed=$true;requireExactApproved=$true}}
+                pair=@{registryImage=$ImageId};ordinary=@{intent=@{};begin=@{registryDigest=$Pin;checkpoint=$Checkpoint}
+                check=@{};sourceReceipt=$Receipt;stop=@{next=@{phase='APPLY_STOP'}}}}
+        }
+        function Container {param($Id) return ($Fixture.rows[$Id]|ConvertTo-Json -Depth 10|ConvertFrom-Json)}
+        function Read-OrdinarySuccessorSource {param($Source,[switch]$PublicationRecovery,[switch]$Frozen,[string[]]$CandidateIds)
+            if($CandidateIds -cnotcontains $NewG -or $CandidateIds -cnotcontains $NewR){throw 'FIXTURE_TARGET_IDS'}
+            if($Frozen -and @($Fixture.rows.Values|Where-Object{$_.State.Status -cne 'exited'}).Count){throw 'FIXTURE_RETURN_WRITER'}
+            return @{gateway=(Container $Gid);registry=(Container $Rid);receiver=@{profileDigest=('a'*64)}}}
+        function Read-BootstrapGatewayCandidate {return (Container $NewG)}
+        function Read-BootstrapReceiver {param($Intent,$GatewayId,[switch]$Returning)
+            if(-not $Returning -or $GatewayId -cne $NewG){throw 'FIXTURE_RETURN_RECEIVER'}
+            return (Container $NewR)}
+        function Assert-Release-Production {}
+        function Assert-ReleaseVolumeHolders {}
+        function Assert-Volume {}
+        function Assert-CorrectiveGateAbsent {if($Fixture.gate){throw 'FIXTURE_ACTIVE_MARKER'}}
+        function Receipt {param($Volume,[switch]$Exact,[switch]$ExactClaimed,[switch]$ExactApproved)
+            if($Volume -cne 'old-state' -or -not ($Exact -and $ExactClaimed -and $ExactApproved)){throw 'FIXTURE_RECEIPT_MODE'}
+            if($Fixture.drift){return @{sha256=@{};summary=@{}}};return $Receipt}
+        function Read-SuccessorPublication {return @{anchor=$Fixture.anchor}}
+        function Publish-SuccessorInterlock {param($Source,$Next,$RegistryDigest)
+            if($RegistryDigest -cne $Pin){throw 'FIXTURE_RETURN_PIN'}
+            if(Same-Json $Next $Before){return $BeforeDigest}
+            if(-not $script:R.PSObject.Properties['ordinaryReturn'] -or -not (Same-Json $Next $Recovery)){
+                throw 'FIXTURE_RECOVERY_BEFORE_PROOF'}
+            if($Fixture.anchor.record.phase -ne 'RECOVERY_HOLD'){
+                $Fixture.phaseWrites++;$Fixture.anchor=@{state='Committed';record=$Recovery;digest=$AfterDigest;registryDigest=$Pin}
+                if($Fixture.losePublish){$Fixture.losePublish=$false;throw 'FIXTURE_RETURN_PUBLISH_ACK'}
+            }
+            return $AfterDigest}
+        function Python-Code {param($Arguments,$Code,$InputText)
+            $Fixture.proofs++
+            if(@($Arguments|Where-Object{$_ -like 'type=volume,*' -and $_ -notmatch ',readonly,'}).Count -or
+               @($Fixture.rows.Values|Where-Object{$_.State.Status -cne 'exited'}).Count){
+                throw 'FIXTURE_RETURN_READONLY'}
+            return (ConvertTo-Json -Compress -Depth 10 @{record=$Recovery;registryDigest=$Pin;checkpoint=$Checkpoint})}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk){throw 'FIXTURE_RETURN_NOT_DURABLE'}
+            $Fixture.events.Add('save:'+ $script:R.phase)}
+        function Read-Private {return $script:R}
+        function Wait-CorrectiveRegistryListener {param($Id)
+            if($Id -cne $Rid -or $Fixture.rows[$Id].State.Status -cne 'running'){throw 'FIXTURE_RETURN_LISTENER'}}
+        function Image-RegistrySuccessor-Preflight {param($ImageId,$ReleaseNonce,$InterlockDigest,[switch]$LatestPin)
+            if(-not $LatestPin -or $ReleaseNonce -cne $Nonce -or $InterlockDigest -cne $AfterDigest){throw 'FIXTURE_RETURN_PEER'}
+            return @{registryCheckpoint=$Checkpoint}}
+        function Assert-SuccessorRuntimeDelivery {param($Actual,$Retained,$Publication)
+            if($Publication.record.phase -cne 'RECOVERY_HOLD'){throw 'FIXTURE_RETURN_PHASE'}}
+        function Wait-Healthy {param($Id)
+            if($Id -cne $Gid -or $Fixture.rows[$Id].State.Status -cne 'running'){throw 'FIXTURE_RETURN_HEALTH'}}
+        function Admit-Source {param($C,$Source)
+            if($C.Id -cne $Gid -or $C.State.Status -cne 'running' -or $Fixture.rows[$Rid].State.Status -cne 'running'){
+                throw 'FIXTURE_RETURN_SOURCE'}}
+        function Docker-Text {param($Arguments)
+            $Id=$Arguments[-1];$C=$Fixture.rows[$Id]
+            $Role=if($Id -ceq $Gid){'g'}elseif($Id -ceq $Rid){'r'}elseif($Id -ceq $NewG){'newg'}else{'newr'}
+            $Fixture.events.Add($Role+':'+$Arguments[0])
+            switch($Arguments[0]){
+                'stop' {if($Role -ceq 'newr' -and $Fixture.rows[$NewG].State.Status -ne 'exited'){throw 'FIXTURE_RETURN_STOP_ORDER'}
+                    $C.State.Status='exited'}
+                'start' {if($Fixture.anchor.record.phase -cne 'RECOVERY_HOLD' -or $Role -cnotin @('g','r') -or
+                    ($Role -ceq 'g' -and $Fixture.rows[$Rid].State.Status -ne 'running')){throw 'FIXTURE_RETURN_START_ORDER'}
+                    $C.State.Status='running';if($Role -ceq 'r' -and $Fixture.loseStart){$Fixture.loseStart=$false;throw 'FIXTURE_RETURN_START_ACK'}}
+                'update' {$C.HostConfig.RestartPolicy.Name=$Arguments[1].Substring(10)}
+                default {throw 'FIXTURE_RETURN_EFFECT'}
+            }}
+        Reset-ReturnFixture
+        $Fixture.gate=$true
+        try {Return-BootstrapPreparedPair;throw 'FIXTURE_ACTIVE_ACCEPTED'}catch{if($_.Exception.Message -cne 'FIXTURE_ACTIVE_MARKER'){throw}}
+        if($Fixture.events.Count){throw 'FIXTURE_ACTIVE_EFFECT'}
+        $Fixture.gate=$false;$Fixture.drift=$true
+        try {Return-BootstrapPreparedPair;throw 'FIXTURE_DRIFT_ACCEPTED'}catch{if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_ORDINARY_RETURN_STATE_CHANGED'){throw}}
+        if($Fixture.proofs -or $Fixture.phaseWrites){throw 'FIXTURE_DRIFT_EFFECT'}
+        $Fixture.drift=$false
+        try {Return-BootstrapPreparedPair;throw 'FIXTURE_PUBLISH_ACK_ACCEPTED'}catch{if($_.Exception.Message -cne 'FIXTURE_RETURN_PUBLISH_ACK'){throw}}
+        if($Fixture.proofs -ne 1 -or $Fixture.phaseWrites -ne 1 -or $Fixture.rows[$Rid].State.Status -ne 'exited'){
+            throw 'FIXTURE_RETURN_PUBLISH_ORDER'}
+        Return-BootstrapPreparedPair
+        if($script:R.phase -cne 'Returned' -or $Fixture.proofs -ne 1 -or $Fixture.phaseWrites -ne 1 -or
+            ($Fixture.events -join ',') -cne 'newg:stop,newr:stop,save:Staged,r:start,r:update,g:start,g:update,save:Returned'){
+            throw ('FIXTURE_RETURN_EVENTS '+($Fixture.events -join ','))}
+        $Count=$Fixture.events.Count
+        Return-BootstrapPreparedPair
+        if($Fixture.events.Count -ne $Count){throw 'FIXTURE_RETURN_REPLAY'}
+    }finally{$script:R=$PreviousR;$script:RecordPath=$PreviousPath}
+    Write-Host 'FORTIS_SUCCESSOR_ORDINARY_RETURN_SELFTEST_PASS'
+}
+
+function Assert-BootstrapGatewayLifecycleSelfTest {
+    $PreviousR=$script:R;$PreviousPath=$script:RecordPath
+    try {
+        $script:RecordPath='fixture-attempt';$Pointer='fixture-current'
+        $Gid='a'*64;$Rid='b'*64;$OldGid='c'*64;$OldRid='d'*64;$ImageId='sha256:'+('e'*64)
+        $Source=@{path='fixture-source';runtime=@{pilotId=$OldGid;registryReleaseNonce='old';stateVolume='old-state'}}
+        $Original=@{targetRegistryId=$OldRid;targetRegistryProfile='profile';targetRegistryImage=$ImageId
+            checkpoints=@{target=@{sourceRevision=3}}}
+        $Delivery=[pscustomobject]@{profileDigest=('a'*64);sourceDelivery=[pscustomobject]@{interlockDigest=('f'*64)}}
+        $Digest='1'*64
+        $Fixture=@{rows=@{};events=[Collections.Generic.List[string]]::new();pointer=$Source.path;gate=$false
+            failProbe=$true;losePointer=$true;loseActivationSave=$false;effects=0;expectedProbes=@()}
+        function Reset-Fixture {
+            foreach($Id in @($Gid,$Rid,$OldGid,$OldRid)){
+                $Status=if($Id -ceq $Gid){'created'}elseif($Id -ceq $Rid){'running'}else{'exited'}
+                $Fixture.rows[$Id]=[pscustomobject]@{Id=$Id;Image=$ImageId;State=[pscustomobject]@{Status=$Status;StartedAt='0001-01-01T00:00:00Z'}
+                    HostConfig=[pscustomobject]@{RestartPolicy=[pscustomobject]@{Name='no';MaximumRetryCount=0}}}
+            }
+            $script:R=[pscustomobject]@{phase='Prepared';activated=$false;probesPassed=$false;source=$Source
+                bootstrapCheckRecord='fixture-check';bootstrapCheckHash=('2'*64);bootstrapOwnerGo=@{}
+                bootstrapReceiver=[pscustomobject]@{id=$Rid};bootstrapDelivery=$Delivery
+                configurationDigest=$Digest;probes='[]'
+                runtime=[pscustomobject]@{pilotId='';pilotName='fixture-gateway';stateVolume='new-state';releaseNonce='new';registryDelivery=$Delivery}}
+            $Fixture.pointer=$Source.path;$Fixture.gate=$false;$Fixture.events.Clear()
+        }
+        function Read-BootstrapFrozenIntent {param($Source,$CheckPath,$CheckHash,[switch]$Runtime,[switch]$Returning)
+            return @{attempt=$script:R}}
+        function Read-BootstrapSeedSource {param($Source,[switch]$Transition)
+            if(-not $Transition -and ($Fixture.rows[$OldGid].State.Status -cne 'exited' -or
+                $Fixture.rows[$OldRid].State.Status -cne 'exited')){throw 'FIXTURE_OLD_PAIR_NOT_FROZEN'}}
+        function Read-Private {param($Path)
+            if($Path -ceq $Pointer){return @{record=$Fixture.pointer}}
+            if($Path -ceq $Source.path){return @{correctivePair=$Original}}
+            if($Path -ceq $script:RecordPath){return $script:R}
+            throw 'FIXTURE_LIFECYCLE_RECORD'}
+        function Container {param($Id)
+            if($Id -ceq 'fixture-gateway'){$Id=$Gid}
+            if(-not $Fixture.rows.ContainsKey($Id)){throw 'FIXTURE_LIFECYCLE_ID'}
+            return ($Fixture.rows[$Id]|ConvertTo-Json -Depth 10|ConvertFrom-Json)}
+        function Read-BootstrapReceiver {param($Intent,$GatewayId,[switch]$Accepted)
+            if($GatewayId -cne $Gid -or $Intent.attempt.runtime.pilotId -cne $Gid){throw 'FIXTURE_GATEWAY_ID_NOT_SAVED'}
+            return (Container $Rid)}
+        function Read-SuccessorPublication {return @{anchor=@{state='Committed';record=@{phase='STAGED_TARGET_FROZEN'}
+            digest=$Delivery.sourceDelivery.interlockDigest}}}
+        function Read-CorrectiveAttemptPair {}
+        function Assert-Release-Production {}
+        function Assert-SourceUnchanged {}
+        function Assert-OnlyWriter {}
+        function Assert-ReleaseVolumeHolders {}
+        function Read-GatewayNetworks {}
+        function Read-OwnerShellFlag {return $false}
+        function Complete-ActionCoreNetwork {param($C,$P) return $C}
+        function Step {}
+        function Write-ReleaseTiming {}
+        function Wait-Healthy {param($Id)
+            if($Fixture.rows[$Id].State.Status -cne 'running'){throw 'FIXTURE_HEALTH'}}
+        function Wait-CorrectiveRegistryListener {param($Id)
+            if($Fixture.rows[$Id].State.Status -cne 'running'){throw 'FIXTURE_LISTENER'}}
+        function Read-CorrectiveCheckpoint {param($Id,$Nonce,$Profile,$Image,$Revision,$Commit,[switch]$Frozen)
+            if($Id -cne $OldRid -or $Revision -ne 3 -or $Frozen -ne ($Fixture.rows[$OldRid].State.Status -ceq 'exited')){
+                throw 'FIXTURE_OLD_CHECKPOINT'}
+            return $Original.checkpoints.target}
+        function Admit {param($C,$P,[switch]$AllowUnhealthy,[switch]$RegistryReturnSource,[switch]$AllowPendingIngress,[switch]$BootstrapRetained)
+            if($C.Id -ceq $Gid){
+                if($P.pilotId -and $P.pilotId -cne $Gid){throw 'FIXTURE_GATEWAY_PIN'}
+                if(-not $RegistryReturnSource -and $Fixture.rows[$Rid].State.Status -cne 'running'){throw 'FIXTURE_PEER_NOT_RUNNING'}
+            } elseif($C.Id -ceq $OldGid){
+                if(-not $BootstrapRetained -or $Fixture.rows[$OldRid].State.Status -cne 'running'){throw 'FIXTURE_OLD_PEER_NOT_RUNNING'}
+            }else{throw 'FIXTURE_ADMIT_ID'}}
+        function Admit-Source {param($C,$Source)
+            if($C.Id -cne $OldGid -or $Fixture.rows[$OldGid].State.Status -cne 'running' -or
+               $Fixture.rows[$OldRid].State.Status -cne 'running'){throw 'FIXTURE_RETURN_SOURCE'}}
+        function Assert-CorrectiveGateAbsent {param($P)
+            if($Fixture.gate){throw 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'}}
+        function Image-CLI {param($Command,$InputText,$StateVolume)
+            return @{active=$Fixture.gate;markerPresent=$Fixture.gate}}
+        function Running-CLI {param($Id,$Command,$InputText,[switch]$Root)
+            if($Id -cne $Gid -or $Fixture.rows[$Id].State.Status -cne 'running'){throw 'FIXTURE_CLI_ID'}
+            switch($Command[0]){
+                'gate-status' {return @{active=$Fixture.gate;configurationDigest=$Digest}}
+                'catalog' {return @{configurationDigest=$Digest;operations=@()}}
+                'probe-frozen' {
+                    $ProbeArgs=ConvertFrom-Json -InputObject $InputText
+                    if($ProbeArgs.interlockDigest -cne $Delivery.sourceDelivery.interlockDigest -or
+                       $ProbeArgs.profileDigest -cne $Delivery.profileDigest -or $ProbeArgs.configurationDigest -cne $Digest -or
+                       -not (Same-Json $ProbeArgs.probes $Fixture.expectedProbes)){
+                        throw 'FIXTURE_FROZEN_PROBE_INPUT'}
+                    if($Fixture.failProbe){throw 'FIXTURE_PROBE_FAILED'}
+                    return @{status='READ_PROBES_PASS';count=$Fixture.expectedProbes.Count}
+                }
+                'activate' {
+                    if(-not $Root -or -not $script:R.probesPassed -or $Fixture.gate){throw 'FIXTURE_ACTIVATION_ORDER'}
+                    $Fixture.events.Add('activate');$Fixture.gate=$true;throw 'FIXTURE_ACTIVATION_ACK_LOST'}
+                default {throw 'FIXTURE_CLI_COMMAND'}
+            }}
+        function Repo-JSON {param($Code)
+            if($Code -match 'list_branches'){return @{nativeCapabilities=$true;githubRead=$true}}
+            return @{configurationDigest=$Digest}
+        }
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk){throw 'FIXTURE_LIFECYCLE_SAVE'}
+            if($script:R.activated -and -not $Fixture.gate){throw 'FIXTURE_FALSE_ACTIVATION'}
+            $Fixture.events.Add('save:'+ $script:R.phase+':'+$script:R.activated)}
+        function Write-Private {param($Path,$Value,[switch]$FlushToDisk)
+            if($Path -cne $Pointer -or -not $FlushToDisk -or $script:R.phase -cne 'Complete' -or
+               -not $script:R.activated -or $Fixture.rows[$Rid].HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                throw 'FIXTURE_POINTER_ORDER'}
+            if($Fixture.losePointer){$Fixture.losePointer=$false;throw 'FIXTURE_POINTER_ACK_LOST'}
+            $Fixture.pointer=$Value.record;$Fixture.events.Add('pointer')}
+        function Docker-Text {param($Arguments)
+            if(($Arguments -join ' ') -ceq 'ps -a --format {{.Names}}'){return 'fixture-gateway'}
+            $Id=$Arguments[-1];$Row=$Fixture.rows[$Id]
+            $Role=if($Id -ceq $Gid){'g'}elseif($Id -ceq $Rid){'r'}elseif($Id -ceq $OldGid){'oldg'}else{'oldr'}
+            $Fixture.events.Add($Role+':'+$Arguments[0]);$Fixture.effects++
+            switch($Arguments[0]){
+                'start' {
+                    if($Role -ceq 'g' -and ($script:R.runtime.pilotId -cne $Gid -or
+                        $Fixture.rows[$Rid].State.Status -cne 'running')){throw 'FIXTURE_START_BEFORE_RECORD'}
+                    if($Role -ceq 'oldg' -and $Fixture.rows[$OldRid].State.Status -cne 'running'){throw 'FIXTURE_RETURN_ORDER'}
+                    $Row.State.Status='running';if($Role -ceq 'g'){throw 'FIXTURE_START_ACK_LOST'}}
+                'stop' {
+                    if($Fixture.gate){throw 'FIXTURE_STOP_AFTER_ACTIVATION'}
+                    if($Role -ceq 'r' -and $Fixture.rows[$Gid].State.Status -ceq 'running'){throw 'FIXTURE_STOP_ORDER'}
+                    $Row.State.Status='exited'}
+                'update' {
+                    if($Role -ceq 'r' -and -not $script:R.activated){throw 'FIXTURE_RESTART_BEFORE_MARKER'}
+                    $Row.HostConfig.RestartPolicy.Name=$Arguments[1].Substring(10)}
+                default {throw 'FIXTURE_LIFECYCLE_EFFECT'}
+            }}
+        Reset-Fixture
+        $null=Read-BootstrapGatewayCandidate @{attempt=$script:R}
+        if($script:R.phase -cne 'Created' -or $script:R.runtime.pilotId -cne $Gid){throw 'FIXTURE_GATEWAY_CREATE_ACK'}
+        try {Resume-Target;throw 'FIXTURE_PROBE_ACCEPTED'}catch{if($_.Exception.Message -cne 'FIXTURE_PROBE_FAILED'){throw}}
+        Return-BootstrapPreparedPair
+        if($script:R.phase -cne 'Returned' -or ($Fixture.events -join ',') -cne
+            'save:Created:False,g:start,save:Staged:False,g:stop,r:stop,oldr:start,oldr:update,oldg:start,oldg:update,save:Returned:False'){
+            throw ('FIXTURE_GATEWAY_RETURN_ORDER '+($Fixture.events -join ','))
+        }
+        $Effects=$Fixture.effects;Return-BootstrapPreparedPair
+        if($Fixture.effects -ne $Effects){throw 'FIXTURE_RETURN_REPLAY'}
+        Reset-Fixture;$Fixture.failProbe=$false
+        $Fixture.expectedProbes=@([pscustomobject]@{service='mirror';operation='get_repository';target='fortis-approvals';params=[pscustomobject]@{}})
+        $script:R.probes=ConvertTo-Json -InputObject $Fixture.expectedProbes -Depth 10 -Compress
+        $null=Read-BootstrapGatewayCandidate @{attempt=$script:R}
+        try {Resume-Target;throw 'FIXTURE_POINTER_LOSS_ACCEPTED'}catch{if($_.Exception.Message -cne 'FIXTURE_POINTER_ACK_LOST'){throw}}
+        if($script:R.phase -cne 'Complete' -or -not $script:R.activated -or $Fixture.pointer -cne $Source.path){
+            throw 'FIXTURE_ACTIVATION_NOT_DURABLE'}
+        $Effects=$Fixture.effects
+        Resume-Target;Resume-Target
+        if($Fixture.pointer -cne $script:RecordPath -or $Fixture.effects -ne $Effects -or
+           @($Fixture.events|Where-Object{$_ -ceq 'activate'}).Count -ne 1){
+            throw 'FIXTURE_POINTER_RECOVERY_EFFECT'}
+        # A lost activation record can leave the actual marker present in
+        # Staged; Return must fail before any stop, not trust activated=false.
+        $script:R.phase='Staged';$script:R.activated=$false
+        $Fixture.rows[$Rid].HostConfig.RestartPolicy.Name='no'
+        try {Return-BootstrapPreparedPair;throw 'FIXTURE_ACTIVE_RETURN_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'){throw}}
+        if($Fixture.effects -ne $Effects){throw 'FIXTURE_ACTIVE_RETURN_EFFECT'}
+    } finally {$script:R=$PreviousR;$script:RecordPath=$PreviousPath}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_GATEWAY_LIFECYCLE_SELFTEST_PASS'
+}
+
+
+function Assert-BootstrapReceiverSelfTest {
+    $PreviousR=$script:R
+    try {
+        $Nonce='11111111-1111-4111-8111-111111111111';$Id=$Nonce.Replace('-','')
+        $RegistryImage='sha256:'+('a'*64);$GatewayImage='sha256:'+('b'*64)
+        $Profile='c'*64;$Generation='d'*64;$Digest='e'*64;$Hold='f'*64;$Cursor='1'*40
+        $AttemptId='22222222-2222-4222-8222-222222222222';$ContainerId='3'*64
+        $Stop=[pscustomobject]@{phase='APPLY_STOP'}
+        $Next=[pscustomobject]@{phase='STAGED_TARGET_FROZEN';generation=$Generation}
+        $Handoff=[pscustomobject]@{interlockDigest=$Digest}
+        $Companion=[pscustomobject]@{companionDigest=('4'*64);schemaDigest=('5'*64);authorityWitnessDigest=('6'*64)}
+        $Checkpoint=[pscustomobject]@{sourceRevision=4;sourceCursor=$Cursor;profileDigest=('5'*64)}
+        $Pair=[pscustomobject]@{registryImage=$RegistryImage;checked=[pscustomobject]@{
+            registry=[pscustomobject]@{checkpoint=$Checkpoint;binding=[pscustomobject]@{authorityDigest=('6'*64)}}
+            gateway=[pscustomobject]@{companion=$Companion}}}
+        $Begin=[pscustomobject]@{registryDigest=$Hold;phasePlan=[pscustomobject]@{records=@('a','b','c',$Stop,$Next);handoff=$Handoff}
+            holdSnapshot=[pscustomobject]@{snapshotRevision=6;eventDigest=('7'*64)}}
+        $Material=[pscustomobject]@{registryProfileDigest=$Profile;gatewayProfileDigest=('8'*64);generation=$Generation;handoff=$Handoff}
+        $Source=@{runtime=@{runId='cd6d3d97350e4f5590d9c3e9ece69580';stateVolume='fortis-github-pilot-state-cd6d3d97350e4f5590d9c3e9ece69580'}}
+        $Attempt=[pscustomobject]@{phase='Prepared';activated=$false;probesPassed=$false;bootstrapMaterials=$Material;bootstrapBegin=$Begin
+            runtime=[pscustomobject]@{registryReleaseNonce=$Nonce;image=$GatewayImage;pilotId='';pilotName='fixture-gateway';stateVolume='new-state'}}
+        $Intent=@{attempt=$Attempt;pair=$Pair;go=@{attemptId=$AttemptId;targetGeneration=$Generation};check=@{binding=@{sourceSha=$Cursor}}}
+        $Delivery=[pscustomobject]@{profileDigest=$Material.gatewayProfileDigest;generation=$Generation;maintenancePhase='STAGED_TARGET_FROZEN'
+            sourceDelivery=[pscustomobject]@{policyAuthorityDigest=$Pair.checked.registry.binding.authorityDigest}
+            registryCheckpoint=[pscustomobject]@{registryDigest=$Hold;profileDigest=$Checkpoint.profileDigest;sourceRevision=4
+                sourceCursor=$Cursor;snapshotRevision=6;eventDigest=$Begin.holdSnapshot.eventDigest};existingCompanion=$Companion;companionDigest=$Companion.companionDigest}
+        $Fixture=@{container=$null;publication=[pscustomobject]@{state='Committed';record=$Stop;registryDigest=$Hold;digest=('9'*64)}
+            saves=0;creates=0;starts=0;publishes=0;seal=0;losePublish=$true;wrongProof=$true}
+        function Read-BootstrapFrozenIntent {return $Intent}
+        function Read-BootstrapSeedSource {}
+        function Assert-Release-Production {}
+        function Assert-CorrectiveGateAbsent {}
+        function Assert-ReleaseVolumeHolders {}
+        function Assert-CorrectiveTargetHolders {}
+        function Assert-Volume {}
+        function Assert-OnlyWriter {}
+        function Step {}
+        function Read-Private {return $Attempt}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk){throw 'FIXTURE_RECEIVER_NOT_DURABLE'}
+            $Fixture.saves++}
+        function Seal-BootstrapFinalProfiles {$Fixture.seal++;return $Material}
+        function Read-SuccessorPublication {return @{anchor=$Fixture.publication}}
+        function Container {param($Name)
+            if($Name -cnotin @($ContainerId,('fortis-registry-successor-'+$Id)) -or -not $Fixture.container){throw 'FIXTURE_RECEIVER_ID'}
+            return ($Fixture.container|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
+        function Docker-Text {param($Arguments)
+            if(($Arguments -join ' ') -ceq 'ps -a --format {{.Names}}'){
+                if($Fixture.container){return $Fixture.container.Name.Substring(1)}
+                return ''
+            }
+            if($Arguments[0] -ceq 'create'){
+                if($Fixture.saves -ne 1 -or $Attempt.bootstrapReceiver.id -or $Fixture.container){throw 'FIXTURE_RECEIVER_CREATE_ORDER'}
+                $Fixture.creates++
+                $Mounts=@(foreach($Arg in $Arguments|Where-Object{$_ -like 'type=volume,*'}){
+                    $Parts=@{};foreach($Entry in ($Arg -split ',')){if($Entry -match '='){$K,$V=$Entry -split '=',2;$Parts[$K]=$V}}
+                    [ordered]@{Type='volume';Name=$Parts.source;Source=('/var/lib/docker/volumes/'+$Parts.source+'/_data')
+                        Destination=$Parts.target;RW=($Arg -cnotmatch ',readonly$')}
+                })
+                if($Mounts.Count -ne 7 -or $Arguments -cnotcontains '--restart=no' -or
+                   $Arguments -cnotcontains ('io.fortis.bootstrap-attempt='+$AttemptId)){throw 'FIXTURE_RECEIVER_ARGUMENTS'}
+                $Cmd=@($Arguments[($Arguments.IndexOf($RegistryImage)+1)..($Arguments.Count-1)])
+                $Fixture.container=[pscustomobject]@{Id=$ContainerId;Name=('/fortis-registry-successor-'+$Id);Image=$RegistryImage
+                    Path='python';Args=@($Cmd[1..($Cmd.Count-1)]);Mounts=$Mounts
+                    State=[pscustomobject]@{Status='created';StartedAt='0001-01-01T00:00:00Z'}
+                    Config=[pscustomobject]@{User='20002:20002';Cmd=$Cmd;Entrypoint=@();Labels=[pscustomobject]@{
+                        'org.opencontainers.image.revision'=$Cursor;'io.fortis.bootstrap-attempt'=$AttemptId}}
+                    HostConfig=[pscustomobject]@{NetworkMode='none';RestartPolicy=[pscustomobject]@{Name='no';MaximumRetryCount=0}
+                        Init=$true;ReadonlyRootfs=$true;Privileged=$false;CapAdd=@();CapDrop=@('ALL')
+                        SecurityOpt=@('no-new-privileges:true');PidsLimit=64;Memory=536870912}}
+                throw 'FIXTURE_CREATE_ACK_LOST'
+            }
+            if($Arguments[0] -ceq 'start'){
+                if($Attempt.bootstrapReceiver.id -cne $ContainerId -or $Fixture.publication.state -cne 'Committed' -or
+                   $Fixture.publication.record.phase -cne 'STAGED_TARGET_FROZEN'){throw 'FIXTURE_RECEIVER_START_ORDER'}
+                $Fixture.starts++;$Fixture.container.State.Status='running';throw 'FIXTURE_START_ACK_LOST'
+            }
+            throw 'FIXTURE_RECEIVER_UNEXPECTED_EFFECT'
+        }
+        function Publish-SuccessorInterlock {param($Source,$Next,$RegistryDigest)
+            if($Attempt.bootstrapReceiver.id -cne $ContainerId -or $Fixture.saves -lt 2 -or $RegistryDigest -cne $Hold){
+                throw 'FIXTURE_RECEIVER_PUBLISH_ORDER'}
+            if($Fixture.losePublish){
+                $Fixture.losePublish=$false;$Fixture.publication.state='Pending'
+                $Fixture.publication|Add-Member -NotePropertyName next -NotePropertyValue $Next
+                throw 'FIXTURE_PUBLISH_ACK_LOST'
+            }
+            if($Fixture.publication.record.phase -ceq 'APPLY_STOP'){$Fixture.publishes++}
+            $Fixture.publication=[pscustomobject]@{state='Committed';record=$Next;registryDigest=$Hold;digest=$Digest}
+            return $Digest
+        }
+        function Wait-CorrectiveRegistryListener {param($Id)
+            if($Id -cne $ContainerId -or $Fixture.container.State.Status -cne 'running'){throw 'FIXTURE_RECEIVER_NOT_STARTED'}}
+        function Image-RegistrySuccessor-Preflight {
+            param($ImageId,$ReleaseNonce,$InterlockDigest,[switch]$LatestPin,$IncumbentVolume,$ExpectedExisting)
+            if(-not $LatestPin -or $InterlockDigest -cne $Digest -or $IncumbentVolume -cne $Source.runtime.stateVolume -or -not (Same-Json $ExpectedExisting $Companion)){throw 'FIXTURE_RECEIVER_PREFLIGHT_PIN'}
+            $Result=$Delivery|ConvertTo-Json -Depth 10|ConvertFrom-Json
+            Assert-RegistrySuccessorCompanionPreflight $Result $IncumbentVolume $ExpectedExisting
+            if($Fixture.wrongProof){$Result.registryCheckpoint.eventDigest='0'*64}
+            return $Result
+        }
+        try {$null=Start-BootstrapReceiver $Source fixture ('a'*64);throw 'FIXTURE_PENDING_PUBLISH_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_PUBLISH_ACK_LOST'){throw}}
+        if($Fixture.creates -ne 1 -or $Fixture.starts -ne 0 -or $Fixture.saves -ne 2){throw 'FIXTURE_RECEIVER_PRESTART'}
+        try {$null=Start-BootstrapReceiver $Source fixture ('a'*64);throw 'FIXTURE_WRONG_CHECKPOINT_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'){throw}}
+        if($Fixture.starts -ne 1 -or $Fixture.saves -ne 2){throw 'FIXTURE_RECEIVER_UNVERIFIED_SAVE'}
+        $Fixture.wrongProof=$false
+        $Wrong=$Companion|ConvertTo-Json|ConvertFrom-Json
+        $Wrong.authorityWitnessDigest='0'*64
+        try {Assert-RegistrySuccessorCompanionPreflight $Delivery $Source.runtime.stateVolume $Wrong;throw 'FIXTURE_WRONG_COMPANION_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'){throw}}
+        try {Assert-RegistrySuccessorCompanionPreflight $Delivery $Source.runtime.stateVolume;throw 'FIXTURE_UNPINNED_COMPANION_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'){throw}}
+        $Actual=Start-BootstrapReceiver $Source fixture ('a'*64)
+        $Again=Start-BootstrapReceiver $Source fixture ('a'*64)
+        if($Fixture.creates -ne 1 -or $Fixture.starts -ne 1 -or $Fixture.publishes -ne 1 -or $Fixture.saves -ne 3 -or
+           $Fixture.seal -ne 1 -or -not (Same-Json $Actual $Again)){throw 'FIXTURE_RECEIVER_DUPLICATE_EFFECT'}
+        $Fixture.container.Mounts[-1].RW=$true
+        try {$null=Read-BootstrapReceiver $Intent;throw 'FIXTURE_WRITABLE_ANCHOR_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_MOUNT_CHANGED'){throw}}
+    } finally {$script:R=$PreviousR}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_RECEIVER_SELFTEST_PASS'
+}
+
+function Assert-BootstrapFinalMaterialSelfTest {
+    $PreviousR=$script:R;$PreviousPath=$script:RecordPath
+    try {
+        $script:RecordPath='fixture-attempt'
+        $G='a'*64;$R='b'*64;$Generation='c'*64
+        $Handoff=[pscustomobject]@{role='staged_target';registryDigest=('d'*64)}
+        $Stop=[pscustomobject]@{phase='APPLY_STOP'}
+        $Plan=[pscustomobject]@{records=@('a','b','c',$Stop,[pscustomobject]@{previousDigest=('e'*64)});handoff=$Handoff}
+        $Begin=[pscustomobject]@{phasePlan=$Plan;registryDigest=$Handoff.registryDigest}
+        $Attempt=[pscustomobject]@{bootstrapBegin=$Begin}
+        $Intent=@{attempt=$Attempt;go=@{targetGeneration=$Generation}}
+        $Publication=[pscustomobject]@{state='Committed';record=$Stop;digest=('e'*64);registryDigest=$Handoff.registryDigest}
+        $Registry=[pscustomobject]@{profileDigest=$R;profile=@{schemaVersion=3};generation=$Generation
+            handoff=$Handoff;fileHashes=[pscustomobject]@{'profile.json'=$R}}
+        $Gateway=[pscustomobject]@{profileDigest=$G;registryProfileDigest=$R;generation=$Generation
+            handoff=$Handoff;fileHashes=[pscustomobject]@{'profile.json'=$G}}
+        $Fixture=@{events=[Collections.Generic.List[string]]::new();saves=0;bad=$true;lose=$true}
+        function Read-BootstrapFrozenIntent {return $Intent}
+        function Assert-BootstrapNoReceiver {}
+        function Read-SuccessorPublication {return @{anchor=$Publication}}
+        function Read-BootstrapSeedSource {return @{digest=('f'*64)}}
+        function Assert-BootstrapFrozenCheck {}
+        function Read-Private {return $Attempt}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk -or (-not $script:R.PSObject.Properties['bootstrapMaterials'] -and -not $script:R.PSObject.Properties['ordinaryStateCopy'])){throw 'FIXTURE_MATERIAL_SAVE'}
+            $Fixture.saves++}
+        function Invoke-BootstrapFinalMaterialHelper {
+            param($Intent,$Source,$Publication,$Seed,$Role,$RegistryProfile,[switch]$VerifyOnly)
+            $Fixture.events.Add($Role+':'+$(if($VerifyOnly){'RO'}else{'RW'}))
+            if($Role -ceq 'State'){
+                if(-not $VerifyOnly){
+                    if($Fixture.stateWrites){throw 'FIXTURE_DUPLICATE_STATE_COPY'}
+                    $Fixture.stateWrites++;throw 'FIXTURE_STATE_COPY_ACK_LOST'
+                }
+                if($Fixture.stateWrites -ne 1){throw 'FIXTURE_STATE_COPY_NOT_APPLIED'}
+                return $State
+            }
+            if($Role -ceq 'Registry'){
+                if(-not $VerifyOnly -and $Fixture.lose){$Fixture.lose=$false;throw 'FIXTURE_MATERIAL_ACK_LOST'}
+                return $Registry
+            }
+            if(-not (Same-Json $RegistryProfile $Registry.profile)){throw 'FIXTURE_REGISTRY_PROFILE_PIN'}
+            if($Fixture.bad){return [pscustomobject]@{profileDigest=$G;registryProfileDigest=('0'*64)
+                generation=$Generation;handoff=$Handoff;fileHashes=$Gateway.fileHashes}}
+            return $Gateway
+        }
+        try {$null=Seal-BootstrapFinalProfiles @{} fixture ('1'*64);throw 'FIXTURE_CROSS_PROFILE_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_CHANGED'){throw}}
+        if($Fixture.saves -ne 0 -or ($Fixture.events -join ',') -cne 'Registry:RW,Registry:RO,Gateway:RW,Gateway:RO'){
+            throw 'FIXTURE_MATERIAL_EARLY_SAVE'}
+        $Fixture.events.Clear();$Fixture.bad=$false
+        $Actual=Seal-BootstrapFinalProfiles @{} fixture ('1'*64)
+        $Again=Seal-BootstrapFinalProfiles @{} fixture ('1'*64)
+        if($Fixture.saves -ne 1 -or -not (Same-Json $Actual $Again) -or
+           ($Fixture.events -join ',') -cne 'Registry:RW,Registry:RO,Gateway:RW,Gateway:RO,Registry:RO,Gateway:RO'){
+            throw 'FIXTURE_MATERIAL_REENTRY'}
+        $Publication.state='Pending'
+        try {$null=Seal-BootstrapFinalProfiles @{} fixture ('1'*64);throw 'FIXTURE_MATERIAL_PENDING_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'){throw}}
+        if($Fixture.events.Count -ne 6){throw 'FIXTURE_MATERIAL_EFFECT_BEFORE_PHASE'}
+        # Ordinary copy receipts must be durable before either final seal.
+        $Fixture.events.Clear();$Fixture.saves=0;$Fixture.stateWrites=0
+        $Publication.state='Committed'
+        $Attempt=[pscustomobject]@{phase='Prepared'}
+        $OrdinaryBegin=[pscustomobject]@{draining='a';registryDigest=$Handoff.registryDigest;checkpoint=@{sourceRevision=4};holdSnapshot=@{holds=@('pair')}}
+        $State=[pscustomobject]@{result='PAIRED_STAGED_STATE_COPY_ONLY';checkpoint=$OrdinaryBegin.checkpoint
+            holdSnapshot=$OrdinaryBegin.holdSnapshot;final=@{record=@{phase='STAGED_TARGET_FROZEN';previousDigest=$Publication.digest};handoff=$Handoff}}
+        $Intent=@{attempt=$Attempt;go=@{targetGeneration=$Generation};ordinary=@{begin=$OrdinaryBegin;stop=@{next=$Stop}}
+            check=@{maintenanceTransitions=@{frozen='b';checked='c'}}}
+        function Assert-PairedFrozenSource {}
+        $Actual=Seal-BootstrapFinalProfiles @{} fixture ('1'*64)
+        $Again=Seal-BootstrapFinalProfiles @{} fixture ('1'*64)
+        if($Fixture.saves -ne 2 -or $Fixture.stateWrites -ne 1 -or -not (Same-Json $Actual $Again) -or
+           ($Fixture.events -join ',') -cne 'State:RW,State:RO,Registry:RW,Registry:RO,Gateway:RW,Gateway:RO,State:RO,Registry:RO,Gateway:RO'){
+            throw 'FIXTURE_ORDINARY_MATERIAL_REENTRY'
+        }
+
+    } finally {$script:R=$PreviousR;$script:RecordPath=$PreviousPath}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_FINAL_MATERIAL_SELFTEST_PASS'
+}
+
+function Assert-BootstrapPreparedAttemptSelfTest {
+    $PreviousR=$script:R;$PreviousPath=$script:RecordPath;$PreviousPair=$script:BootstrapPair
+    try {
+        $CheckPath=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) 'fortis-bootstrap-check.json'))
+        $ReviewPath=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) 'fortis-bootstrap-review.json'))
+        $CheckedImageRecord=$CheckPath;$AttemptPointer='fixture-pointer'
+        $script:RecordPath='fixture-attempt'
+        $Source=@{path='fixture-source';hash=('a'*64)}
+        $Receipt=[ordered]@{sha256=[ordered]@{fixture='b'*64};summary=[ordered]@{}}
+        $Check=[ordered]@{binding=[ordered]@{bootstrapReviewProofRecord=$ReviewPath};sourceReceipt=$Receipt}
+        $script:BootstrapPair=[ordered]@{compatibilityDigest=('c'*64)}
+        $Go=[ordered]@{attemptId='11111111-1111-4111-8111-111111111111'}
+        $script:R=[ordered]@{phase='Prepared';activated=$false;probesPassed=$false;source=$Source
+            runtime=[ordered]@{pilotId=''};sourceReceipt=$null}
+        $Fixture=@{records=@{};events=[Collections.Generic.List[string]]::new();changed=$true;sourceDrift=$false}
+        function Get-FileHash {param($LiteralPath,$Algorithm)
+            if($LiteralPath -cne $CheckPath){throw 'FIXTURE_CHECK_PATH'}
+            return @{Hash=('d'*64)}}
+        function Read-Private {param($Path)
+            if($Path -ceq $CheckPath){return $Check}
+            return ($Fixture.records[$Path]|ConvertTo-Json -Depth 25|ConvertFrom-Json)}
+        function New-BootstrapOwnerGo {param($Source,$CheckPath,$CheckHash,$ReviewProofPath)
+            if($ReviewProofPath -cne $ReviewPath -or $CheckHash -cne ('d'*64)){throw 'FIXTURE_GO_PIN'}
+            $Fixture.events.Add('GO');return $Go}
+        function Read-BootstrapCompatibility {param($Source,[switch]$Recheck)
+            if(-not $Recheck){throw 'FIXTURE_RECHECK_REQUIRED'}
+            $Fixture.events.Add('RECHECK')
+            if($Fixture.changed){return @{compatibilityDigest=('0'*64)}}
+            return $script:BootstrapPair}
+        function Verify-Checked-Image {param($Source,$Report,[switch]$ReturnReceipt)
+            if(-not $ReturnReceipt){throw 'FIXTURE_RECEIPT_REQUIRED'}
+            $Fixture.events.Add('VERIFY')
+            if($Fixture.sourceDrift){return @{changed=$true}}
+            return $Receipt}
+        function Assert-BootstrapNoReceiver {}
+        function Assert-Release-Production {}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk -or -not (Same-Json $script:R.sourceReceipt $Receipt) -or
+               -not (Same-Json $script:R.bootstrapOwnerGo $Go)){throw 'FIXTURE_ATTEMPT_NOT_DURABLE'}
+            $Fixture.events.Add('SAVE');$Fixture.records[$script:RecordPath]=$script:R}
+        function Write-Private {param($Path,$Value,[switch]$FlushToDisk)
+            if(-not $FlushToDisk -or -not $Fixture.records[$script:RecordPath] -or $Path -cne $AttemptPointer){
+                throw 'FIXTURE_POINTER_ORDER'}
+            $Fixture.events.Add('POINTER');$Fixture.records[$Path]=$Value}
+        function Read-BootstrapFrozenIntent {param($Source,$CheckPath,$CheckHash)
+            if($Fixture.records[$AttemptPointer].record -cne $script:RecordPath){throw 'FIXTURE_POINTER_MISSING'}
+            $Fixture.events.Add('READBACK')}
+        try {Save-BootstrapPreparedAttempt $Source @{} $CheckPath $ReviewPath;throw 'FIXTURE_CHANGED_COMPATIBILITY_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPATIBILITY_CHANGED'){throw}}
+        if($Fixture.records.Count){throw 'FIXTURE_ATTEMPT_BEFORE_CHECK'}
+        $Fixture.events.Clear();$Fixture.changed=$false;$Fixture.sourceDrift=$true
+        try {Save-BootstrapPreparedAttempt $Source @{} $CheckPath $ReviewPath;throw 'FIXTURE_CHANGED_SOURCE_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_CHECK_CHANGED'){throw}}
+        if($Fixture.records.Count){throw 'FIXTURE_ATTEMPT_BEFORE_CHECK'}
+        $Fixture.events.Clear();$Fixture.sourceDrift=$false
+        Save-BootstrapPreparedAttempt $Source @{} $CheckPath $ReviewPath
+        if(($Fixture.events -join ',') -cne 'GO,RECHECK,VERIFY,SAVE,POINTER,READBACK' -or
+           $script:R -is [Collections.IDictionary] -or -not $script:R.PSObject.Properties['bootstrapOwnerGo']){
+            throw 'FIXTURE_PREPARED_ORDER'
+        }
+        function Stop-BootstrapSourcePair {$Fixture.events.Add('STOP')}
+        function Invoke-BootstrapFrozenPair {$Fixture.events.Add('BEGIN')}
+        function Publish-BootstrapFrozenPhases {$Fixture.events.Add('PUBLISH');return 'APPLY_STOP'}
+        function Seal-BootstrapFinalProfiles {$Fixture.events.Add('SEAL');return 'SEALED'}
+        function Start-BootstrapReceiver {
+            $Fixture.events.Add('RECEIVER')
+            $script:R.runtime=[pscustomobject]@{registryProfileDigest='preliminary'}
+            return [pscustomobject]@{profileDigest='final';generation='new'}
+        }
+        function Read-SuccessorPublication {return @{anchor='STAGED_TARGET_FROZEN'}}
+        $Prepared=Invoke-BootstrapPreparedTransition
+        if($Prepared.publication -cne 'STAGED_TARGET_FROZEN' -or $Prepared.material -cne 'SEALED' -or $Prepared.delivery.profileDigest -cne 'final' -or
+           $script:R.runtime.registryProfileDigest -cne 'final' -or
+           ($Fixture.events -join ',') -cne 'GO,RECHECK,VERIFY,SAVE,POINTER,READBACK,STOP,BEGIN,PUBLISH,SEAL,RECEIVER,SAVE'){
+            throw 'FIXTURE_PREPARED_TRANSITION_ORDER'
+        }
+        # Exercise the actual ordinary Prepared writer and persisted JSON
+        # type, then the same transition. No second paired begin/migration.
+        $Fixture.events.Clear();$Fixture.records.Clear()
+        $ReleaseBase=Split-Path $CheckPath -Parent
+        $Source.runtime=@{runId='ordinary-fixture'}
+        $ContextPath=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+        $StopPath=Join-Path $ReleaseBase 'apply-stop.json'
+        $Auth=@{sourceRecordDigest=$Source.hash;attemptId=$Go.attemptId;targetGeneration=('e'*64)}
+        $Context=@{intentDigest=('f'*64);intent=@{authorization=$Auth}}
+        $Check.binding.ordinaryIntentDigest=$Context.intentDigest
+        $Stop=@{checkedRecordDigest=('d'*64);sourceRecordDigest=$Source.hash}
+        $Fixture.records[$ContextPath]=$Context
+        $script:R=[ordered]@{phase='Prepared';activated=$false;probesPassed=$false;source=$Source
+            runtime=[ordered]@{pilotId=''};sourceReceipt=$null}
+        function Get-FileHash {param($LiteralPath,$Algorithm)
+            if($LiteralPath -cnotin @($CheckPath,$ContextPath,$StopPath)){throw 'FIXTURE_CHECK_PATH'}
+            return @{Hash=('d'*64)}}
+        function Read-Host {param($Prompt)
+            if($Prompt -cne ('Type APPLY SUCCESSOR '+('d'*64))){throw 'FIXTURE_ORDINARY_GO_PIN'}
+            $Fixture.events.Add('GO');return ('APPLY SUCCESSOR '+('d'*64))}
+        function Verify-Checked-Image {param($Source,$Report,[switch]$PrepareSuccessorStop)
+            if(-not $PrepareSuccessorStop){throw 'FIXTURE_STOP_REQUIRED'}
+            $Fixture.events.Add('VERIFY');return $Stop}
+        function Save-SuccessorApplyStopIntent {param($Intent)
+            if(-not (Same-Json $Stop $Intent)){throw 'FIXTURE_STOP_DRIFT'}
+            $Fixture.events.Add('STOP_INTENT');$Fixture.records[$StopPath]=$Intent;return $StopPath}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk -or -not (Same-Json $script:R.sourceReceipt $Receipt) -or
+               $script:R.bootstrapOwnerGo.intentDigest -cne $Context.intentDigest){throw 'FIXTURE_ATTEMPT_NOT_DURABLE'}
+            $Fixture.events.Add('SAVE')
+            $Fixture.records[$script:RecordPath]=$script:R|ConvertTo-Json -Depth 30|ConvertFrom-Json}
+        Save-OrdinaryPreparedAttempt $Source @{} $Stop
+        if(-not $script:R.PSObject.Properties['ordinaryHandover']){throw 'FIXTURE_ORDINARY_RECORD_NOT_RELOADED'}
+        $Prepared=Invoke-BootstrapPreparedTransition
+        if($Prepared.delivery.profileDigest -cne 'final' -or
+           ($Fixture.events -join ',') -cne 'GO,VERIFY,STOP_INTENT,SAVE,POINTER,READBACK,STOP,SEAL,RECEIVER,SAVE'){
+            throw 'FIXTURE_ORDINARY_PREPARED_TRANSITION_ORDER'
+        }
+
+    } finally {$script:R=$PreviousR;$script:RecordPath=$PreviousPath;$script:BootstrapPair=$PreviousPair}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_PREPARED_ATTEMPT_SELFTEST_PASS'
+}
+
+function Assert-BootstrapPhasePublicationSelfTest {
+    $Source=@{hash=('a'*64)}
+    $Records=@([pscustomobject]@{phase='NORMAL';sequence=0;previousDigest=$null})
+    $Digests=@(0..5|ForEach-Object{('{0:x64}' -f ($_+1))})
+    $Names=@('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP','STAGED_TARGET_FROZEN')
+    for($I=1;$I -le 5;$I++){
+        $Records+=@([pscustomobject]@{phase=$Names[$I-1];sequence=$I;previousDigest=$Digests[$I-1]})
+    }
+    $Result=[pscustomobject]@{registryDigest=('b'*64);phasePlan=[pscustomobject]@{records=@($Records[1..5])}}
+    $Attempt=[pscustomobject]@{bootstrapBegin=$Result}
+    $Fixture=@{anchor=[pscustomobject]@{schema='fortis-successor-maintenance-publication-v2';state='Committed'
+        record=$Records[0];digest=$Digests[0];registryDigest=$null};writes=0;readbacks=0;reconciles=0;failAt=2;changed=$false}
+    function Read-BootstrapFrozenIntent {return @{attempt=$Attempt}}
+    function Assert-Release-Production {}
+    function Assert-BootstrapNoReceiver {}
+    function Invoke-BootstrapFrozenPair {param($Source,$CheckPath,$CheckHash,[switch]$Readback)
+        if(-not $Readback){throw 'FIXTURE_PHASE_WRITER_REPLAY'}
+        $Fixture.readbacks++
+        if($Fixture.changed){return @{registryDigest=('0'*64)}}
+        return $Result}
+    function Read-BootstrapSeedSource {return @{record=$Records[0];digest=$Digests[0]}}
+    function Read-SuccessorPublication {return @{anchor=$Fixture.anchor}}
+    function Publish-SuccessorInterlock {param($Source,$Next,$RegistryDigest)
+        if($RegistryDigest -cne $Result.registryDigest -or $Next.sequence -gt 4){throw 'FIXTURE_PHASE_PIN'}
+        if($Fixture.anchor.state -ceq 'Committed' -and (Same-Json $Fixture.anchor.record $Next)){
+            $Fixture.reconciles++;return $Fixture.anchor.digest}
+        if($Next.previousDigest -cne $Fixture.anchor.digest){throw 'FIXTURE_PHASE_ORDER'}
+        $Previous=$Fixture.anchor.record
+        if($Next.sequence -eq $Fixture.failAt){
+            $Fixture.anchor.state='Pending'
+            $Fixture.anchor|Add-Member -NotePropertyName next -NotePropertyValue $Next -Force
+            $Fixture.anchor|Add-Member -NotePropertyName nextRegistryDigest -NotePropertyValue $RegistryDigest -Force
+            $Fixture.failAt=0
+            throw 'FIXTURE_PHASE_ACK_LOST'
+        }
+        if($Fixture.anchor.state -ceq 'Pending' -and -not (Same-Json $Fixture.anchor.next $Next)){throw 'FIXTURE_PHASE_PENDING_CHANGED'}
+        $Fixture.anchor=[pscustomobject]@{schema='fortis-successor-maintenance-publication-v2';state='Committed'
+            record=$Next;digest=$Digests[$Next.sequence];registryDigest=$RegistryDigest;previous=$Previous}
+        $Fixture.writes++
+        return $Fixture.anchor.digest
+    }
+    try {$null=Publish-BootstrapFrozenPhases $Source fixture ('c'*64);throw 'FIXTURE_PHASE_ACK_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'FIXTURE_PHASE_ACK_LOST'){throw}}
+    if($Fixture.writes -ne 1 -or $Fixture.anchor.state -cne 'Pending'){throw 'FIXTURE_PHASE_PENDING_LOST'}
+    $Fixture.anchor.nextRegistryDigest='0'*64
+    try {$null=Publish-BootstrapFrozenPhases $Source fixture ('c'*64);throw 'FIXTURE_PHASE_CHANGED_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_PHASE_CHANGED'){throw}}
+    $Fixture.anchor.nextRegistryDigest=$Result.registryDigest
+    $Actual=Publish-BootstrapFrozenPhases $Source fixture ('c'*64)
+    $Again=Publish-BootstrapFrozenPhases $Source fixture ('c'*64)
+    if($Fixture.writes -ne 4 -or $Fixture.reconciles -ne 1 -or
+       $Actual.record.phase -cne 'APPLY_STOP' -or -not (Same-Json $Actual $Again)){throw 'FIXTURE_PHASE_SUFFIX'}
+    $Fixture.changed=$true
+    try {$null=Publish-BootstrapFrozenPhases $Source fixture ('c'*64);throw 'FIXTURE_PHASE_READBACK_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_PAIR_CHANGED'){throw}}
+    if($Fixture.writes -ne 4){throw 'FIXTURE_PHASE_EARLY_EFFECT'}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_PHASE_PUBLICATION_SELFTEST_PASS'
+}
+
+function Assert-BootstrapPhysicalPairSelfTest {
+    $PreviousR=$script:R;$PreviousPath=$script:RecordPath
+    try {
+        $script:RecordPath='fixture-attempt'
+        $Gid='a'*64;$Rid='b'*64;$ImageId='sha256:'+('c'*64)
+        $Source=@{path='fixture-source';runtime=@{pilotId=$Gid;registryReleaseNonce='fixture-old';stateVolume='old-state'}}
+        $Original=@{targetRegistryId=$Rid;targetRegistryProfile='profile';targetRegistryImage=$ImageId
+            checkpoints=@{target=@{sourceRevision=3}}}
+        $script:R=[pscustomobject]@{phase='Prepared';source=$Source;bootstrapCheckRecord='fixture-check';bootstrapCheckHash=('d'*64)
+            runtime=@{pilotId='';registryReleaseNonce='11111111-1111-4111-8111-111111111111';pilotName='fixture-candidate';stateVolume='new-state'}
+            activated=$false;probesPassed=$false}
+        $Fixture=@{rows=@{};effects=[Collections.Generic.List[string]]::new();saves=0;freeze=0;target=$false
+            failAt='';failBefore=$false;readback=$true;sourceDrift=$false}
+        foreach($Id in @($Gid,$Rid)){
+            $Fixture.rows[$Id]=[pscustomobject]@{Id=$Id;Image=$ImageId;State=[pscustomobject]@{Status='running'}
+                HostConfig=[pscustomobject]@{RestartPolicy=[pscustomobject]@{Name='unless-stopped';MaximumRetryCount=0}}}
+        }
+        function Container {param($Id)
+            if(-not $Fixture.rows.ContainsKey($Id)){throw 'BOOTSTRAP_PHYSICAL_SELFTEST_ID'}
+            # Docker inspect returns an independent snapshot, not an alias.
+            return ($Fixture.rows[$Id]|ConvertTo-Json -Depth 10|ConvertFrom-Json)}
+        function Read-BootstrapFrozenIntent {param($Source,$CheckPath,$CheckHash)
+            if($CheckPath -cne 'fixture-check' -or $CheckHash -cne ('d'*64)){throw 'BOOTSTRAP_PHYSICAL_SELFTEST_PIN'}
+            return @{attempt=$script:R}}
+        function Assert-Release-Production {}
+        function Assert-CorrectiveTargetHolders {param($Nonce,$Allowed)
+            if($Fixture.target){throw 'FIXTURE_TARGET_PRESENT'}}
+        function Assert-ReleaseVolumeHolders {param($Volumes,$Allowed,$ErrorCode)
+            if($Fixture.target){throw $ErrorCode}}
+        function Assert-CorrectiveGateAbsent {param($P) if($Fixture.target){throw 'FIXTURE_GATE_PRESENT'}}
+        function Read-BootstrapGatewayCandidate {}
+        function Read-BootstrapSeedSource {param($Source,[switch]$Transition)
+            if(-not $Transition){
+                foreach($Row in $Fixture.rows.Values){
+                    if($Row.State.Status -cne 'exited' -or $Row.HostConfig.RestartPolicy.Name -cne 'no'){
+                        throw 'BOOTSTRAP_PHYSICAL_SELFTEST_NOT_FROZEN'
+                    }
+                }
+            }}
+        function Assert-BootstrapFrozenCheck {param($Source,$CheckPath,$CheckHash)
+            if($Fixture.sourceDrift){throw 'FIXTURE_SOURCE_DRIFT'}
+            $Fixture.freeze++}
+        function Read-Private {param($Path)
+            if($Path -ceq 'fixture-source'){return @{correctivePair=$Original}}
+            if($Path -ceq 'fixture-attempt'){return $script:R}
+            throw 'BOOTSTRAP_PHYSICAL_SELFTEST_PATH'}
+        function Step {param($Name)}
+        function Docker-Text {param($Arguments)
+            if(($Arguments -join ' ') -ceq 'ps -a --format {{.Names}}'){return ''}
+            $Id=$Arguments[-1];$Row=$Fixture.rows[$Id]
+            $Role=if($Id -ceq $Gid){'g'}else{'r'}
+            $Effect=$Role+':'+$Arguments[0]+$(if($Arguments[0] -ceq 'update'){':'+$Arguments[1]}else{''})
+            $Fixture.effects.Add($Effect)
+            if($Effect -ceq $Fixture.failAt -and $Fixture.failBefore){throw 'FIXTURE_BEFORE_EFFECT'}
+            if($Arguments[0] -ceq 'update'){$Row.HostConfig.RestartPolicy.Name=$Arguments[1].Substring(10)}
+            elseif($Arguments[0] -ceq 'stop'){
+                if($Row.HostConfig.RestartPolicy.Name -cne 'no'){throw 'FIXTURE_RESTART_ENABLED'}
+                if($Role -ceq 'r' -and $Fixture.rows[$Gid].State.Status -cne 'exited'){throw 'FIXTURE_STOP_ORDER'}
+                $Row.State.Status='exited'
+            } elseif($Arguments[0] -ceq 'start'){
+                if($Role -ceq 'g' -and $Fixture.rows[$Rid].State.Status -cne 'running'){throw 'FIXTURE_START_ORDER'}
+                $Row.State.Status='running'
+            } else {throw 'FIXTURE_UNEXPECTED_EFFECT'}
+            if($Effect -ceq $Fixture.failAt){throw 'FIXTURE_ACK_LOST'}
+        }
+        function Read-CorrectiveCheckpoint {param($Id,$Nonce,$Profile,$Image,$Revision,$Commit,[switch]$Frozen)
+            if($Id -cne $Rid -or $Revision -ne 3 -or $Frozen -ne ($Fixture.rows[$Rid].State.Status -ceq 'exited')){
+                throw 'FIXTURE_REGISTRY_READBACK_ORDER'
+            }
+            return $Original.checkpoints.target}
+        function Wait-CorrectiveRegistryListener {param($Id)
+            if($Id -cne $Rid -or $Fixture.rows[$Rid].State.Status -cne 'running'){throw 'FIXTURE_REGISTRY_NOT_RUNNING'}}
+        function Admit {param($C,$P,[switch]$AllowUnhealthy,[switch]$BootstrapRetained)
+            if(-not $BootstrapRetained -or $Fixture.rows[$Rid].State.Status -cne 'running'){throw 'FIXTURE_PEER_UNAVAILABLE'}}
+        function Wait-Healthy {param($Id)
+            if($Id -cne $Gid -or $Fixture.rows[$Gid].State.Status -cne 'running'){throw 'FIXTURE_GATEWAY_NOT_RUNNING'}}
+        function Admit-Source {param($C,$Source)
+            foreach($Row in $Fixture.rows.Values){
+                if($Row.State.Status -cne 'running' -or $Row.HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                    throw 'FIXTURE_RETURN_INCOMPLETE'
+                }
+            }}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk -or $script:R.phase -cne 'Returned'){throw 'FIXTURE_RETURN_NOT_DURABLE'}
+            $Fixture.saves++}
+        # Failure before Registry stop leaves a partial pair. Return must
+        # start only Gateway and restore both original restart policies.
+        $Fixture.failAt='r:stop';$Fixture.failBefore=$true
+        try {Stop-BootstrapSourcePair $Source fixture-check ('d'*64);throw 'FIXTURE_FAILED_STOP_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_EFFECT_UNCONFIRMED Stop'){throw}}
+        if($Fixture.freeze -ne 0){throw 'FIXTURE_FROZEN_CHECK_BEFORE_STOP'}
+        $Fixture.failAt='g:start';$Fixture.failBefore=$false
+        Return-BootstrapPreparedPair
+        if($script:R.phase -cne 'Returned' -or $Fixture.saves -ne 1 -or
+           ($Fixture.effects -join ',') -cne 'g:update:--restart=no,g:stop,r:update:--restart=no,r:stop,r:update:--restart=unless-stopped,g:start,g:update:--restart=unless-stopped'){
+            throw 'FIXTURE_PARTIAL_RETURN_ORDER'
+        }
+        $script:R.phase='Prepared';$Fixture.effects.Clear();$Fixture.failAt='g:stop'
+        Stop-BootstrapSourcePair $Source fixture-check ('d'*64)
+        Stop-BootstrapSourcePair $Source fixture-check ('d'*64)
+        if($Fixture.freeze -ne 2 -or $Fixture.effects.Count -ne 4){throw 'FIXTURE_DUPLICATE_STOP'}
+        $Fixture.target=$true
+        try {Return-BootstrapPreparedPair;throw 'FIXTURE_TARGET_RETURN_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_TARGET_PRESENT'){throw}}
+        if($Fixture.effects.Count -ne 4 -or $Fixture.saves -ne 1){throw 'FIXTURE_EFFECT_WITH_TARGET'}
+        $Fixture.target=$false;$Fixture.failAt='r:start'
+        Return-BootstrapPreparedPair
+        if(($Fixture.effects -join ',') -cne 'g:update:--restart=no,g:stop,r:update:--restart=no,r:stop,r:start,r:update:--restart=unless-stopped,g:start,g:update:--restart=unless-stopped' -or
+           $Fixture.saves -ne 2){throw 'FIXTURE_FULL_RETURN_ORDER'}
+        # A changed frozen receipt must deny seed, not strand the original
+        # source when no target receiver exists.
+        $script:R.phase='Prepared';$Fixture.effects.Clear();$Fixture.failAt='';$Fixture.sourceDrift=$true
+        try {Stop-BootstrapSourcePair $Source fixture-check ('d'*64);throw 'FIXTURE_DRIFT_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_SOURCE_DRIFT'){throw}}
+        Return-BootstrapPreparedPair
+        if($Fixture.saves -ne 3){throw 'FIXTURE_DRIFT_RETURN'}
+        $Effects=$Fixture.effects.Count
+        Return-BootstrapPreparedPair
+        if($Fixture.saves -ne 3 -or $Fixture.effects.Count -ne $Effects){throw 'FIXTURE_DUPLICATE_RETURN'}
+        # The exact stopped Gateway from a recovered Check is not started
+        # for Apply. Lost publication ACK must be recovered before any stop.
+        $script:R.phase='Prepared';$Fixture.effects.Clear();$Fixture.sourceDrift=$false
+        $Fixture.rows[$Gid].State.Status='exited';$Fixture.rows[$Gid].HostConfig.RestartPolicy.Name='no'
+        $Fixture.rows[$Rid].State.Status='running';$Fixture.rows[$Rid].HostConfig.RestartPolicy.Name='no'
+        $Fixture.failAt='r:stop';$Fixture.failBefore=$false
+        $Checked=@{phase='CHECK_SEALED'};$Next=@{phase='APPLY_STOP'}
+        $Stop=@{next=$Next;sourceRecordDigest=('a'*64);checkedRecordDigest=('d'*64);targetImageId=$ImageId}
+        $Receipt=@{sha256=@{fixture=('e'*64)}}
+        $OrdinaryIntent=@{attempt=$script:R;ordinary=@{stop=$Stop;check=@{};begin=@{registryDigest=('f'*64)}}
+            check=@{sourceReceipt=$Receipt;maintenanceTransitions=@{}};context=@{payload=@{}}}
+        $Fixture.anchor=@{state='Committed';record=$Checked;digest=('1'*64)}
+        $Fixture.loseStopPublish=$true;$Fixture.stopPublishes=0
+        function Read-BootstrapFrozenIntent {return $OrdinaryIntent}
+        function Assert-BootstrapNoReceiver {if($Fixture.target){throw 'FIXTURE_TARGET_PRESENT'}}
+        function Read-OrdinarySuccessorSource {param($Source,[switch]$PublicationRecovery)
+            @{gateway=(Container $Gid);registry=(Container $Rid)}}
+        function Read-SuccessorPublication {return @{anchor=$Fixture.anchor}}
+        function Publish-SuccessorInterlock {param($Source,$Next,$RegistryDigest)
+            if($RegistryDigest -cne ('f'*64)){throw 'FIXTURE_WRONG_REGISTRY'}
+            if($Fixture.anchor.record.phase -ceq 'CHECK_SEALED'){
+                $Fixture.stopPublishes++;$Fixture.anchor.record=$Next;$Fixture.anchor.digest='2'*64
+                if($Fixture.loseStopPublish){$Fixture.loseStopPublish=$false;throw 'FIXTURE_STOP_PUBLICATION_ACK_LOST'}
+            }
+            return $Fixture.anchor.digest}
+        function New-SuccessorApplyVerifyPayload {return @{}}
+        function Read-SuccessorFreezeSeal {param($Payload,$Volume,$Mount)
+            if($Fixture.anchor.record.phase -ceq 'APPLY_STOP' -and (-not $Payload.stoppedIntent -or
+                $Fixture.rows[$Rid].State.Status -cne 'exited')){throw 'FIXTURE_STOP_PROOF_EARLY'}
+            return @{sourceReceipt=$Receipt;stopIntent=$Stop}}
+        function Assert-PairedFrozenSource {param($Intent,$Source)
+            foreach($Row in $Fixture.rows.Values){
+                if($Row.State.Status -cne 'exited' -or $Row.HostConfig.RestartPolicy.Name -cne 'no'){throw 'FIXTURE_NOT_FROZEN'}
+            }}
+        try {Stop-BootstrapSourcePair $Source fixture-check ('d'*64);throw 'FIXTURE_STOP_PUBLICATION_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_STOP_PUBLICATION_ACK_LOST'){throw}}
+        if($Fixture.effects.Count){throw 'FIXTURE_STOP_BEFORE_PUBLICATION'}
+        Stop-BootstrapSourcePair $Source fixture-check ('d'*64)
+        Stop-BootstrapSourcePair $Source fixture-check ('d'*64)
+        if($Fixture.stopPublishes -ne 1 -or ($Fixture.effects -join ',') -cne 'r:stop'){
+            throw 'FIXTURE_ORDINARY_STOP_REENTRY'
+        }
+
+    } finally {$script:R=$PreviousR;$script:RecordPath=$PreviousPath}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_PHYSICAL_PAIR_SELFTEST_PASS'
+}
+
+function Assert-BootstrapFrozenPairSelfTest {
+    # Exercise the actual internal controller bridge without a host effect.
+    $PreviousPath=$script:RecordPath;$PreviousR=$script:R;$PreviousPair=$script:BootstrapPair
+    try {
+        $script:RecordPath='fixture-attempt'
+        $AttemptPointer='fixture-pointer'
+        $CheckPath='fixture-check';$CheckHash='a'*64
+        $Source=@{path='fixture-source';hash=('b'*64)}
+        $Nonce='11111111-1111-4111-8111-111111111111'
+        $Pair=[pscustomobject]@{registryImage=('sha256:'+('c'*64));registryProfileSha256=('d'*64)
+            reviewSha256=('e'*64);evidenceSha256=('f'*64);compatibilityDigest=('1'*64)
+            checked=[pscustomobject]@{artifacts=[pscustomobject]@{gateway=('2'*64);registry=('c'*64)}
+                gateway=[pscustomobject]@{releaseNonce=$Nonce;profileDigest=('3'*64)}
+                registry=[pscustomobject]@{binding=[pscustomobject]@{generation=('4'*64)}
+                    review=[pscustomobject]@{ownerReviewProofDigest=('5'*64);reviewContentDigest=('0'*64)}}}}
+        $script:BootstrapPair=$Pair
+        $Check=[pscustomobject]@{schema='fortis-extension-image-check-v1';phase='Ready'
+            binding=[pscustomobject]@{sourceRecord=$Source.path;sourceHash=$Source.hash;sourceSha=('6'*40);bootstrapPair=$Pair
+                bootstrapReviewProofRecord='fixture-review'}
+            sourceReceipt=[pscustomobject]@{sha256=[pscustomobject]@{fixture=('7'*64)};summary=[pscustomobject]@{}}}
+        $Fixture=@{records=@{};answer='WRONG';seeds=0;calls=0;effects=0;saves=0;result=$null;loseAck=$true}
+        $Fixture.records[$CheckPath]=$Check
+        $Fixture.records['fixture-review']=[pscustomobject]@{schema='fortis-registry-bootstrap-review-v1'
+            decision='APPROVE_BOOTSTRAP_MERGE';reviewContentDigest=('0'*64);reviewedAt=100}
+        $Fixture.records[$AttemptPointer]=[pscustomobject]@{record=$script:RecordPath}
+        function Read-Private {param($Path) return $Fixture.records[$Path]}
+        function Get-FileHash {param($LiteralPath,$Algorithm)
+            if($LiteralPath -ceq $CheckPath){return @{Hash=$CheckHash}}
+            if($LiteralPath -ceq $Source.path){return @{Hash=$Source.hash}}
+            if($LiteralPath -ceq 'fixture-review'){return @{Hash=('5'*64)}}
+            throw 'BOOTSTRAP_BRIDGE_SELFTEST_PATH'}
+        function Read-Host {param($Prompt) return $Fixture.answer}
+        function Save {param([switch]$FlushToDisk)
+            if(-not $FlushToDisk -or $script:RecordPath -cne 'fixture-attempt'){throw 'BOOTSTRAP_BRIDGE_SELFTEST_FLUSH'}
+            $Fixture.records[$script:RecordPath]=$script:R;$Fixture.saves++}
+        function Assert-CorrectiveTargetHolders {param($Nonce,$Allowed)
+            if($Nonce -cne '11111111-1111-4111-8111-111111111111' -or @($Allowed).Count){throw 'BOOTSTRAP_BRIDGE_SELFTEST_HOLDER'}}
+        function Assert-Volume {param($Volume) if(-not $Volume){throw 'BOOTSTRAP_BRIDGE_SELFTEST_VOLUME'}}
+        function Assert-ReleaseVolumeHolders {param($Volumes,$Allowed,$ErrorCode)
+            if(@($Volumes).Count -ne 2 -or @($Allowed).Count){throw 'BOOTSTRAP_BRIDGE_SELFTEST_HOLDER'}}
+        function Read-BootstrapSeedSource {param($Source) return @{digest=('8'*64);record=@{phase='NORMAL'}}}
+        function Assert-BootstrapFrozenCheck {}
+        function Initialize-SuccessorBootstrapInterlock {param($Source,$CheckPath,$CheckHash)
+            $Fixture.seeds++;return @{digest=('8'*64)}}
+        function Docker-Json {param($Arguments)
+            if(($Arguments -join ' ') -cne ('image inspect '+$Pair.registryImage)){throw 'BOOTSTRAP_BRIDGE_SELFTEST_IMAGE'}
+            return [pscustomobject]@{Id=$Pair.registryImage;Config=[pscustomobject]@{
+                User='20002:20002';Entrypoint=@();Labels=[pscustomobject]@{'org.opencontainers.image.revision'=('6'*40)}}}}
+        function Python-Code {param($Arguments,$Code,$InputText)
+            $Fixture.calls++
+            $P=ConvertFrom-Json $InputText
+            if($Arguments -cnotcontains '20002:20002' -or $Arguments -cnotcontains $Pair.registryImage -or
+               @($Arguments|Where-Object{$_ -match 'target=/run/fortis-registry-read'}).Count -or
+               $P.profile -cne $Pair.registryProfileSha256 -or $P.review -cne $Pair.reviewSha256 -or
+               $P.evidence -cne $Pair.evidenceSha256 -or $P.seed -cne ('8'*64) -or
+               -not (Same-Json $P.go $Fixture.records[$script:RecordPath].bootstrapOwnerGo) -or
+               -not (Same-Json $P.sourceReceipt $Check.sourceReceipt)){
+                throw 'BOOTSTRAP_BRIDGE_SELFTEST_BINDING'
+            }
+            $StateArg=@($Arguments|Where-Object{$_ -match 'target=/run/fortis-registry-state'})
+            if($StateArg.Count -ne 1 -or ([bool]($StateArg[0] -match ',readonly,') -ne $P.readback)){
+                throw 'BOOTSTRAP_BRIDGE_SELFTEST_READBACK_MODE'
+            }
+            if($null -eq $Fixture.result){
+                if($P.readback){throw 'BOOTSTRAP_BRIDGE_SELFTEST_READBACK_BEFORE_EFFECT'}
+                $Fixture.effects++
+                $Records=@(foreach($Phase in @('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP','STAGED_TARGET_FROZEN')){
+                    [ordered]@{phase=$Phase;previousDigest=('8'*64);generation=$P.go.targetGeneration}})
+                $Fixture.result=[ordered]@{result='BOOTSTRAP_PAIR_BEGIN_ACCOUNTED_ONLY';hostAccepted=$false;admissionAllowed=$false
+                    pair=[ordered]@{attemptId=$P.go.attemptId;compatibilityReadbackDigest=$P.go.compatibilityDigest}
+                    receipts=@('r','g');holdSnapshot=[ordered]@{holds=@('r','g')};registryDigest=('9'*64)
+                    phasePlan=[ordered]@{proofKind='BOOTSTRAP_PHYSICAL_FREEZE';records=$Records;registryDigest=('9'*64)
+                        handoff=[ordered]@{attemptId=$P.go.attemptId;registryDigest=('9'*64)}}}
+            }
+            if($Fixture.loseAck){$Fixture.loseAck=$false;throw 'BOOTSTRAP_BRIDGE_SELFTEST_ACK_LOST'}
+            return (ConvertTo-Json -Compress -Depth 20 $Fixture.result)
+        }
+        try {$null=New-BootstrapOwnerGo $Source $CheckPath $CheckHash 'fixture-review';throw 'BOOTSTRAP_BRIDGE_SELFTEST_GO_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_REQUIRED'){throw}}
+        $Fixture.answer='APPLY BOOTSTRAP '+$CheckHash
+        $Fixture.records['fixture-review'].reviewContentDigest='9'*64
+        try {$null=New-BootstrapOwnerGo $Source $CheckPath $CheckHash 'fixture-review';throw 'BOOTSTRAP_BRIDGE_SELFTEST_REVIEW_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_REVIEW_CHANGED'){throw}}
+        $Fixture.records['fixture-review'].reviewContentDigest='0'*64
+        $Go=New-BootstrapOwnerGo $Source $CheckPath $CheckHash 'fixture-review'
+        $Attempt=[pscustomobject]@{schema='fortis-extension-release-v1';phase='Prepared';activated=$false;probesPassed=$false
+            bootstrapCheckRecord=$CheckPath;bootstrapCheckHash=$CheckHash;bootstrapOwnerGo=$Go;bootstrapReviewProofRecord='fixture-review';source=$Source
+            runtime=[pscustomobject]@{image=('sha256:'+('2'*64));registryReleaseNonce=$Nonce;registryProfileDigest=('3'*64)}
+            sourceReceipt=$Check.sourceReceipt}
+        $Fixture.records[$script:RecordPath]=$Attempt
+        $Go.reviewProofDigest='0'*64
+        try {$null=Invoke-BootstrapFrozenPair $Source $CheckPath $CheckHash;throw 'BOOTSTRAP_BRIDGE_SELFTEST_WRONG_GO_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_OWNER_GO_CHANGED'){throw}}
+        if($Fixture.seeds -ne 0 -or $Fixture.calls -ne 0){throw 'BOOTSTRAP_BRIDGE_SELFTEST_EARLY_EFFECT'}
+        $Go.reviewProofDigest='5'*64
+        # First call loses the writer ACK, but reads back original receipts
+        # through a RO helper in the same intent. Re-entry is also RO.
+        $Actual=Invoke-BootstrapFrozenPair $Source $CheckPath $CheckHash
+        $Again=Invoke-BootstrapFrozenPair $Source $CheckPath $CheckHash
+        if($Fixture.effects -ne 1 -or $Fixture.calls -ne 3 -or $Fixture.saves -ne 1 -or
+           -not (Same-Json $Actual $Again) -or -not (Same-Json $Actual $Fixture.records[$script:RecordPath].bootstrapBegin)){
+            throw 'BOOTSTRAP_BRIDGE_SELFTEST_RECOVERY'
+        }
+        $Attempt.phase='Created'
+        try {$null=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash -Runtime;throw 'FIXTURE_RUNTIME_UNBOUND_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'){throw}}
+        $Delivery=[pscustomobject]@{profileDigest=('7'*64);generation=$Go.targetGeneration}
+        $Attempt|Add-Member -NotePropertyName bootstrapMaterials -NotePropertyValue @{gatewayProfileDigest=$Delivery.profileDigest}
+        $Attempt|Add-Member -NotePropertyName bootstrapDelivery -NotePropertyValue $Delivery
+        $Attempt.runtime|Add-Member -NotePropertyName registryDelivery -NotePropertyValue $Delivery
+        $Attempt.runtime|Add-Member -NotePropertyName maintenanceGeneration -NotePropertyValue $Go.targetGeneration
+        $Attempt.runtime.registryProfileDigest=$Delivery.profileDigest
+        $null=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash -Runtime
+        $Attempt.runtime.registryProfileDigest='0'*64
+        try {$null=Read-BootstrapFrozenIntent $Source $CheckPath $CheckHash -Runtime;throw 'FIXTURE_WRONG_RUNTIME_PROFILE_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'){throw}}
+    } finally {$script:RecordPath=$PreviousPath;$script:R=$PreviousR;$script:BootstrapPair=$PreviousPair}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_FROZEN_PAIR_SELFTEST_PASS'
+}
+
+function Assert-SuccessorBootstrapSeedSelfTest {
+    $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-seed-fixture'
+    $Source=@{hash=('a'*64);runtime=@{runId=('b'*32)}}
+    $Old=[pscustomobject]@{digest=('c'*64);record=[pscustomobject]@{
+        phase='NORMAL';sequence=0;generation=('d'*64);registryInstanceId='fixture';scopeDigest=('e'*64)}}
+    $Fixture=@{record=$null;position='EMPTY';projection=$null;saves=0;seeds=0;commits=0;reads=0;proofs=0;proofAllowed=$false}
+    function Read-BootstrapSeedSource {param($Source) $Fixture.reads++;return $Old}
+    function Assert-BootstrapFrozenCheck {
+        param($Source,$CheckPath,$CheckHash)
+        if(-not $Fixture.proofAllowed){throw 'SEED_SELFTEST_FROZEN_CHECK_CHANGED'}
+        if($CheckPath -cne 'fixture' -or $CheckHash -cne ('a'*64)){throw 'SEED_SELFTEST_CHECK_PIN'}
+        $Fixture.proofs++
+    }
+    function Test-Path {param($LiteralPath) return ($null -ne $Fixture.record)}
+    function Read-Private {param($Path) return $Fixture.record}
+    function Write-Private {
+        param($Path,$Value,[switch]$FlushToDisk)
+        if(-not $FlushToDisk){throw 'SEED_SELFTEST_FLUSH_REQUIRED'}
+        $Fixture.record=$Value;$Fixture.saves++
+    }
+    function State-Helper {
+        param($Payload,$Mounts,[switch]$Root)
+        if(-not $Root -or $Mounts.Count -ne 6 -or $Payload.digest -cne $Old.digest -or
+           -not (Same-Json $Payload.record $Old.record)){throw 'SEED_SELFTEST_BINDING'}
+        if($Payload.mode -ceq 'seed'){
+            if($Fixture.record.state -cne 'Pending'){throw 'SEED_SELFTEST_INTENT_REQUIRED'}
+            $Fixture.seeds++;$Fixture.position='SEEDED'
+            $Fixture.projection=[pscustomobject]@{schemaVersion=1;state='Pending';instanceId=$Old.record.registryInstanceId
+                scopeDigest=$Old.record.scopeDigest;sequence=0;generation=$Old.record.generation
+                phase='NORMAL';interlockDigest=$Old.digest;registryDigest=$null}
+            throw 'SEED_SELFTEST_SEED_ACK_LOST'
+        }
+        if($Payload.mode -ceq 'commit'){
+            if($Fixture.record.state -cne 'Committed'){throw 'SEED_SELFTEST_HOST_COMMIT_REQUIRED'}
+            if($Fixture.projection.state -ceq 'Pending'){
+                $Fixture.projection.state='Committed';$Fixture.commits++;throw 'SEED_SELFTEST_COMMIT_ACK_LOST'
+            }
+        }
+        return [pscustomobject]@{position=$Fixture.position;digest=$Old.digest;latest=$Fixture.projection}
+    }
+    try {$null=Initialize-SuccessorBootstrapInterlock $Source fixture ('a'*64);throw 'SEED_SELFTEST_FROZEN_CHECK_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'SEED_SELFTEST_FROZEN_CHECK_CHANGED'){throw}}
+    if($Fixture.saves -ne 0 -or $Fixture.seeds -ne 0){throw 'SEED_SELFTEST_EFFECT_BEFORE_CHECK'}
+    $Fixture.proofAllowed=$true
+    try {$null=Initialize-SuccessorBootstrapInterlock $Source fixture ('a'*64);throw 'SEED_SELFTEST_SEED_UNCONFIRMED'}
+    catch {if($_.Exception.Message -cne 'SEED_SELFTEST_SEED_ACK_LOST'){throw}}
+    if($Fixture.record.state -cne 'Pending'){throw 'SEED_SELFTEST_PENDING_LOST'}
+    try {$null=Initialize-SuccessorBootstrapInterlock $Source fixture ('a'*64);throw 'SEED_SELFTEST_COMMIT_UNCONFIRMED'}
+    catch {if($_.Exception.Message -cne 'SEED_SELFTEST_COMMIT_ACK_LOST'){throw}}
+    $Final=Initialize-SuccessorBootstrapInterlock $Source fixture ('a'*64)
+    if($Final.state -cne 'Committed' -or $Fixture.saves -ne 2 -or $Fixture.seeds -ne 1 -or
+       $Fixture.commits -ne 1 -or $Fixture.reads -lt 3){throw 'SEED_SELFTEST_READBACK'}
+    $Fixture.record=$null
+    try {$null=Initialize-SuccessorBootstrapInterlock $Source fixture ('a'*64);throw 'SEED_SELFTEST_UNOWNED_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_SEED_UNOWNED_STATE'){throw}}
+    Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_SEED_SELFTEST_PASS'
+}
+
+function Test-SuccessorLatestDelivery {
+    param($Delivery)
+    if($null -eq $Delivery){return $false}
+    if($Delivery -is [Collections.IDictionary]){
+        if(-not $Delivery.Contains('latestPin')){return $false}
+        $Value=$Delivery['latestPin']
+    } else {
+        $Field=$Delivery.PSObject.Properties['latestPin']
+        if(-not $Field){return $false}
+        $Value=$Field.Value
+    }
+    if($Value -isnot [bool] -or -not $Value){throw 'RELEASE_SUCCESSOR_LATEST_PIN_INVALID'}
+    return $true
+}
 function Read-SuccessorPublication {
     param($Source)
     if($Source.runtime.runId -cnotmatch '^[0-9a-f]{32}$' -or
        $Source.runtime.maintenanceGeneration -cnotmatch '^[0-9a-f]{64}$'){
         throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
     }
-    $Path=Join-Path $ReleaseBase ('maintenance-publication-'+$Source.runtime.runId+'.json')
+    # v2 uses a single host anchor across generations. Per-release
+    # historical files must never be fallback authority for v2 receivers.
+    $Delivery=if($Source.runtime -is [Collections.IDictionary]){$Source.runtime['registryDelivery']}
+        else{$Field=$Source.runtime.PSObject.Properties['registryDelivery'];if($Field){$Field.Value}}
+    $Latest=Test-SuccessorLatestDelivery $Delivery
+    $Operational=Join-Path $ReleaseBase 'maintenance-publication-v2.json'
+    if($Source.runtime.runId -ceq 'cd6d3d97350e4f5590d9c3e9ece69580'){$Latest=$true}
+    $Path=if($Latest){$Operational}else{Join-Path $ReleaseBase ('maintenance-publication-'+$Source.runtime.runId+'.json')}
     $Anchor=Read-Private $Path
-    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v1' -or
+    $ExpectedSchema=if($Latest){'fortis-successor-maintenance-publication-v2'}else{'fortis-successor-maintenance-publication-v1'}
+    if($Anchor.schema -cne $ExpectedSchema -or
        $Anchor.sourceRecordHash -cne $Source.hash -or
        $Anchor.state -cnotin @('Committed','Pending') -or
-       $Anchor.digest -cnotmatch '^[0-9a-f]{64}$' -or
-       $Anchor.record.generation -cne $Source.runtime.maintenanceGeneration){
+       $Anchor.digest -cnotmatch '^[0-9a-f]{64}$'){
         throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+    }
+    if($Anchor.schema -ceq 'fortis-successor-maintenance-publication-v1'){
+        if($Anchor.record.generation -cne $Source.runtime.maintenanceGeneration){throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'}
+    } else {
+        if($Anchor.state -ceq 'Pending' -and -not $Anchor.PSObject.Properties['next']){
+            throw 'RELEASE_SUCCESSOR_SEED_PENDING'
+        }
+        # The owner record remains bound to the exact source release until
+        # protected promotion explicitly binds the target. No generation reset.
+        $Attempt=$Anchor.record.attempt
+        if($Anchor.record.generation -cne $Source.runtime.maintenanceGeneration -and
+           ($null -eq $Attempt -or $Attempt.sourceGeneration -cne $Source.runtime.maintenanceGeneration -or
+            $Anchor.record.generation -cne $Attempt.targetGeneration)){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+        }
+        if(($Anchor.record.phase -ceq 'NORMAL' -and $null -ne $Anchor.registryDigest) -or
+           ($Anchor.record.phase -cne 'NORMAL' -and $Anchor.registryDigest -cnotmatch '^[0-9a-f]{64}$')){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+        }
     }
     return @{path=$Path;anchor=$Anchor}
 }
+function Read-SuccessorRuntimePublication {
+    param($Runtime)
+    if(-not (Test-SuccessorLatestDelivery $Runtime.registryDelivery) -or
+       $Runtime.runId -cnotmatch '^[0-9a-f]{32}$'){throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'}
+    $Path=Join-Path $ReleaseBase ($Runtime.runId+'\record.json')
+    $Release=Read-Private $Path
+    if($Release.schema -cne 'fortis-extension-release-v1' -or
+       $Release.phase -cnotin @('Created','Staged','Complete') -or
+       -not (Same-Json $Release.runtime.registryDelivery $Runtime.registryDelivery)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'
+    }
+    foreach($Field in @('runId','pilotId','image','stateVolume','registryReleaseNonce',
+                        'registryProfileDigest','maintenanceGeneration')){
+        if($Release.runtime.$Field -cne $Runtime.$Field){throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'}
+    }
+    $Hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $Anchor=Read-Private (Join-Path $ReleaseBase 'maintenance-publication-v2.json')
+    # During handover the original protected source owns the same anchor.
+    # After rebinding it must name the exact current release. No other
+    # release, older anchor, or mounted projection can substitute.
+    if($Anchor.sourceRecordHash -ceq $Hash){
+        $Owner=@{path=$Path;hash=$Hash;runtime=$Runtime}
+    } elseif($Anchor.sourceRecordHash -ceq $Release.source.hash -and
+             (Get-FileHash -LiteralPath $Release.source.path -Algorithm SHA256).Hash -ceq $Release.source.hash){
+        $Owner=$Release.source
+    } else {throw 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'}
+    $Current=(Read-SuccessorPublication $Owner).anchor
+    if(-not (Same-Json $Current $Anchor) -or $Current.schema -cne 'fortis-successor-maintenance-publication-v2' -or
+       $Current.state -cne 'Committed' -or $Current.record.generation -cne $Runtime.maintenanceGeneration -or
+       $Current.record.phase -cnotin @('NORMAL','DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP',
+            'STAGED_TARGET_FROZEN','BACKUP_FROZEN','PROMOTE_FROZEN','COMPLETION_PENDING','RECOVERY_HOLD')){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    return $Current
+}
+function Assert-SuccessorRuntimeDelivery {
+    param($Actual,$Retained,$Publication)
+    if(-not (Test-SuccessorLatestDelivery $Actual) -or -not (Test-SuccessorLatestDelivery $Retained) -or
+       $Actual.profileDigest -cne $Retained.profileDigest -or $Actual.companionDigest -cne $Retained.companionDigest -or
+       $Actual.generation -cne $Retained.generation -or $Actual.generation -cne $Publication.record.generation -or
+       $Actual.maintenancePhase -cne $Publication.record.phase -or
+       $Actual.sourceDelivery.interlockDigest -cne $Publication.digest -or
+       $Actual.registryCheckpoint.profileDigest -cne $Retained.registryCheckpoint.profileDigest -or
+       ($Publication.record.phase -cne 'NORMAL' -and $Actual.registryCheckpoint.registryDigest -cne $Publication.registryDigest)){
+        throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+    }
+    foreach($Field in @('device','inode','policyAuthorityDigest')){
+        if($Actual.sourceDelivery.$Field -cne $Retained.sourceDelivery.$Field){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+        }
+    }
+}
+function Assert-SuccessorRuntimePublicationSelfTest {
+    $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-latest-anchor-fixture'
+    $Old=@{path=(Join-Path $ReleaseBase 'old.json');hash=('a'*64);runtime=@{
+        runId='cd6d3d97350e4f5590d9c3e9ece69580';maintenanceGeneration=('b'*64)}}
+    $Runtime=@{runId=('c'*32);pilotId=('d'*64);image=('sha256:'+('e'*64));stateVolume='fixture'
+        registryReleaseNonce='fixture';registryProfileDigest=('f'*64);maintenanceGeneration=('1'*64)
+        registryDelivery=@{latestPin=$true}}
+    $Path=Join-Path $ReleaseBase ($Runtime.runId+'\record.json')
+    $Latest=Join-Path $ReleaseBase 'maintenance-publication-v2.json'
+    $Release=@{schema='fortis-extension-release-v1';phase='Complete';runtime=$Runtime;source=$Old}
+    $Anchor=@{schema='fortis-successor-maintenance-publication-v2';state='Committed';sourceRecordHash=$Old.hash
+        digest=('2'*64);registryDigest=('3'*64);record=@{generation=$Runtime.maintenanceGeneration
+            phase='BACKUP_FROZEN';attempt=@{sourceGeneration=$Old.runtime.maintenanceGeneration
+                targetGeneration=$Runtime.maintenanceGeneration}}}
+    $Fixture=@{records=@{};hashes=@{};legacyReads=0;latestPath=$Latest;releasePath=$Path}
+    $Fixture.records[$Latest]=$Anchor;$Fixture.records[$Path]=$Release
+    $Fixture.hashes[$Path]='4'*64;$Fixture.hashes[$Old.path]=$Old.hash
+    function Read-Private {
+        param($Path)
+        if($Path -cne $Fixture.latestPath -and $Path -cne $Fixture.releasePath){
+            $Fixture.legacyReads++;throw 'LATEST_SELFTEST_HISTORICAL_FALLBACK'
+        }
+        if(-not $Fixture.records.ContainsKey($Path)){throw 'LATEST_SELFTEST_ANCHOR_MISSING'}
+        return $Fixture.records[$Path]
+    }
+    function Get-FileHash {param($LiteralPath,$Algorithm) return @{Hash=$Fixture.hashes[$LiteralPath]}}
+    if(-not (Same-Json (Read-SuccessorRuntimePublication $Runtime) $Anchor)){throw 'LATEST_SELFTEST_SOURCE_ANCHOR'}
+    $Anchor.sourceRecordHash=$Fixture.hashes[$Path]
+    if(-not (Same-Json (Read-SuccessorRuntimePublication $Runtime) $Anchor)){throw 'LATEST_SELFTEST_REBOUND_ANCHOR'}
+    $Anchor.sourceRecordHash='0'*64
+    try {$null=Read-SuccessorRuntimePublication $Runtime;throw 'LATEST_SELFTEST_WRONG_OWNER_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_PUBLICATION_SCOPE_INVALID'){throw}}
+    $Fixture.records.Remove($Latest)
+    try {$null=Read-SuccessorRuntimePublication $Runtime;throw 'LATEST_SELFTEST_MISSING_ANCHOR_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'LATEST_SELFTEST_ANCHOR_MISSING'){throw}}
+    if($Fixture.legacyReads){throw 'LATEST_SELFTEST_HISTORICAL_FALLBACK'}
+    Write-Host 'FORTIS_SUCCESSOR_RUNTIME_PUBLICATION_SELFTEST_PASS'
+}
+function Assert-SuccessorRuntimeDeliverySelfTest {
+    $Retained=[pscustomobject]@{latestPin=$true;profileDigest=('a'*64);companionDigest=('b'*64);generation=('c'*64)
+        sourceDelivery=[pscustomobject]@{device=1;inode=2;policyAuthorityDigest=('d'*64);interlockDigest=('e'*64)}
+        registryCheckpoint=[pscustomobject]@{profileDigest=('f'*64);registryDigest=('1'*64)}}
+    $Actual=$Retained|ConvertTo-Json -Depth 10|ConvertFrom-Json
+    $Actual|Add-Member -NotePropertyName maintenancePhase -NotePropertyValue 'BACKUP_FROZEN'
+    $Actual.sourceDelivery.interlockDigest='2'*64
+    $Publication=[pscustomobject]@{record=[pscustomobject]@{generation=$Retained.generation;phase='BACKUP_FROZEN'}
+        digest=('2'*64);registryDigest=$Retained.registryCheckpoint.registryDigest}
+    Assert-SuccessorRuntimeDelivery $Actual $Retained $Publication
+    $Actual.sourceDelivery.interlockDigest=$Retained.sourceDelivery.interlockDigest
+    try {Assert-SuccessorRuntimeDelivery $Actual $Retained $Publication;throw 'LATEST_RUNTIME_SELFTEST_STALE_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'){throw}}
+    $Actual.sourceDelivery.interlockDigest=$Publication.digest
+    $Actual.registryCheckpoint.registryDigest='0'*64
+    try {Assert-SuccessorRuntimeDelivery $Actual $Retained $Publication;throw 'LATEST_RUNTIME_SELFTEST_HOLD_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'){throw}}
+    $Publication.record.phase='NORMAL';$Publication.registryDigest=$null;$Actual.maintenancePhase='NORMAL'
+    Assert-SuccessorRuntimeDelivery $Actual $Retained $Publication
+    $Actual.sourceDelivery.inode=3
+    try {Assert-SuccessorRuntimeDelivery $Actual $Retained $Publication;throw 'LATEST_RUNTIME_SELFTEST_MOUNT_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'){throw}}
+    Write-Host 'FORTIS_SUCCESSOR_RUNTIME_DELIVERY_SELFTEST_PASS'
+}
+function Publish-SuccessorLatestInterlock {
+    param($Source,$Next,$Loaded,$RegistryDigest)
+    # The caller owns the existing exclusive controller lock and has
+    # independently verified the exact phase/hold evidence. The second
+    # volume is only a projection, never the authoritative host record.
+    $Anchor=$Loaded.anchor
+    if(($Next.phase -ceq 'NORMAL' -and $null -ne $RegistryDigest) -or
+       ($Next.phase -cne 'NORMAL' -and $RegistryDigest -cnotmatch '^[0-9a-f]{64}$')){
+        throw 'RELEASE_SUCCESSOR_LATEST_PIN_INVALID'
+    }
+    $AlreadyCommitted=($Anchor.state -ceq 'Committed' -and (Same-Json $Anchor.record $Next))
+    if($AlreadyCommitted){
+        if($Anchor.registryDigest -cne $RegistryDigest -or $null -eq $Anchor.previous){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'
+        }
+        $Previous=$Anchor.previous;$PriorRegistryDigest=$Anchor.previousRegistryDigest
+    } else {
+        $Previous=$Anchor.record;$PriorRegistryDigest=$Anchor.registryDigest
+        if($Next.previousDigest -cne $Anchor.digest){throw 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'}
+        if($Anchor.state -ceq 'Pending'){
+            if(-not (Same-Json $Anchor.next $Next) -or $Anchor.nextRegistryDigest -cne $RegistryDigest){
+                throw 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'
+            }
+        } else {
+            # Finish the previously committed publication before replacing its
+            # durable intent. A crash between host commit and projection commit
+            # leaves the previous exact transition available for readback.
+            if($Anchor.record.sequence -gt 0){
+                if((Publish-SuccessorLatestInterlock $Source $Anchor.record $Loaded $Anchor.registryDigest) -cne $Anchor.digest){
+                    throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+                }
+            }
+            Write-Private $Loaded.path ([ordered]@{schema=$Anchor.schema;state='Pending';sourceRecordHash=$Source.hash
+                record=$Previous;digest=$Anchor.digest;registryDigest=$PriorRegistryDigest;next=$Next
+                nextRegistryDigest=$RegistryDigest}) -FlushToDisk
+        }
+    }
+    $Mounts=@('--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy')
+    $Payload=@{action='successor_interlock_publish';mode='readback';previous=$Previous;next=$Next
+        latest=@{previousRegistryDigest=$PriorRegistryDigest;nextRegistryDigest=$RegistryDigest}}
+    $Actual=State-Helper $Payload $Mounts -Root
+    if($Actual.position -ceq 'PREVIOUS' -and -not $AlreadyCommitted -and
+       $Actual.digest -ceq $Anchor.digest -and $Actual.phase -ceq $Previous.phase){
+        $Payload.mode='publish';$Actual=State-Helper $Payload $Mounts -Root
+    }
+    if($Actual.position -cne 'NEXT' -or $Actual.phase -cne $Next.phase -or
+       $Actual.digest -cnotmatch '^[0-9a-f]{64}$' -or
+       ($AlreadyCommitted -and $Actual.digest -cne $Anchor.digest) -or
+       $Actual.latest.state -cnotin @('Pending','Committed') -or
+       (-not $AlreadyCommitted -and $Actual.latest.state -cne 'Pending') -or
+       $Actual.latest.interlockDigest -cne $Actual.digest -or $Actual.latest.generation -cne $Next.generation -or
+       $Actual.latest.registryDigest -cne $RegistryDigest -or $Actual.latest.phase -cne $Next.phase -or
+       $Actual.latest.sequence -ne $Next.sequence -or $Actual.latest.instanceId -cne $Next.registryInstanceId -or
+       $Actual.latest.scopeDigest -cne $Next.scopeDigest){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    if(-not $AlreadyCommitted){
+        $Committed=[ordered]@{schema=$Anchor.schema;state='Committed';sourceRecordHash=$Source.hash
+            record=$Next;digest=$Actual.digest;registryDigest=$RegistryDigest;previous=$Previous
+            previousRegistryDigest=$PriorRegistryDigest}
+        Write-Private $Loaded.path $Committed -FlushToDisk
+        if(-not (Same-Json (Read-Private $Loaded.path) $Committed)){throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'}
+    }
+    # The helper fsyncs both directories on a Committed readback. Do not
+    # launch an extra container for an already durable projection.
+    if($AlreadyCommitted -and $Actual.latest.state -ceq 'Committed'){return $Actual.digest}
+    # A failed ACK after either durable write is recovered by the same exact
+    # readback, not a second phase or reissuing the stop/activation effect.
+    $Payload.mode='commit'
+    $Final=State-Helper $Payload $Mounts -Root
+    if($Final.position -cne 'NEXT' -or $Final.digest -cne $Actual.digest -or $Final.phase -cne $Next.phase -or
+       $Final.latest.state -cne 'Committed' -or $Final.latest.interlockDigest -cne $Final.digest -or
+       $Final.latest.registryDigest -cne $RegistryDigest -or $Final.latest.generation -cne $Next.generation -or
+       $Final.latest.sequence -ne $Next.sequence -or $Final.latest.instanceId -cne $Next.registryInstanceId -or
+       $Final.latest.scopeDigest -cne $Next.scopeDigest -or $Final.latest.phase -cne $Next.phase){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    return $Final.digest
+}
+
+function Assert-SuccessorLatestPublicationSelfTest {
+    $Generation='a'*64;$OldDigest='b'*64;$NewDigest='c'*64;$RegistryDigest='d'*64;$FrozenDigest='f'*64
+    $Source=@{hash=('e'*64);runtime=@{maintenanceGeneration=$Generation}}
+    $Old=[ordered]@{phase='NORMAL';generation=$Generation;sequence=0;registryInstanceId='fixture';scopeDigest=('f'*64)}
+    $Next=[ordered]@{phase='DRAINING';generation=$Generation;sequence=1;previousDigest=$OldDigest
+        registryInstanceId=$Old.registryInstanceId;scopeDigest=$Old.scopeDigest}
+    $Frozen=[ordered]@{phase='FROZEN_BEFORE_CHECK';generation=$Generation;sequence=2;previousDigest=$NewDigest
+        registryInstanceId=$Old.registryInstanceId;scopeDigest=$Old.scopeDigest}
+    $Fixture=@{writes=0;commits=0;saves=0;old=$Old;drain=$Next;frozen=$Frozen;current=$Old;projection='Committed';losePublish=$true;loseCommit=$true;anchor=[ordered]@{
+        schema='fortis-successor-maintenance-publication-v2';state='Committed';record=$Old;digest=$OldDigest;registryDigest=$null}}
+    function Read-SuccessorPublication {return @{path='fixture';anchor=$Fixture.anchor}}
+    function Read-Private {param($Path) if($Path -cne 'fixture'){throw 'LATEST_SELFTEST_PATH'};return $Fixture.anchor}
+    function Write-Private {
+        param($Path,$Value,[switch]$FlushToDisk)
+        if($Path -cne 'fixture' -or -not $FlushToDisk){throw 'LATEST_SELFTEST_SAVE'}
+        if($Value.state -ceq 'Pending' -and $Value.record.phase -ceq 'DRAINING' -and $Fixture.projection -cne 'Committed'){
+            throw 'LATEST_SELFTEST_PREDECESSOR_NOT_RECONCILED'
+        }
+        $Fixture.saves++;$Fixture.anchor=$Value
+    }
+    function State-Helper {
+        param($Payload,$Mounts,[switch]$Root)
+        if(-not $Root -or $Mounts.Count -ne 4 -or $Payload.latest.nextRegistryDigest -cne $RegistryDigest){throw 'LATEST_SELFTEST_BINDING'}
+        $IsDrain=Same-Json $Payload.next $Fixture.drain
+        if($IsDrain){
+            if(-not (Same-Json $Payload.previous $Fixture.old)){throw 'LATEST_SELFTEST_BINDING'}
+            $Pin=$NewDigest
+        } else {
+            if(-not (Same-Json $Payload.previous $Fixture.drain) -or -not (Same-Json $Payload.next $Fixture.frozen)){throw 'LATEST_SELFTEST_BINDING'}
+            $Pin=$FrozenDigest
+        }
+        if($Payload.mode -ceq 'publish'){
+            if($Fixture.anchor.state -cne 'Pending' -or $Fixture.projection -cne 'Committed' -or
+               -not (Same-Json $Fixture.current $Payload.previous)){throw 'LATEST_SELFTEST_INTENT_REQUIRED'}
+            $Fixture.writes++;$Fixture.current=$Payload.next;$Fixture.projection='Pending'
+            if($Fixture.losePublish){$Fixture.losePublish=$false;throw 'LATEST_SELFTEST_PUBLISH_ACK_LOST'}
+        }
+        if($Payload.mode -ceq 'commit'){
+            if($Fixture.anchor.state -cne 'Committed' -or -not (Same-Json $Fixture.anchor.record $Payload.next) -or
+               -not (Same-Json $Fixture.current $Payload.next)){throw 'LATEST_SELFTEST_HOST_COMMIT_REQUIRED'}
+            if($Fixture.projection -ceq 'Pending'){
+                # Interrupt before projection commit. The next phase must
+                # finish this exact committed predecessor first.
+                if($Fixture.loseCommit){$Fixture.loseCommit=$false;throw 'LATEST_SELFTEST_COMMIT_ACK_LOST'}
+                $Fixture.commits++;$Fixture.projection='Committed'
+            }
+        }
+        if(Same-Json $Fixture.current $Payload.previous){
+            return @{position='PREVIOUS';phase=$Payload.previous.phase;digest=$Payload.next.previousDigest}
+        }
+        if(-not (Same-Json $Fixture.current $Payload.next)){throw 'LATEST_SELFTEST_POSITION'}
+        return @{position='NEXT';phase=$Payload.next.phase;digest=$Pin;latest=@{state=$Fixture.projection;interlockDigest=$Pin;
+            registryDigest=$RegistryDigest;generation=$Generation;sequence=$Payload.next.sequence
+            phase=$Payload.next.phase;instanceId=$Payload.next.registryInstanceId;scopeDigest=$Payload.next.scopeDigest}}
+    }
+    try {$null=Publish-SuccessorInterlock $Source $Next $RegistryDigest;throw 'LATEST_SELFTEST_PUBLISH_UNCONFIRMED'}
+    catch {if($_.Exception.Message -cne 'LATEST_SELFTEST_PUBLISH_ACK_LOST'){throw}}
+    if($Fixture.anchor.state -cne 'Pending' -or $Fixture.projection -cne 'Pending'){throw 'LATEST_SELFTEST_PENDING_LOST'}
+    try {$null=Publish-SuccessorInterlock $Source $Next $RegistryDigest;throw 'LATEST_SELFTEST_COMMIT_UNCONFIRMED'}
+    catch {if($_.Exception.Message -cne 'LATEST_SELFTEST_COMMIT_ACK_LOST'){throw}}
+    if($Fixture.anchor.state -cne 'Committed' -or $Fixture.projection -cne 'Pending'){throw 'LATEST_SELFTEST_PENDING_LOST'}
+    if((Publish-SuccessorInterlock $Source $Frozen $RegistryDigest) -cne $FrozenDigest -or
+       (Publish-SuccessorInterlock $Source $Frozen $RegistryDigest) -cne $FrozenDigest -or
+        $Fixture.anchor.state -cne 'Committed' -or $Fixture.projection -cne 'Committed' -or
+        $Fixture.writes -ne 2 -or $Fixture.commits -ne 2 -or $Fixture.saves -ne 4){throw 'LATEST_SELFTEST_READBACK_FAILED'}
+    try {$null=Publish-SuccessorInterlock $Source $Frozen ('0'*64);throw 'LATEST_SELFTEST_CHANGED_PIN_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_PUBLICATION_INTENT_CHANGED'){throw}}
+    Write-Host 'FORTIS_SUCCESSOR_LATEST_PUBLICATION_SELFTEST_PASS'
+}
+
 function Publish-SuccessorInterlock {
-    param($Source,$Next)
+    param($Source,$Next,$RegistryDigest=$null)
     # The existing owner controller lock and phase admission cover this call.
     $Loaded=Read-SuccessorPublication $Source
     $Anchor=$Loaded.anchor
+    if($Anchor.schema -ceq 'fortis-successor-maintenance-publication-v2'){
+        return (Publish-SuccessorLatestInterlock $Source $Next $Loaded $RegistryDigest)
+    }
     $AlreadyCommitted=($Anchor.state -ceq 'Committed' -and (Same-Json $Anchor.record $Next))
     if($AlreadyCommitted){
         $Previous=$Anchor.previous
@@ -1081,6 +3943,14 @@ function Assert-SuccessorPublicationSelfTest {
 }
 function Read-SuccessorMaintenanceContext {
     param($Source)
+    if($Bootstrap289){
+        # The static #289 source cannot acknowledge operational DRAINING.
+        # The one protected bootstrap uses physical exclusion before seed;
+        # ordinary latest-pin and historical/static paths stay distinct.
+        if($Action -cnotin @('Check','Apply')){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'}
+        $null=Read-BootstrapSeedSource $Source -Live
+        return
+    }
     if($Corrective288){
         # Explicit one-time initial delivery continuation, not a generic
         # successor maintenance waiver. Original NORMAL anchor is checked
@@ -1105,11 +3975,42 @@ function Read-SuccessorMaintenanceContext {
     $Path=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
     $Protected=Read-Private $Path
     $Payload=$Protected.payload
-    if($Protected.schema -cne 'fortis-successor-maintenance-check-v1' -or
+    if($Protected.schema -cnotin @('fortis-successor-maintenance-check-v1','fortis-successor-maintenance-check-v2') -or
        $Protected.sourceRecordHash -cne $Source.hash -or $Protected.targetSourceSha -cne $SourceSha -or
        $Protected.targetImageId -cne $script:Image -or
        ($null -ne $Payload -and ($Payload.generation -cne $Generation.Value -or
         $Payload.targetSourceSha -cne $SourceSha))){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+    }
+    $CurrentPublication=(Read-SuccessorPublication $Source).anchor
+    $Latest=$Protected.schema -ceq 'fortis-successor-maintenance-check-v2'
+    if($Latest -ne ($CurrentPublication.schema -ceq 'fortis-successor-maintenance-publication-v2')){
+        throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+    }
+    if($Latest){
+        # A durable ordinary intent can exist before any begin receipt.
+        # Recovery must read that exact intent instead of repeating a
+        # NORMAL-only compatibility probe against a possibly committed pair.
+        if($Action -ceq 'Check' -and $Protected.PSObject.Properties['intentDigest'] -and -not $Protected.begin){
+            if($Protected.intentDigest -cnotmatch '^[0-9a-f]{64}$' -or $Protected.draining -or $Payload -or
+               $Protected.registryDigest -or $CurrentPublication.state -cne 'Committed' -or
+               -not (Same-Json $CurrentPublication.record $Protected.intent.normal) -or
+               $Protected.intent.authorization.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+               $Protected.targetNonce -cne $RegistryReleaseNonce -or
+               $Protected.targetRegistryImage -cne $SuccessorRegistryImage -or
+               $Protected.intent.compatibility.registry.profileDigest -cne $SuccessorRegistryProfileSha256){
+                throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+            }
+            return $Protected
+        }
+        if($Protected.registryDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           ($null -ne $Payload -and ($Payload.latestPin -isnot [bool] -or -not $Payload.latestPin -or
+            $Payload.registryDigest -cne $Protected.registryDigest)) -or
+           ($CurrentPublication.record.phase -cne 'NORMAL' -and
+            $CurrentPublication.registryDigest -cne $Protected.registryDigest)){
+            throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+        }
+    } elseif($null -ne $Payload -and $Payload.PSObject.Properties['latestPin']){
         throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
     }
     if($null -ne $Payload){
@@ -1176,7 +4077,15 @@ function Start-SuccessorMaintenanceCheck {
     if($Before.record.phase -cnotin @('NORMAL','DRAINING')){throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'}
     # Re-entering a pending or completed DRAINING intent takes the same
     # exact publisher readback path before the inspector is called.
-    $Digest=Publish-SuccessorInterlock $Source $Context.draining
+    $RegistryDigest=$null
+    if($Before.schema -ceq 'fortis-successor-maintenance-publication-v2'){
+        $RegistryDigest=$Context.registryDigest
+        if($RegistryDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           ($null -ne $Context.payload -and $Context.payload.registryDigest -cne $RegistryDigest)){
+            throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+        }
+    }
+    $Digest=Publish-SuccessorInterlock $Source $Context.draining $RegistryDigest
     if($null -ne $Context.payload -and $Context.payload.interlockDigest -cne $Digest){
         throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
     }
@@ -1200,19 +4109,27 @@ function Complete-SuccessorMaintenanceCheck {
         throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
     }
     $Current=(Read-SuccessorPublication $Source).anchor
+    $RegistryDigest=$null
+    if($Current.schema -ceq 'fortis-successor-maintenance-publication-v2'){
+        $RegistryDigest=$Context.registryDigest
+        if($RegistryDigest -cnotmatch '^[0-9a-f]{64}$' -or $Payload.registryDigest -cne $RegistryDigest -or
+           $Current.registryDigest -cne $RegistryDigest -or $Payload.latestPin -isnot [bool] -or -not $Payload.latestPin){
+            throw 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'
+        }
+    }
     if($Current.record.phase -ceq 'DRAINING'){
         if($Current.digest -cne $Payload.interlockDigest -or
            -not (Same-Json $Current.record $Transitions.draining)){
             throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'
         }
-        $null=Publish-SuccessorInterlock $Source $Transitions.frozen
+        $null=Publish-SuccessorInterlock $Source $Transitions.frozen $RegistryDigest
         $Current=(Read-SuccessorPublication $Source).anchor
     }
     if(($Current.record.phase -ceq 'FROZEN_BEFORE_CHECK' -and
         (Same-Json $Current.record $Transitions.frozen)) -or
        ($Current.record.phase -ceq 'CHECK_SEALED' -and
         (Same-Json $Current.record $Transitions.checked))){
-        $Digest=Publish-SuccessorInterlock $Source $Transitions.checked
+        $Digest=Publish-SuccessorInterlock $Source $Transitions.checked $RegistryDigest
     } else {throw 'RELEASE_SUCCESSOR_CHECK_PHASE_CHANGED'}
 
     # The same read-only verifier used by Apply compares the actual mounted
@@ -1239,7 +4156,7 @@ function Assert-SuccessorCheckSealSelfTest {
     $Context=@{payload=$Payload;draining=$Draining}
     $Stored=@{sourceReceipt=@{sha256='fixture'};maintenanceSeal=$Seal;maintenanceTransitions=$Stages}
     $Fixture=@{stage=$Draining;writes=0;reads=0}
-    function Read-SuccessorPublication {return @{anchor=@{record=$Fixture.stage;digest='drain'}}}
+    function Read-SuccessorPublication {return @{anchor=@{schema='fortis-successor-maintenance-publication-v1';record=$Fixture.stage;digest='drain'}}}
     function Publish-SuccessorInterlock {
         param($Source,$Next)
         if(Same-Json $Fixture.stage $Next){return 'checked'}
@@ -1280,7 +4197,7 @@ function Assert-SuccessorCheckStartSelfTest {
     $Fixture=@{phase='NORMAL';calls=0;digest=('c'*64)}
     $Context=@{draining=$Draining;payload=$null}
     function Read-SuccessorPublication {
-        return @{anchor=@{state='Committed';record=$(if($Fixture.phase -ceq 'DRAINING'){$Draining}else{@{phase=$Fixture.phase}})}}
+        return @{anchor=@{schema='fortis-successor-maintenance-publication-v1';state='Committed';record=$(if($Fixture.phase -ceq 'DRAINING'){$Draining}else{@{phase=$Fixture.phase}})}}
     }
     function Publish-SuccessorInterlock {
         param($Source,$Next)
@@ -1303,6 +4220,54 @@ function Assert-SuccessorCheckStartSelfTest {
         throw 'RELEASE_SUCCESSOR_CHECK_SELFTEST_WRONG_WITNESS_ACCEPTED'
     } catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'){throw}}
     Write-Host 'FORTIS_SUCCESSOR_CHECK_START_SELFTEST_PASS'
+}
+function Assert-SuccessorLatestCheckSelfTest {
+    $Pin='a'*64;$Digest='b'*64
+    $Draining=[ordered]@{phase='DRAINING'}
+    $Frozen=[ordered]@{phase='FROZEN_BEFORE_CHECK'}
+    $Checked=[ordered]@{phase='CHECK_SEALED'}
+    $Stages=[ordered]@{draining=$Draining;frozen=$Frozen;checked=$Checked}
+    $Source=@{runtime=@{stateVolume='fixture'}}
+    $Context=@{registryDigest=$Pin;draining=$Draining;payload=$null}
+    $Fixture=@{stage=@{phase='NORMAL'};writes=0;reads=0}
+    function Read-SuccessorPublication {
+        return @{anchor=@{schema='fortis-successor-maintenance-publication-v2';state='Committed'
+            record=$Fixture.stage;digest=$Digest;registryDigest=$(if($Fixture.stage.phase -cne 'NORMAL'){$Pin})}}
+    }
+    function Publish-SuccessorInterlock {
+        param($Source,$Next,$RegistryDigest)
+        if($RegistryDigest -cne $Pin){throw 'LATEST_CHECK_SELFTEST_REGISTRY_PIN'}
+        $Fixture.stage=$Next;$Fixture.writes++;return $Digest
+    }
+    function Read-SuccessorFreezeSeal {
+        param($Verify,$Volume,$InterlockVolume)
+        if($Fixture.stage.phase -cne 'CHECK_SEALED' -or $Verify.latestPin -ne $true -or
+           $Verify.registryDigest -cne $Pin -or $Verify.interlockDigest -cne $Digest){
+            throw 'LATEST_CHECK_SELFTEST_READBACK'
+        }
+        $Fixture.reads++;return @{sourceReceipt=$Stored.sourceReceipt}
+    }
+    $Start=Start-SuccessorMaintenanceCheck $Source $Context
+    if($Start.digest -cne $Digest -or $null -ne $Start.payload -or $Fixture.writes -ne 1){
+        throw 'LATEST_CHECK_SELFTEST_DRAIN'
+    }
+    $Payload=[pscustomobject]@{action='successor_freeze_inspect';latestPin=$true;interlockDigest=$Digest;drain='fixture'
+        attemptId='attempt';restrictionDigest='restriction';registryDigest=$Pin;stateDigest='state'
+        companionDigest='companion';workerAttestationDigest='worker'}
+    $Seal=[pscustomobject]@{result='FREEZE_BINDINGS_MATCH_ONLY';interlockDigest=$Digest;attemptId='attempt'
+        restrictionDigest='restriction';registryDigest=$Pin;stateReceiptDigest='state'
+        companionDigest='companion';workerAttestationDigest='worker'}
+    $Context.payload=$Payload
+    $Stored=@{sourceReceipt=@{sha256='fixture'};maintenanceSeal=$Seal;maintenanceTransitions=$Stages}
+    $Context.registryDigest='0'*64
+    try {$null=Complete-SuccessorMaintenanceCheck $Source $Context $Stored;throw 'LATEST_CHECK_SELFTEST_CHANGED_PIN_ACCEPTED'}
+    catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'){throw}}
+    $Context.registryDigest=$Pin
+    if((Complete-SuccessorMaintenanceCheck $Source $Context $Stored) -cne $Digest -or
+       $Fixture.writes -ne 3 -or $Fixture.reads -ne 1){
+        throw 'LATEST_CHECK_SELFTEST_COMPLETE'
+    }
+    Write-Host 'FORTIS_SUCCESSOR_LATEST_CHECK_SELFTEST_PASS'
 }
 function Successor-CheckRecordPath {
     param([string]$AttemptId)
@@ -1994,23 +4959,27 @@ function Read-RegistrySuccessorAnchor {
     return $Anchor
 }
 function Assert-RegistrySuccessorCompanionPreflight {
-    param($Result,[string]$IncumbentVolume)
+    param($Result,[string]$IncumbentVolume,$ExpectedExisting=$null)
     $Legacy=$Result.PSObject.Properties['legacyCompanion']
     $Existing=$Result.PSObject.Properties['existingCompanion']
     if(-not $IncumbentVolume){
-        if($Legacy -or $Existing){throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'}
+        if($Legacy -or $Existing -or $ExpectedExisting){throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'}
         return
     }
     if([bool]$Legacy -eq [bool]$Existing){throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'}
     if($Legacy){
-        if($Legacy.Value.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
+        if($ExpectedExisting -or $Legacy.Value.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
            $Legacy.Value.coreRowsDigest -cnotmatch '^[0-9a-f]{64}$'){
             throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
         }
     } else {
-        # Only the existing #288 recovery continuation can use the retained
-        # successor preflight; no generic change to the maintenance gate.
-        if($IncumbentVolume -cne 'fortis-github-pilot-state-6ec445e6191543e7873275166922010b' -or
+        # Legacy #288 exception stays narrow. A latest-pin handover instead
+        # consumes the independently sealed incumbent companion witness
+        # from the exact protected Check; not a new historical volume list.
+        if(($ExpectedExisting -and
+            ($IncumbentVolume -cnotmatch '^fortis-github-pilot-state-[0-9a-f]{32}$' -or
+             -not (Same-Json $Existing.Value $ExpectedExisting))) -or
+           (-not $ExpectedExisting -and $IncumbentVolume -cne 'fortis-github-pilot-state-6ec445e6191543e7873275166922010b') -or
            $Existing.Value.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
            $Existing.Value.companionDigest -cne $Result.companionDigest -or
            $Existing.Value.authorityWitnessDigest -cnotmatch '^[0-9a-f]{64}$'){
@@ -2019,8 +4988,8 @@ function Assert-RegistrySuccessorCompanionPreflight {
     }
 }
 function Image-RegistrySuccessor-Preflight {
-    param([string]$ImageId,[string]$ReleaseNonce,[string]$InterlockDigest,[string]$IncumbentVolume='')
-    if($ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+    param([string]$ImageId,[string]$ReleaseNonce,[string]$InterlockDigest,[string]$IncumbentVolume='', [switch]$LatestPin, [switch]$RunningSource,$ExpectedExisting=$null)
+    if(([bool]$ExpectedExisting -ne [bool]($LatestPin -and $IncumbentVolume)) -or ($RunningSource -and (-not $LatestPin -or $IncumbentVolume)) -or $ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
        $ReleaseNonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
        $InterlockDigest -cnotmatch '^[0-9a-f]{64}$' -or
        ($IncumbentVolume -and $IncumbentVolume -cnotmatch '^fortis-github-pilot-state-[0-9a-f]{32}$')){
@@ -2030,9 +4999,9 @@ function Image-RegistrySuccessor-Preflight {
     $Reader='fortis-r7-registry-reader-'+$Id
     $Socket='fortis-registry-read-'+$Id
     $Evidence='fortis-registry-source-evidence-'+$Id
-    foreach($Volume in @($Reader,$Socket,$Evidence,'fortis-r7-maintenance-interlock')){
-        Assert-Volume $Volume
-    }
+    $Interlock=if($LatestPin){'fortis-r7-maintenance-interlock-v2'}else{'fortis-r7-maintenance-interlock'}
+    foreach($Volume in @($Reader,$Socket,$Evidence,$Interlock)){Assert-Volume $Volume}
+    if($LatestPin){Assert-Volume 'fortis-r7-maintenance-anchor'}
     Assert-OnlyWriter $Reader
     if($IncumbentVolume){Assert-OnlyWriter $Evidence}
     $Code=@'
@@ -2047,10 +5016,12 @@ if p['inspectIncumbent']:
     root=Path('/source')
     _check_owner_readonly_mount(root)
     core=root/'private'/'approvals.sqlite'
+# The historical immutable image does not know the new optional kwarg.
+extra={'running_source':True} if p.get('runningSource') else {}
 result=reviewed_successor_delivery(expected_release_nonce=p['nonce'],
     expected_source_digest=_installed_policy_source_digest(),
     expected_interlock_digest=p['interlockDigest'], incumbent_core=core,
-    scratch_root=Path('/run/fortis-copy-check') if core is not None else None)
+    scratch_root=Path('/run/fortis-copy-check') if core is not None else None,**extra)
 print(json.dumps(result,separators=(',',':'),sort_keys=True))
 '@
     $Encoded=Code64 $Code
@@ -2061,7 +5032,10 @@ print(json.dumps(result,separators=(',',':'),sort_keys=True))
         '--mount',('type=volume,source='+$Reader+',target=/run/r7-registry-reader,readonly,volume-nocopy'),
         '--mount',('type=volume,source='+$Socket+',target=/run/fortis-registry-read,readonly,volume-nocopy'),
         '--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,readonly,volume-nocopy'),
-        '--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,readonly,volume-nocopy')
+        '--mount',('type=volume,source='+$Interlock+',target=/run/r7-maintenance,readonly,volume-nocopy'))
+    if($LatestPin){
+        $Args+=@('--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    }
     if($IncumbentVolume){
         Assert-Volume $IncumbentVolume
         $Args+=@('--mount',('type=volume,source='+$IncumbentVolume+',target=/source,readonly,volume-nocopy'),
@@ -2069,18 +5043,866 @@ print(json.dumps(result,separators=(',',':'),sort_keys=True))
     }
     $Args+=@('--entrypoint','python',$ImageId,'-I','-B','-c',$Wrapper)
     $Payload=ConvertTo-Json -Compress -InputObject @{nonce=$ReleaseNonce
-        interlockDigest=$InterlockDigest;inspectIncumbent=[bool]$IncumbentVolume}
+        interlockDigest=$InterlockDigest;inspectIncumbent=[bool]$IncumbentVolume;runningSource=[bool]$RunningSource}
     $WaitMs=if($IncumbentVolume){300000}else{120000}
     $Result=(Private-Process $Args $Payload -WaitTimeoutMs $WaitMs)|ConvertFrom-Json
     if($Result.profileDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Result.companionDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Result.generation -cnotmatch '^[0-9a-f]{64}$' -or
-       $Result.sourceDelivery.interlockDigest -cne $InterlockDigest){
+       $Result.sourceDelivery.interlockDigest -cne $InterlockDigest -or
+       ([bool]$LatestPin -ne (Test-SuccessorLatestDelivery $Result))){
         throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
     }
-    Assert-RegistrySuccessorCompanionPreflight $Result $IncumbentVolume
+    Assert-RegistrySuccessorCompanionPreflight $Result $IncumbentVolume $ExpectedExisting
     return $Result
 }
+function Read-PairedGatewayMaterial {
+    param($Source,[switch]$Ordinary)
+    $OldReader=$Source.runtime.registryReaderVolume
+    $Reader=$script:RegistryReaderVolume+'-prepared'
+    foreach($V in @($OldReader,$Reader,$script:RegistryReaderVolume,$Source.runtime.stateVolume)){Assert-Volume $V}
+    Assert-OnlyWriter $OldReader;Assert-OnlyWriter $Reader
+    $OldSourceDigest=Image-Registry-Source-Digest -ImageId $Source.runtime.image
+    $GatewayCode=@'
+import json,sys
+from pathlib import Path
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import reviewed_bootstrap_gateway,inspect_bootstrap_empty_profile_target
+p=json.load(sys.stdin)
+actual=_installed_policy_source_digest()
+if actual!=p['sourceDigest']:raise RuntimeError('BOOTSTRAP_GATEWAY_SOURCE_CHANGED')
+result=reviewed_bootstrap_gateway(expected_release_nonce=p['nonce'],expected_source_digest=actual,
+    incumbent_nonce=p['oldNonce'],incumbent_source_digest=p['oldSourceDigest'],
+    incumbent_profile_digest=p['oldProfileDigest'],incumbent_core=Path('/source/private/approvals.sqlite'),ordinary=p['ordinary'])
+print(json.dumps({'material':result,'finalRoot':inspect_bootstrap_empty_profile_target()},sort_keys=True,separators=(',',':')))
+'@
+    $GatewayArgs=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','512m',
+        '--mount',('type=volume,source='+$OldReader+',target=/run/r7-registry-incumbent-reader,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$Reader+',target=/run/r7-registry-reader,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$script:RegistryReaderVolume+',target=/target,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$Source.runtime.stateVolume+',target=/source,readonly,volume-nocopy'),
+        $script:Image)
+    $GatewayInput=ConvertTo-Json -Compress @{nonce=$script:RegistryBoundReleaseNonce;sourceDigest=$script:RegistryGatewaySourceDigest
+        oldNonce=$Source.runtime.registryReleaseNonce;oldSourceDigest=$OldSourceDigest;oldProfileDigest=$Source.runtime.registryProfileDigest;ordinary=[bool]$Ordinary}
+    $GatewayRead=(Python-Code $GatewayArgs $GatewayCode $GatewayInput)|ConvertFrom-Json
+    return $GatewayRead
+}
+
+function Read-BootstrapCompatibility {
+    param($Source,[switch]$Recheck)
+    $Anchor=Read-BootstrapSeedSource $Source -Live
+    $Id=$script:RegistryBoundReleaseNonce.Replace('-','')
+    Assert-CorrectiveTargetHolders $script:RegistryBoundReleaseNonce @() -PreparedProfiles
+    $RegistryInfo=@(Docker-Json @('image','inspect',$BootstrapRegistryImage))[0]
+    $GatewayInfo=@(Docker-Json @('image','inspect',$script:Image))[0]
+    if($GatewayInfo.Id -cne $script:Image -or @($GatewayInfo.Config.Entrypoint | Where-Object {$_}).Count -or
+       @($RegistryInfo.Config.Entrypoint | Where-Object {$_}).Count){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_IMAGE_CHANGED'
+    }
+    if($RegistryInfo.Id -cne $BootstrapRegistryImage -or $RegistryInfo.Config.User -cne '20002:20002' -or
+       $RegistryInfo.Os -cne 'linux' -or $RegistryInfo.Architecture -cne 'amd64' -or
+       $RegistryInfo.Config.Labels.'org.opencontainers.image.revision' -cne $SourceSha){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_IMAGE_CHANGED'
+    }
+    $OldReader=$Source.runtime.registryReaderVolume
+    $Reader=$script:RegistryReaderVolume+'-prepared'
+    $State='fortis-registry-state-e13b-'+$Id
+    $RegistryConfig='fortis-registry-config-e13b-'+$Id+'-prepared'
+    $BackupVolume='fortis-registry-backup-68f27953baaa4f18a4695d4762d3480b'
+    foreach($Volume in @($OldReader,$Reader,$Source.runtime.stateVolume,$State,$RegistryConfig,$BackupVolume,$script:RegistryReaderVolume,
+        ('fortis-registry-config-e13b-'+$Id),('fortis-registry-read-'+$Id),('fortis-registry-source-evidence-'+$Id),
+        ('fortis-registry-source-'+$Id),('fortis-registry-bootstrap-backup-'+$Id),'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+        Assert-Volume $Volume
+    }
+    foreach($Volume in @($OldReader,$Reader,$State,$RegistryConfig,$BackupVolume)){Assert-OnlyWriter $Volume}
+    Assert-ReleaseVolumeHolders @('fortis-registry-bootstrap-backup-'+$Id) @() 'RELEASE_SUCCESSOR_BOOTSTRAP_BACKUP_HOLDER_CHANGED'
+    $GatewayRead=Read-PairedGatewayMaterial $Source
+    $Gateway=$GatewayRead.material
+    $RegistryCode=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import (
+    inspect_bootstrap_pair,bootstrap_compatibility_digest,verify_bootstrap_backup)
+from fortis_approvals.r7_registry_reader_mount import inspect_bootstrap_empty_profile_target
+from pathlib import Path
+p=json.load(sys.stdin)
+registry=inspect_bootstrap_pair(p['profile'],review_sha256=p['review'],evidence_sha256=p['evidence'],source_sha=p['source'])
+if registry['review']['registryBackupDigest']!=p['backup']:
+    raise RuntimeError('SOURCE_BOOTSTRAP_BACKUP_CHANGED')
+if not p['recheck']:verify_bootstrap_backup(p['backup'])
+checked={'gateway':p['gateway'],'registry':registry,'artifacts':p['artifacts']}
+print(json.dumps({'checked':checked,'compatibilityDigest':bootstrap_compatibility_digest(checked),
+                  'finalRoot':inspect_bootstrap_empty_profile_target(),'backupRoot':inspect_bootstrap_empty_profile_target(Path('/reserve'))},
+                 sort_keys=True,separators=(',',':')))
+'@
+    $RegistryArgs=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+        '--user','20002:20002','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+        '--pids-limit','32','--memory','512m',
+        '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$RegistryConfig+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+        '--mount',('type=volume,source=fortis-registry-config-e13b-'+$Id+',target=/target,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$BackupVolume+',target=/run/fortis-registry-backup,readonly,volume-nocopy'),
+        '--mount',('type=volume,source=fortis-registry-bootstrap-backup-'+$Id+',target=/reserve,readonly,volume-nocopy'),
+        $BootstrapRegistryImage)
+    $Artifacts=@{gateway=$script:Image.Substring(7);registry=$BootstrapRegistryImage.Substring(7)}
+    $Backup='384ce6e58fd8103a187c411e6ae87d1d7063d1d9822a7463b401c0785effe57a'
+    $RegistryInput=ConvertTo-Json -Compress -Depth 20 @{profile=$BootstrapRegistryProfileSha256;review=$BootstrapReviewSha256
+        evidence=$BootstrapEvidenceSha256;source=$SourceSha;gateway=$Gateway;artifacts=$Artifacts;backup=$Backup;recheck=[bool]$Recheck}
+    $Result=(Python-Code $RegistryArgs $RegistryCode $RegistryInput)|ConvertFrom-Json
+    $Review=$Result.checked.registry.review
+    $BackupPath=(Read-Private (Join-Path $ReleaseBase 'primary-backup.json')).record
+    $BackupRecord=Read-Private $BackupPath
+    if($Review.primaryRecordDigest -cne '1a4a83906c54f878f21f7acec0c999d4ecfa09e9efa5e2c65be70679a30f2e2d' -or
+       $Review.gatewayBackupDigest -cne '615875561e72018e90e2ce3719b8dcda30656edd8efb9f305eb39fb86b2ec25d' -or
+       (Get-FileHash -LiteralPath $BackupPath -Algorithm SHA256).Hash -ine $Review.gatewayBackupDigest -or
+       $BackupRecord.schema -cne 'fortis-primary-backup-v1' -or $BackupRecord.phase -cne 'Complete' -or
+       $BackupRecord.sourceRecord -cne $Source.path -or $BackupRecord.sourceHash -ine $Source.hash -or
+       (-not $Recheck -and -not (Same-Json (Receipt $BackupRecord.backupVolume) $BackupRecord.receipt)) -or
+       $Review.registryBackupDigest -cne $Backup -or
+       $Result.compatibilityDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Result.checked.gateway.profileDigest -cne $Gateway.profileDigest -or
+       $Result.checked.registry.profileDigest -cne $BootstrapRegistryProfileSha256 -or
+       $Result.checked.registry.checkpoint.sourceCursor -cne $SourceSha -or
+       $Result.checked.registry.checkpoint.sourceRevision -ne 4 -or
+       $Result.checked.registry.checkpoint.snapshotRevision -ne 4 -or
+       $Result.checked.registry.binding.interlockDigest -cne $Anchor.digest -or
+       $Result.checked.registry.binding.generation -cne $Anchor.record.generation){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPATIBILITY_CHANGED'
+    }
+    Assert-CorrectiveTargetHolders $script:RegistryBoundReleaseNonce @() -PreparedProfiles
+    if(-not (Same-Json (Read-BootstrapSeedSource $Source -Live) $Anchor)){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPATIBILITY_CHANGED'
+    }
+    $Pair=[ordered]@{registryImage=$BootstrapRegistryImage;registryProfileSha256=$BootstrapRegistryProfileSha256
+        reviewSha256=$BootstrapReviewSha256;evidenceSha256=$BootstrapEvidenceSha256
+        checked=$Result.checked;compatibilityDigest=$Result.compatibilityDigest
+        finalRoots=[ordered]@{Gateway=$GatewayRead.finalRoot;Registry=$Result.finalRoot}
+        backupRoot=$Result.backupRoot}
+    $null=Read-BootstrapOwnerReviewProof $BootstrapReviewProofRecord $Pair
+    return $Pair
+}
+function Read-OrdinarySuccessorSource {
+    param($Source,[switch]$PublicationRecovery,[switch]$Frozen,[string[]]$CandidateIds=@())
+    $P=$Source.runtime
+    $Release=Read-Private $Source.path
+    $Primary=Read-Private $PrimaryPointer
+    if(-not (Test-SuccessorLatestDelivery $P.registryDelivery) -or
+       -not $ConfirmWorkerQuiescent -or $Release.schema -cne 'fortis-extension-release-v1' -or
+       $Release.phase -cne 'Complete' -or $Release.activated -ne $true -or $Release.probesPassed -ne $true -or
+       (Read-Private $Pointer).record -cne $Source.path -or $Primary.sourceRecord -cne $Source.path -or
+       $Primary.sourceHash -ine $Source.hash -or -not (Same-Json $Primary.runtime $P) -or
+       (Get-FileHash -LiteralPath $Source.path -Algorithm SHA256).Hash -ine $Source.hash -or
+       -not (Same-Json $Release.runtime.registryDelivery $P.registryDelivery)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    }
+    # The first installed latest-pin release carries this exact paired
+    # receiver record; later ordinary handovers retain the same binding.
+    $Receiver=$Release.bootstrapReceiver
+    $G=Container $P.pilotId;$R=Container $Receiver.id
+    if(($Frozen -and ($G.State.Status -cne 'exited' -or $R.State.Status -cne 'exited' -or
+        $G.HostConfig.RestartPolicy.Name -cne 'no' -or $R.HostConfig.RestartPolicy.Name -cne 'no')) -or
+       ($PublicationRecovery -and ($G.State.Status -cnotin @('running','exited') -or
+        $R.State.Status -cnotin @('running','exited'))) -or
+       (-not ($PublicationRecovery -or $Frozen) -and ($G.State.Status -cne 'running' -or $G.State.Health.Status -cne 'healthy')) -or
+       $R.Id -cne $Receiver.id -or $Receiver.profileDigest -cne $Release.bootstrapMaterials.registryProfileDigest -or
+       $Receiver.generation -cne $P.maintenanceGeneration){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    }
+    $Commit=@(Docker-Json @('image','inspect',$P.image))[0].Config.Labels.'org.opencontainers.image.revision'
+    if($Commit -cnotmatch '^[0-9a-f]{40}$'){throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'}
+    if($PublicationRecovery -or $Frozen){
+        # Exact already-accepted source, even if a pending phase prevented
+        # its restart. This is structural readback for the publisher only.
+        if($R.Config.Labels.'org.opencontainers.image.revision' -cne $Commit){throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'}
+        if($R.HostConfig.RestartPolicy.Name -ceq 'no'){
+            Assert-CorrectiveRegistryContainer $R $P.registryReleaseNonce $Receiver.image $Receiver.profileDigest 'writer' $Commit -Status $R.State.Status -LatestPin
+        }else{
+            Assert-CorrectiveRegistryContainer $R $P.registryReleaseNonce $Receiver.image $Receiver.profileDigest 'source' $Commit -Status $R.State.Status -LatestPin
+        }
+    }else{
+        Assert-CorrectiveRegistryContainer $R $P.registryReleaseNonce $Receiver.image $Receiver.profileDigest 'writer' $Commit -Status running -LatestPin -Accepted
+    }
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce @($G.Id,$R.Id)
+    Assert-OperationalMaintenanceHolders $Source (@($G.Id,$R.Id)+$CandidateIds) 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    # Structural admission here also works during a lost begin ACK, when
+    # NORMAL with an actual hold must not pass full startup admission.
+    if($G.HostConfig.RestartPolicy.Name -ceq 'no' -and ($PublicationRecovery -or $Frozen)){
+        Admit $G $P -RegistryReturnSource -AllowUnhealthy -RetainedMaintenance
+    }else{Admit $G $P -RegistryReturnSource -AllowUnhealthy:($PublicationRecovery -or $Frozen)}
+    if($Frozen){
+        Assert-OnlyWriter $P.stateVolume
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$P.registryReleaseNonce.Replace('-',''))
+    }else{
+        Assert-OnlyWriter $P.stateVolume $G.Id
+        Assert-OnlyWriter ('fortis-registry-state-e13b-'+$P.registryReleaseNonce.Replace('-','')) $R.Id
+    }
+    return @{gateway=$G;registry=$R;receiver=$Receiver}
+}
+
+function Read-OrdinarySuccessorCompatibility {
+    param($Source,$Publication)
+    $SourcePair=Read-OrdinarySuccessorSource $Source
+    if($Publication.schema -cne 'fortis-successor-maintenance-publication-v2' -or
+       $Publication.state -cne 'Committed' -or $Publication.record.phase -cne 'NORMAL' -or
+       -not (Same-Json (Read-SuccessorPublication $Source).anchor $Publication)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    }
+    $P=$Source.runtime;$Id=$script:RegistryBoundReleaseNonce.Replace('-','');$OldId=$P.registryReleaseNonce.Replace('-','')
+    Assert-CorrectiveTargetHolders $script:RegistryBoundReleaseNonce @() -PreparedProfiles
+    $Target=@(Docker-Json @('image','inspect',$SuccessorRegistryImage))[0]
+    $GatewayInfo=@(Docker-Json @('image','inspect',$script:Image))[0]
+    if($GatewayInfo.Id -cne $script:Image -or @($GatewayInfo.Config.Entrypoint|Where-Object{$_}).Count -or
+       $Target.Id -cne $SuccessorRegistryImage -or $Target.Config.User -cne '20002:20002' -or
+       $Target.Os -cne 'linux' -or $Target.Architecture -cne 'amd64' -or
+       @($Target.Config.Entrypoint|Where-Object{$_}).Count -or
+       $Target.Config.Labels.'org.opencontainers.image.revision' -cne $SourceSha){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_IMAGE_CHANGED'
+    }
+    $GatewayRead=Read-PairedGatewayMaterial $Source -Ordinary
+    $RegistryCode=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.owner_functional_v1_bootstrap import inspect_ordinary_pair
+from fortis_approvals.r7_registry_reader_mount import inspect_bootstrap_empty_profile_target
+from pathlib import Path
+from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc, semantic_contract as sc
+p=json.load(sys.stdin)
+r=inspect_ordinary_pair(p['profile'],incumbent_profile_sha256=p['oldProfile'],source_sha=p['source'],normal=p['normal'])
+roots={'gateway':p['gatewayRoot'],'registry':inspect_bootstrap_empty_profile_target(),
+       'state':inspect_bootstrap_empty_profile_target(Path('/state-target')),
+       'backup':inspect_bootstrap_empty_profile_target(Path('/reserve'))}
+checked={'gateway':p['gateway'],'registry':r,'artifacts':p['artifacts'],'roots':roots}
+auth={**p['authorization'],'compatibilityDigest':sc.digest(checked),'normalDigest':sc.digest(p['normal'])}
+intent={'schemaVersion':1,'normal':p['normal'],'authorization':auth,'compatibility':checked}
+pair=mc.ordinary_pair_intent(intent)
+print(json.dumps({'intent':intent,'intentDigest':sc.digest(intent),'pairDigest':sc.digest(pair),'registryDigest':sc.digest(r['holdSnapshot'])},sort_keys=True,separators=(',',':')))
+'@
+    $Mounts=@(
+        ('type=volume,source=fortis-registry-state-e13b-'+$OldId+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+        ('type=volume,source=fortis-registry-config-e13b-'+$OldId+',target=/run/fortis-registry-incumbent-runtime,readonly,volume-nocopy'),
+        ('type=volume,source=fortis-registry-config-e13b-'+$Id+'-prepared,target=/run/fortis-registry-runtime,readonly,volume-nocopy'),
+        ('type=volume,source=fortis-registry-config-e13b-'+$Id+',target=/target,readonly,volume-nocopy'),
+        ('type=volume,source=fortis-registry-state-e13b-'+$Id+',target=/state-target,readonly,volume-nocopy'),
+        ('type=volume,source=fortis-registry-bootstrap-backup-'+$Id+',target=/reserve,readonly,volume-nocopy'),
+        'type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+        'type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    foreach($V in @(('fortis-registry-state-e13b-'+$OldId),('fortis-registry-config-e13b-'+$OldId),
+        ('fortis-registry-config-e13b-'+$Id+'-prepared'),('fortis-registry-config-e13b-'+$Id),
+        ('fortis-registry-state-e13b-'+$Id),('fortis-registry-bootstrap-backup-'+$Id),'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){Assert-Volume $V}
+    Assert-OnlyWriter ('fortis-registry-config-e13b-'+$Id+'-prepared')
+    Assert-ReleaseVolumeHolders @('fortis-registry-bootstrap-backup-'+$Id) @() 'RELEASE_SUCCESSOR_ORDINARY_RESERVE_CHANGED'
+    $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user','20002:20002',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','1024m',
+        '--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700')
+    foreach($Mount in $Mounts){$Args+=@('--mount',$Mount)}
+    $Args+=@($SuccessorRegistryImage)
+    $Auth=@{attemptId=[Guid]::NewGuid().ToString('D');sourceRecordDigest=$Source.hash.ToLowerInvariant()
+        targetNonce=$script:RegistryBoundReleaseNonce;recordedAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        targetGeneration=(Sha256-Utf8 ([Guid]::NewGuid().ToString('D')+[Guid]::NewGuid().ToString('D'))).ToLowerInvariant()}
+    $InputText=ConvertTo-Json -Compress -Depth 25 @{profile=$SuccessorRegistryProfileSha256;oldProfile=$SourcePair.receiver.profileDigest
+        source=$SourceSha;gateway=$GatewayRead.material;gatewayRoot=$GatewayRead.finalRoot;normal=$Publication.record;authorization=$Auth
+        artifacts=@{gateway=$script:Image.Substring(7);registry=$SuccessorRegistryImage.Substring(7)}}
+    $Result=(Python-Code $Args $RegistryCode $InputText)|ConvertFrom-Json
+    $Checked=$Result.intent.compatibility
+    $Live=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Publication.digest -LatestPin
+    Assert-SuccessorRuntimeDelivery $Live $P.registryDelivery $Publication
+    foreach($Field in @('sourceRevision','sourceCursor','snapshotRevision','eventDigest','profileDigest')){
+        if($Live.registryCheckpoint.$Field -cne $Checked.registry.checkpoint.$Field){throw 'RELEASE_SUCCESSOR_ORDINARY_CHECKPOINT_CHANGED'}
+    }
+    if($Result.intentDigest -cnotmatch '^[0-9a-f]{64}$' -or $Result.pairDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Checked.registry.profileDigest -cne $SuccessorRegistryProfileSha256 -or
+       $Checked.gateway.incumbentProfileDigest -cne $P.registryProfileDigest -or
+       $Checked.registry.incumbentProfileDigest -cne $SourcePair.receiver.profileDigest -or
+       $Result.intent.authorization.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+       $Result.intent.authorization.normalDigest -cne $Publication.digest -or
+       $Checked.registry.binding.authorityDigest -cne $Live.sourceDelivery.policyAuthorityDigest -or
+       $Result.registryDigest -cne $Live.registryCheckpoint.registryDigest -or
+       -not (Same-Json (Read-SuccessorPublication $Source).anchor $Publication)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_COMPATIBILITY_CHANGED'
+    }
+    return $Result
+}
+
+function Invoke-SuccessorControllerPeer {
+    param($Source,[string]$IntentDigest,[switch]$Readback,[switch]$Drain)
+    $P=$Source.runtime;$Id=$P.registryReleaseNonce.Replace('-','')
+    $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.r7_unified_server import _installed_policy_source_digest
+from fortis_approvals.r7_registry_reader_mount import _load_sealed_registry_reader,MOUNT,_check_live_peer
+p=json.load(sys.stdin)
+reader,_,digest=_load_sealed_registry_reader(MOUNT,p['nonce'],_installed_policy_source_digest())
+if digest!=p['profile']:raise RuntimeError('MAINTENANCE_CONTROLLER_PROFILE_CHANGED')
+_check_live_peer(reader)
+if p['drain']:
+    from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
+    gate=reader._successor_config._maintenance_gate(reader,sc.loads_strict(reader._successor_config._raw))
+    result=gate.drain_status()
+else:
+    result=reader._semantic_transport.controller_paired_begin(p['intentDigest'],readback=p['readback'])
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
+'@
+    $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only','--user','10001:10001',
+        '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','32','--memory','256m',
+        '--mount',('type=volume,source='+$P.registryReaderVolume+',target=/run/r7-registry-reader,readonly,volume-nocopy'),
+        '--mount',('type=volume,source='+$P.registrySocketVolume+',target=/run/fortis-registry-read,readonly,volume-nocopy'),
+        '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+        '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy',
+        $P.image)
+    return ((Python-Code $Args $Code (ConvertTo-Json -Compress @{nonce=$P.registryReleaseNonce;profile=$P.registryProfileDigest
+        intentDigest=$IntentDigest;readback=[bool]$Readback;drain=[bool]$Drain}))|ConvertFrom-Json)
+}
+
+function Read-OrdinaryNativePreflight {
+    param($Source,$Candidate)
+    $Before=Read-OrdinarySuccessorSource $Source
+    Assert-NativeRepoRead
+    $After=Read-OrdinarySuccessorSource $Source
+    if($Before.gateway.Id -cne $After.gateway.Id -or $Before.registry.Id -cne $After.registry.Id -or
+       -not (Same-Json (Read-SuccessorPublication $Source).anchor.record $Candidate.intent.normal)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    }
+    return @{sourceRecordDigest=$Source.hash.ToLowerInvariant();intentDigest=$Candidate.intentDigest
+        gatewayId=$After.gateway.Id;registryId=$After.registry.Id;githubRead=$true}
+}
+function Prepare-SuccessorMaintenanceContext {
+    param($Source,$Candidate,[switch]$PreflightOnly,$Report=$null)
+    if($PreflightOnly){
+        # Check remains non-mutating until ordinary staged Apply and Return
+        # can consume the holds. Never publish a partial maintenance window.
+        if(-not $Candidate){throw 'RELEASE_SUCCESSOR_ORDINARY_COMPATIBILITY_REQUIRED'}
+        return @{status='SUCCESSOR_PAIR_PREFLIGHT_ONLY';intentDigest=$Candidate.intentDigest
+            pairDigest=$Candidate.pairDigest;checkpoint=$Candidate.intent.compatibility.registry.checkpoint}
+    }
+    $Path=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+    $Existing=Test-Path -LiteralPath $Path
+    if($Existing){
+        $Context=Read-Private $Path
+    }else{
+        if(-not $Candidate){throw 'RELEASE_SUCCESSOR_ORDINARY_COMPATIBILITY_REQUIRED'}
+        $Native=Read-OrdinaryNativePreflight $Source $Candidate
+        $Confirm='BEGIN SUCCESSOR '+$Candidate.intentDigest
+        if((Read-Host ('Confirm exact independently checked successor pair and quiescent worker; type '+$Confirm)) -cne $Confirm){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_OWNER_GO_REQUIRED'
+        }
+        $Context=[pscustomobject][ordered]@{schema='fortis-successor-maintenance-check-v2'
+            sourceRecordHash=$Source.hash;targetSourceSha=$SourceSha;targetImageId=$script:Image
+            targetRegistryImage=$SuccessorRegistryImage;targetNonce=$script:RegistryBoundReleaseNonce
+            intent=$Candidate.intent;intentDigest=$Candidate.intentDigest;pairDigest=$Candidate.pairDigest
+            begin=$null;registryDigest=$null;draining=$null;payload=$null;replacement=$null
+            nativeRead=$Native;preflightBinding=$(if($Report){Checked-Image-Binding $Source $Report $null}else{$null})}
+        Write-Private $Path $Context -FlushToDisk
+        $Context=Read-Private $Path
+    }
+    if($Context.schema -cne 'fortis-successor-maintenance-check-v2' -or
+       $Context.sourceRecordHash -ine $Source.hash -or $Context.targetSourceSha -cne $SourceSha -or
+       $Context.targetImageId -cne $script:Image -or $Context.targetRegistryImage -cne $SuccessorRegistryImage -or
+       $Context.targetNonce -cne $script:RegistryBoundReleaseNonce -or
+       $Context.intent.authorization.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+       $Context.intent.authorization.targetNonce -cne $script:RegistryBoundReleaseNonce -or
+       $Context.intent.compatibility.artifacts.gateway -cne $script:Image.Substring(7) -or
+       $Context.intent.compatibility.artifacts.registry -cne $SuccessorRegistryImage.Substring(7) -or
+       $Context.intent.compatibility.registry.items.gateway.source.sourceSha -cne $SourceSha -or
+       $Context.intent.compatibility.registry.profileDigest -cne $SuccessorRegistryProfileSha256 -or
+       $Context.intentDigest -cnotmatch '^[0-9a-f]{64}$' -or $Context.pairDigest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery:$Existing
+    if($Context.nativeRead.githubRead -ne $true -or
+       $Context.nativeRead.intentDigest -cne $Context.intentDigest -or
+       $Context.nativeRead.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+       $Context.nativeRead.gatewayId -cne $Rows.gateway.Id -or $Context.nativeRead.registryId -cne $Rows.registry.Id -or
+       ($Report -and -not (Same-Json $Context.preflightBinding (Checked-Image-Binding $Source $Report $null)))){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_PREFLIGHT_CHANGED'
+    }
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    if(-not $Context.begin){
+        if($Publication.state -cne 'Committed' -or -not (Same-Json $Publication.record $Context.intent.normal)){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+        }
+        if($Rows.gateway.State.Status -ceq 'exited'){
+            # The original begin may have committed before its ACK and the
+            # Gateway may no longer be able to start against the new hold.
+            # Do not project, revoke, replace or invoke a new begin here.
+            if(-not $Existing -or $Rows.registry.State.Status -cne 'running'){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_RECOVERY_REQUIRED'
+            }
+            Assert-OnlyWriter $Source.runtime.stateVolume
+            $Actual=Invoke-SuccessorControllerPeer $Source $Context.intentDigest -Readback
+            if($Actual.result -cne 'PROTECTED_PAIR_BEGIN_READBACK_ONLY'){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_RECOVERY_REQUIRED'
+            }
+        }else{
+            $null=Read-OrdinarySuccessorSource $Source
+            $Mounts=@('--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+                '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,volume-nocopy')
+            $ProjectionInput=@{action='successor_begin_intent';intent=$Context.intent}
+            if($Context.replacement){
+                $ProjectionInput.mode='replace';$ProjectionInput.absence=$Context.replacement
+            }
+            $Projection=State-Helper $ProjectionInput $Mounts -Root
+            if($Projection.intentDigest -cne $Context.intentDigest -or $Projection.pairDigest -cne $Context.pairDigest -or
+               $Projection.revoked -isnot [bool]){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+            }
+            $Actual=Invoke-SuccessorControllerPeer $Source $Context.intentDigest -Readback
+            if($Actual.result -ceq 'PROTECTED_PAIR_BEGIN_NOT_APPLIED'){
+                if($Actual.intentDigest -cne $Context.intentDigest -or $Actual.revoked -isnot [bool] -or
+                   $Actual.expired -isnot [bool] -or $Actual.revoked -ne $Projection.revoked){
+                    throw 'RELEASE_SUCCESSOR_ORDINARY_PREDECESSOR_CHANGED'
+                }
+                if($Actual.expired -or $Actual.revoked){
+                    # Revoke under the same reservation as begin, BEFORE the
+                    # decisive absence readback. A late old effect, if already
+                    # committed, must be recovered, not replaced.
+                    $Revoked=State-Helper @{action='successor_begin_intent';mode='revoke';intent=$Context.intent} $Mounts -Root
+                    if($Revoked.revoked -ne $true -or $Revoked.intentDigest -cne $Context.intentDigest -or
+                       $Revoked.pairDigest -cne $Context.pairDigest){throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'}
+                    $Actual=Invoke-SuccessorControllerPeer $Source $Context.intentDigest -Readback
+                    if($Actual.result -ceq 'PROTECTED_PAIR_BEGIN_NOT_APPLIED'){
+                        if($Actual.revoked -ne $true -or $Actual.intentDigest -cne $Context.intentDigest -or
+                           $null -ne $Actual.receipts){throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_UNCONFIRMED'}
+                        if($Report -and (-not $Candidate -or $Candidate.intentDigest -ceq $Context.intentDigest)){
+                            $Candidate=Read-OrdinarySuccessorCompatibility $Source $Publication
+                        }
+                        if(-not $Candidate -or $Candidate.intentDigest -ceq $Context.intentDigest -or
+                           -not (Same-Json $Candidate.intent.normal $Context.intent.normal) -or
+                           $Candidate.intent.authorization.attemptId -ceq $Context.intent.authorization.attemptId -or
+                           $Candidate.intent.authorization.recordedAt -le $Context.intent.authorization.recordedAt -or
+                           $Candidate.intent.authorization.sourceRecordDigest -cne $Source.hash.ToLowerInvariant() -or
+                           $Candidate.intent.authorization.targetNonce -cne $script:RegistryBoundReleaseNonce -or
+                           -not (Same-Json $Candidate.intent.compatibility.artifacts $Context.intent.compatibility.artifacts) -or
+                           $Candidate.intent.compatibility.registry.profileDigest -cne $SuccessorRegistryProfileSha256 -or
+                           $Candidate.intent.compatibility.registry.items.gateway.source.sourceSha -cne $SourceSha -or
+                           -not (Same-Json $Candidate.intent.compatibility.registry.checkpoint $Actual.checkpoint) -or
+                           -not (Same-Json $Candidate.intent.compatibility.registry.holdSnapshot $Actual.holdSnapshot)){
+                            throw 'RELEASE_SUCCESSOR_ORDINARY_FRESH_CHECK_REQUIRED'
+                        }
+                        $Native=Read-OrdinaryNativePreflight $Source $Candidate
+                        $Confirm='BEGIN SUCCESSOR '+$Candidate.intentDigest
+                        if((Read-Host ('Confirm replacement of proven unused intent; type '+$Confirm)) -cne $Confirm){
+                            throw 'RELEASE_SUCCESSOR_ORDINARY_OWNER_GO_REQUIRED'
+                        }
+                        # Retain exact old context and the decisive readback
+                        # outside both runtime volumes before changing authority.
+                        $Archive=Join-Path $ReleaseBase ('maintenance-unused-'+$Context.intent.authorization.attemptId+'.json')
+                        $Retained=[ordered]@{context=$Context;absence=$Actual}
+                        if(-not (Test-Path -LiteralPath $Archive)){Write-Private $Archive $Retained -FlushToDisk}
+                        if(-not (Same-Json (Read-Private $Archive) $Retained)){throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'}
+                        $Context.intent=$Candidate.intent;$Context.intentDigest=$Candidate.intentDigest
+                        $Context.pairDigest=$Candidate.pairDigest;$Context.replacement=$Actual
+                        $Context.nativeRead=$Native
+                        Write-Private $Path $Context -FlushToDisk
+                        if(-not (Same-Json (Read-Private $Path) $Context)){throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'}
+                        # Re-enter the exact durable replacement; do not
+                        # manufacture a second replacement from this candidate.
+                        return (Prepare-SuccessorMaintenanceContext $Source $null -Report $Report)
+                    }
+                }
+            }
+            if($Actual.result -ceq 'PROTECTED_PAIR_BEGIN_NOT_APPLIED'){
+                if($Actual.intentDigest -cne $Context.intentDigest -or $Actual.exactPredecessor -ne $true -or
+                   $Actual.revoked -or $Actual.expired){
+                    throw 'RELEASE_SUCCESSOR_ORDINARY_PREDECESSOR_CHANGED'
+                }
+                # A new begin is allowed only with the exact healthy running source.
+                $null=Read-OrdinarySuccessorSource $Source
+                $Written=$null
+                try{$Written=Invoke-SuccessorControllerPeer $Source $Context.intentDigest}
+                catch{Write-Warning 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_READBACK'}
+                $Actual=Invoke-SuccessorControllerPeer $Source $Context.intentDigest -Readback
+                if($Written -and -not (Same-Json $Written $Actual)){throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_CHANGED'}
+            }
+        }
+        if($Actual.result -cne 'PROTECTED_PAIR_BEGIN_READBACK_ONLY' -or $Actual.intentDigest -cne $Context.intentDigest -or
+           $Actual.registryDigest -cnotmatch '^[0-9a-f]{64}$' -or $Actual.draining.phase -cne 'DRAINING' -or
+           $Actual.draining.previousDigest -cne $Publication.digest -or
+           $Actual.draining.attempt.attemptId -cne $Context.intent.authorization.attemptId){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_UNCONFIRMED'
+        }
+        $Context.begin=$Actual;$Context.registryDigest=$Actual.registryDigest;$Context.draining=$Actual.draining
+        Write-Private $Path $Context -FlushToDisk
+        $Context=Read-Private $Path
+        if(-not (Same-Json $Context.begin $Actual)){throw 'RELEASE_SUCCESSOR_ORDINARY_BEGIN_UNCONFIRMED'}
+    }
+    if($Context.begin.result -cne 'PROTECTED_PAIR_BEGIN_READBACK_ONLY' -or
+       $Context.begin.intentDigest -cne $Context.intentDigest -or $Context.registryDigest -cne $Context.begin.registryDigest -or
+       -not (Same-Json $Context.draining $Context.begin.draining)){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $script:OrdinaryFreshFreeze=$null
+    $Started=Start-SuccessorMaintenanceCheck $Source $Context
+    if(-not $Started.resume -and -not $Context.payload){
+        $Frozen=Read-OrdinarySuccessorFreeze $Source $Context $Started.digest
+        if($Frozen){
+            $Context.payload=$Frozen.payload
+            $script:OrdinaryFreshFreeze=$Frozen
+            Write-Private $Path $Context -FlushToDisk
+            if(-not (Same-Json (Read-Private $Path) $Context)){throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'}
+        }
+    }
+    if($Report){return (Complete-OrdinarySuccessorCheck $Source $Report $Context $script:OrdinaryFreshFreeze)}
+    return $Context
+}
+
+function Complete-OrdinarySuccessorCheck {
+    param($Source,$Report,$Context,$Fresh=$null)
+    if(-not $Context.payload){return @{status='MAINTENANCE_DRAINING';attemptId=$Context.draining.attempt.attemptId}}
+    $Payload=$Context.payload
+    $Path=Successor-CheckRecordPath $Payload.attemptId
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    if(Test-Path -LiteralPath $Path){
+        $Stored=Read-Private $Path
+    }else{
+        if($Publication.record.phase -cne 'DRAINING' -or $Publication.state -cne 'Committed'){
+            throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+        }
+        # The producer's result may be consumed under the same controller
+        # lock. Re-entry independently re-inspects rather than trust cache.
+        if(-not $Fresh){$Fresh=Read-SuccessorFreezeSeal $Payload $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock'}
+        if(-not (Same-Json $Fresh.transitions.draining $Context.draining) -or
+           $Fresh.seal.stateReceiptDigest -cne $Payload.stateDigest -or
+           $Fresh.seal.registryDigest -cne $Context.registryDigest -or
+           $Fresh.seal.interlockDigest -cne $Publication.digest){
+            throw 'RELEASE_SUCCESSOR_FREEZE_SEAL_CHANGED'
+        }
+        $Path=Save-Checked-Image $Source $Report $Fresh.sourceReceipt $Payload $Fresh.seal $Fresh.transitions
+        $Stored=Read-Private $Path
+    }
+    if($Stored.schema -cne 'fortis-extension-image-check-v1' -or $Stored.phase -cne 'Ready'){
+        throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+    }
+    Assert-Checked-Image-Binding $Stored.binding (Checked-Image-Binding $Source $Report $Payload)
+    $Digest=Complete-SuccessorMaintenanceCheck $Source $Context $Stored
+    return @{status='CHECK_SEALED';checkedImageRecord=$Path;interlockDigest=$Digest;attemptId=$Payload.attemptId}
+}
+
+function Read-OrdinarySuccessorFreeze {
+    param($Source,$Context,[string]$Digest)
+    if(-not $ConfirmWorkerQuiescent -or $Digest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Context.registryDigest -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+    }
+    $Publication=(Read-SuccessorPublication $Source).anchor
+    if($Publication.state -cne 'Committed' -or $Publication.digest -cne $Digest -or
+       $Publication.registryDigest -cne $Context.registryDigest -or
+       -not (Same-Json $Publication.record $Context.draining)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
+    $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery
+    if($Rows.gateway.State.Status -ceq 'exited'){
+        # A stopped source is not a new startup admission. Drain is measured
+        # through the exact Registry peer and the shared inode reservation;
+        # never restart the Gateway while the source generation is held.
+        # Prevent an automatic source restart before the exclusive state
+        # inspection. A later Return restores the recorded restart policy.
+        $Gateway=Set-BootstrapContainerState $Rows.gateway DisableRestart
+        if($Gateway.State.Status -cne 'exited'){throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'}
+        Assert-OnlyWriter $Source.runtime.stateVolume
+        if($Rows.registry.State.Status -ceq 'exited'){
+            if(-not (Same-Json (Read-SuccessorPublication $Source).anchor $Publication)){
+                throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+            }
+            $Registry=Set-BootstrapContainerState $Rows.registry DisableRestart
+            $Registry=Set-BootstrapContainerState $Registry Start
+            Wait-CorrectiveRegistryListener $Registry.Id
+            $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery
+            if($Rows.gateway.State.Status -cne 'exited' -or $Rows.registry.Id -cne $Registry.Id){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+            }
+        }
+    }else{
+        $Rows=Read-OrdinarySuccessorSource $Source
+    }
+    if($Rows.registry.State.Status -cne 'running'){throw 'RELEASE_SUCCESSOR_DRAIN_UNCONFIRMED'}
+    $Drain=Invoke-SuccessorControllerPeer $Source $Context.intentDigest -Drain
+    if($Drain.status -ceq 'UNKNOWN'){throw 'RELEASE_SUCCESSOR_DRAIN_UNCONFIRMED'}
+    if($Drain.status -cne 'DRAINING' -or $Drain.attemptId -cne $Context.draining.attempt.attemptId -or
+       $Drain.generation -cne $Context.draining.generation -or
+       $Drain.interlockDigest -cne $Digest -or $Drain.registryDigest -cne $Context.registryDigest -or
+       $Drain.ready -isnot [bool]){throw 'RELEASE_SUCCESSOR_DRAIN_UNCONFIRMED'}
+    $After=Read-OrdinarySuccessorSource $Source -PublicationRecovery
+    if($After.gateway.Id -cne $Rows.gateway.Id -or $After.registry.Id -cne $Rows.registry.Id -or
+       $After.registry.State.Status -cne 'running' -or
+       -not (Same-Json (Read-SuccessorPublication $Source).anchor $Publication)){
+        throw 'RELEASE_SUCCESSOR_DRAIN_UNCONFIRMED'
+    }
+    if($Rows.gateway.State.Status -ceq 'exited'){
+        if($After.gateway.State.Status -cne 'exited' -or
+           $After.gateway.HostConfig.RestartPolicy.Name -cne 'no'){
+            throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+        }
+        Assert-OnlyWriter $Source.runtime.stateVolume
+    }else{
+        $null=Read-OrdinarySuccessorSource $Source
+    }
+    if(-not $Drain.ready){return}
+    if($Drain.reservations -ne 0){throw 'RELEASE_SUCCESSOR_DRAIN_UNCONFIRMED'}
+    $Companion=$Context.intent.compatibility.gateway.companion
+    $Payload=@{action='successor_freeze_inspect';latestPin=$true
+        instanceId=$Context.draining.registryInstanceId;scopeDigest=$Context.draining.scopeDigest
+        generation=$Context.draining.generation;interlockDigest=$Digest;registryDigest=$Context.registryDigest
+        attemptId=$Context.draining.attempt.attemptId;restrictionDigest=$Context.draining.attempt.restrictionDigest
+        subject=$Context.draining.attempt.subject;targetSourceSha=$Context.targetSourceSha
+        coreSchemaDigest=$Companion.schemaDigest;companionDigest=$Companion.companionDigest
+        preserveUncertainIds=@(Parse-PreservedUncertainRequests $script:PreserveUncertainRequests|Sort-Object)
+        preserveClaimedIds=@(Parse-PreservedUncertainRequests $script:PreserveClaimedJobs|Sort-Object)
+        drain=$Drain;prepare=@{intentDigest=$Context.intentDigest;sourceRecordDigest=$Source.hash.ToLowerInvariant()
+            ownerConfirmed=$true;begin=$Context.begin}}
+    return (Read-SuccessorFreezeSeal $Payload $Source.runtime.stateVolume 'fortis-r7-maintenance-interlock')
+}
+
+
+function Assert-OrdinaryCheckResumeSelfTest {
+    $PreviousImage=$script:Image;$PreviousCheck=$script:RegistryPrebuiltCheck
+    $PreviousReturn=$script:RegistryReturn;$PreviousApproved=$script:PreserveApprovedRequest
+    try {
+        $Bootstrap289=$false;$Corrective288=$false;$Action='Check';$AllowUncertainGrowth=$false
+        $EmergencyRequested=$false;$RegistryReturnContainerId='';$CheckedImageRecord=''
+        $script:RegistryReturn=$null;$script:PreserveApprovedRequest='';$script:RegistryPrebuiltCheck=$true
+        $script:Image='sha256:'+('a'*64);$SourceSha='b'*40;$ReleaseBase=[IO.Path]::GetTempPath()
+        $RegistryReleaseNonce='11111111-1111-4111-8111-111111111111'
+        $SuccessorRegistryImage='sha256:'+('c'*64);$SuccessorRegistryProfileSha256='d'*64
+        $Source=@{hash=('e'*64);runtime=[pscustomobject]@{runId=('f'*32);maintenanceGeneration=('1'*64)}}
+        $Normal=@{phase='NORMAL';generation=('1'*64)}
+        $Drain=@{phase='DRAINING';generation=('1'*64);attempt=@{attemptId=$RegistryReleaseNonce;source=@{sourceSha=$SourceSha}}}
+        $Context=[pscustomobject]@{schema='fortis-successor-maintenance-check-v2'
+            sourceRecordHash=$Source.hash;targetSourceSha=$SourceSha;targetImageId=$script:Image
+            targetNonce=$RegistryReleaseNonce;targetRegistryImage=$SuccessorRegistryImage
+            intentDigest=('2'*64);intent=@{normal=$Normal;authorization=@{sourceRecordDigest=$Source.hash}
+                compatibility=@{registry=@{profileDigest=$SuccessorRegistryProfileSha256}}}
+            payload=$null;begin=$null;draining=$null;registryDigest=$null}
+        $Fixture=@{anchor=@{schema='fortis-successor-maintenance-publication-v2';state='Committed';record=$Normal;registryDigest=$null}}
+        function Read-Private {return $Context}
+        function Read-SuccessorPublication {return @{anchor=$Fixture.anchor}}
+        function Successor-CheckRecordPath {param($Id) if($Id -cne $RegistryReleaseNonce){throw 'FIXTURE_CHECK_ATTEMPT'};return 'fixture'}
+        if(-not (Same-Json (Read-SuccessorMaintenanceContext $Source) $Context)){throw 'FIXTURE_PREBEGIN_CONTEXT_LOST'}
+        $Context.targetNonce='wrong'
+        try {$null=Read-SuccessorMaintenanceContext $Source;throw 'FIXTURE_WRONG_NONCE_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_MAINTENANCE_CONTEXT_CHANGED'){throw}}
+        $Context.targetNonce=$RegistryReleaseNonce;$Context.begin=@{intentDigest=$Context.intentDigest}
+        $Context.draining=$Drain;$Context.registryDigest='3'*64
+        $Fixture.anchor.record=$Drain;$Fixture.anchor.registryDigest=$Context.registryDigest
+        if(-not (Same-Json (Read-SuccessorMaintenanceContext $Source) $Context)){throw 'FIXTURE_DRAIN_CONTEXT_LOST'}
+    }finally{
+        $script:Image=$PreviousImage;$script:RegistryPrebuiltCheck=$PreviousCheck
+        $script:RegistryReturn=$PreviousReturn;$script:PreserveApprovedRequest=$PreviousApproved
+    }
+    Write-Host 'FORTIS_SUCCESSOR_ORDINARY_CHECK_RESUME_SELFTEST_PASS'
+}
+
+function Assert-OrdinaryBeginSelfTest {
+    $PreviousImage=$script:Image;$PreviousNonce=$script:RegistryBoundReleaseNonce
+    $PreviousUncertain=$script:PreserveUncertainRequests;$PreviousClaimed=$script:PreserveClaimedJobs
+    try {
+        $script:Image='sha256:'+('a'*64)
+        $script:RegistryBoundReleaseNonce='11111111-1111-4111-8111-111111111111'
+        $script:PreserveUncertainRequests='';$script:PreserveClaimedJobs=''
+        $ConfirmWorkerQuiescent=$true
+        $SuccessorRegistryImage='sha256:'+('b'*64);$SuccessorRegistryProfileSha256='c'*64
+        $SourceSha='d'*40;$ReleaseBase=[IO.Path]::GetTempPath()
+        $Source=@{hash=('e'*64);runtime=@{runId=('f'*32);stateVolume='fixture'}}
+        $Path=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+        $Normal=@{phase='NORMAL';sequence=4}
+        $FirstId='22222222-2222-4222-8222-222222222222';$NextId='33333333-3333-4333-8333-333333333333'
+        $Drain=@{phase='DRAINING';sequence=5;previousDigest=('1'*64);generation=('6'*64)
+            registryInstanceId='fixture-instance';scopeDigest=('7'*64)
+            attempt=@{attemptId=$NextId;restrictionDigest=('8'*64);subject=@{targetId='gateway'}}}
+        $OriginalCandidate=@{intentDigest=('2'*64);pairDigest=('3'*64);intent=@{normal=$Normal
+            authorization=@{sourceRecordDigest=$Source.hash;attemptId=$FirstId;recordedAt=100;targetNonce=$script:RegistryBoundReleaseNonce}
+            compatibility=@{artifacts=@{gateway=('a'*64);registry=('b'*64)}
+                gateway=@{companion=@{schemaDigest=('9'*64);companionDigest=('a'*64)}}
+                registry=@{profileDigest=$SuccessorRegistryProfileSha256;checkpoint=@{sourceRevision=5};holdSnapshot=@{holds=@()}
+                    items=@{gateway=@{source=@{sourceSha=$SourceSha}}}}}}}
+        $New=($OriginalCandidate|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json)
+        $New.intentDigest='b'*64;$New.pairDigest='c'*64
+        $New.intent.authorization.attemptId=$NextId;$New.intent.authorization.recordedAt=401
+        $Archive=Join-Path $ReleaseBase ('maintenance-unused-'+$FirstId+'.json')
+        $Fixture=@{files=@{};go=0;writes=0;projection=0;revoked=$false;projected=$null
+            replace=0;loseReplace=$true;publish=0;freeze=0;ready=$false;anchor=@{
+                schema='fortis-successor-maintenance-publication-v2';state='Committed';record=$Normal;digest=('1'*64);registryDigest=$null}}
+        function Test-Path {param($LiteralPath) return $Fixture.files.ContainsKey($LiteralPath)}
+        function Read-Private {param($Path) return ($Fixture.files[$Path]|ConvertFrom-Json)}
+        function Write-Private {param($Path,$Value,[switch]$FlushToDisk)
+            if(-not $FlushToDisk){throw 'FIXTURE_CONTEXT_NOT_DURABLE'}
+            $Fixture.files[$Path]=ConvertTo-Json -InputObject $Value -Depth 25 -Compress}
+        function Read-Host {param($Prompt)
+            $Fixture.go++
+            if($Fixture.go -eq 1){return ('BEGIN SUCCESSOR '+$OriginalCandidate.intentDigest)}
+            return ('BEGIN SUCCESSOR '+$New.intentDigest)}
+        $Fixture.rows=@{gateway=@{Id='gateway';State=@{Status='running'};HostConfig=@{RestartPolicy=@{Name='unless-stopped'}}}
+            registry=@{Id='registry';State=@{Status='running'};HostConfig=@{RestartPolicy=@{Name='unless-stopped'}}}}
+        $CheckPath=Join-Path $ReleaseBase 'ordinary-check-fixture.json'
+        $Transitions=@{draining=$Drain;frozen=@{phase='FROZEN_BEFORE_CHECK';sequence=6}
+            checked=@{phase='CHECK_SEALED';sequence=7}}
+        $Fixture.contextPath=$Path;$Fixture.loseFreezePublish=$true;$Fixture.checkWrites=0
+        function Successor-CheckRecordPath {param($AttemptId) if($AttemptId -cne $NextId){throw 'FIXTURE_WRONG_CHECK'};return $CheckPath}
+        function Checked-Image-Binding {param($Source,$Report,$Maintenance)
+            $B=[ordered]@{sourceHash=$Source.hash;configurationDigest=$Report.configurationDigest}
+            if($Maintenance){$B.ordinaryIntentDigest=(Read-Private $Fixture.contextPath).intentDigest}
+            return $B}
+        function Assert-Checked-Image-Binding {param($Stored,$Expected)
+            if(-not (Same-Json $Stored $Expected)){throw 'FIXTURE_CHECK_BINDING_CHANGED'}}
+        function Save-Checked-Image {param($Source,$Report,$Receipt,$Maintenance,$Seal,$Stages)
+            if($Fixture.anchor.record.phase -cne 'DRAINING' -or $Fixture.checkWrites){throw 'FIXTURE_CHECK_SAVE_ORDER'}
+            $Fixture.checkWrites++
+            Write-Private $CheckPath @{schema='fortis-extension-image-check-v1';phase='Ready'
+                binding=(Checked-Image-Binding $Source $Report $Maintenance);sourceReceipt=$Receipt
+                maintenanceSeal=$Seal;maintenanceTransitions=$Stages} -FlushToDisk
+            return $CheckPath}
+        $Report=@{configurationDigest=('9'*64)}
+        $Fixture.loseReadback=$true;$Fixture.loseDrainPublish=$true;$Fixture.recoveryStarts=0;$Fixture.nativeReads=0
+        function Assert-NativeRepoRead {
+            if($Fixture.rows.gateway.State.Status -cne 'running'){throw 'FIXTURE_NATIVE_SOURCE_OFFLINE'}
+            $Fixture.nativeReads++
+        }
+        function Read-OrdinarySuccessorSource {param($Source,[switch]$PublicationRecovery)
+            if(-not $PublicationRecovery -and ($Fixture.rows.gateway.State.Status -cne 'running' -or
+                $Fixture.rows.registry.State.Status -cne 'running')){throw 'FIXTURE_LIVE_SOURCE_REQUIRED'}
+            return ($Fixture.rows|ConvertTo-Json -Depth 10 -Compress|ConvertFrom-Json)
+        }
+        function Assert-OnlyWriter {param($Volume) if($Volume -cne 'fixture'){throw 'FIXTURE_WRITER_SCOPE'}}
+        function Set-BootstrapContainerState {param($C,$Effect)
+            $Row=if($C.Id -ceq 'gateway'){$Fixture.rows.gateway}else{$Fixture.rows.registry}
+            if($Effect -ceq 'DisableRestart'){$Row.HostConfig.RestartPolicy.Name='no'}
+            elseif($Effect -ceq 'Start' -and $C.Id -ceq 'registry' -and $Row.HostConfig.RestartPolicy.Name -ceq 'no' -and
+                $Fixture.rows.gateway.State.Status -ceq 'exited' -and $Fixture.anchor.record.phase -ceq 'DRAINING'){
+                $Fixture.recoveryStarts++;$Row.State.Status='running'
+            }else{throw 'FIXTURE_UNEXPECTED_RECOVERY_EFFECT'}
+            return ($Row|ConvertTo-Json -Depth 10 -Compress|ConvertFrom-Json)
+        }
+        function Wait-CorrectiveRegistryListener {param($Id) if($Id -cne 'registry'){throw 'FIXTURE_WRONG_LISTENER'}}
+        function Assert-Volume {}
+        function Parse-PreservedUncertainRequests {}
+        function Read-SuccessorPublication {return @{anchor=$Fixture.anchor}}
+        function State-Helper {param($Payload,$Mounts,[switch]$Root)
+            if($Payload.action -ceq 'successor_freeze_apply_verify'){
+                if($Fixture.anchor.record.phase -cne 'CHECK_SEALED' -or
+                   $Payload.interlockDigest -cne $Fixture.anchor.digest -or -not $Fixture.checkWrites){
+                    throw 'FIXTURE_CHECK_VERIFY_ORDER'}
+                return @{sourceReceipt=(Read-Private $CheckPath).sourceReceipt;transitions=$Transitions;seal=$Payload.checkSeal}
+            }
+            if($Payload.action -ceq 'successor_freeze_inspect'){
+                if($Root -or $Mounts.Count -ne 6 -or $Fixture.publish -ne 1 -or
+                   $Payload.prepare.ownerConfirmed -ne $true -or $Payload.prepare.intentDigest -cne $New.intentDigest -or
+                   -not $Payload.drain.ready -or -not (Read-Private $Path).begin){
+                    throw 'FIXTURE_FREEZE_BEFORE_DRAIN'
+                }
+                $Fixture.freeze++
+                $Out=@{}+ $Payload;$Out.Remove('prepare')
+                $Out.stateDigest='d'*64;$Out.workerAttestationDigest='e'*64
+                $Produced=$Out|ConvertTo-Json -Depth 25 -Compress|ConvertFrom-Json
+                return @{payload=$Produced;seal=@{result='FREEZE_BINDINGS_MATCH_ONLY'
+                    attemptId=$Payload.attemptId;restrictionDigest=$Payload.restrictionDigest
+                    interlockDigest=$Payload.interlockDigest;registryDigest=$Payload.registryDigest
+                    stateReceiptDigest=$Out.stateDigest;companionDigest=$Payload.companionDigest
+                    workerAttestationDigest=$Out.workerAttestationDigest}
+                    sourceReceipt=@{sha256=@{};summary=@{}};transitions=$Transitions}
+            }
+            if(-not $Root -or -not $Fixture.files.ContainsKey($Path) -or $Payload.action -cne 'successor_begin_intent'){throw 'FIXTURE_INTENT_ORDER'}
+            $Fixture.projection++
+            $Selected=if($Payload.intent.authorization.attemptId -ceq $FirstId){$OriginalCandidate}else{$New}
+            if($Payload['mode'] -ceq 'revoke'){
+                if($Fixture.projected -cne $OriginalCandidate.intentDigest){throw 'FIXTURE_REVOKE_SCOPE'}
+                $Fixture.revoked=$true
+            }elseif($Payload['mode'] -ceq 'replace'){
+                if(-not $Fixture.revoked -and $Fixture.projected -cne $New.intentDigest){throw 'FIXTURE_REPLACE_BEFORE_REVOKE'}
+                if(-not $Fixture.files.ContainsKey($Archive) -or $Payload.absence.revoked -ne $true -or
+                   (Read-Private $Path).intentDigest -cne $New.intentDigest){throw 'FIXTURE_REPLACE_BEFORE_ARCHIVE'}
+                if($Fixture.projected -cne $New.intentDigest){
+                    $Fixture.replace++;$Fixture.revoked=$false;$Fixture.projected=$New.intentDigest
+                    if($Fixture.loseReplace){$Fixture.loseReplace=$false;throw 'FIXTURE_REPLACE_ACK_LOST'}
+                }
+            }else{$Fixture.projected=$Selected.intentDigest}
+            return @{intentDigest=$Selected.intentDigest;pairDigest=$Selected.pairDigest;revoked=$Fixture.revoked}}
+        function Invoke-SuccessorControllerPeer {param($Source,$IntentDigest,[switch]$Readback,[switch]$Drain)
+            if($IntentDigest -cne $Fixture.projected){throw 'FIXTURE_BEGIN_INTENT'}
+            if($Drain){
+                return @{status='DRAINING';attemptId=$NextId;generation=('6'*64);interlockDigest=('5'*64)
+                    registryDigest=('4'*64);reservations=$(if($Fixture.ready){0}else{1});ready=$Fixture.ready}
+            }
+            if($IntentDigest -ceq $OriginalCandidate.intentDigest){
+                if(-not $Readback){throw 'FIXTURE_EXPIRED_EFFECT'}
+                return @{result='PROTECTED_PAIR_BEGIN_NOT_APPLIED';intentDigest=$IntentDigest;exactPredecessor=$true
+                    revoked=$Fixture.revoked;expired=$true;receipts=$null
+                    checkpoint=$OriginalCandidate.intent.compatibility.registry.checkpoint;holdSnapshot=$OriginalCandidate.intent.compatibility.registry.holdSnapshot}
+            }
+            if(-not $Readback){$Fixture.writes++;throw 'FIXTURE_BEGIN_ACK_LOST'}
+            if($Fixture.writes -eq 0){return @{result='PROTECTED_PAIR_BEGIN_NOT_APPLIED';intentDigest=$IntentDigest;exactPredecessor=$true;revoked=$false;expired=$false}}
+            if($Fixture.loseReadback){
+                $Fixture.loseReadback=$false;$Fixture.rows.gateway.State.Status='exited'
+                throw 'FIXTURE_BEGIN_READBACK_LOST'
+            }
+            return @{result='PROTECTED_PAIR_BEGIN_READBACK_ONLY';intentDigest=$IntentDigest;registryDigest=('4'*64);draining=$DrainRecord}}
+        # Avoid shadowing the phase record with the peer's -Drain switch.
+        $DrainRecord=$Drain
+        function Publish-SuccessorInterlock {param($Source,$Next,$RegistryDigest)
+            $Saved=Read-Private $Fixture.contextPath
+            if(-not $Saved.begin -or $RegistryDigest -cne ('4'*64)){throw 'FIXTURE_PUBLISH_BEFORE_READBACK'}
+            if($Next.phase -cin @('FROZEN_BEFORE_CHECK','CHECK_SEALED')){
+                if(-not $Fixture.checkWrites){throw 'FIXTURE_PHASE_BEFORE_CHECK'}
+                if($Next.phase -ceq 'FROZEN_BEFORE_CHECK'){
+                    $Fixture.anchor.record=$Next;$Fixture.anchor.digest='6'*64
+                    if($Fixture.loseFreezePublish){$Fixture.loseFreezePublish=$false;throw 'FIXTURE_FROZEN_ACK_LOST'}
+                }else{
+                    $Fixture.anchor.record=$Next;$Fixture.anchor.digest='7'*64
+                }
+                return $Fixture.anchor.digest
+            }
+            if(-not (Same-Json $Next $DrainRecord)){throw 'FIXTURE_WRONG_DRAIN'}
+            if($Fixture.anchor.record.phase -ceq 'NORMAL'){
+                if($Fixture.loseDrainPublish){
+                    $Fixture.loseDrainPublish=$false;$Fixture.anchor.state='Pending'
+                    $Fixture.anchor.next=$Next;$Fixture.rows.registry.State.Status='exited'
+                    throw 'FIXTURE_DRAIN_ACK_LOST'
+                }
+                $Fixture.publish++;$Fixture.anchor.record=$Next;$Fixture.anchor.state='Committed'
+                $Fixture.anchor.digest='5'*64;$Fixture.anchor.registryDigest=$RegistryDigest
+            }
+            return ('5'*64)}
+        $Preview=Prepare-SuccessorMaintenanceContext $Source $OriginalCandidate -PreflightOnly
+        if($Preview.status -cne 'SUCCESSOR_PAIR_PREFLIGHT_ONLY' -or $Fixture.files.Count -or $Fixture.go){throw 'FIXTURE_PREFLIGHT_EFFECT'}
+        function Read-OrdinarySuccessorCompatibility {throw 'RELEASE_SUCCESSOR_ORDINARY_FRESH_CHECK_REQUIRED'}
+        try {$null=Prepare-SuccessorMaintenanceContext $Source $OriginalCandidate -Report $Report;throw 'FIXTURE_EXPIRED_ACCEPTED'}
+        catch {if($_.Exception.Message -cne 'RELEASE_SUCCESSOR_ORDINARY_FRESH_CHECK_REQUIRED'){throw}}
+        if(-not $Fixture.revoked -or $Fixture.writes -or $Fixture.publish){throw 'FIXTURE_EXPIRED_MUTATION'}
+        try {$null=Prepare-SuccessorMaintenanceContext $Source $New;throw 'FIXTURE_MISSING_ACK'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_REPLACE_ACK_LOST'){throw}}
+        if($Fixture.replace -ne 1 -or -not $Fixture.files.ContainsKey($Archive) -or $Fixture.writes){throw 'FIXTURE_REPLACE_ACK'}
+        try {$null=Prepare-SuccessorMaintenanceContext $Source $null;throw 'FIXTURE_EXPECTED_LOST_BEGIN_READBACK'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_BEGIN_READBACK_LOST'){throw}}
+        $Projected=$Fixture.projection
+        try {$null=Prepare-SuccessorMaintenanceContext $Source $null;throw 'FIXTURE_EXPECTED_LOST_DRAIN_ACK'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_DRAIN_ACK_LOST'){throw}}
+        if($Fixture.projection -ne $Projected -or $Fixture.writes -ne 1 -or -not (Read-Private $Path).begin){
+            throw 'FIXTURE_STOPPED_GATEWAY_REPLAY'
+        }
+        $First=Prepare-SuccessorMaintenanceContext $Source $null
+        if($First.payload -or $Fixture.publish -ne 1 -or $Fixture.freeze -or $Fixture.recoveryStarts -ne 1 -or
+           $Fixture.rows.gateway.State.Status -cne 'exited' -or $Fixture.rows.gateway.HostConfig.RestartPolicy.Name -cne 'no'){
+            throw 'FIXTURE_BUSY_DRAIN'
+        }
+        $Fixture.ready=$true
+        try {$null=Prepare-SuccessorMaintenanceContext $Source $null -Report $Report;throw 'FIXTURE_EXPECTED_LOST_FROZEN_ACK'}
+        catch {if($_.Exception.Message -cne 'FIXTURE_FROZEN_ACK_LOST'){throw}}
+        $Sealed=Prepare-SuccessorMaintenanceContext $Source $null -Report $Report
+        $Again=Prepare-SuccessorMaintenanceContext $Source $null -Report $Report
+        if($Sealed.status -cne 'CHECK_SEALED' -or $Fixture.checkWrites -ne 1 -or
+           $Fixture.anchor.record.phase -cne 'CHECK_SEALED' -or -not (Same-Json $Sealed $Again) -or $Fixture.go -ne 2 -or $Fixture.writes -ne 1 -or
+           $Fixture.replace -ne 1 -or $Fixture.publish -ne 1 -or $Fixture.freeze -ne 1 -or
+           $Fixture.nativeReads -ne 2){throw 'FIXTURE_ORDINARY_BEGIN_REPLAY'}
+    } finally {
+        $script:Image=$PreviousImage;$script:RegistryBoundReleaseNonce=$PreviousNonce
+        $script:PreserveUncertainRequests=$PreviousUncertain;$script:PreserveClaimedJobs=$PreviousClaimed
+    }
+    Write-Host 'FORTIS_SUCCESSOR_ORDINARY_BEGIN_SELFTEST_PASS'
+}
+
+
 function Read-RegistrySuccessorDelivery {
     param($Source)
     $Anchor=Read-RegistrySuccessorAnchor $Source
@@ -2108,7 +5930,7 @@ function Read-RegistrySuccessorDelivery {
 function Assert-CorrectiveRegistryContainer {
     param($C,[string]$Nonce,[string]$Image,[string]$Profile,[string]$Role,[string]$Commit,
           [ValidateSet('','created','running','exited')][string]$Status='',
-          [switch]$Accepted)
+          [switch]$Accepted,[switch]$BootstrapRetained,[switch]$LatestPin)
     $Id=$Nonce.Replace('-','')
     $Name='/fortis-registry-successor-'+$Id
     $Restart='no';$ExpectedStatus='created';$StateWrite=$true
@@ -2120,6 +5942,17 @@ function Assert-CorrectiveRegistryContainer {
         $Cmd+=@('--corrective-preview-sha',$Commit)
     } elseif($Role -cne 'writer'){throw 'RELEASE_CORRECTIVE_REGISTRY_ROLE_INVALID'}
     if($Status){$ExpectedStatus=$Status}
+    if($BootstrapRetained){
+        if($Accepted -or $Role -cne 'writer' -or
+           $Nonce -cne '4ec7d8b8-2b51-4457-8b15-6559bcdeae94' -or
+           $C.Id -cne 'fb747224e917dc88653dac29961f2d11bebca6023c9f73317c4ce6ce7597ae18' -or
+           $Commit -cne '073d6f8701595e499eac5a1fa0cbe90accb05819' -or
+           $ExpectedStatus -cnotin @('running','exited') -or
+           $C.HostConfig.RestartPolicy.Name -cnotin @('no','unless-stopped')){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_CHANGED'
+        }
+        $Restart=$C.HostConfig.RestartPolicy.Name
+    }
     if($Accepted){
         if($Role -cne 'writer' -or $ExpectedStatus -cne 'running'){throw 'RELEASE_CORRECTIVE_REGISTRY_ROLE_INVALID'}
         $Restart='unless-stopped'
@@ -2137,7 +5970,7 @@ function Assert-CorrectiveRegistryContainer {
        $C.HostConfig.PidsLimit -ne 64 -or $C.HostConfig.Memory -ne 536870912 -or
        $C.Path -cne 'python' -or @($C.Config.Entrypoint|Where-Object{$_}).Count -ne 0 -or
        -not (Same-Json @($C.Config.Cmd) $Cmd) -or
-       -not (Same-Json @($C.Args) @($Cmd[1..($Cmd.Count-1)])) -or @($C.Mounts).Count -ne 6){
+       -not (Same-Json @($C.Args) @($Cmd[1..($Cmd.Count-1)])) -or @($C.Mounts).Count -ne $(if($LatestPin){7}else{6})){
         throw 'RELEASE_CORRECTIVE_REGISTRY_CONTAINER_CHANGED'
     }
     if($Role -cne 'source' -and $C.Config.Labels.'org.opencontainers.image.revision' -cne $Commit){
@@ -2149,7 +5982,8 @@ function Assert-CorrectiveRegistryContainer {
         @(('fortis-registry-read-'+$Id),'/run/fortis-registry-read',$true),
         @(('fortis-registry-source-evidence-'+$Id),'/run/fortis-registry-source-evidence',$false),
         @(('fortis-registry-source-'+$Id),'/run/fortis-registry-source',$false),
-        @('fortis-r7-maintenance-interlock','/run/r7-maintenance',$false))
+        @($(if($LatestPin){'fortis-r7-maintenance-interlock-v2'}else{'fortis-r7-maintenance-interlock'}),'/run/r7-maintenance',$false))
+    if($LatestPin){$Mounts+=,@('fortis-r7-maintenance-anchor','/run/r7-maintenance-anchor',$false)}
     foreach($Mount in $Mounts){
         Assert-Volume $Mount[0]
         $Found=@($C.Mounts|Where-Object{$_.Type -ceq 'volume' -and $_.Name -ceq $Mount[0] -and
@@ -2159,11 +5993,45 @@ function Assert-CorrectiveRegistryContainer {
     }
 }
 function Assert-CorrectiveTargetHolders {
-    param([string]$Nonce,[string[]]$Allowed)
+    param([string]$Nonce,[string[]]$Allowed,[switch]$PreparedProfiles)
     $Id=$Nonce.Replace('-','')
     $Volumes=@(('fortis-registry-state-e13b-'+$Id),('fortis-registry-config-e13b-'+$Id),
         ('fortis-registry-read-'+$Id),('fortis-registry-source-evidence-'+$Id),
         ('fortis-registry-source-'+$Id),('fortis-r7-registry-reader-'+$Id))
+    if($PreparedProfiles){
+        $Volumes+=@(('fortis-registry-config-e13b-'+$Id+'-prepared'),('fortis-r7-registry-reader-'+$Id+'-prepared'))
+    }
+    Assert-ReleaseVolumeHolders $Volumes $Allowed 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'
+}
+function Assert-OperationalMaintenanceHolders {
+    param($Source,[string[]]$Allowed,[string]$ErrorCode)
+    # The global operational volumes survive releases. Only exact recorded
+    # ancestors may retain their original RO mounts while stopped, never a
+    # running or auto-restarting old generation or an unrecorded alias.
+    $Retained=@{};$Seen=@{};$Cursor=$Source
+    while($Cursor -and (Test-SuccessorLatestDelivery $Cursor.runtime.registryDelivery)){
+        if($Seen.ContainsKey($Cursor.path) -or $Seen.Count -ge 128 -or
+           (Get-FileHash -LiteralPath $Cursor.path -Algorithm SHA256).Hash -ine $Cursor.hash){
+            throw $ErrorCode
+        }
+        $Seen[$Cursor.path]=$true
+        $Record=Read-Private $Cursor.path
+        $Receiver=$Record.bootstrapReceiver
+        if($Record.schema -cne 'fortis-extension-release-v1' -or $Record.phase -cne 'Complete' -or
+           $Record.activated -ne $true -or $Record.runtime.pilotId -cne $Cursor.runtime.pilotId -or
+           $Record.runtime.image -cne $Cursor.runtime.image -or
+           -not (Same-Json $Record.runtime.registryDelivery $Cursor.runtime.registryDelivery) -or
+           $Receiver.id -cnotmatch '^[0-9a-f]{64}$' -or $Receiver.image -cnotmatch '^sha256:[0-9a-f]{64}$'){
+            throw $ErrorCode
+        }
+        $Retained[$Record.runtime.pilotId]=$Record.runtime.image
+        $Retained[$Receiver.id]=$Receiver.image
+        $Cursor=$Record.source
+    }
+    Assert-ReleaseVolumeHolders @('fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor') $Allowed $ErrorCode -RetainedReadOnly $Retained
+}
+function Assert-ReleaseVolumeHolders {
+    param([string[]]$Volumes,[string[]]$Allowed,[string]$ErrorCode,$RetainedReadOnly=$null)
     $Ids=@((Docker-Text @('ps','-aq','--no-trunc')) -split '\r?\n'|Where-Object{$_})
     foreach($C in @(Inspect-Containers $Ids)){
         if($Allowed -ccontains $C.Id){continue}
@@ -2171,14 +6039,21 @@ function Assert-CorrectiveTargetHolders {
             $NameField=$M.PSObject.Properties['Name']
             $MountName=if($NameField){[string]$NameField.Value}else{''}
             $SourceField=$M.PSObject.Properties['Source']
-            if(-not $SourceField){throw 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'}
+            if(-not $SourceField){throw $ErrorCode}
             $MountSource=[string]$SourceField.Value
             foreach($V in $Volumes){
                 $Root='/var/lib/docker/volumes/'+$V+'/_data'
                 if($MountName -ceq $V -or ($MountSource -and ($MountSource -ceq $Root -or
                    $MountSource.StartsWith($Root+'/',[StringComparison]::Ordinal) -or
                    $Root.StartsWith($MountSource.TrimEnd('/')+'/',[StringComparison]::Ordinal)))){
-                    throw 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'
+                    $Destination=if($V -ceq 'fortis-r7-maintenance-interlock-v2'){'/run/r7-maintenance'}
+                        elseif($V -ceq 'fortis-r7-maintenance-anchor'){'/run/r7-maintenance-anchor'}else{''}
+                    if($Destination -and $RetainedReadOnly -and $RetainedReadOnly.ContainsKey($C.Id) -and
+                       $C.Image -ceq $RetainedReadOnly[$C.Id] -and $C.State.Status -ceq 'exited' -and
+                       $C.HostConfig.RestartPolicy.Name -ceq 'no' -and $C.HostConfig.RestartPolicy.MaximumRetryCount -eq 0 -and
+                       $M.Type -ceq 'volume' -and $MountName -ceq $V -and $MountSource -ceq $Root -and
+                       $M.Destination -ceq $Destination -and $M.RW -is [bool] -and -not $M.RW){continue}
+                    throw $ErrorCode
                 }
             }
         }
@@ -2602,7 +6477,17 @@ from fortis_approvals.r7_unified_server import _installed_policy_source_digest
 from fortis_approvals.r7_registry_reader_mount import load_owner_registry_reader,reviewed_registry_reader_mount_digest
 from fortis_approvals.integrations.github.gateway.functional_review_runtime import prepare_staged_functional_state
 p=json.load(sys.stdin);source=_installed_policy_source_digest()
-digest=reviewed_registry_reader_mount_digest(expected_release_nonce=p['nonce'],expected_source_digest=source)
+delivery=p.get('delivery',{})
+dynamic=delivery.get('latestPin') is True
+def check_frozen():
+    from fortis_approvals.r7_registry_reader_mount import reviewed_successor_delivery
+    actual=reviewed_successor_delivery(expected_release_nonce=p['nonce'],expected_source_digest=source,
+        expected_interlock_digest=delivery['sourceDelivery']['interlockDigest'])
+    if actual['maintenancePhase']!='STAGED_TARGET_FROZEN' or any(
+            delivery.get(k)!=v for k,v in actual.items()):
+        raise RuntimeError('REGISTRY_STAGED_SUCCESSOR_WITNESS_CHANGED')
+    return actual['profileDigest']
+digest=check_frozen() if dynamic else reviewed_registry_reader_mount_digest(expected_release_nonce=p['nonce'],expected_source_digest=source)
 if digest!=p['profileDigest']:raise RuntimeError('REGISTRY_STAGED_SEAL_CHANGED')
 reader=load_owner_registry_reader(expected_release_nonce=p['nonce'],expected_source_digest=source)
 if 'delivery' in p:
@@ -2619,6 +6504,7 @@ if 'delivery' in p:
 result=prepare_staged_functional_state(reader,'/state/private')
 if 'delivery' in p and 'existingCompanion' in p['delivery'] and result['result']!='P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED':
     raise RuntimeError('REGISTRY_STAGED_SUCCESSOR_COLLECTOR_CHANGED')
+if dynamic and check_frozen()!=digest:raise RuntimeError('REGISTRY_STAGED_SEAL_CHANGED')
 print(json.dumps(result,sort_keys=True,separators=(',',':')))
 '@
     $Encoded=Code64 $Code
@@ -2628,12 +6514,30 @@ print(json.dumps(result,sort_keys=True,separators=(',',':')))
         '--pids-limit','64','--memory','256m',
         '--mount',('type=volume,source='+$Runtime.stateVolume+',target=/state,volume-nocopy'),
         '--mount',('type=volume,source='+$Runtime.registryReaderVolume+',target=/run/r7-registry-reader,readonly'),
-        '--mount',('type=volume,source='+$Runtime.registrySocketVolume+',target=/run/fortis-registry-read,readonly'),
-        '--entrypoint','python',$Runtime.image,'-I','-B','-c',$Wrapper)
+        '--mount',('type=volume,source='+$Runtime.registrySocketVolume+',target=/run/fortis-registry-read,readonly'))
     $InputData=@{nonce=$Runtime.registryReleaseNonce;profileDigest=$Runtime.registryProfileDigest}
     if($script:RegistryDelivery){$InputData.delivery=$script:RegistryDelivery}
+    $Latest=Test-SuccessorLatestDelivery $script:RegistryDelivery
+    if($Latest){
+        $Publication=(Read-SuccessorPublication $script:R.source).anchor
+        Assert-SuccessorRuntimeDelivery $script:RegistryDelivery $Runtime.registryDelivery $Publication
+        if($Publication.state -cne 'Committed' -or $Publication.record.phase -cne 'STAGED_TARGET_FROZEN'){
+            throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+        }
+        $Evidence='fortis-registry-source-evidence-'+$Runtime.registryReleaseNonce.Replace('-','')
+        foreach($Volume in @($Evidence,'fortis-r7-maintenance-interlock-v2','fortis-r7-maintenance-anchor')){
+            Assert-Volume $Volume;Assert-OnlyWriter $Volume
+        }
+        $Args+=@('--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,readonly,volume-nocopy'),
+            '--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+            '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+    }
+    $Args+=@('--entrypoint','python',$Runtime.image,'-I','-B','-c',$Wrapper)
     $Payload=ConvertTo-Json -Compress -Depth 10 -InputObject $InputData
     $Result=(Private-Process $Args $Payload)|ConvertFrom-Json
+    if($Latest -and -not (Same-Json (Read-SuccessorPublication $script:R.source).anchor $Publication)){
+        throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+    }
     if($Result.result -cnotin @('P5_FUNCTIONAL_STATE_NOT_SELECTED',
         'P5_FUNCTIONAL_LOCAL_COLLECTOR_GENESIS','P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED')){
         throw 'RELEASE_REGISTRY_COLLECTOR_STAGED_PREPARE_FAILED'
@@ -2783,9 +6687,31 @@ function Checked-Image-Binding {
     }
     if($script:RegistryDelivery){$Binding['registryDelivery']=$script:RegistryDelivery}
     if($script:CorrectivePair){$Binding['correctivePair']=$script:CorrectivePair}
+    if($script:BootstrapPair){
+        $Binding['bootstrapPair']=$script:BootstrapPair
+        $Binding['bootstrapReviewProofRecord']=[IO.Path]::GetFullPath($BootstrapReviewProofRecord)
+    }
     if($script:RegistryReturn){$Binding['registryReturn']=$script:RegistryReturn}
     if($script:RegistryCrash){$Binding['registryCrash']=$script:RegistryCrash}
     if($Maintenance){
+        $ContextPath=Join-Path $ReleaseBase ('maintenance-'+$Source.runtime.runId+'.json')
+        if(Test-Path -LiteralPath $ContextPath){
+            $Context=Read-Private $ContextPath
+            if($Context.PSObject.Properties['intentDigest']){
+                if($Context.draining.attempt.attemptId -cne $Maintenance.attemptId -or
+                   $Context.sourceRecordHash -ine $Source.hash -or $Context.targetImageId -cne $script:Image){
+                    throw 'RELEASE_SUCCESSOR_CHECK_RECORD_CHANGED'
+                }
+                $Binding['ordinaryIntentDigest']=$Context.intentDigest
+                if($Context.nativeRead.githubRead -ne $true -or
+                   $Context.nativeRead.intentDigest -cne $Context.intentDigest -or
+                   $Context.nativeRead.sourceRecordDigest -cne $Source.hash.ToLowerInvariant()){
+                    throw 'RELEASE_SUCCESSOR_ORDINARY_PREFLIGHT_CHANGED'
+                }
+                $Binding['ordinaryNativeRead']=$Context.nativeRead
+
+            }
+        }
         $Binding['maintenance']=[ordered]@{attemptId=$Maintenance.attemptId;subject=$Maintenance.subject
             restrictionDigest=$Maintenance.restrictionDigest;generation=$Maintenance.generation}
     }
@@ -2819,7 +6745,7 @@ function Save-Checked-Image {
     if($Maintenance -and (Test-Path -LiteralPath $Directory -PathType Container)){
         Assert-DirectoryAcl $Directory
     } else {Protect-Directory $Directory}
-    if($Maintenance -or $script:CorrectivePair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}
+    if($Maintenance -or $script:CorrectivePair -or $script:BootstrapPair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}
     return $Path
 }
 function Assert-Checked-Image-Binding {
@@ -2876,6 +6802,12 @@ function Verify-Checked-Image {
     if($BindingOnly){return}
     if($PrepareSuccessorStop){
         if(-not $Maintenance){throw 'RELEASE_SUCCESSOR_MAINTENANCE_CHECK_REQUIRED'}
+        if($Maintenance.ContainsKey('latestPin') -and $Maintenance.latestPin -eq $true){
+            $Publication=(Read-SuccessorPublication $Source).anchor
+            if((Publish-SuccessorInterlock $Source $Publication.record $Maintenance.registryDigest) -cne $Maintenance.interlockDigest){
+                throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+            }
+        }
         $Maintenance['prepareStop']=@{sourceRecordDigest=$Source.hash.ToLowerInvariant()
             checkedRecordDigest=$CheckDigest;targetImageId=$script:Image}
     }
@@ -3196,7 +7128,19 @@ function Assert-Registry288RecoveredProfileSelfTest {
 function Admit {
     param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress,
           [string]$MountPreflightImageId='', [string]$VerifiedPromoteRescueImage='',
-          [switch]$RegistryReturnSource)
+          [switch]$RegistryReturnSource,[switch]$BootstrapRetained,[switch]$RetainedMaintenance)
+    if($RetainedMaintenance -and (-not $RegistryReturnSource -or -not $AllowUnhealthy -or
+       -not (Test-SuccessorLatestDelivery $P.registryDelivery) -or
+       $P.pilotId -cne $C.Id -or $P.restartPolicy -cne 'unless-stopped' -or
+       $C.State.Status -cnotin @('running','exited') -or $C.HostConfig.RestartPolicy.Name -cne 'no')){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_SOURCE_CHANGED'
+    }
+    if($BootstrapRetained -and ($P.runId -cne 'cd6d3d97350e4f5590d9c3e9ece69580' -or
+       $P.pilotId -cne '2a6e198d6356ed225e61cad93938e1f40f4f13fe99450e782c93ddbfc6cba417' -or
+       $P.restartPolicy -cne 'unless-stopped' -or $C.State.Status -cnotin @('running','exited') -or
+       $C.HostConfig.RestartPolicy.Name -cnotin @('no','unless-stopped'))){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_CHANGED'
+    }
     # The original Docker image identity remains mandatory for State-Helper
     # admission. In one owner-accepted UC-GW-013 recovery only the two OFFLINE
     # volume-content digest checks may run under the verified rescue snapshot.
@@ -3258,11 +7202,13 @@ function Admit {
             throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
         }
         $Expected.registrySuccessorDelivery=$true
+        if(Test-SuccessorLatestDelivery $Delivery){$Expected.registryLatestPin=$true}
     }
     $Networks=Read-GatewayNetworks $P
     if($null -ne $Networks){$Expected.gatewayNetworks=$Networks}
     if($AllowPendingIngress){
-        if($null -eq $Networks -or $script:R.phase -cne 'Created' -or
+        if($null -eq $Networks -or
+           ($script:R.phase -cne 'Created' -and -not ($script:R.phase -ceq 'Returned' -and $script:R.PSObject.Properties['bootstrapOwnerGo'])) -or
            $script:R.activated -or $script:R.probesPassed -or
            $C.State.Status -cne 'created' -or
            $C.State.StartedAt -cne '0001-01-01T00:00:00Z'){
@@ -3278,7 +7224,8 @@ function Admit {
         if($P.pilotName -cne 'fortis-gateway' -or
            $P.originalPilotName -cne ('fortis-github-pilot-'+$P.runId) -or
            $C.Name -cne '/fortis-gateway' -or
-           $C.HostConfig.RestartPolicy.Name -cne 'unless-stopped' -or
+           ($C.HostConfig.RestartPolicy.Name -cne 'unless-stopped' -and
+            -not (($BootstrapRetained -or $RetainedMaintenance) -and $C.HostConfig.RestartPolicy.Name -ceq 'no')) -or
            $C.HostConfig.RestartPolicy.MaximumRetryCount -ne 0){
             throw 'PRIMARY_RUNTIME_IDENTITY_MISMATCH'
         }
@@ -3301,10 +7248,21 @@ function Admit {
         # At each existing source/candidate/rollback admission boundary,
         # recheck the exact read-only profile bytes and kernel live peer.
         if($Delivery){
-            $Actual=Image-RegistrySuccessor-Preflight -ImageId $MountImage -ReleaseNonce $RegistryProtected.releaseNonce -InterlockDigest $Delivery.sourceDelivery.interlockDigest
-            if(-not (Same-Json $Actual.sourceDelivery $Delivery.sourceDelivery) -or
-               $Actual.companionDigest -cne $Delivery.companionDigest -or $Actual.generation -cne $Delivery.generation){
-                throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+            if(Test-SuccessorLatestDelivery $Delivery){
+                $Publication=Read-SuccessorRuntimePublication $P
+                $RunningSource=$Publication.record.phase -cin @('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP')
+                if($RunningSource -and $C.State.Status -cne 'running'){throw 'RELEASE_SUCCESSOR_RUNNING_SOURCE_REQUIRED'}
+                $Actual=Image-RegistrySuccessor-Preflight -ImageId $MountImage -ReleaseNonce $RegistryProtected.releaseNonce -InterlockDigest $Publication.digest -LatestPin -RunningSource:$RunningSource
+                Assert-SuccessorRuntimeDelivery $Actual $Delivery $Publication
+                if(-not (Same-Json (Read-SuccessorRuntimePublication $P) $Publication)){
+                    throw 'RELEASE_SUCCESSOR_PUBLICATION_UNCONFIRMED'
+                }
+            } else {
+                $Actual=Image-RegistrySuccessor-Preflight -ImageId $MountImage -ReleaseNonce $RegistryProtected.releaseNonce -InterlockDigest $Delivery.sourceDelivery.interlockDigest
+                if(-not (Same-Json $Actual.sourceDelivery $Delivery.sourceDelivery) -or
+                   $Actual.companionDigest -cne $Delivery.companionDigest -or $Actual.generation -cne $Delivery.generation){
+                    throw 'RELEASE_REGISTRY_SUCCESSOR_DELIVERY_CHANGED'
+                }
             }
             $Observed=$Actual.profileDigest
         } else {
@@ -3313,7 +7271,7 @@ function Admit {
                 -ReaderVolume $RegistryProtected.readerVolume
         }
         if($Observed -cne $RegistryProtected.profileDigest){
-            if(-not $Delivery){throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'}
+            if(-not $Delivery -or (Test-SuccessorLatestDelivery $Delivery)){throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'}
             Assert-Registry288RecoveredProfile $P $Observed
         }
     }
@@ -3442,6 +7400,9 @@ function Assert-SourceUnchanged {
 }
 function Return-Source {
     if($script:R.phase -ceq 'Complete' -or $script:R.activated){throw 'RELEASE_ACTIVE_RETURN_REQUIRES_REVIEW'}
+    $Bootstrap=if($script:R -is [Collections.IDictionary]){$script:R['bootstrapOwnerGo']}
+        else{$F=$script:R.PSObject.Properties['bootstrapOwnerGo'];if($F){$F.Value}}
+    if($Bootstrap){Return-BootstrapPreparedPair;return}
     $Pair=Read-CorrectiveAttemptPair
     if($Pair){Return-CorrectivePair $Pair;return}
     Assert-Release-Production
@@ -3528,6 +7489,45 @@ function Complete-ActionCoreNetwork {
 }
 function Resume-Target {
     $P=$script:R.runtime;$C=Container $P.pilotName
+    $Bootstrap=$script:R.PSObject.Properties['bootstrapOwnerGo']
+    if($Bootstrap){
+        $Intent=Read-BootstrapFrozenIntent $script:R.source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash -Runtime
+        $Current=(Read-Private $Pointer).record
+        if($Current -cne $script:R.source.path -and
+           ($script:R.phase -cne 'Complete' -or $Current -cne $script:RecordPath)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_SOURCE_CHANGED'
+        }
+        $C=Read-BootstrapGatewayCandidate $Intent
+        $P=$script:R.runtime
+        $Receiver=Read-BootstrapReceiver $Intent -GatewayId $C.Id -Accepted:$script:R.activated
+        if($Current -ceq $script:R.source.path -and $Receiver){
+            Assert-PairedFrozenSource $Intent $script:R.source -CandidateIds @($C.Id,$Receiver.Id)
+        }
+        $Published=(Read-SuccessorPublication $script:R.source).anchor
+        if(-not $Receiver -or $Receiver.State.Status -ne 'running' -or
+           $Published.state -cne 'Committed' -or $Published.record.phase -cne 'STAGED_TARGET_FROZEN' -or
+           $Published.digest -cne $P.registryDelivery.sourceDelivery.interlockDigest){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+        }
+        $GateInput=ConvertTo-Json -Compress @{nonce=$P.releaseNonce;configurationDigest=$script:R.configurationDigest}
+        $GateRecord=Image-CLI @('gate-record-status') $GateInput -StateVolume $P.stateVolume
+        if(($GateRecord.markerPresent -ne $false -and $GateRecord.active -ne $true) -or
+           ($GateRecord.active -and -not $script:R.probesPassed) -or
+           ($script:R.activated -and -not $GateRecord.active)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ACTIVATION_CHANGED'
+        }
+        if($script:R.phase -ceq 'Complete'){
+            if(-not $script:R.activated -or -not $script:R.probesPassed -or
+               $Receiver.HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ACTIVATION_CHANGED'
+            }
+            Admit $C $P
+            Assert-Release-Production
+            if($Current -ceq $script:R.source.path){Write-Private $Pointer @{schema=1;record=$script:RecordPath} -FlushToDisk}
+            Write-Host 'FORTIS_SUCCESSOR_BOOTSTRAP_CURRENT_POINTER_COMPLETED'
+            return
+        }
+    }
     $Corrective=Read-CorrectiveAttemptPair
     if($Corrective){
         if(-not $ConfirmWorkerQuiescent){throw 'RELEASE_CORRECTIVE_QUIESCENCE_REQUIRED'}
@@ -3557,19 +7557,39 @@ function Resume-Target {
     $C=Complete-ActionCoreNetwork $C $P
     Admit $C $P -AllowUnhealthy
     if($C.State.Status -ceq 'created' -or $C.State.Status -ceq 'exited'){
-        Assert-OnlyWriter $P.stateVolume;$null=Docker-Text @('start',$C.Id)
+        Assert-OnlyWriter $P.stateVolume
+        if($Bootstrap){$C=Set-BootstrapContainerState $C Start}
+        else{$null=Docker-Text @('start',$C.Id)}
     }
     Wait-Healthy $C.Id;Admit (Container $C.Id) $P
-    $script:R.runtime.pilotId=$C.Id;$script:R.phase='Staged';Save -FlushToDisk:([bool]$Corrective)
+    $script:R.runtime.pilotId=$C.Id;$script:R.phase='Staged';Save -FlushToDisk:([bool]($Corrective -or $Bootstrap))
     $Gate=Running-CLI $C.Id @('gate-status')
     if($Gate.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_RUNNING_DIGEST_MISMATCH'}
+    if($Bootstrap -and $Gate.active -ne $GateRecord.active){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_ACTIVATION_CHANGED'}
     if(-not $Gate.active){
         Step 'VERIFY_STAGED_CATALOG'
         $Catalog=Running-CLI $C.Id @('catalog')
         if($Catalog.configurationDigest -cne $script:R.configurationDigest -or @($Catalog.operations|Where-Object{$_.policy -cne 'DENY' -and -not $_.ready}).Count){throw 'RELEASE_CATALOG_NOT_READY'}
         $RepoCatalog=Repo-JSON "import json;from fortis_approvals.extensions.client import default_client;print(json.dumps(default_client().catalog()))"
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
-        $null=Running-CLI $C.Id @('probe') $script:R.probes
+        if($Bootstrap){
+            Assert-NativeRepoRead
+            # Windows PS5.1 emits the parsed JSON array as one pipeline
+            # object; PS7 enumerates it. Explicit foreach preserves the
+            # exact zero/one probe list on both, never a nested array.
+            $ParsedProbes=ConvertFrom-Json -InputObject $script:R.probes
+            $ProbeList=@(foreach($Item in $ParsedProbes){$Item})
+            $ProbeInput=ConvertTo-Json -Compress -Depth 20 @{
+                configurationDigest=$script:R.configurationDigest
+                interlockDigest=$P.registryDelivery.sourceDelivery.interlockDigest
+                profileDigest=$P.registryDelivery.profileDigest
+                probes=$ProbeList}
+            $Probe=Running-CLI $C.Id @('probe-frozen') $ProbeInput
+            if($Probe.status -cne 'READ_PROBES_PASS' -or
+                $Probe.count -ne $ProbeList.Count){
+                throw 'RELEASE_SUCCESSOR_FROZEN_PROBE_UNCONFIRMED'
+            }
+        }else{$null=Running-CLI $C.Id @('probe') $script:R.probes}
         if(Read-GatewayNetworks $P){
             $ValidatedNetworks=Read-GatewayNetworks $P
             if(Test-RecordedGatewayNetwork $ValidatedNetworks 'fortis-actioncore-net'){
@@ -3587,7 +7607,7 @@ function Resume-Target {
             Step 'VERIFY_STAGED_OWNER_SHELL_MTLS'
             Running-OwnerShell-Check $C.Id
         }
-        $script:R.probesPassed=$true;Save -FlushToDisk:([bool]$Corrective)
+        $script:R.probesPassed=$true;Save -FlushToDisk:([bool]($Corrective -or $Bootstrap))
         Assert-Release-Production
         if($Corrective){
             $null=Read-CorrectiveAttemptPair
@@ -3595,9 +7615,26 @@ function Resume-Target {
             Assert-CorrectiveTargetCheckpoint $Corrective
             Assert-CorrectiveGateAbsent $P
         }else{Assert-SourceUnchanged}
+        if($Bootstrap){
+            $Intent=Read-BootstrapFrozenIntent $script:R.source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash -Runtime
+            $RegistryCandidate=Read-BootstrapReceiver $Intent -GatewayId $C.Id
+            if(-not $RegistryCandidate){throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_MISSING'}
+            Assert-PairedFrozenSource $Intent $script:R.source -CandidateIds @($C.Id,$RegistryCandidate.Id)
+            Admit (Container $C.Id) $P
+            Assert-CorrectiveGateAbsent $P
+        }
         Step 'ACTIVATE'
-        $Activated=Running-CLI $C.Id @('activate') '' -Root
-        if($Activated.status -cne 'ACTIVATED'){throw 'RELEASE_ACTIVATION_NOT_CONFIRMED'}
+        if($Bootstrap){
+            try {$null=Running-CLI $C.Id @('activate') '' -Root}
+            catch {Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_ACTIVATION_READBACK'}
+            $ActualGate=Image-CLI @('gate-record-status') $GateInput -StateVolume $P.stateVolume
+            if($ActualGate.active -ne $true -or $ActualGate.markerPresent -ne $true){
+                throw 'RELEASE_ACTIVATION_NOT_CONFIRMED'
+            }
+        } else {
+            $Activated=Running-CLI $C.Id @('activate') '' -Root
+            if($Activated.status -cne 'ACTIVATED'){throw 'RELEASE_ACTIVATION_NOT_CONFIRMED'}
+        }
     } elseif(-not $script:R.probesPassed){throw 'RELEASE_ACTIVE_WITHOUT_PROBE_RECEIPT'}
     if($Corrective){
         # Persist the irreversible boundary before enabling auto-restart or
@@ -3605,8 +7642,17 @@ function Resume-Target {
         $script:R.activated=$true;Save -FlushToDisk
         Complete-CorrectiveRegistryPair $Corrective
     }
-    $script:R.activated=$true;$script:R.phase='Complete';Save -FlushToDisk:([bool]$Corrective)
-    Write-Private $Pointer @{schema=1;record=$script:RecordPath} -FlushToDisk:([bool]$Corrective)
+    if($Bootstrap){
+        # The marker is irreversible, even while the Registry holds block
+        # business effects. Keep the receiver until protected completion.
+        $script:R.activated=$true;Save -FlushToDisk
+        $Intent=Read-BootstrapFrozenIntent $script:R.source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash -Runtime
+        $Receiver=Read-BootstrapReceiver $Intent -GatewayId $C.Id -Accepted
+        $null=Set-BootstrapContainerState $Receiver RestoreRestart
+        $null=Read-BootstrapReceiver $Intent -GatewayId $C.Id -Accepted
+    }
+    $script:R.activated=$true;$script:R.phase='Complete';Save -FlushToDisk:([bool]($Corrective -or $Bootstrap))
+    Write-Private $Pointer @{schema=1;record=$script:RecordPath} -FlushToDisk:([bool]($Corrective -or $Bootstrap))
     [ordered]@{record=$script:RecordPath;image=$P.image;configurationDigest=$script:R.configurationDigest
         active=$true;previousRetained=$true;productionUnchanged=$true;providerMutationAcceptance='PENDING_OR_NOT_APPLICABLE'}|ConvertTo-Json
     Write-Host 'FORTIS_INTEGRATIONS_ACTIVATED'
@@ -4668,8 +8714,29 @@ if($Action -eq 'SelfTest'){
     Assert-ContainerInventorySelfTest
     Assert-CheckedImagePreflightSelfTest
     Assert-SuccessorPublicationSelfTest
+    Assert-SuccessorLatestPublicationSelfTest
+    Assert-SuccessorRuntimeDeliverySelfTest
+    Assert-SuccessorRuntimePublicationSelfTest
+    Assert-SuccessorBootstrapSeedSelfTest
+    Assert-BootstrapFrozenCheckSelfTest
+    Assert-BootstrapFrozenPairSelfTest
+    Assert-BootstrapPhysicalPairSelfTest
+    Assert-BootstrapPhasePublicationSelfTest
+    Assert-BootstrapPreparedAttemptSelfTest
+    Assert-BootstrapFinalMaterialSelfTest
+    Assert-BootstrapReceiverSelfTest
+    Assert-BootstrapGatewayLifecycleSelfTest
+    Assert-BootstrapPostLifecycleSelfTest
+    Assert-BootstrapPostLifecycleSelfTest -Ordinary
+    # SelfTest runs before live release binding/preflight initialization.
+    $script:RegistryBoundReleaseNonce=''
+    $script:RegistryPrebuiltCheck=$false
+    Assert-OrdinaryBeginSelfTest
+    Assert-OrdinaryReturnSelfTest
+    Assert-OrdinaryCheckResumeSelfTest
     Assert-SuccessorCheckStartSelfTest
     Assert-SuccessorCheckSealSelfTest
+    Assert-SuccessorLatestCheckSelfTest
     Assert-ReleaseTimingSelfTest
     Assert-ReleaseStateCleanupSelectionSelfTest
     Assert-FormerPrimaryRetirementSelfTest
@@ -5014,6 +9081,10 @@ if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}el
 # Never turn a Core UNCERTAIN or CLAIMED job into a retry or completion.
 $script:AutoCheckPointer=Join-Path $ReleaseBase 'auto-check.json'
 $script:AutoConfigText=$null;$script:AutoProbeText=$null
+if(($Bootstrap289 -or $BootstrapRegistryImage -or $BootstrapRegistryProfileSha256 -or $BootstrapReviewSha256 -or $BootstrapEvidenceSha256 -or $BootstrapReviewProofRecord) -and
+   ($Auto -or $Action -cnotin @('Check','Apply') -or $AttemptRecord)){
+    throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'
+}
 if(($Corrective288 -or $CorrectiveRegistryImage -or $CorrectiveRegistryProfileSha256) -and
    ($Auto -or $Action -cnotin @('Check','Apply') -or $AttemptRecord)){
     throw 'RELEASE_CORRECTIVE_288_EXPLICIT_CHECK_REQUIRED'
@@ -5236,6 +9307,32 @@ $script:RegistryPrebuiltCheck=([bool]$EnableRegistryMount -and $Action -ceq 'Che
     -not $Auto -and -not $Build -and -not $Pull -and
     $Image -cmatch '^sha256:[0-9a-f]{64}$' -and $SourceSha -cmatch '^[0-9a-f]{40}$')
 $ApprovedImageSource=($Build -or [bool]$CheckedImageRecord -or $script:RegistryPrebuiltCheck)
+$OrdinaryPairRequested=[bool]($SuccessorRegistryImage -or $SuccessorRegistryProfileSha256)
+if($OrdinaryPairRequested -and ((-not $script:RegistryPrebuiltCheck -and
+   -not ($Action -ceq 'Apply' -and $CheckedImageRecord -and $EnableRegistryMount -and -not $Auto)) -or -not $ConfirmWorkerQuiescent -or
+   $Bootstrap289 -or $Corrective288 -or $RegistryReturnContainerId -or $RegistryReturnNonce -or
+   $AllowUncertainGrowth -or $EmergencyRequested -or $CurrentRecord -or $AttemptRecord -or
+   $RegistryCrashRecovery -or $PreserveApprovedRequest -or $EnablePublisherMount -or
+   $SuccessorRegistryImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+   $SuccessorRegistryProfileSha256 -cnotmatch '^[0-9a-f]{64}$')){
+    throw 'RELEASE_SUCCESSOR_ORDINARY_EXACT_CHECK_REQUIRED'
+}
+if($Bootstrap289){
+    if(-not $EnableRegistryMount -or
+       (-not $script:RegistryPrebuiltCheck -and -not ($Action -ceq 'Apply' -and $CheckedImageRecord)) -or
+       -not $ConfirmWorkerQuiescent -or $Corrective288 -or
+       $RegistryReturnContainerId -or $RegistryReturnNonce -or $AllowUncertainGrowth -or
+       $PreserveApprovedRequest -or $EmergencyRequested -or $CurrentRecord -or $AttemptRecord -or
+       $RegistryCrashRecovery -or $EnablePublisherMount -or -not $BootstrapReviewProofRecord -or
+       $BootstrapRegistryImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       $BootstrapRegistryProfileSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+       $BootstrapReviewSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+       $BootstrapEvidenceSha256 -cnotmatch '^[0-9a-f]{64}$' -or $BootstrapReviewSha256 -ceq $BootstrapEvidenceSha256){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'
+    }
+} elseif($BootstrapRegistryImage -or $BootstrapRegistryProfileSha256 -or $BootstrapReviewSha256 -or $BootstrapEvidenceSha256 -or $BootstrapReviewProofRecord){
+    throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'
+}
 if($Corrective288){
     if($Auto -or -not $EnableRegistryMount -or -not $ConfirmWorkerQuiescent -or
        $RegistryReturnContainerId -or $RegistryReturnNonce -or $AllowUncertainGrowth -or
@@ -5361,7 +9458,7 @@ if($PreserveClaimedJobs){
         $SourceSha -cnotmatch '^[0-9a-f]{40}$' -or $CurrentRecord -or $AttemptRecord -or
         -not $ConfirmWorkerQuiescent){throw 'RELEASE_CLAIMED_REQUIRES_OWNER_REVIEW_AND_QUIESCENCE'}
 }
-if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Promote')){
+if($ConfirmWorkerQuiescent -and $Action -cnotin @('Check','Apply','Backup','Promote','Return')){
     throw 'RELEASE_QUIESCENCE_ACTION_INVALID'
 }
 if($Build -and ($Action -cnotin @('Apply','Check','RegistrySourceDigest') -or $AttemptRecord)){throw 'RELEASE_BUILD_ACTION_INVALID'}
@@ -5439,6 +9536,10 @@ if($Action -eq 'Return' -or $AttemptRecord){
     if(-not $AttemptRecord){$AttemptRecord=(Read-Private $AttemptPointer).record}
     $script:RecordPath=[IO.Path]::GetFullPath($AttemptRecord);$script:R=Read-Private $script:RecordPath
     if($script:R.schema -cne 'fortis-extension-release-v1'){throw 'RELEASE_ATTEMPT_SCHEMA_INVALID'}
+    if($Action -ceq 'Return'){
+        $PairedReturn=[bool]$script:R.PSObject.Properties['bootstrapOwnerGo']
+        if($PairedReturn -ne [bool]$ConfirmWorkerQuiescent){throw 'RELEASE_QUIESCENCE_ACTION_INVALID'}
+    }
     if($script:Image -and $script:Image -cne $script:R.runtime.image){throw 'RELEASE_ATTEMPT_IDENTITY_MISMATCH'}
     $script:Image=$script:R.runtime.image;$VaultVolume=$script:R.runtime.vaultVolume
     $Stored=Read-PreservedUncertainRequests $script:R.runtime
@@ -5512,10 +9613,17 @@ if($Action -eq 'Return' -or $AttemptRecord){
     if($script:PreserveClaimedJobs -and -not $ConfirmWorkerQuiescent){
         throw 'RELEASE_CLAIMED_RESUME_REQUIRES_QUIESCENCE'
     }
+    $BootstrapAttempt=$script:R.PSObject.Properties['bootstrapOwnerGo']
+    if($BootstrapAttempt -and $script:R.phase -ceq 'Prepared'){
+        $Intent=Read-BootstrapFrozenIntent $script:R.source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash
+        if(-not $Intent.ContainsKey('ordinary')){$null=Read-BootstrapSeedSource $script:R.source}
+        $Candidate=Read-BootstrapGatewayCandidate $Intent
+        if(-not $Candidate){throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'}
+    }
     if($script:R.phase -cnotin @('Created','Staged')){
-        # Corrective Complete with a still-unpublished current pointer:
-        # Resume-Target verifies exact old pointer and active target first.
-        if($script:R.phase -cne 'Complete' -or -not $script:R.PSObject.Properties['correctivePair']){
+        # Complete with a still-unpublished current pointer: verify actual
+        # active target first, then recover only the exact pointer.
+        if($script:R.phase -cne 'Complete' -or -not ($BootstrapAttempt -or $script:R.PSObject.Properties['correctivePair'])){
             throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'
         }
     }
@@ -5523,7 +9631,11 @@ if($Action -eq 'Return' -or $AttemptRecord){
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
 $SourceForOwnerShell=Get-SourceRecord
-$SuccessorContext=Read-SuccessorMaintenanceContext $SourceForOwnerShell
+$SuccessorContext=if(-not $OrdinaryPairRequested -or $Action -ceq 'Apply' -or
+   (Test-Path -LiteralPath (Join-Path $ReleaseBase ('maintenance-'+$SourceForOwnerShell.runtime.runId+'.json')))){
+    Read-SuccessorMaintenanceContext $SourceForOwnerShell
+}
+$OrdinaryCandidate=$null
 $SuccessorMaintenance=$null
 if($Action -ceq 'Apply'){$SuccessorMaintenance=$SuccessorContext}
 if($AllowUncertainGrowth){
@@ -5548,7 +9660,9 @@ Initialize-RegistryReleaseBinding -Enabled ([bool]$EnableRegistryMount) -Request
 if($EnableRegistryMount){
     Step 'REGISTRY_NONCE_HISTORY_PREFLIGHT'
     $AllowedRegistryCheck=if($Action -eq 'Apply'){$CheckedImageRecord}
-        elseif($SuccessorContext){Successor-CheckRecordPath $SuccessorContext.draining.attempt.attemptId}
+        elseif($SuccessorContext -and $SuccessorContext.PSObject.Properties['intentDigest']){
+            Successor-CheckRecordPath $SuccessorContext.intent.authorization.attemptId
+        }elseif($SuccessorContext){Successor-CheckRecordPath $SuccessorContext.draining.attempt.attemptId}
         else{''}
     Assert-Registry-Nonce-Fresh -Nonce $RegistryReleaseNonce -AllowedCheckRecord $AllowedRegistryCheck
     Step 'REGISTRY_SOURCE_DIGEST_IMAGE_PREFLIGHT'
@@ -5557,6 +9671,36 @@ if($EnableRegistryMount){
         throw 'RELEASE_REGISTRY_SOURCE_DIGEST_MISMATCH'
     }
     Step 'REGISTRY_READER_SEAL_AND_PEER_PREFLIGHT'
+    if($OrdinaryPairRequested){
+        if($Action -ceq 'Apply'){
+            $Context=Read-Private (Join-Path $ReleaseBase ('maintenance-'+$SourceForOwnerShell.runtime.runId+'.json'))
+            $Check=Read-Private $CheckedImageRecord
+            if(-not $SuccessorContext -or $Context.intentDigest -cne $Check.binding.ordinaryIntentDigest -or
+               $Context.targetRegistryImage -cne $SuccessorRegistryImage -or
+               $Context.intent.compatibility.registry.profileDigest -cne $SuccessorRegistryProfileSha256 -or
+               $Context.targetNonce -cne $script:RegistryBoundReleaseNonce){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+            }
+            $OrdinaryCandidate=@{intent=$Context.intent}
+        }elseif($SuccessorContext){
+            if(-not $SuccessorContext.PSObject.Properties['intentDigest'] -or
+               $SuccessorContext.targetRegistryImage -cne $SuccessorRegistryImage -or
+               $SuccessorContext.intent.compatibility.registry.profileDigest -cne $SuccessorRegistryProfileSha256 -or
+               $SuccessorContext.targetNonce -cne $script:RegistryBoundReleaseNonce){
+                throw 'RELEASE_SUCCESSOR_ORDINARY_CONTEXT_CHANGED'
+            }
+            $OrdinaryCandidate=@{intent=$SuccessorContext.intent;intentDigest=$SuccessorContext.intentDigest
+                pairDigest=$SuccessorContext.pairDigest}
+        }else{
+            $OrdinaryCandidate=Read-OrdinarySuccessorCompatibility $SourceForOwnerShell (Read-SuccessorPublication $SourceForOwnerShell).anchor
+        }
+        $script:RegistrySocketVolume='fortis-registry-read-'+$script:RegistryBoundReleaseNonce.Replace('-','')
+        $script:RegistryProfileDigest=$OrdinaryCandidate.intent.compatibility.gateway.profileDigest
+    } elseif($Bootstrap289){
+        $script:BootstrapPair=Read-BootstrapCompatibility $SourceForOwnerShell
+        $script:RegistrySocketVolume='fortis-registry-read-'+$script:RegistryBoundReleaseNonce.Replace('-','')
+        $script:RegistryProfileDigest=$script:BootstrapPair.checked.gateway.profileDigest
+    } else {
     $script:RegistryDelivery=Read-RegistrySuccessorDelivery $SourceForOwnerShell
     if($script:RegistryDelivery){
         if($Auto -or $RegistryReturnContainerId -or $SuccessorContext -or -not $ConfirmWorkerQuiescent){
@@ -5570,6 +9714,7 @@ if($EnableRegistryMount){
         $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
             -ImageId $script:Image -ReleaseNonce $script:RegistryBoundReleaseNonce `
             -ReaderVolume $script:RegistryReaderVolume
+    }
     }
 }
 $script:MachinePowerShellVolume=Read-MachinePowerShellVolume $SourceForOwnerShell.runtime
@@ -5630,6 +9775,10 @@ if($Action -eq 'Apply'){
     $Report=Image-CLI @('check') $ConfigText
 }
 if($Report.status -cne 'READY'){throw 'RELEASE_CONFIG_OR_CREDENTIAL_NOT_READY'}
+if($OrdinaryPairRequested -or $Bootstrap289){
+    $PairedProbeText=if($Probes){Get-Content -LiteralPath $Probes -Raw}else{'[]'}
+    Assert-PairedReleaseProbes $SourceForOwnerShell $PairedProbeText
+}
 if($RegistryReturnContainerId){
     Step 'REGISTRY_RETURN_PREFLIGHT'
     $SourceForReturn=$SourceForOwnerShell
@@ -5649,12 +9798,31 @@ if($RegistryReturnContainerId){
 # paths retain their original full early audit.
 if($Action -ceq 'Apply' -and $SuccessorMaintenance){
     $StopIntent=Verify-Checked-Image $SourceForOwnerShell $Report -PrepareSuccessorStop
-    $null=Save-SuccessorApplyStopIntent $StopIntent
-    # A prepared stop is not owner GO or a staged receiver. Keep the Gateway
-    # running until the new runtime and protected Return can consume the hold.
-    throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'
+    if(-not $OrdinaryPairRequested){
+        # No unreviewed legacy/static maintenance path to paired Apply.
+        $null=Save-SuccessorApplyStopIntent $StopIntent
+        throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'
+    }
+} elseif($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto}
+if($Bootstrap289 -and $Action -ceq 'Apply'){
+    # Only the one exact #289 migration may enter the paired controller.
+    # A protected Check and original owner review are mandatory, not GO:
+    # Save-BootstrapPreparedAttempt obtains the separate APPLY confirmation,
+    # repeats compatibility/state checks and persists the intent before stop.
+    if(-not $CheckedImageRecord -or -not $script:BootstrapPair -or -not $BootstrapReviewProofRecord){
+        throw 'RELEASE_SUCCESSOR_BOOTSTRAP_EXACT_CHECK_REQUIRED'
+    }
 }
-if($CheckedImageRecord){Verify-Checked-Image $SourceForOwnerShell $Report -BindingOnly:$Auto}
+if($Action -eq 'Check' -and $OrdinaryPairRequested){
+    Assert-Previous-Image-Retained $SourceForOwnerShell
+    if(Test-Path -LiteralPath $AttemptPointer){
+        $Last=Read-Private (Read-Private $AttemptPointer).record
+        if($Last.phase -cnotin @('Complete','Returned')){throw 'RELEASE_PRIOR_ATTEMPT_REQUIRES_RESUME_OR_RETURN'}
+    }
+    $Result=Prepare-SuccessorMaintenanceContext $SourceForOwnerShell $OrdinaryCandidate -Report $Report
+    $Result|ConvertTo-Json -Depth 12
+    return
+}
 if($Action -eq 'Check'){
     $CheckReceipt=$null;$MaintenanceSeal=$null;$MaintenanceTransitions=$null;$ResumeMaintenanceCheck=$false
     if($Build -or $script:RegistryPrebuiltCheck -or $script:PreserveUncertainRequests -or $script:PreserveClaimedJobs -or $script:PreserveApprovedRequest){
@@ -5705,6 +9873,12 @@ if($Action -eq 'Check'){
         # or the full owner-accepted UC-GW-013 rescue gate has passed.
         # Do not defer the missing-image error until Apply SOURCE_ADMISSION.
         Assert-Previous-Image-Retained $Source
+        if($Bootstrap289){
+            $FreshBootstrap=Read-BootstrapCompatibility $Source -Recheck
+            if(-not (Same-Json $FreshBootstrap $script:BootstrapPair)){
+                throw 'RELEASE_SUCCESSOR_BOOTSTRAP_COMPATIBILITY_CHANGED'
+            }
+        }
         if($Corrective288){
             $FreshPair=Read-CorrectiveRegistryPair $Source
             if(-not (Same-Json $FreshPair $script:CorrectivePair)){
@@ -5737,6 +9911,11 @@ if($Action -eq 'Check'){
             })
         }
     }
+    if($Bootstrap289){
+        $Report.status='BOOTSTRAP_CHECKED_ONLY'
+        $Report|Add-Member -NotePropertyName compatibilityDigest -NotePropertyValue $script:BootstrapPair.compatibilityDigest
+        $Report|Add-Member -NotePropertyName deploymentAuthorized -NotePropertyValue $false
+    }
     $Report|ConvertTo-Json -Depth 12;return
 }
 if(Test-Path -LiteralPath $AttemptPointer){
@@ -5752,31 +9931,42 @@ foreach($Marker in @('IMAGE_NATIVE_GIT_IMPORT_PASS','IMAGE_SONAR_OFFLINE_SMOKE_P
     if($Smoke -notmatch $Marker){throw 'RELEASE_IMAGE_SMOKE_INCOMPLETE'}
 }
 Step 'REPO_CLIENT_PREFLIGHT'
-$Code=@'
-import json,sys
-sys.path.insert(0,'/workspace/repo/Repos/fortis-approvals')
-from fortis_approvals.workflow.client import default_client
-c=default_client(); assert c.github.list_branches('fortis-approvals',per_page=1)['items']
-print(json.dumps({'nativeCapabilities':True,'githubRead':True}))
-'@
-$Preflight=Repo-JSON $Code
-if(-not $Preflight.nativeCapabilities -or -not $Preflight.githubRead){throw 'RELEASE_REPO_CLIENT_PREFLIGHT_FAILED'}
+if($OrdinaryPairRequested){
+    $Rows=Read-OrdinarySuccessorSource $SourceForOwnerShell -PublicationRecovery
+    $Native=(Read-Private $CheckedImageRecord).binding.ordinaryNativeRead
+    if($Native.githubRead -ne $true -or $Native.gatewayId -cne $Rows.gateway.Id -or
+       $Native.registryId -cne $Rows.registry.Id -or $Native.sourceRecordDigest -cne $SourceForOwnerShell.hash.ToLowerInvariant()){
+        throw 'RELEASE_SUCCESSOR_ORDINARY_PREFLIGHT_CHANGED'
+    }
+    if($Rows.gateway.State.Status -ceq 'running'){Assert-NativeRepoRead}
+    # A stopped held Gateway cannot answer a fresh HTTP request. The
+    # exact protected Check contains its pre-begin typed read; the staged
+    # target must independently pass the same native read before activation.
+}else{Assert-NativeRepoRead}
 Step 'SOURCE_ADMISSION'
 $Source=Get-SourceRecord
 if(($script:PreserveClaimedJobs -or $script:PreserveApprovedRequest) -and
     -not $ConfirmWorkerQuiescent){throw 'RELEASE_PRESERVATION_REQUIRES_QUIESCENCE'}
-$Old=Container $Source.runtime.pilotId;Admit-Source $Old $Source
+if($OrdinaryPairRequested){
+    $Rows=Read-OrdinarySuccessorSource $Source -PublicationRecovery
+    $Old=$Rows.gateway
+}else{$Old=Container $Source.runtime.pilotId;Admit-Source $Old $Source}
 if($script:RegistryCrash){
     if($Old.State.Status -cne 'exited'){throw 'RELEASE_REGISTRY_CRASH_SOURCE_RESTARTED'}
     Assert-RegistryCrashIncumbent $Source
-} elseif($Old.State.Status -cne 'running'){
+} elseif($Old.State.Status -cne 'running' -and -not ($OrdinaryPairRequested -and
+    $Old.State.Status -ceq 'exited')){
     throw 'RELEASE_SOURCE_NOT_RUNNING'
 }
 Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'
 Assert-Previous-Image-Retained $Source
 Assert-OnlyWriter $Source.runtime.stateVolume $Old.Id
 Step 'SOURCE_STATE_PREFLIGHT'
-$PreStopReceipt=if($Auto -and $CheckedImageRecord){
+$PreStopReceipt=if($OrdinaryPairRequested){
+    # Verify-Checked-Image already obtained the fresh exact frozen seal
+    # and receipt. The final owner GO repeats that independent comparison.
+    (Read-Private $CheckedImageRecord).sourceReceipt
+}elseif($Auto -and $CheckedImageRecord){
     # Fresh binding and full state/growth verification after read-only source
     # admission. Serialize this exact verified receipt, not an earlier cache.
     Verify-Checked-Image $Source $Report -ReturnReceipt
@@ -5900,6 +10090,19 @@ try {
             throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'
         }
     }
+    if($Bootstrap289 -or $OrdinaryPairRequested){
+        Step 'BOOTSTRAP_PREPARED_TRANSITION'
+        Assert-Previous-Image-Retained $Source
+        if($OrdinaryPairRequested){Save-OrdinaryPreparedAttempt $Source $Report $StopIntent}
+        else{Save-BootstrapPreparedAttempt $Source $Report $CheckedImageRecord $BootstrapReviewProofRecord}
+        $SourceStopAttempted=$true
+        $Prepared=Invoke-BootstrapPreparedTransition
+        $Runtime=$script:R.runtime
+        if(-not (Same-Json $Prepared.delivery $Runtime.registryDelivery)){
+            throw 'RELEASE_SUCCESSOR_BOOTSTRAP_RECEIVER_PROOF_CHANGED'
+        }
+        Step 'ATTEMPT_POINTER_SAVED'
+    } else {
     Step 'STOP_SOURCE';Assert-Release-Production;Admit-Source (Container $Old.Id) $Source
     if($script:RegistryCrash){
         Assert-RegistryCrashIncumbent $Source
@@ -5951,6 +10154,7 @@ try {
     # On mismatch, the guarded failure path returns the retained source.
     if($CheckedImageRecord){Assert-Checked-Source-Receipt $script:R.sourceReceipt}
     if($script:CorrectivePair){Switch-CorrectiveRegistryPair}
+    }
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
@@ -5992,8 +10196,13 @@ try {
     if($script:RegistryDelivery){
         $Evidence='fortis-registry-source-evidence-'+$Runtime.registryReleaseNonce.Replace('-','')
         Assert-Volume $Evidence;Assert-OnlyWriter $Evidence
-        $Arguments+=@('--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,volume-nocopy'),
-            '--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,readonly,volume-nocopy')
+        $Arguments+=@('--mount',('type=volume,source='+$Evidence+',target=/run/fortis-registry-source-evidence,volume-nocopy'))
+        if(Test-SuccessorLatestDelivery $script:RegistryDelivery){
+            $Arguments+=@('--mount','type=volume,source=fortis-r7-maintenance-interlock-v2,target=/run/r7-maintenance,readonly,volume-nocopy',
+                '--mount','type=volume,source=fortis-r7-maintenance-anchor,target=/run/r7-maintenance-anchor,readonly,volume-nocopy')
+        } else {
+            $Arguments+=@('--mount','type=volume,source=fortis-r7-maintenance-interlock,target=/run/r7-maintenance,readonly,volume-nocopy')
+        }
     }
     if($Runtime.registryReaderVolume){
         $Arguments+=@('--mount',('type=volume,source='+$Runtime.registryReaderVolume+
@@ -6002,15 +10211,26 @@ try {
             ',target=/run/fortis-registry-read,readonly'))
     }
     $Arguments+=@($script:Image)
-    $script:R.runtime.pilotId=Docker-Text $Arguments
-    if($script:R.runtime.pilotId -cnotmatch '^[0-9a-f]{64}$'){throw 'RELEASE_CREATED_ID_INVALID'}
-    $script:R.phase='Created';Save -FlushToDisk:([bool]$script:CorrectivePair);Resume-Target
+    if($Bootstrap289 -or $OrdinaryPairRequested){
+        $CreatedAck=''
+        try {$CreatedAck=Docker-Text $Arguments}catch{Write-Warning 'RELEASE_SUCCESSOR_BOOTSTRAP_GATEWAY_CREATE_READBACK'}
+        $Intent=Read-BootstrapFrozenIntent $Source $script:R.bootstrapCheckRecord $script:R.bootstrapCheckHash
+        $Created=Read-BootstrapGatewayCandidate $Intent
+        if(-not $Created -or $Created.State.Status -cne 'created' -or
+           ($CreatedAck -and $CreatedAck -cne $Created.Id)){throw 'RELEASE_CREATED_ID_INVALID'}
+    } else {
+        $script:R.runtime.pilotId=Docker-Text $Arguments
+        if($script:R.runtime.pilotId -cnotmatch '^[0-9a-f]{64}$'){throw 'RELEASE_CREATED_ID_INVALID'}
+        $script:R.phase='Created';Save -FlushToDisk:([bool]$script:CorrectivePair)
+    }
+    Resume-Target
 } catch {
     $Failure='step='+$script:Step+'; '+$_.Exception.Message
     $script:R.failureStep=$script:Step;$script:R.failureMessage=$Failure
     try{Save}catch{Write-Warning 'RELEASE_FAILURE_RECORD_NOT_SAVED'}
     $CanReturnSource=(-not $script:RegistryReturn -or $RegistryStopAuthorized) -and
         (-not $script:RegistryDelivery -or $SourceStopAttempted)
+    if(($Bootstrap289 -or $OrdinaryPairRequested) -and -not $SourceStopAttempted){$CanReturnSource=$false}
     if($CanReturnSource){
         try{Return-Source}catch{Write-Warning ('RELEASE_RETURN_REQUIRES_REVIEW: '+$_.Exception.Message)}
     }

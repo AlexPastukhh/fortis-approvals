@@ -671,6 +671,153 @@ class ImpactTests(unittest.TestCase):
                 signed('SOURCE_PREFLIGHT',{'proposal':next_proposal})
             self.assertEqual(state_path.read_bytes(),after_second)
 
+            # A separately reviewed bootstrap is not a third repair. Use
+            # the real Git/CI/SQLite fixture with synthetic owner proof pins.
+            # Patch only the exact historical edge constants for this repo.
+            fixture(source_events,'_BOOTSTRAP_BASE',next_merge)
+            fixture(source_events,'_BOOTSTRAP_EVENT',third['eventDigest'])
+            incumbent_path,incumbent_config=state_path,config_root
+            incumbent_files={p.name:p.read_bytes() for p in config_root.iterdir()}
+            fixture(boot,'_BOOTSTRAP_INCUMBENT_PROFILE',sha(incumbent_files['profile.json']))
+            fixture(boot,'_BOOTSTRAP_INCUMBENT_CONFIG',incumbent_config/'profile.json')
+            fixture(boot,'_BOOTSTRAP_INCUMBENT_STATE',incumbent_path)
+            fixture(boot,'_BOOTSTRAP_INSTALLED_STATE',incumbent_path)
+            incumbent_store=ReleaseEventJournal(incumbent_path,instance_id=instance,scope=scope,
+                expected_legacy=witness,transition_digest=manifest_pin)
+            prefix=protected.bootstrap_prefix(final_view,incumbent_store)
+            state_path=self.state/'bootstrap-clone'/'registry.sqlite'
+            state_path.parent.mkdir(mode=0o700)
+            with (patch.object(protected,'_check_owner_readonly_mount'),
+                  patch('fortis_approvals.r7_registry_reader_mount._exact_mountinfo',return_value=True)):
+                with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_STAGE_SOURCE_CHANGED'):
+                    protected.stage_bootstrap_registry(incumbent_store,incumbent_config,pins,
+                        target=state_path,expected_prefix={**prefix,'sourcePrefixDigest':'0'*64})
+                self.assertFalse(state_path.exists())
+                self.assertEqual(protected.stage_bootstrap_registry(incumbent_store,incumbent_config,pins,
+                    target=state_path,expected_prefix=prefix),prefix)
+                with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_TARGET_NOT_FRESH'):
+                    protected.stage_bootstrap_registry(incumbent_store,incumbent_config,pins,
+                        target=state_path,expected_prefix=prefix)
+            config_root=self.root/'bootstrap-config'
+            shutil.copytree(incumbent_config,config_root)
+            config_path=config_root/'profile.json'
+            cfg={**cfg,'registryStatePath':str(state_path)}
+            profile_file_sha=write('profile.json',cfg)
+            fixture(boot,'STATE_PATH',state_path)
+            fixture(boot,'CONFIG_PATH',config_path)
+            (self.source/'src.py').write_text('raise RuntimeError("bootstrap code must not execute")\n')
+            self.git.run(['add','src.py'],cwd=self.source)
+            migration_tree=self.git.text(['write-tree'],cwd=self.source)
+            migration_head=commit(migration_tree,[next_merge],'bootstrap head')
+            migration_merge=commit(migration_tree,[next_merge,migration_head],'bootstrap merge')
+            migration_observed={**next_observed,'number':291,'baseSha':next_merge,
+                                'headSha':migration_head,'treeSha':migration_tree}
+            migration_impact=self.verifier.verify(migration_observed)
+            migration_ci={**deepcopy(next_ci),'number':291,'baseSha':next_merge,'headSha':migration_head,
+                          'validatedImpactDigest':sc.digest(migration_impact)}
+            for check in migration_ci['checks']:check['headSha']=migration_head
+            migration_proposal={**next_proposal,'number':291,'baseSha':next_merge,'headSha':migration_head,
+                'treeSha':migration_tree,'expectedSourceRevision':3,'ciDigest':sc.digest(migration_ci)}
+            migration_post={**next_post,'number':291,'headSha':migration_head,'treeSha':migration_tree,
+                'mergeSha':migration_merge,'mainSha':migration_merge,'parents':[next_merge,migration_head],
+                'ciDigest':migration_proposal['ciDigest']}
+            review={'schemaVersion':1,'prefix':prefix,'proposal':migration_proposal,'authorityDigest':authority,
+                    'authorityWitnessDigest':'1'*64,'primaryRecordDigest':'2'*64,'gatewayBackupDigest':'3'*64,
+                    'registryBackupDigest':'4'*64}
+            def proof_for(content):
+                return sc.canonical({'schema':'fortis-registry-bootstrap-review-v1',
+                    'decision':'APPROVE_BOOTSTRAP_MERGE','reviewContentDigest':sc.digest(
+                        {k:v for k,v in content.items() if k!='ownerReviewProofDigest'}),'reviewedAt':100}).encode()
+            proof_raw=proof_for(review)
+            review['ownerReviewProofDigest']=sha(proof_raw)
+            review_pin=write('bootstrap-review.json',review)
+            evidence={'reviewDigest':review_pin,'observation':migration_post,'ci':migration_ci,
+                'body':migration_observed['body'],'bundleSha256':repair_bundle(migration_merge,'bootstrap'),'mergedAt':101}
+            clone_before=state_path.read_bytes()
+            def account(review_value=review,evidence_value=evidence,*,pin=None,source=migration_merge,mount=True,proof=None):
+                if proof is None:
+                    proof=proof_for(review_value)
+                    updated={**review_value,'ownerReviewProofDigest':sha(proof)}
+                    if evidence_value['reviewDigest']==sc.digest(review_value):
+                        evidence_value={**evidence_value,'reviewDigest':sc.digest(updated)}
+                    review_value=updated
+                reviewed_pin=write('bootstrap-review.json',review_value)
+                evidence_pin=write('bootstrap-evidence.json',evidence_value)
+                with patch('fortis_approvals.r7_registry_reader_mount._exact_mountinfo',return_value=mount):
+                    return boot.account_bootstrap_migration(profile_file_sha,
+                        review_sha256=pin or reviewed_pin,evidence_sha256=evidence_pin,source_sha=source,owner_review_raw=proof)
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_OWNER_REVIEW_CHANGED'):
+                account(proof=b'{}')
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_OWNER_REVIEW_ORDER_UNPROVEN'):
+                account(evidence_value={**evidence,'mergedAt':100})
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_CLONE_MOUNT_REQUIRED'):
+                account(mount=False)
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_EVIDENCE_PIN_CHANGED'):
+                account(pin='0'*64)
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_REVIEW_CHANGED'):
+                account(evidence_value={**evidence,'reviewDigest':'0'*64})
+            for bad,code in (({**review,'prefix':{**prefix,'sourcePrefixDigest':'0'*64}},
+                              'SOURCE_BOOTSTRAP_REVIEW_CHANGED'),
+                             ({**review,'authorityDigest':'0'*64},'SOURCE_BOOTSTRAP_RUNTIME_PINS_CHANGED')):
+                with self.assertRaisesRegex(Denied,code):
+                    account(bad,{**evidence,'reviewDigest':sc.digest(bad)})
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_RUNTIME_PINS_CHANGED'):
+                account(source=next_merge)
+            bad_ci=deepcopy(migration_ci);bad_ci['checks'][0]['appId']=1
+            bad_review={**review,'proposal':{**migration_proposal,'ciDigest':sc.digest(bad_ci)}}
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_CI_CHANGED'):
+                account(bad_review,{**evidence,'reviewDigest':sc.digest(bad_review),'ci':bad_ci,
+                    'observation':{**migration_post,'ciDigest':sc.digest(bad_ci)}})
+            bad_merge=commit(migration_tree,[repair_merge,migration_head],'skipped incumbent')
+            with self.assertRaisesRegex(Denied,'SUCCESSOR_MERGE_GIT_OBJECT_CHANGED'):
+                account(evidence_value={**evidence,'observation':{**migration_post,
+                    'mergeSha':bad_merge,'mainSha':bad_merge},
+                    'bundleSha256':repair_bundle(bad_merge,'bootstrap')},source=bad_merge)
+            self.assertEqual(repair_bundle(migration_merge,'bootstrap'),evidence['bundleSha256'])
+            self.assertEqual(state_path.read_bytes(),clone_before)
+            self.assertEqual(incumbent_path.read_bytes(),after_second)
+            # The actual launcher now stages a fresh clone itself. Keep
+            # the negative-case fixture and its SQLite sidecars untouched.
+            state_path=self.state/'bootstrap-integrated'/'registry.sqlite'
+            state_path.parent.mkdir(mode=0o700)
+            cfg={**cfg,'registryStatePath':str(state_path)}
+            profile_file_sha=write('profile.json',cfg)
+            fixture(boot,'STATE_PATH',state_path)
+            self.assertFalse(list(state_path.parent.iterdir()))
+            with patch.object(boot,'_BOOTSTRAP_INCUMBENT_PROFILE','0'*64):
+                with self.assertRaisesRegex(Denied,'REGISTRY_SUCCESSOR_PROFILE_PIN_CHANGED'):account()
+            self.assertFalse(list(state_path.parent.iterdir()))
+            migration_result=account()
+            migration_receipt=migration_result['sourceMigrationReceipt']
+            self.assertEqual(migration_receipt['kind'],source_events.BOOTSTRAP_MIGRATION)
+            self.assertEqual(migration_receipt['sourceRevision'],4)
+            self.assertEqual(migration_receipt['sourceCursor'],migration_merge)
+            self.assertFalse(migration_receipt['deploymentAuthorized'])
+            self.assertFalse(migration_result['hostAccepted'])
+            self.assertFalse(migration_result['admissionAllowed'])
+            clone_after=state_path.read_bytes()
+            self.assertEqual(account(),migration_result)
+            self.assertEqual(state_path.read_bytes(),clone_after)
+            migrated=read_service_via_entrypoint(config_path,readonly=False,expected_profile=profile_file_sha)
+            migrated_domain=migrated.frames.service.domain
+            migrated_view=migrated_domain.snapshot()
+            for old_receipt in (accepted,source_receipt,third):
+                self.assertEqual(migrated_view['sourceOperations'][old_receipt['operationId']][1],old_receipt)
+            req,saved,_=migrated_view['sourceOperations'][migration_receipt['operationId']]
+            self.assertEqual(saved,migration_receipt)
+            with self.assertRaisesRegex(Denied,'SOURCE_BOOTSTRAP_OFFLINE_REQUIRED'):
+                migrated_domain.register_source(req)
+            self.assertEqual(migrated_view['sourceRevision'],4)
+            self.assertEqual(migrated_view['sourceCursor'],migration_merge)
+            self.assertEqual(migrated_domain.source_preflight({**migration_proposal,'number':292,
+                'baseSha':migration_merge,'expectedSourceRevision':4})['sourceCursor'],migration_merge)
+            state=next(iter(migrated_view['states'].values()))
+            self.assertEqual(state['desired']['provenance'],'REVIEWED_BOOTSTRAP_MIGRATION')
+            self.assertIsNone(state['installed'])
+            self.assertIsNone(state['activeAttempt'])
+            self.assertEqual(incumbent_path.read_bytes(),after_second)
+            self.assertEqual({p.name:p.read_bytes() for p in incumbent_config.iterdir()},incumbent_files)
+            print('BOOTSTRAP_MIGRATION_LOCAL_PREFIX_AND_READBACK_PASS')
 
 
     def test_owner_portal_exact_merge_register_and_shared_read(self):
@@ -1049,6 +1196,7 @@ class ImpactTests(unittest.TestCase):
             ('owner-actor',*action,'scope',lineage.subjects[0]),
             ('owner-actor','github','list_pull_requests','fortis-approvals',{'repository':repo})]
         for actor in ('owner-actor',machine_actor):
+            semantic_rows.append((actor,'registry','get_component','scope',lineage.subjects[0]))
             for operation in ('list_components','plan_batch'):
                 semantic_rows.extend((actor,'registry',operation,'scope',subject)
                                      for subject in ({'repository':repo},lineage.subjects[0]))
@@ -1211,6 +1359,13 @@ class ImpactTests(unittest.TestCase):
                     import sqlite3
                     from contextlib import closing
                     from fortis_approvals.extensions.transition_authority import stored_authority_witness
+                    source_profile = transport.profile(source_checkpoint=True)
+                    target_view = lineage.domain.snapshot()
+                    self.assertEqual(source_profile['sourceRevision'], target_view['sourceRevision'])
+                    self.assertEqual(source_profile['sourceCheckpoint'], {
+                        **{k: target_view[k] for k in ('sourceCursor', 'snapshotRevision', 'eventDigest')},
+                        'registryDigest': sc.digest(lineage.domain.maintenance_snapshot()),
+                    })
                     frozen = Path(old.path)
                     before_bytes = frozen.read_bytes()
                     receipt = load_peer(released,interlock=controller.pin,incumbent_core=frozen,reuse=True)
@@ -1301,6 +1456,15 @@ class ImpactTests(unittest.TestCase):
                                         'HTTP_AUTHORIZATION':'Bearer '+machine_grant}, start)
 
                 self.ingress = ingress
+                # Exercise the actual staged machine wrapper and classifier:
+                # metadata catalog is passive; ordinary integration calls are not.
+                with patch.object(machine_app.delegate.gate,'reserve',
+                                  side_effect=Denied('RELEASE_MAINTENANCE')):
+                    status,catalog=SemanticAccessTests.http(self,'/v1/integrations/catalog',{})
+                    self.assertEqual(status,200,catalog)
+                    self.assertIn('configurationDigest',catalog)
+                    self.assertEqual(SemanticAccessTests.http(self,
+                        '/v1/integrations/catalog',{'unexpected':True})[0],403)
                 if not reopening:
                     blocked = {'service':'registry','operation':'list_components'}
                     self.assertEqual(SemanticAccessTests.http(self, '/v1/reads', blocked),
@@ -1336,11 +1500,33 @@ class ImpactTests(unittest.TestCase):
                 incumbent_choices=old_choices,incumbent_scope=old_scope,opt_in=opt_in,
                 release_active=reopening)
             return core
+        def change_policy(core, cookie, csrf, coord, revision, desired):
+            actor,service,operation,target=coord
+            candidate={'actor':actor,'provider':service,'operation':operation,'target':target,
+                       'scope':'exact','expectedPolicy':'DENY','desiredPolicy':desired,
+                       'expectedRevision':revision,'expectedPolicyVersion':core.policy_version,
+                       'reasonCode':'ISOLATED_SCOPE_REVIEW'}
+            code,change,_=self.call('/v1/owner/policy/editor/begin',{'candidate':candidate},
+                                     cookie=cookie,csrf=csrf)
+            self.assertEqual(code,200,change)
+            code,saved,_=self.call('/v1/owner/policy/editor/finish',{'ceremonyId':change['ceremonyId'],
+                'change':change['change'],'response':self.key.assert_(change)},cookie=cookie,csrf=csrf)
+            self.assertEqual(code,200,saved)
+
         core=build(transition=True,companion=companion_digest)
+        retained_policies={}
         if corrective:
-            # Initial delivery completed in the fixture, but no product
-            # approval or semantic policy edit has happened. Freeze the
-            # isolated source, retain its bytes and open a separate clone.
+            # Reproduce the owner's reported partial configuration before
+            # copying the source. No provider execution or product approval.
+            cookie,csrf=G2WebAuthnTest.login(self)
+            for service,op,target,policy in (
+                    ('release','merge_and_register','scope','ASK'),
+                    ('github','merge_pull_request','fortis-approvals','ASK'),
+                    ('github','list_pull_requests','fortis-approvals','ALLOW')):
+                coord=('owner-actor',service,op,target)
+                self.assertIn(coord,coords)
+                change_policy(core,cookie,csrf,coord,len(retained_policies),policy)
+                retained_policies[coord]=policy
             self.assertEqual(endpoint.writes,0)
             before = snapshot(core, lambda db: authority_witness(core,db))
             frozen_companion = snapshot(core,inspect_companion)
@@ -1377,6 +1563,269 @@ class ImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(Denied,'R7_REGISTRY_CORRECTIVE_PAIR_CHANGED'):
                 project_corrective_profiles(recovered_seal,old_registry,old_composition,
                                             **{**kw,'peer_key_digest':old_registry['semantic']['peerKeyDigest']})
+            # Re-project the already-installed v2 profile from a separately
+            # checked incumbent. The oldest enrollment pin must survive.
+            incumbent=projected
+            next_peer,next_frame=b'j'*32,b'k'*32
+            next_source='8'*64
+            next_inputs=dict(expected_gateway_digest=sc.digest(incumbent['gateway']),
+                expected_registry_digest=sc.digest(incumbent['registry']),
+                new_source_digest=next_source,nonce=str(uuid.uuid4()),
+                peer_key_digest=sha(next_peer),frame_key_digest=sha(next_frame))
+            profiles=(incumbent['gateway'],incumbent['registry'],incumbent['successor'])
+            deny='R7_REGISTRY_CORRECTIVE_SOURCE_SEAL_CHANGED'
+            with self.assertRaisesRegex(Denied,deny):
+                project_corrective_profiles(*profiles,**next_inputs)
+            next_inputs['expected_gateway_source_digest']=new_source
+            with self.assertRaisesRegex(Denied,deny):
+                project_corrective_profiles(*profiles,**{**next_inputs,'expected_gateway_source_digest':next_source})
+            with self.assertRaisesRegex(Denied,deny):
+                project_corrective_profiles(*profiles,**{**next_inputs,'new_source_digest':new_source})
+            with self.assertRaisesRegex(Denied,deny):
+                project_corrective_profiles(incumbent['gateway'],old_registry,incumbent['successor'],**next_inputs)
+            projected=project_corrective_profiles(*profiles,**next_inputs)
+            from fortis_approvals.extensions.successor_runtime import project_staged_profiles
+            from fortis_approvals.tests.test_maintenance_gate import Controller
+            from fortis_approvals.tests.test_registry_semantic_contract import begin
+            ctrl=Controller(profiles[0]['instanceId'],profiles[0]['scopeDigest'],
+                            profiles[0]['semanticGeneration'])
+            target_generation='7'*64
+            item=begin(repo=profiles[2]['repository'],target='fortis-gateway')
+            attempt={'attemptId':str(uuid.uuid4()),'subject':item['subject'],'source':item['source'],
+                     'restrictionDigest':'c'*64,'sourceGeneration':ctrl.record['generation'],
+                     'targetGeneration':target_generation}
+            ctrl.advance('DRAINING',attempt=attempt)
+            for phase in ('FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP'):
+                ctrl.advance(phase)
+            ctrl.advance('STAGED_TARGET_FROZEN',generation=target_generation)
+            handoff={'role':'staged_target','attemptId':attempt['attemptId'],
+                     'restrictionDigest':attempt['restrictionDigest'],'interlockDigest':ctrl.pin,
+                     'registryDigest':'d'*64}
+            inputs={**next_inputs,'handoff':handoff,'staged_record':ctrl.record,
+                    'staged_companion_digest':'e'*64}
+            originals=copy.deepcopy(profiles)
+            staged=project_staged_profiles(*profiles,**inputs)
+            self.assertEqual(profiles,originals)
+            self.assertEqual(staged['gateway']['semanticGeneration'],target_generation)
+            self.assertEqual(staged['registry']['semantic']['generation'],target_generation)
+            self.assertEqual(staged['registry']['sourceWrite']['interlockDigest'],ctrl.pin)
+            self.assertEqual(staged['gateway']['successorSha256'],sc.digest(staged['successor']))
+            self.assertEqual(staged['successor'],{**projected['successor'],'schemaVersion':3,'latestPin':True,
+                'frozenHandoff':handoff,'interlockDigest':ctrl.pin,'companionDigest':'e'*64})
+            self.assertIs(staged['registry']['sourceWrite']['latestPin'],True)
+            # Bootstrap already has a fresh checked nonce/keys. Finalization
+            # must not rotate either or change the retained authority. This
+            # is synthetic phase evidence; real SQLite receipt reconstruction
+            # is exercised by the bootstrap source-lineage test.
+            from fortis_approvals.extensions.successor_runtime import project_bootstrap_final_profiles
+            from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
+            pre_g,pre_r,pre_c=(projected[k] for k in ('gateway','registry','successor'))
+            # The local socket fixture uses intentionally different mocked
+            # peer UIDs. Model the exact matched host reader here only.
+            pre_r={**pre_r,'readerUid':pre_g['readerUid'],'readerGid':pre_g['readerGid']}
+            sem=pre_r['semantic']
+            binding={'instanceId':pre_r['instanceId'],'scopeDigest':sc.digest(pre_r['scope']),
+                'profileDigest':sem['successorProfileDigest'],'generation':sem['generation'],
+                'internalActor':sem['internalActor'],'peerKeyDigest':sem['peerKeyDigest'],
+                'frameKeyDigest':sem['frameKeyDigest'],'socketPath':pre_r['socketPath'],
+                'readerUid':pre_r['readerUid'],'readerGid':pre_r['readerGid'],
+                'authorityDigest':pre_r['sourceWrite']['policyAuthorityDigest'],
+                'interlockDigest':pre_r['sourceWrite']['interlockDigest']}
+            subjects=mc.paired_subjects(repo)
+            items={role:{**begin(repo=repo,target=subject['targetId']),'subject':subject}
+                   for role,subject in subjects.items()}
+            checkpoint={'sourceRevision':4,'snapshotRevision':4,'sourceCursor':items['gateway']['source']['sourceSha'],
+                'eventDigest':'a'*64,'profileDigest':sem['successorProfileDigest']}
+            from fortis_approvals.extensions.transition_authority import stored_authority_witness
+            companion_witness={'schemaDigest':frozen_companion['schemaDigest'],
+                'companionDigest':pre_c['companionDigest'],
+                'authorityWitnessDigest':sc.digest(snapshot(core,stored_authority_witness))}
+            checked={'gateway':{'result':'BOOTSTRAP_GATEWAY_MATERIAL_ONLY','profileDigest':sc.digest(pre_g),
+                'sourceDigest':pre_g['gatewaySourceDigest'],'releaseNonce':pre_g['releaseNonce'],
+                'incumbentProfileDigest':sc.digest(incumbent['gateway']),'companion':companion_witness,
+                'binding':binding},'registry':{'result':'BOOTSTRAP_REGISTRY_MATERIAL_ONLY',
+                'profileDigest':sc.digest(pre_r),'binding':binding,'checkpoint':checkpoint,'items':items,
+                'sourceMigrationReceipt':{},'review':{'authorityWitnessDigest':companion_witness['authorityWitnessDigest'],'ownerReviewProofDigest':'f'*64}},
+                'artifacts':{role:items[role]['source']['artifactSha256'] or 'a'*64 for role in items}}
+            seed=Controller(pre_g['instanceId'],pre_g['scopeDigest'],pre_g['semanticGeneration']).record
+            owner_go={'schemaVersion':1,'attemptId':str(uuid.uuid4()),'checkDigest':'c'*64,
+                'sourceRecordDigest':'d'*64,'compatibilityDigest':mc.bootstrap_compatibility_digest(checked),
+                'reviewDigest':'e'*64,'evidenceDigest':'1'*64,'reviewProofDigest':'f'*64,
+                'targetGeneration':target_generation,'recordedAt':100}
+            # The fixture's original interlock pin is the same genesis.
+            self.assertEqual(sc.digest(seed),binding['interlockDigest'])
+            auth=mc.bootstrap_pair_authorization(checked,owner_go,{'sha256':{},'summary':{}},
+                review_sha256='e'*64,evidence_sha256='1'*64,seed_digest=sc.digest(seed))
+            pair=mc.paired_begin({'schemaVersion':1,'attemptId':auth['attemptId'],'checkpoint':checkpoint,
+                'items':items,'artifacts':checked['artifacts'],'controllerReceiptDigest':sc.digest(auth),
+                'compatibilityReadbackDigest':auth['compatibilityDigest']},repo)
+            holds={'instanceId':binding['instanceId'],'scopeDigest':binding['scopeDigest'],
+                'snapshotRevision':6,'eventDigest':'a'*64,'holds':[]}
+            receipts=[]
+            for role in ('registry','gateway'):
+                ident=mc.paired_operation_id(pair['attemptId'],role)
+                holds['holds'].append({'attemptId':ident,'subject':items[role]['subject'],'source':items[role]['source'],
+                    'restrictionDigest':'c'*64,'stateFreeze':True,'blockedOperations':[],
+                    'pairId':pair['attemptId'],'pairDigest':sc.digest(pair)})
+                receipts.append({'operationId':ident,'eventKind':'PROTECTED_PAIRED_BEGIN','instanceId':binding['instanceId'],
+                    'subject':items[role]['subject'],'recordedAt':100,'technicalInstallationVerified':False})
+            plan=mc.bootstrap_phase_plan(seed,auth,pair,receipts,holds)
+            result={'result':'BOOTSTRAP_PAIR_BEGIN_ACCOUNTED_ONLY','pair':pair,'receipts':receipts,
+                'holdSnapshot':holds,'registryDigest':plan['registryDigest'],'phasePlan':plan,
+                'hostAccepted':False,'admissionAllowed':False}
+            publication={'schema':'fortis-successor-maintenance-publication-v2','state':'Committed',
+                'sourceRecordHash':auth['sourceRecordDigest'],'record':plan['records'][-2],
+                'digest':sc.digest(plan['records'][-2]),'previous':plan['records'][-3],
+                'registryDigest':plan['registryDigest'],'previousRegistryDigest':plan['registryDigest']}
+            final_inputs=dict(checked=checked,authorization=auth,seed=seed,begin=result,publication=publication)
+            pre=(pre_g,pre_r,pre_c);before_final=copy.deepcopy(pre)
+            final=project_bootstrap_final_profiles(*pre,**final_inputs)
+            self.assertEqual(pre,before_final)
+            self.assertEqual(final['gateway'],{**pre_g,'semanticGeneration':target_generation,
+                'successorSha256':sc.digest(final['successor'])})
+            self.assertEqual(final['registry'],{**pre_r,'semantic':{**sem,'generation':target_generation},
+                'sourceWrite':{**pre_r['sourceWrite'],'latestPin':True,'interlockDigest':plan['handoff']['interlockDigest']}})
+            self.assertEqual(final['successor'],{**pre_c,'schemaVersion':3,'latestPin':True,
+                'frozenHandoff':plan['handoff'],'interlockDigest':plan['handoff']['interlockDigest']})
+            with self.assertRaises(Denied):
+                project_bootstrap_final_profiles(*pre,**{**final_inputs,'publication':{**publication,'state':'Pending'}})
+            with self.assertRaises(Denied):
+                project_bootstrap_final_profiles({**pre_g,'releaseNonce':str(uuid.uuid4())},pre_r,pre_c,**final_inputs)
+            prepared_root=self.root/'bootstrap-prepared-gateway'
+            final_root=self.root/'bootstrap-final-gateway'
+            for root in (prepared_root,final_root):root.mkdir(mode=0o700)
+            files={**old_files,'profile.json':sc.canonical(pre_g).encode(),
+                   'successor.json':sc.canonical(pre_c).encode(),
+                   'planner.key':next_peer,'semantic-frame.key':next_frame}
+            for name,raw in files.items():
+                path=prepared_root/name;path.write_bytes(raw);path.chmod(0o600)
+            pin_target={'device':final_root.stat().st_dev,'inode':final_root.stat().st_ino}
+            from fortis_approvals.extensions import maintenance_interlock_reader as ir
+            from types import SimpleNamespace
+            phase=(publication['record'],{'interlockDigest':publication['digest'],
+                                          'registryDigest':publication['registryDigest']})
+            def seal(verify):
+                with (patch.object(mount,'_check_owner_readonly_mount'),
+                      patch.object(mount,'GatewayRegistryUnixCandidateRead',return_value=copy.copy(socket_peer)),
+                      patch.object(mount,'_exact_mountinfo',return_value=True),
+                      patch.object(mount.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY if verify else 0)),
+                      patch.object(ir,'read_latest_interlock',return_value=phase)):
+                    return mount.seal_bootstrap_gateway_material(**final_inputs,registry_profile=pre_r,
+                        verify_only=verify,expected_target=pin_target,incumbent_core=Path(core.path),
+                        root=prepared_root,target=final_root)
+            sealed=seal(False)
+            self.assertEqual(seal(True),sealed)
+            self.assertEqual(sealed['profileDigest'],sc.digest(final['gateway']))
+            self.assertEqual(sealed['registryProfileDigest'],sc.digest(final['registry']))
+            self.assertEqual({p.name:p.read_bytes() for p in prepared_root.iterdir()},files)
+            self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),before)
+            # Exercise the actual ordinary material branch on the same
+            # preserved Core and the already sealed bootstrap profile.
+            from fortis_approvals.extensions.successor_runtime import _project_retained_profiles
+            from fortis_approvals.integrations.registry_contracts import maintenance_seal
+            prep2=_project_retained_profiles(final['gateway'],final['registry'],final['successor'],
+                expected_gateway_digest=sc.digest(final['gateway']),expected_registry_digest=sc.digest(final['registry']),
+                expected_gateway_source_digest=pre_g['gatewaySourceDigest'],new_source_digest='9'*64,
+                nonce=str(uuid.uuid4()),peer_key_digest=sha(b'l'*32),frame_key_digest=sha(b'm'*32),staged=True)
+            g2,r2,c2=(prep2[k] for k in ('gateway','registry','successor'))
+            prep_root=self.root/'ordinary-prepared-gateway';target_root=self.root/'ordinary-final-gateway'
+            for root in (prep_root,target_root):root.mkdir(mode=0o700)
+            files2={**files,'profile.json':sc.canonical(g2).encode(),'successor.json':sc.canonical(c2).encode(),
+                    'planner.key':b'l'*32,'semantic-frame.key':b'm'*32}
+            for name,raw in files2.items():
+                path=prep_root/name;path.write_bytes(raw);path.chmod(0o600)
+            normal=plan['records'][-1]
+            for phase_name in ('BACKUP_FROZEN','PROMOTE_FROZEN','COMPLETION_PENDING','NORMAL'):
+                normal=mc.validate_transition(normal,{**normal,'phase':phase_name,'sequence':normal['sequence']+1,
+                    'previousDigest':sc.digest(normal),'proofDigest':'1'*64})
+            with patch.object(mount,'_check_owner_readonly_mount'),patch.object(mount,'GatewayRegistryUnixCandidateRead',return_value=copy.copy(socket_peer)):
+                gateway2=mount.reviewed_bootstrap_gateway(expected_release_nonce=g2['releaseNonce'],
+                    expected_source_digest=g2['gatewaySourceDigest'],incumbent_nonce=final['gateway']['releaseNonce'],
+                    incumbent_source_digest=final['gateway']['gatewaySourceDigest'],incumbent_profile_digest=sc.digest(final['gateway']),
+                    incumbent_core=Path(core.path),root=prep_root,incumbent_root=final_root,ordinary=True)
+            roots={k:{'device':target_root.stat().st_dev,'inode':target_root.stat().st_ino+i}
+                   for i,k in enumerate(('gateway','registry','state','backup'))}
+            cp={**checkpoint,'snapshotRevision':12}
+            ordinary_checked={'gateway':gateway2,'registry':{'result':'ORDINARY_REGISTRY_MATERIAL_ONLY',
+                'profileDigest':sc.digest(r2),'incumbentProfileDigest':sc.digest(final['registry']),
+                'binding':gateway2['binding'],'checkpoint':cp,'items':items,
+                'holdSnapshot':{**holds,'snapshotRevision':cp['snapshotRevision'],'holds':[]}},
+                'artifacts':checked['artifacts'],'roots':roots}
+            auth2={'attemptId':str(uuid.uuid4()),'sourceRecordDigest':'6'*64,'targetGeneration':'5'*64,
+                'targetNonce':g2['releaseNonce'],'recordedAt':200,'normalDigest':sc.digest(normal),
+                'compatibilityDigest':sc.digest(ordinary_checked)}
+            intent={'schemaVersion':1,'normal':normal,'compatibility':ordinary_checked,'authorization':auth2}
+            pair2=mc.ordinary_pair_intent(intent)
+            holds2={**holds,'snapshotRevision':cp['snapshotRevision']+2,'holds':[]}
+            receipts2=[]
+            for role,h,row in zip(('registry','gateway'),holds['holds'],receipts):
+                ident=mc.paired_operation_id(pair2['attemptId'],role)
+                holds2['holds'].append({**h,'attemptId':ident,'pairId':pair2['attemptId'],'pairDigest':sc.digest(pair2)})
+                receipts2.append({**row,'operationId':ident,'recordedAt':auth2['recordedAt']})
+            drain=mc.paired_draining_record(normal,pair2,receipts2,holds2,target_generation=auth2['targetGeneration'],recorded_at=auth2['recordedAt'])
+            begin2={'result':'PROTECTED_PAIR_BEGIN_READBACK_ONLY','intentDigest':sc.digest(intent),'pair':pair2,
+                'receipts':receipts2,'checkpoint':{**cp,'snapshotRevision':holds2['snapshotRevision']},
+                'holdSnapshot':holds2,'draining':drain,'registryDigest':sc.digest(holds2)}
+            state={'sha256':{},'summary':{}}
+            check={'result':'FREEZE_BINDINGS_MATCH_ONLY','interlockDigest':sc.digest(drain),'registryDigest':begin2['registryDigest'],
+                'stateReceiptDigest':sc.digest(state),'companionDigest':gateway2['companion']['companionDigest'],
+                'workerAttestationDigest':'8'*64,'attemptId':auth2['attemptId'],'restrictionDigest':drain['attempt']['restrictionDigest']}
+            checked_phase=maintenance_seal.checked_transitions(check,drain)['checked']
+            stop=maintenance_seal.apply_stop_plan(checked_phase,check,{'sourceRecordDigest':auth2['sourceRecordDigest'],
+                'checkedRecordDigest':'9'*64,'targetImageId':'sha256:'+pair2['artifacts']['gateway']})
+            pub={**publication,'sourceRecordHash':auth2['sourceRecordDigest'],'record':stop['next'],'digest':sc.digest(stop['next']),
+                 'previous':checked_phase,'registryDigest':begin2['registryDigest'],'previousRegistryDigest':begin2['registryDigest']}
+            ordinary_proof={'intent':intent,'check':check,'sourceReceipt':state,'stop':stop}
+            def seal2(verify):
+                with (patch.object(mount,'_check_owner_readonly_mount'),
+                      patch.object(mount,'GatewayRegistryUnixCandidateRead',return_value=copy.copy(socket_peer)),
+                      patch.object(mount,'_exact_mountinfo',return_value=True),
+                      patch.object(mount.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY if verify else 0)),
+                      patch.object(ir,'read_latest_interlock',return_value=(pub['record'],{'interlockDigest':pub['digest'],'registryDigest':pub['registryDigest']})),
+                      patch.object(ir,'read_controller_begin',return_value={'intent':intent,'revoked':False})):
+                    return mount.seal_bootstrap_gateway_material(checked=ordinary_checked,authorization=auth2,seed=normal,begin=begin2,
+                        publication=pub,registry_profile=r2,verify_only=verify,expected_target=roots['gateway'],
+                        incumbent_core=Path(core.path),root=prep_root,target=target_root,ordinary=ordinary_proof)
+            sealed2=seal2(False)
+            self.assertEqual(seal2(True),sealed2)
+            self.assertEqual(sealed2['generation'],auth2['targetGeneration'])
+            self.assertEqual(sc.loads_strict((target_root/'successor.json').read_bytes())['successorDigest'],final['successor']['successorDigest'])
+            self.assertEqual({p.name:p.read_bytes() for p in prep_root.iterdir()},files2)
+            self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),before)
+            # A later release carries forward the same original enrollment
+            # even though its installed profile has an older frozen handoff.
+            ctrl2=Controller(staged['gateway']['instanceId'],staged['gateway']['scopeDigest'],target_generation)
+            second_attempt={**attempt,'attemptId':str(uuid.uuid4()),'sourceGeneration':target_generation,
+                            'targetGeneration':'6'*64}
+            ctrl2.advance('DRAINING',attempt=second_attempt)
+            for phase in ('FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP'):ctrl2.advance(phase)
+            ctrl2.advance('STAGED_TARGET_FROZEN',generation='6'*64)
+            second=project_staged_profiles(staged['gateway'],staged['registry'],staged['successor'],
+                expected_gateway_digest=sc.digest(staged['gateway']),expected_registry_digest=sc.digest(staged['registry']),
+                expected_gateway_source_digest=next_source,new_source_digest='9'*64,nonce=str(uuid.uuid4()),
+                peer_key_digest=sha(b'l'*32),frame_key_digest=sha(b'm'*32),staged_record=ctrl2.record,
+                handoff={**handoff,'attemptId':second_attempt['attemptId'],'interlockDigest':ctrl2.pin},
+                staged_companion_digest='f'*64)
+            self.assertEqual(second['gateway']['semanticGeneration'],'6'*64)
+            self.assertEqual(second['successor']['retainedEnrollmentSourceDigest'],enrollment_source)
+            self.assertEqual(second['successor']['successorDigest'],staged['successor']['successorDigest'])
+            with self.assertRaises(Denied):
+                project_corrective_profiles(staged['gateway'],staged['registry'],staged['successor'],
+                    **{**next_inputs,'expected_gateway_digest':sc.digest(staged['gateway']),
+                       'expected_registry_digest':sc.digest(staged['registry']),
+                       'expected_gateway_source_digest':next_source,'new_source_digest':'9'*64})
+            with self.assertRaises(Denied):
+                project_staged_profiles(*profiles,**{**inputs,'handoff':{**handoff,'interlockDigest':'0'*64}})
+            for change in ({'registryInstanceId':str(uuid.uuid4())},{'scopeDigest':'0'*64},
+                           {'attempt':{**attempt,'sourceGeneration':'6'*64}},
+                           {'attempt':{**attempt,'sourceGeneration':target_generation}}):
+                mixed={**ctrl.record,**change}
+                with self.assertRaises(Denied):
+                    project_staged_profiles(*profiles,**{**inputs,'staged_record':mixed,
+                        'handoff':{**handoff,'interlockDigest':sc.digest(mixed)}})
+            self.assertEqual(projected['successor'],incumbent['successor'])
+            self.assertEqual(projected['successor']['retainedEnrollmentSourceDigest'],enrollment_source)
+            new_source=next_source
             released=projected['gateway']
             write_mounted('planner.key',next_peer)
             write_mounted('semantic-frame.key',next_frame)
@@ -1429,28 +1878,83 @@ class ImpactTests(unittest.TestCase):
             # must be discarded; no provider effect or authority append.
             self.assertEqual(original_domain.snapshot(),original_snapshot)
             self.assertEqual(lineage.domain.snapshot()['sourceRevision'],3)
+            # Pre-effect probe on preliminary sealed material, without
+            # connecting to either Registry or claiming a live receiver.
+            preliminary=project_corrective_profiles(released,projected_registry,projected['successor'],
+                expected_gateway_digest=sc.digest(released),expected_registry_digest=sc.digest(projected_registry),
+                expected_gateway_source_digest=new_source,new_source_digest='6'*64,
+                nonce=str(uuid.uuid4()),peer_key_digest=sha(b'q'*32),frame_key_digest=sha(b'r'*32))
+            preliminary_root=self.root/'bootstrap-preliminary'
+            shutil.copytree(gateway_root,preliminary_root)
+            for name,data in (('profile.json',sc.canonical(preliminary['gateway']).encode()),
+                    ('successor.json',sc.canonical(preliminary['successor']).encode()),
+                    ('planner.key',b'q'*32),('semantic-frame.key',b'r'*32)):
+                (preliminary_root/name).write_bytes(data)
+            # Match the exact sealed key of each profile in the same-UID fixture.
+            def candidate_reader(**kw):
+                result=copy.copy(socket_peer)
+                result._peer_key=kw['peer_key']
+                return result
+            with (patch.object(mount,'_check_owner_readonly_mount'),
+                  patch.object(mount,'GatewayRegistryUnixCandidateRead',side_effect=candidate_reader),
+                  patch.object(mount,'_check_live_peer',side_effect=AssertionError('bootstrap must stay offline'))):
+                arguments=dict(expected_release_nonce=preliminary['gateway']['releaseNonce'],
+                    expected_source_digest='6'*64,incumbent_nonce=released['releaseNonce'],
+                    incumbent_source_digest=new_source,incumbent_profile_digest=sc.digest(released),
+                    incumbent_core=Path(corrected.path),
+                    root=preliminary_root,incumbent_root=gateway_root)
+                probe=mount.reviewed_bootstrap_gateway(**arguments)
+                self.assertEqual(probe['profileDigest'],sc.digest(preliminary['gateway']))
+                self.assertEqual(probe['companion']['companionDigest'],sc.digest(frozen_companion))
+                self.assertEqual(probe['binding']['authorityDigest'],corrected.authority.sha)
+                with self.assertRaisesRegex(Denied,'R7_REGISTRY_BOOTSTRAP_PROFILE_CHANGED'):
+                    mount.reviewed_bootstrap_gateway(**{**arguments,'incumbent_profile_digest':'0'*64})
             core=corrected
         cookie,csrf=G2WebAuthnTest.login(self)
 
-        for revision,coord in enumerate(sorted(coords)):
-            actor,service,operation,target=coord
-            desired='ALLOW' if operation in ('list_components','list_pull_requests','plan_batch') else 'ASK'
-            candidate={'actor':actor,'provider':service,'operation':operation,'target':target,
-                       'scope':'exact','expectedPolicy':'DENY','desiredPolicy':desired,
-                       'expectedRevision':revision,'expectedPolicyVersion':core.policy_version,
-                       'reasonCode':'ISOLATED_SCOPE_REVIEW'}
-            code,change,_=self.call('/v1/owner/policy/editor/begin',{'candidate':candidate},
-                                     cookie=cookie,csrf=csrf)
-            self.assertEqual(code,200,change)
-            code,saved,_=self.call('/v1/owner/policy/editor/finish',{'ceremonyId':change['ceremonyId'],
-                'change':change['change'],'response':self.key.assert_(change)},cookie=cookie,csrf=csrf)
-            self.assertEqual(code,200,saved)
+        def inventory_rows(expected):
+            code,inventory,_=self.call('/v1/owner/provider-inventory',cookie=cookie)
+            self.assertEqual(code,200,inventory)
+            exact=[r for r in inventory['operations'] if r['scope']=='exact']
+            by_coord={(r['actor'],r['provider'],r['operation'],r['target']):r for r in exact}
+            self.assertEqual(len(by_coord),len(exact))
+            for coord in coords:
+                row=by_coord[coord]
+                self.assertEqual(row['currentPolicy'],expected[coord])
+                self.assertIn(expected[coord],row['editablePolicies'])
+                self.assertTrue(row['active'])
+                if coord in {tuple(g['child']) for g in grant_rows}:
+                    self.assertEqual(row['operationKind'],'context-child')
+                    self.assertEqual(row['contextParents'],[
+                        {'service':'release','operation':'merge_and_register','target':'scope'}])
+                    self.assertEqual(row['effectivePolicy'],
+                        'DENY' if expected[coord]=='DENY' else 'UNKNOWN')
+            if kernel_peer:
+                old=[r for r in inventory['operations'] if r['provider']=='registry'
+                     and r['operation'].startswith('candidate_')]
+                self.assertEqual({r['operation'] for r in old},
+                    {'candidate_head','candidate_list_desired','candidate_original_operation'})
+                self.assertTrue(all(r['currentPolicy']=='DENY' for r in old))
+            return by_coord
 
+        # Real owner HTTP inventory, with the installed Registry extension
+        # and reviewed successor sharing the provider name.
+        initial=snapshot(core,lambda db:authority_witness(core,db))
+        inventory_rows({coord:retained_policies.get(coord,'DENY') for coord in coords})
+        self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),initial)
+        desired_policies=dict(retained_policies)
+        for coord in sorted(coords-set(retained_policies)):
+            operation=coord[2]
+            desired='ALLOW' if operation in ('list_components','get_component','list_pull_requests','plan_batch') else 'ASK'
+            change_policy(core,cookie,csrf,coord,len(desired_policies),desired)
+            desired_policies[coord]=desired
+
+        inventory_rows(desired_policies)
         start=perf_counter()
         code,rows,_=self.call(PREFIX+'/discover',{},cookie=cookie,csrf=csrf)
         self.assertEqual(code,200,rows)
         self.assertEqual(len(rows),1)
-        self.assertEqual(rows[0]['state'],'PENDING')
+        self.assertEqual(rows[0]['state'],'PENDING',rows)
         self.assertEqual(endpoint.writes,0)
         discovered=perf_counter()
         discovery_seconds=discovered-start

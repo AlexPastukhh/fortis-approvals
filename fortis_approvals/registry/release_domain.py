@@ -9,6 +9,7 @@ from ..integrations.registry_contracts import semantic_contract as sc
 from .release_event_journal import ReleaseEventJournal, _request, protected_params
 from .state_journal import _CommitUncertain
 from . import source_event_journal as sources
+from ..integrations.registry_contracts.maintenance_contract import paired_begin, paired_operation_id
 
 _ACTIONS = frozenset(('image-rebuild','config-deploy','windows-update',
                       'package-build','migration-required'))
@@ -231,13 +232,15 @@ class ReleaseDomain:
                                   'catalogSha256':catalog,'artifactSha256':None},
                         'provenance':{'TRANSITION':'REVIEWED_TRANSITION','MERGE':'ACCOUNTED_MERGE',
                                       'EXTERNAL_MERGE':'ACCOUNTED_EXTERNAL_MERGE',
-                                      sources.DELIVERY_REPAIR:'REVIEWED_DELIVERY_REPAIR'}[req['kind']],
+                                      sources.DELIVERY_REPAIR:'REVIEWED_DELIVERY_REPAIR',
+                                      sources.BOOTSTRAP_MIGRATION:'REVIEWED_BOOTSTRAP_MIGRATION'}[req['kind']],
                         'sourceRevision':receipt['sourceRevision'],
                         'sourceEventDigest':receipt['eventDigest'],
                         'evidenceDigest':req['evidenceDigest'],
                         'pullRequest':{'repository':p['repository'],'number':p['number'],
                                        'headSha':p['headSha'],'baseSha':p['baseSha']},
-                        'evidenceVerified':req['kind'] in ('MERGE','EXTERNAL_MERGE',sources.DELIVERY_REPAIR)}
+                        'evidenceVerified':req['kind'] in ('MERGE','EXTERNAL_MERGE',sources.DELIVERY_REPAIR,
+                                                         sources.BOOTSTRAP_MIGRATION)}
                     self._add_actions(state,state['desired']['recordId'],row['actions'])
                     previous={sc.canonical(dep):dep for dep in state['sourceRequirements']}
                     previous.update({sc.canonical(dep):dep for dep in p['dependencies']})
@@ -248,10 +251,27 @@ class ReleaseDomain:
                 source_requirements.extend(p['dependencies'])
                 index+=1
         advance(0)
-        for req, receipt in seen.values():
+        rows = iter(seen.values())
+        previous_release=sources.release_anchor(self.store,seen,0)
+        for req, receipt in rows:
             sc.need(req.get('profileDigest') == profile_digest,
                     'REGISTRY_DOMAIN_EVENT_PROFILE_CHANGED')
-            self._apply(states, profiles, req, receipt,catalog=catalog)
+            if req['kind'] in ('PROTECTED_PAIRED_BEGIN','PROTECTED_PAIRED_CLOSE'):
+                other=next(rows,None)
+                sc.need(other is not None,'REGISTRY_PROTECTED_PAIR_INCOMPLETE')
+                # No source event or another write may intervene in this pair.
+                sc.need(index==len(source_rows) or source_rows[index][2]>receipt['snapshotRevision'],
+                        'REGISTRY_PROTECTED_PAIR_INCOMPLETE')
+                checkpoint={'sourceRevision':index,
+                    'sourceCursor':source_rows[index-1][1]['sourceCursor'] if index else self.store.expected_legacy['cursorSha'],
+                    'snapshotRevision':receipt['snapshotRevision']-1+index,
+                    'eventDigest':sc.digest([previous_release,source_rows[index-1][1]['eventDigest']]) if index else previous_release,
+                    'profileDigest':profile_digest}
+                self._apply_pair(states,profiles,[(req,receipt),other],checkpoint,catalog)
+                receipt=other[1]
+            else:
+                self._apply(states, profiles, req, receipt,catalog=catalog)
+            previous_release=receipt['eventDigest']
             advance(receipt['snapshotRevision'])
         sc.need(index==len(source_rows),'SOURCE_EVENT_ORDER_CHANGED')
         for state in states.values():
@@ -303,7 +323,40 @@ class ReleaseDomain:
                                             'ownerReported':False,'technicallyVerified':False})
         cls._refresh_actions(state)
 
-    def _apply(self, states, profiles, req, receipt=None, *, catalog=None):
+    def _apply_pair(self, states, profiles, rows, checkpoint, catalog):
+        first,second=(row[0] for row in rows)
+        pair=paired_begin(first['pair'],self.store.scope['repository'])
+        closing=first['kind']=='PROTECTED_PAIRED_CLOSE'
+        sc.need((closing or pair['checkpoint']==checkpoint) and all(
+            req['kind']==first['kind'] and req.get('pair')==pair
+            and req['actor']==first['actor'] and req['profileDigest']==checkpoint['profileDigest']
+            and req['operationId']==paired_operation_id(pair['attemptId'],role,closing=closing)
+            for req,role in zip((first,second),('registry','gateway'))),
+            'REGISTRY_PROTECTED_PAIR_CHANGED')
+        if closing:
+            # The original pair, per-target CAS and accepted technical
+            # observations are all required; neither member can close alone.
+            for req,receipt in rows:
+                self._apply(states,profiles,req,receipt,catalog=catalog,paired_closing=True)
+            return
+        sc.need(all(req['params']==pair['items'][role]
+                    for req,role in zip((first,second),('registry','gateway'))),
+                'REGISTRY_PROTECTED_PAIR_CHANGED')
+        registry,gateway=(key(pair['items'][role]['subject']) for role in ('registry','gateway'))
+        sc.need(registry in profiles and gateway in profiles
+                and all(profiles[k]['maintenance'] is not None
+                        and profiles[k]['maintenance']['beginRequired']
+                        and profiles[k]['maintenance']['stateFreeze']
+                        and states[k]['desired'] is not None
+                        and states[k]['desired']['evidenceVerified'] is True
+                        for k in (registry,gateway))
+                and pair['items']['registry']['subject'] in profiles[gateway]['dependencies']
+                and not any(state['activeAttempt'] is not None for state in states.values()),
+                'REGISTRY_PROTECTED_PAIR_SCOPE_OR_HOLD')
+        for req,receipt in rows:
+            self._apply(states,profiles,req,receipt,catalog=catalog,paired_registry=registry)
+
+    def _apply(self, states, profiles, req, receipt=None, *, catalog=None, paired_registry=None, paired_closing=False):
         p = req['params']
         k = key(p['subject'])
         sc.need(k in states and states[k]['subject'] == p['subject'],
@@ -317,7 +370,9 @@ class ReleaseDomain:
             raise Stale('REGISTRY_DOMAIN_STATE_STALE')
         kind = req['kind']
         sc.need(profile['deployable'], 'REGISTRY_DOMAIN_NONDEPLOYABLE')
-        if kind == 'RELEASE_ATTEMPT_STARTED':
+        if kind in ('RELEASE_ATTEMPT_STARTED','PROTECTED_PAIRED_BEGIN'):
+            paired=kind=='PROTECTED_PAIRED_BEGIN'
+            sc.need(paired==(paired_registry is not None),'REGISTRY_PROTECTED_PAIR_CHANGED')
             sc.need(profile['deployable'] and active is None and desired is not None
                     and p['source']['catalogSha256']==(catalog or self.store.scope['catalogSha256'])
                     and same_source(p['source'], desired['source']),
@@ -331,11 +386,14 @@ class ReleaseDomain:
                 sc.need(len(matches)==1,'REGISTRY_DOMAIN_DEPENDENCY_UNVERIFIED')
                 dependencies.add(matches[0])
             sc.need(not profile['unresolvedDependencies'] and all(
-                dep in states and self._planning_state(states[dep])=='DEPLOYED'
+                dep in states and (self._planning_state(states[dep])=='DEPLOYED'
+                    or (paired and k!=paired_registry and dep==paired_registry))
                 for dep in dependencies),'REGISTRY_DOMAIN_DEPENDENCY_UNVERIFIED')
             for other_key, other in states.items():
                 if other['activeAttempt'] is not None:
-                    sc.need(not _overlap(profile, profiles[other_key]),
+                    sc.need((paired and k!=paired_registry and other_key==paired_registry
+                             and other['activeAttempt'].get('pairDigest')==sc.digest(req['pair']))
+                            or not _overlap(profile, profiles[other_key]),
                             'REGISTRY_DOMAIN_RESOURCE_CONFLICT')
             state['activeAttempt'] = {'attemptId':req['operationId'],'source':_copy(p['source']),
                                       'desiredRecordId':desired['recordId'],
@@ -343,6 +401,10 @@ class ReleaseDomain:
                                       'resources':list(profile['resources']),
                                       'coveredRecordIds':sorted({a['recordId'] for a in state['actionCoverage']}),
                                       'state':'OWNER_WINDOW','result':None}
+            if paired:
+                role='registry' if k==paired_registry else 'gateway'
+                state['activeAttempt'].update(pairId=req['pair']['attemptId'],
+                    pairDigest=sc.digest(req['pair']),preparedArtifactSha256=req['pair']['artifacts'][role])
         elif kind == 'OWNER_RESULT_RECORDED':
             historical = p['context'] == 'historical'
             if not historical:
@@ -400,7 +462,7 @@ class ReleaseDomain:
                             a['ownerReported']=False
                 self._refresh_actions(state)
         else:
-            sc.need(kind in ('TECHNICAL_OBSERVATION_ACCEPTED','RELEASE_HOLD_CLOSED'),
+            sc.need(kind in ('TECHNICAL_OBSERVATION_ACCEPTED','RELEASE_HOLD_CLOSED','PROTECTED_PAIRED_CLOSE'),
                     'REGISTRY_DOMAIN_EVENT_KIND')
             coverage=p.get('coveredRecordIds')
             if p['attemptId'] is not None:
@@ -413,13 +475,31 @@ class ReleaseDomain:
                         'REGISTRY_DOMAIN_ATTEMPT_MISMATCH')
             elif active is not None:
                 raise Denied('REGISTRY_DOMAIN_ACTIVE_HOLD')
-            if kind == 'RELEASE_HOLD_CLOSED':
+            if kind in ('RELEASE_HOLD_CLOSED','PROTECTED_PAIRED_CLOSE'):
                 sc.need(active is not None, 'REGISTRY_DOMAIN_NO_ACTIVE_HOLD')
+                sc.need(('pairId' in active)==paired_closing
+                        and paired_closing==(kind=='PROTECTED_PAIRED_CLOSE'),
+                        'REGISTRY_PROTECTED_PAIR_CLOSE_REQUIRED')
+                if paired_closing:
+                    installed=state['installed']
+                    sc.need(active['pairId']==req['pair']['attemptId']
+                            and active['pairDigest']==sc.digest(req['pair'])
+                            and active.get('verifiedSource')==p['source']
+                            and installed is not None
+                            and installed['validity']=='LAST_ACCEPTED_TECHNICAL_OBSERVATION'
+                            and same_source(installed['source'],p['source'])
+                            and all(installed[k]==p[k] for k in ('controllerReceiptDigest','readbackDigest','observedAt'))
+                            and desired is not None and same_source(desired['source'],p['source'])
+                            and all(a['technicallyVerified'] for a in state['actionCoverage']),
+                            'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
                 state['activeAttempt'] = None
             else:
                 prior = state['installed']
                 sc.need(prior is None or p['observedAt'] >= prior['observedAt'],
                         'REGISTRY_DOMAIN_OBSERVATION_ORDER')
+                if active is not None and 'pairId' in active:
+                    sc.need(coverage is not None and p['source']['artifactSha256']==active['preparedArtifactSha256'],
+                            'REGISTRY_PROTECTED_PAIR_ARTIFACT_CHANGED')
                 if coverage is not None:
                     current=(desired is not None and desired['evidenceVerified']
                              and same_source_lineage(p['source'],desired['source']))
@@ -460,7 +540,9 @@ class ReleaseDomain:
         The trusted peer must authenticate this snapshot; it is a candidate
         view while the source transition and protected admission are open.
         """
-        view=self.snapshot()
+        return self._maintenance_snapshot(self.snapshot())
+
+    def _maintenance_snapshot(self, view):
         holds=[]
         for k,state in sorted(view['states'].items()):
             h=state['activeAttempt']
@@ -471,6 +553,9 @@ class ReleaseDomain:
                           'restrictionDigest':restriction_digest(view['profileDigest'],h),
                           'stateFreeze':h['maintenance']['stateFreeze'],
                           'blockedOperations':h['maintenance']['blockedOperations']})
+            if 'pairId' in h:
+                holds[-1].update(pairId=h['pairId'],pairDigest=h['pairDigest'])
+                holds[-1]['restrictionDigest']=sc.digest([holds[-1]['restrictionDigest'],h['pairDigest']])
         return {'instanceId':self.store.instance_id,
                 'scopeDigest':self.store.expected_legacy['scopeDigest'],
                 'snapshotRevision':view['snapshotRevision'],'eventDigest':view['eventDigest'],
@@ -544,6 +629,7 @@ class ReleaseDomain:
         """
         req=sources.request(value,self.store)
         sc.need(req['kind'] != sources.DELIVERY_REPAIR, 'SOURCE_DELIVERY_REPAIR_OFFLINE_REQUIRED')
+        sc.need(req['kind'] != sources.BOOTSTRAP_MIGRATION, 'SOURCE_BOOTSTRAP_OFFLINE_REQUIRED')
         prior=self.snapshot()['sourceOperations'].get(req['operationId'])
         if prior is not None:
             if prior[0]!=req:
@@ -600,6 +686,201 @@ class ReleaseDomain:
                        self.store.scope['repository'])
                 for item,ident in zip(items,operation_ids)]
         return self._write(reqs,recorded_at)
+
+    def protected_begin_pair(self, value, *, actor, recorded_at):
+        """One exact private controller intent, two immutable receipts atomically.
+
+        Only a separately composed trusted verifier can admit the actual
+        compatibility/readback proof. Ordinary semantic routes cannot call this.
+        """
+        sc.revision(recorded_at)
+        return self._protected_pair_write(self._paired_begin_requests(value,actor),recorded_at)
+
+    def _paired_begin_requests(self,value,actor):
+        pair=paired_begin(value,self.store.scope['repository'])
+        return [_request({'operationId':paired_operation_id(pair['attemptId'],role),
+            'kind':'PROTECTED_PAIRED_BEGIN','actor':actor,'assertionSource':'PROTECTED_CONTROLLER',
+            'parentRequestId':None,'profileDigest':pair['checkpoint']['profileDigest'],
+            'params':pair['items'][role],'pair':pair},self.store.scope['repository'])
+            for role in ('registry','gateway')]
+
+    def protected_pair_begin_readback(self,value,*,actor):
+        """Exact begin at the replay tip, or independently observed absence."""
+        reqs=self._paired_begin_requests(value,actor);pair=reqs[0]['pair']
+        view=self.snapshot();operations=view['operations']
+        checkpoint={k:view[k] for k in pair['checkpoint']}
+        holds=self._maintenance_snapshot(view)
+        rows=[operations.get(req['operationId']) for req in reqs]
+        if not any(rows):
+            return {'receipts':None,'checkpoint':checkpoint,'holdSnapshot':holds}
+        sc.need(all(row is not None and row[0]==req for row,req in zip(rows,reqs))
+                and list(operations)[-2:]==[req['operationId'] for req in reqs]
+                and checkpoint['snapshotRevision']==pair['checkpoint']['snapshotRevision']+2
+                and all(checkpoint[k]==pair['checkpoint'][k] for k in ('sourceCursor','sourceRevision','profileDigest'))
+                and len(holds['holds'])==2 and all(h.get('pairDigest')==sc.digest(pair) for h in holds['holds']),
+                'REGISTRY_PROTECTED_BEGIN_READBACK_CHANGED')
+        return {'receipts':[row[1] for row in rows],'checkpoint':checkpoint,'holdSnapshot':holds}
+
+    def protected_close_pair(self, value, items, *, actor, recorded_at):
+        """Atomic successful closure; trusted verifier must prove real completion.
+
+        Two accepted technical observations remain independent evidence.
+        Return/failure is not successful completion and cannot use this path.
+        """
+        reqs=self._paired_close_requests(value,items,actor=actor)
+        sc.revision(recorded_at)
+        sc.need(all(req['params']['observedAt']<=recorded_at for req in reqs),
+                'REGISTRY_PROTECTED_OBSERVATION_TIME')
+        return self._protected_pair_write(reqs,recorded_at)
+
+    def _paired_close_requests(self,value,items,*,actor):
+        pair=paired_begin(value,self.store.scope['repository'])
+        sc.fields(items,('registry','gateway'))
+        return [_request({'operationId':paired_operation_id(pair['attemptId'],role,closing=True),
+            'kind':'PROTECTED_PAIRED_CLOSE','actor':actor,'assertionSource':'PROTECTED_CONTROLLER',
+            'parentRequestId':None,'profileDigest':pair['checkpoint']['profileDigest'],
+            'params':protected_params('RELEASE_HOLD_CLOSED',items[role]),'pair':pair},
+            self.store.scope['repository']) for role in ('registry','gateway')]
+
+    def protected_pair_completion_readback(self,value,items,*,actor):
+        """Read only the exact completed attempt at the current journal tip.
+
+        This does not retry an observation or close, authenticate the host
+        intent, or allow NORMAL. A trusted controller compares this evidence
+        with its independently durable COMPLETION_PENDING intent. Any later
+        source or release event makes this recovery witness inapplicable.
+        """
+        reqs=self._paired_close_requests(value,items,actor=actor)
+        pair=reqs[0]['pair']
+        view=self.snapshot()
+        current={k:view[k] for k in pair['checkpoint']}
+        sc.need(all(current[k]==pair['checkpoint'][k]
+                    for k in ('sourceRevision','sourceCursor','profileDigest')),
+                'REGISTRY_PROTECTED_COMPLETION_CHECKPOINT_CHANGED')
+        operations=view['operations']
+        rows=[operations.get(req['operationId']) for req in reqs]
+        sc.need(all(row is not None and row[0]==req for row,req in zip(rows,reqs)),
+                'REGISTRY_PROTECTED_COMPLETION_RECEIPTS_MISSING')
+        receipts=[row[1] for row in rows]
+        sc.need(list(operations)[-2:]==[req['operationId'] for req in reqs]
+                and current['snapshotRevision']==receipts[-1]['snapshotRevision']+current['sourceRevision'],
+                'REGISTRY_PROTECTED_COMPLETION_CHECKPOINT_CHANGED')
+        holds=self._maintenance_snapshot(view)
+        sc.need(not holds['holds'],'REGISTRY_PROTECTED_COMPLETION_HOLD_REMAINS')
+        observed={}
+        for req,role in zip(reqs,('registry','gateway')):
+            state=view['states'][key(req['params']['subject'])]
+            installed=state['installed']
+            sc.need(state['planningState']=='DEPLOYED' and installed is not None,
+                    'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+            row=operations.get(installed['operationId'])
+            sc.need(row is not None and row[0]['kind']=='TECHNICAL_OBSERVATION_ACCEPTED'
+                    and all(row[0]['params'][k]==req['params'][k] for k in
+                            ('attemptId','subject','source','controllerReceiptDigest','readbackDigest','observedAt')),
+                    'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+            observed[role]=row[1]
+        return {'result':'PROTECTED_PAIR_COMPLETION_READBACK_ONLY','attemptId':pair['attemptId'],
+                'pairDigest':sc.digest(pair),'checkpoint':current,'holdSnapshot':holds,
+                'closeReceipts':receipts,'observationReceipts':observed}
+
+    def protected_complete_pair(self, value, observations, *, actor, recorded_at):
+        """One private transaction: two observations followed by two closes.
+
+        The trusted verifier must authenticate the exact protected host
+        intent and fresh technical proofs. No ingress exposes this method.
+        """
+        sc.revision(recorded_at)
+        pair,reqs,items=self._paired_completion_requests(value,observations,actor=actor)
+        sc.need(all(req['params']['observedAt']<=recorded_at for req in reqs),
+                'REGISTRY_PROTECTED_OBSERVATION_TIME')
+        result=self._protected_pair_write(self._paired_close_requests(pair,items,actor=actor),
+            recorded_at,observations=reqs)
+        if type(result) is not list:return result
+        readback=self.protected_complete_pair_readback(pair,observations,actor=actor)
+        sc.need([readback['observationReceipts'][r] for r in ('registry','gateway')]+readback['closeReceipts']==result,
+                'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+        return readback
+
+    def _paired_completion_requests(self,value,observations,*,actor):
+        pair=paired_begin(value,self.store.scope['repository'])
+        sc.fields(observations,('registry','gateway'))
+        from ..integrations.registry_contracts.maintenance_evidence import paired_observation_id
+        reqs=[];items={}
+        for role in ('registry','gateway'):
+            p=protected_params('TECHNICAL_OBSERVATION_ACCEPTED',observations[role])
+            original=pair['items'][role]
+            sc.need(p['subject']==original['subject']
+                    and p['source']=={**original['source'],'artifactSha256':pair['artifacts'][role]}
+                    and p['attemptId']==paired_operation_id(pair['attemptId'],role)
+                    and p['expected']=={**original['expected'],'targetRevision':original['expected']['targetRevision']+1}
+                    and 'coveredRecordIds' in p,
+                    'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+            reqs.append(_request({'operationId':paired_observation_id(pair['attemptId'],role),
+                'kind':'TECHNICAL_OBSERVATION_ACCEPTED','actor':actor,'assertionSource':'PROTECTED_CONTROLLER',
+                'parentRequestId':None,'profileDigest':pair['checkpoint']['profileDigest'],'params':p},
+                self.store.scope['repository']))
+            items[role]={**{k:v for k,v in p.items() if k!='coveredRecordIds'},
+                         'expected':{**p['expected'],'targetRevision':p['expected']['targetRevision']+1}}
+        return pair,reqs,items
+
+    def protected_complete_pair_readback(self,value,observations,*,actor):
+        pair,reqs,items=self._paired_completion_requests(value,observations,actor=actor)
+        readback=self.protected_pair_completion_readback(pair,items,actor=actor)
+        view=self.snapshot()
+        sc.need(all(req['operationId'] in view['operations'] and view['operations'][req['operationId']][0]==req
+                    and view['operations'][req['operationId']][1]==readback['observationReceipts'][role]
+                    for req,role in zip(reqs,('registry','gateway')))
+                and list(view['operations'])[-4:]==[req['operationId'] for req in reqs]+
+                     [row['operationId'] for row in readback['closeReceipts']],
+                'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+        return readback
+
+    def _protected_pair_write(self, reqs, recorded_at, *, observations=()):
+        pair=reqs[0]['pair']
+        all_reqs=[*observations,*reqs]
+        # Readback of existing original receipts does not repeat proof/effect.
+        def existing(view):
+            old=[view['operations'].get(req['operationId']) for req in all_reqs]
+            sc.need(not any(old) or all(old),'REGISTRY_DOMAIN_PARTIAL_REPLAY')
+            if not any(old):return None
+            if any(row[0]!=req for row,req in zip(old,all_reqs)):
+                raise Conflict('REGISTRY_RELEASE_OPERATION_CONFLICT')
+            return [row[1] for row in old]
+        prior=existing(self.snapshot())
+        if prior is not None:return prior
+        sc.need(callable(self._protected_verify) and all(self._protected_verify(_copy(req)) is True
+                for req in all_reqs),'REGISTRY_PROTECTED_PROOF_REQUIRED')
+        try:
+            with self.store._db() as db:
+                view=self._project(db)
+                prior=existing(view)
+                if prior is not None:return prior
+                result=[]
+                if observations:
+                    sc.need(view['snapshotRevision']==pair['checkpoint']['snapshotRevision']+2
+                            and all(view[k]==pair['checkpoint'][k] for k in ('sourceCursor','sourceRevision','profileDigest')),
+                            'REGISTRY_PROTECTED_COMPLETION_CHECKPOINT_CHANGED')
+                    for req in observations:
+                        state=view['states'][key(req['params']['subject'])]
+                        active=state['activeAttempt']
+                        sc.need(active is not None and active.get('pairDigest')==sc.digest(pair)
+                                and req['params']['coveredRecordIds']==active['coveredRecordIds'],
+                                'REGISTRY_PROTECTED_PAIR_COMPLETION_UNVERIFIED')
+                        self._apply(view['states'],view['profiles'],req,catalog=view['catalogSha256'])
+                        result.append(self.store._append_in_transaction(db,req,recorded_at))
+                    # Re-project the observations within the SAME transaction
+                    # to obtain their actual per-target CAS and Installed.
+                    view=self._project(db)
+                checkpoint={k:view[k] for k in pair['checkpoint']}
+                self._apply_pair(view['states'],view['profiles'],[(req,None) for req in reqs],
+                                 checkpoint,view['catalogSha256'])
+                result.extend(self.store._append_in_transaction(db,req,recorded_at) for req in reqs)
+                self._project(db)
+            try:
+                if existing(self.snapshot())==result:return result
+            except (Denied,KeyError,Stale):pass
+        except _CommitUncertain:pass
+        return {'result':'UNKNOWN_OUTCOME','operationIds':[r['operationId'] for r in all_reqs]}
 
     def protected_event(self, kind, params, *, actor, operation_id, recorded_at):
         """Separate trusted internal evidence adapter; never a semantic method.
