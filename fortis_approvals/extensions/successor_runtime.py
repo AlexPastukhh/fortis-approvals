@@ -11,17 +11,87 @@ from .maintenance_gate import MaintenanceGate
 from .maintenance_interlock_reader import InterlockReservations, read_owner_interlock
 from .semantic_enrollment import SemanticEnrollment
 
+# Exact reviewed #288 enrollment source; not a new-image identity or a
+# wildcard for authority migration. The outer profile still pins the actual
+# installed Gateway source independently.
+_RETAINED_288_ENROLLMENT_SOURCE = 'df205501660cfc92619bb7bbda1e52df3e207a29fba9ef37a2b9fdadf7a6ac14'
+
+
+def project_corrective_profiles(gateway, registry, composition, *,
+                                expected_gateway_digest, expected_registry_digest,
+                                new_source_digest, nonce, peer_key_digest,
+                                frame_key_digest):
+    """Project the paired owner seals for the retained #288 enrollment.
+
+    No policy, history, catalog, interlock or scope change. The caller must
+    independently verify old seals, actual installed image digest, immutable
+    material and stored authority before writing fresh, separate volumes.
+    """
+    for value in (expected_gateway_digest, expected_registry_digest,
+                  new_source_digest, peer_key_digest, frame_key_digest):
+        sc.hex_id(value,64)
+    sc.uuid_id(nonce)
+    sc.need(sc.digest(gateway)==expected_gateway_digest
+            and sc.digest(registry)==expected_registry_digest
+            and gateway['schemaVersion']==5 and registry['schemaVersion']==3
+            and gateway['gatewaySourceDigest']==_RETAINED_288_ENROLLMENT_SOURCE
+            and sc.digest(composition)==gateway['successorSha256']
+            and composition['schemaVersion']==1 and composition['transition'] is False
+            and composition['frozenHandoff'] is None
+            and nonce!=gateway['releaseNonce'],
+            'R7_REGISTRY_CORRECTIVE_SOURCE_SEAL_CHANGED')
+    pins=registry['semantic']
+    writer=registry['sourceWrite']
+    sc.need(gateway['instanceId']==registry['instanceId']
+            and gateway['scopeDigest']==sc.digest(registry['scope'])
+            and gateway['semanticProfileDigest']==pins['successorProfileDigest']
+            and gateway['semanticGeneration']==pins['generation']
+            and gateway['semanticInternalActor']==pins['internalActor']
+            and gateway['socketPath']==registry['socketPath']
+            and gateway['plannerKeySha256']==pins['peerKeyDigest']
+            and gateway['semanticFrameKeySha256']==pins['frameKeyDigest']
+            and peer_key_digest!=frame_key_digest
+            and not {peer_key_digest,frame_key_digest}&{pins['peerKeyDigest'],pins['frameKeyDigest']}
+            and writer['ownerActor']==composition['ownerPrincipal']
+            and writer['policyAuthorityDigest']==composition['successorDigest']
+            and all(writer[key]==composition[key] for key in
+                    ('target','interlockDigest','validatorRevision','impactBinding','buildPins')),
+            'R7_REGISTRY_CORRECTIVE_PAIR_CHANGED')
+    ProtectedRegistrySuccessor(composition,source_digest=gateway['gatewaySourceDigest'])
+    successor={**composition,'schemaVersion':2,
+               'retainedEnrollmentSourceDigest':gateway['gatewaySourceDigest']}
+    ProtectedRegistrySuccessor(successor,source_digest=new_source_digest)
+    target_gateway={**gateway,'releaseNonce':nonce,'gatewaySourceDigest':new_source_digest,
+                    'plannerKeySha256':peer_key_digest,'semanticFrameKeySha256':frame_key_digest,
+                    'successorSha256':sc.digest(successor)}
+    target_registry={**registry,'semantic':{**pins,'peerKeyDigest':peer_key_digest,
+                                            'frameKeyDigest':frame_key_digest}}
+    return {'gateway':target_gateway,'registry':target_registry,'successor':successor}
+
 
 class ProtectedRegistrySuccessor:
     def __init__(self, value, *, source_digest):
-        sc.fields(value, ('schemaVersion', 'repository', 'target', 'ownerPrincipal',
-                          'context', 'contextDigest', 'semantic', 'semanticDigest',
-                          'successorDigest', 'companionDigest', 'interlockDigest',
-                          'transition', 'frozenHandoff', 'validatorRevision',
-                          'impactBinding', 'buildPins', 'ciPolicy', 'ciPolicyDigest'))
-        sc.need(type(value['schemaVersion']) is int and value['schemaVersion'] == 1
-                and value['repository'] == REPOSITORY and type(value['transition']) is bool,
+        sc.need(type(value) is dict and type(value.get('schemaVersion')) is int
+                and value['schemaVersion'] in (1, 2), 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
+        retained = value['schemaVersion'] == 2
+        fields = ('schemaVersion', 'repository', 'target', 'ownerPrincipal',
+                  'context', 'contextDigest', 'semantic', 'semanticDigest',
+                  'successorDigest', 'companionDigest', 'interlockDigest',
+                  'transition', 'frozenHandoff', 'validatorRevision',
+                  'impactBinding', 'buildPins', 'ciPolicy', 'ciPolicyDigest')
+        sc.fields(value, fields + (('retainedEnrollmentSourceDigest',) if retained else ()))
+        sc.need(value['repository'] == REPOSITORY and type(value['transition']) is bool,
                 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
+        sc.hex_id(source_digest, 64)
+        enrollment_source = source_digest
+        if retained:
+            enrollment_source = value['retainedEnrollmentSourceDigest']
+            # No first transition or new authority epoch may use this path.
+            # install_reviewed still requires the exact stored successor
+            # authority, original history and both exact enrollment digests.
+            sc.need(enrollment_source == _RETAINED_288_ENROLLMENT_SOURCE
+                    and source_digest != enrollment_source and not value['transition'],
+                    'R7_REGISTRY_RETAINED_ENROLLMENT_DENIED')
         for name in ('target', 'ownerPrincipal'):
             sc.name(value[name])
         for pin in ('successorDigest', 'companionDigest', 'interlockDigest', 'ciPolicyDigest'):
@@ -39,8 +109,8 @@ class ProtectedRegistrySuccessor:
         self._raw = sc.canonical(value)
         self._source_digest = source_digest
         self.context = ContextEnrollment.from_reviewed_rows(
-            value['context'], source_digest=source_digest, expected_digest=value['contextDigest'])
-        self.semantic = SemanticEnrollment(value['semantic'], source_digest=source_digest,
+            value['context'], source_digest=enrollment_source, expected_digest=value['contextDigest'])
+        self.semantic = SemanticEnrollment(value['semantic'], source_digest=enrollment_source,
                                            expected_digest=value['semanticDigest'])
         sc.need(all(row.get('repository', row.get('subject', {}).get('repository')) == REPOSITORY
                     for row in self.context.metadata()['grants'])
@@ -71,6 +141,20 @@ class ProtectedRegistrySuccessor:
                 'SOURCE_EVIDENCE_BINDING_CHANGED')
         return expected
 
+    def inspect_existing_companion(self, reader, path):
+        """Check the exact retained source or its untouched staged copy."""
+        from .composite_preservation import inspect_staged_successor
+
+        config = sc.loads_strict(self._raw)
+        history = reader._policy_history
+        sc.need(reader._successor_config is self and config['schemaVersion'] == 2
+                and not config['transition'] and config['frozenHandoff'] is None
+                and type(history) is ReviewedHistoryEvidence,
+                'R7_REGISTRY_SUCCESSOR_TRANSITION_REQUIRED')
+        return inspect_staged_successor(
+            path, expected_digest=config['companionDigest'],
+            verify_history=lambda db: history.verify_successor_storage(db, config['successorDigest']))
+
     def checked_delivery(self, reader, *, expected_interlock_digest, incumbent_core=None, scratch_root=None):
         """Existing Check/Apply read-only helper. Performs no startup or write."""
         from .composite_preservation import project_staged_companion
@@ -85,12 +169,15 @@ class ProtectedRegistrySuccessor:
         receipt = {'sourceDelivery':binding, 'companionDigest':config['companionDigest'],
                    'generation':reader._semantic_transport.generation}
         if incumbent_core is not None:
-            sc.need(config['transition'] and handoff is None, 'R7_REGISTRY_SUCCESSOR_TRANSITION_REQUIRED')
+            sc.need(handoff is None, 'R7_REGISTRY_SUCCESSOR_TRANSITION_REQUIRED')
             history = reader._policy_history
             sc.need(type(history) is ReviewedHistoryEvidence, 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
-            receipt['legacyCompanion'] = project_staged_companion(
-                incumbent_core, expected_digest=config['companionDigest'],
-                verify_history=history.verify_incumbent_storage, scratch_root=scratch_root)
+            if config['transition']:
+                receipt['legacyCompanion'] = project_staged_companion(
+                    incumbent_core, expected_digest=config['companionDigest'],
+                    verify_history=history.verify_incumbent_storage, scratch_root=scratch_root)
+            else:
+                receipt['existingCompanion'] = self.inspect_existing_companion(reader, incumbent_core)
             gate.verify_startup(handoff)
             sc.need(self._delivery(reader, config, readonly=True) == binding, 'SOURCE_EVIDENCE_BINDING_CHANGED')
         return receipt

@@ -112,7 +112,7 @@ def main():
             from .staging import ReleaseGate
             value = stdin_json()
             check(type(value) is dict and set(value) == {'nonce', 'configurationDigest'}, 'RELEASE_GATE_INPUT_INVALID')
-            result = {'active': ReleaseGate(value['nonce'], value['configurationDigest']).ready()}
+            result = ReleaseGate(value['nonce'], value['configurationDigest']).record_status()
         elif args.command == 'gate-status':
             from .staging import ReleaseGate
             config = ExtensionConfig(loads_strict(os.environ.get('FORTIS_EXTENSIONS_CONFIG', '')))

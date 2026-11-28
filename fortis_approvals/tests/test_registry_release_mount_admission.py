@@ -149,6 +149,24 @@ class RegistryExactMountAdmissionTests(unittest.TestCase):
         self.assertIn('RELEASE_REGISTRY_NONCE_REUSE_DENIED',_PS)
         self.assertIn('RELEASE_REGISTRY_PROVIDER_AND_OWNER_MOUNT_MISMATCH',_PS)
 
+    def test_corrective_apply_reuses_checked_attempt_and_owner_go(self):
+        self.assertIn('[switch]$Corrective288',_PS)
+        self.assertIn("($Action -ceq 'Apply' -and $CheckedImageRecord)",_PS)
+        self.assertIn('APPLY CORRECTIVE T4 288',_PS)
+        apply=_PS.split("Step 'PREPARED_RECORD_SAVED'",1)[1]
+        ordered=("APPLY CORRECTIVE T4 288","Verify-Checked-Image $Source $Report",
+                 "Write-Private $AttemptPointer","STOP_SOURCE",
+                 "Switch-CorrectiveRegistryPair","Step 'CLONE_STATE'")
+        # STOP_SOURCE is the preflight label, not a Docker effect. Check
+        # actual stop is after the protected attempt pointer.
+        for marker in ordered:
+            self.assertIn(marker,apply)
+        self.assertLess(apply.index("Write-Private $AttemptPointer"),
+                        apply.index("Docker-Text @('stop','--timeout','20',$Old.Id)"))
+        self.assertLess(apply.index("Assert-Checked-Source-Receipt $script:R.sourceReceipt"),
+                        apply.index("Switch-CorrectiveRegistryPair"))
+        self.assertLess(apply.index("Switch-CorrectiveRegistryPair"),apply.index("Step 'CLONE_STATE'"))
+
     def test_check_binding_exact_profile_digest_and_nonce_in_runtime(self):
         checked=_PS.split('function Checked-Image-Binding {',1)[1].split(
             'function Save-Checked-Image {',1)[0]

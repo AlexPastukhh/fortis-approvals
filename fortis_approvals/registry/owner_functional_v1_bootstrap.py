@@ -307,8 +307,9 @@ def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=Non
     return receipt
 
 
-def account_delivery_repair(expected_profile_sha256, *, repair_evidence_sha256, source_sha):
-    """Append one owner-reviewed edge to the already prepared inactive Registry."""
+def account_delivery_repair(expected_profile_sha256, *, repair_evidence_sha256, source_sha,
+                            predecessor_revision=1):
+    """Append one exact owner-reviewed delivery edge to the inactive Registry."""
     from . import source_event_journal as sources
     from .protected_transition import reviewed_delivery_repair, staged_domain
     from .release_event_journal import ReleaseEventJournal
@@ -319,21 +320,40 @@ def account_delivery_repair(expected_profile_sha256, *, repair_evidence_sha256, 
         STATE_PATH, instance_id=config['instanceId'], scope=config['scope'],
         expected_legacy=pins['legacyWitness'], transition_digest=pins['transitionDigest'])
     domain = staged_domain(journal, root, pins)
-    retained = sources.delivery_repair_predecessor(domain.snapshot()['sourceOperations'])
+    sc.need(type(predecessor_revision) is int and predecessor_revision in (1, 2),
+            'SOURCE_DELIVERY_REPAIR_SCOPE')
+    operations = domain.snapshot()['sourceOperations']
+    transition = sources.delivery_repair_predecessor(operations)
+    retained = sources.delivery_repair_predecessor(operations, predecessor_revision)
     request = sources.request(reviewed_delivery_repair(
         root, config, expected_evidence_sha256=repair_evidence_sha256,
-        expected_source_sha=source_sha, retained_transition=retained), journal)
+        expected_source_sha=source_sha, retained_transition=transition,
+        retained_predecessor=retained), journal)
     with journal._db() as db:
         view = domain._project(db)
-        prior = sources.delivery_repair_predecessor(view['sourceOperations'])
+        prior = sources.delivery_repair_predecessor(view['sourceOperations'], predecessor_revision)
         exact_retry = request['operationId'] in view['sourceOperations']
-        sc.need(prior == retained and not view['operations']
-                and view['sourceRevision'] == (2 if exact_retry else 1),
+        sc.need(prior == retained
+                and sources.delivery_repair_predecessor(view['sourceOperations']) == transition
+                and not view['operations']
+                and view['sourceRevision'] == predecessor_revision + int(exact_retry),
                 'SOURCE_DELIVERY_REPAIR_STAGED_STATE_CHANGED')
         receipt = sources.append(journal, db, request, view['operations'])
         domain._project(db)
-    sc.need(domain.source_operation(request['operationId']) == receipt,
-            'SOURCE_DELIVERY_REPAIR_READBACK_CHANGED')
+    if predecessor_revision == 2:
+        # The candidate is offline and exclusively mounted. Read back the
+        # committed receipt through one final normal connection so SQLite
+        # itself checkpoints/closes its WAL before the immutable preview.
+        # Never unlink SQLite sidecars or ignore a pending WAL.
+        with journal._db() as db:
+            row = domain._project(db)['sourceOperations'].get(request['operationId'])
+            sc.need(row is not None and row[1] == receipt,'SOURCE_DELIVERY_REPAIR_READBACK_CHANGED')
+        sc.need(not any(p.exists() or p.is_symlink() for p in
+                    (Path(str(STATE_PATH)+suffix) for suffix in ('-wal','-shm','-journal'))),
+                'REGISTRY_CORRECTIVE_PREVIEW_UNCHECKPOINTED')
+    else:
+        sc.need(domain.source_operation(request['operationId']) == receipt,
+                'SOURCE_DELIVERY_REPAIR_READBACK_CHANGED')
     return {'result': 'SOURCE_ONLY_REGISTRY_DELIVERY_REPAIR_ACCOUNTED',
             'profileSha256': expected_profile_sha256, 'repairEvidenceSha256': repair_evidence_sha256,
             'transitionDigest': journal.transition_digest,

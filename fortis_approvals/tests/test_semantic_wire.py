@@ -109,22 +109,27 @@ def owner_read_configuration(lineage,root,*,operation,machine_actor='agent-1',so
     return config,write('profile.json',sc.canonical(config).encode())
 
 
-def read_service_via_entrypoint(path, *, readonly=True, expected_profile=None):
+def read_service_via_entrypoint(path, *, readonly=True, expected_profile=None, corrective_preview_sha=None):
     """Capture what main would serve with isolated mount/UID prerequisites."""
     import os
+    from contextlib import nullcontext
     from types import SimpleNamespace
     from unittest.mock import patch
     from fortis_approvals.registry import local_candidate_read_service as entrypoint
     from fortis_approvals.registry.semantic_unix_service import PrivateSemanticUnixService
 
     captured=[]
-    with patch.object(entrypoint,'_readonly_owner_runtime',return_value=path.parent), \
+    mount = (patch('fortis_approvals.r7_registry_reader_mount._check_owner_readonly_mount')
+             if corrective_preview_sha is not None else nullcontext())
+    with mount, patch.object(entrypoint,'_readonly_owner_runtime',return_value=path.parent), \
          patch.object(entrypoint.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY if readonly else 0)), \
          patch('fortis_approvals.registry.semantic_unix_service._private_socket_dir'), \
          patch.object(PrivateSemanticUnixService,'serve',lambda service:captured.append(service)):
         args = ['--owner-config',str(path)]
         if expected_profile is not None:
             args.extend(['--expected-profile-sha256',expected_profile])
+        if corrective_preview_sha is not None:
+            args.extend(['--corrective-preview-sha',corrective_preview_sha])
         entrypoint.main(args)
     return captured[0]
 

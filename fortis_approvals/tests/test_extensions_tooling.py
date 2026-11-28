@@ -57,8 +57,10 @@ class ToolingTests(unittest.TestCase):
             marker=Path(tmp)/'marker';nonce=str(uuid.uuid4());digest='a'*64
             gate=ReleaseGate(nonce,digest,marker=marker)
             self.assertFalse(gate.ready())
+            self.assertEqual(gate.record_status(),{'active':False,'markerPresent':False})
             marker.write_text(json.dumps({'schemaVersion':1,'nonce':nonce,'configurationDigest':digest}))
             marker.chmod(0o600);self.assertFalse(gate.ready())
+            self.assertEqual(gate.record_status(),{'active':False,'markerPresent':True})
             marker.chmod(0o444)
             if os.geteuid()!=0:
                 self.assertFalse(gate.ready())
@@ -67,7 +69,8 @@ class ToolingTests(unittest.TestCase):
                 gate.activate();self.assertTrue(gate.ready())
                 self.assertFalse(ReleaseGate(str(uuid.uuid4()),digest,marker=marker).ready())
             link=Path(tmp)/'link';link.symlink_to(marker)
-            self.assertFalse(ReleaseGate(nonce,digest,marker=link).ready())
+            self.assertEqual(ReleaseGate(nonce,digest,marker=link).record_status(),
+                             {'active':False,'markerPresent':True})
             with self.assertRaises(Denied):ReleaseGate(nonce,'x'*64)
 
 

@@ -5,6 +5,9 @@ immutable, including original receipt bytes. This is not the transition
 merge accounting, domain eligibility, controller observation verifier,
 Gateway authorization or a protected deployment hold. No public routes.
 """
+from contextlib import contextmanager
+from pathlib import Path
+
 from ..core import Conflict, Denied, Stale, canonical, loads_strict
 from ..integrations.registry_contracts import semantic_contract as sc
 from ..integrations.registry_contracts.transition_contract import validate_registry_witness
@@ -97,7 +100,10 @@ class ReleaseEventJournal(FunctionalV1CandidateJournal):
     and provenance. Local event types do not prove that authority or an actual
     technical install. The source cursor remains frozen until W5 transition.
     """
-    def __init__(self, path, *, instance_id, scope, expected_legacy, transition_digest):
+    def __init__(self, path, *, instance_id, scope, expected_legacy, transition_digest,
+                 immutable_snapshot=False):
+        sc.need(type(immutable_snapshot) is bool,'REGISTRY_CORRECTIVE_PREVIEW_PIN_REQUIRED')
+        self._immutable_snapshot = immutable_snapshot
         self.expected_legacy = validate_registry_witness(expected_legacy)
         sc.hex_id(transition_digest, 64)
         self.transition_digest = transition_digest
@@ -107,6 +113,38 @@ class ReleaseEventJournal(FunctionalV1CandidateJournal):
         sc.need(self.expected_legacy['instanceId'] == instance_id and
                 self.expected_legacy['scopeDigest'] == self.initial['scopeDigest'],
                 'REGISTRY_RELEASE_LEGACY_SCOPE')
+
+    def _frozen_file_identity(self):
+        from ..r7_registry_reader_mount import _check_owner_readonly_mount
+        _check_owner_readonly_mount(self.path.parent)
+        self._paths()
+        sc.need(not any(p.exists() or p.is_symlink() for p in
+                    (Path(str(self.path)+suffix) for suffix in ('-wal','-shm','-journal'))),
+                'REGISTRY_CORRECTIVE_PREVIEW_UNCHECKPOINTED')
+        # immutable SQLite ignores the WAL. Only accept the independently
+        # stopped, checkpointed database (no sidecars), with the WAL header.
+        with self.path.open('rb') as source:
+            header=source.read(100)
+        sc.need(len(header)==100 and header[:16]==b'SQLite format 3\x00'
+                and header[18:20]==b'\x02\x02',
+                'REGISTRY_CORRECTIVE_PREVIEW_WAL_HEADER')
+        st=self.path.stat()
+        return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+
+    @contextmanager
+    def _read_only_db(self):
+        if not self._immutable_snapshot:
+            with super()._read_only_db() as db:
+                yield db
+            return
+        before=self._frozen_file_identity()
+        with super()._read_only_db(immutable_snapshot=True) as db:
+            yield db
+        sc.need(self._frozen_file_identity()==before,'REGISTRY_CORRECTIVE_PREVIEW_STATE_CHANGED')
+
+    def _db(self, initialize=False):
+        sc.need(not self._immutable_snapshot,'REGISTRY_CORRECTIVE_PREVIEW_READ_ONLY')
+        return super()._db(initialize=initialize)
 
     @classmethod
     def initialize(cls, *args, **kwargs):

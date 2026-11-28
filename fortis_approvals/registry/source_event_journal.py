@@ -11,12 +11,23 @@ from ..integrations.registry_contracts import source_lineage_contract as lc
 
 DELIVERY_REPAIR = 'DELIVERY_REPAIR'
 _DELIVERY_287 = '87867ef670b5f8ae16645dbc2c25ea19a5e15e0e'
+_DELIVERY_288 = '5ab74dbd5f4f743b325bafd2444486180c3cdf7f'
+_DELIVERY_288_EVENT = '50b368d0fb366fd2dffec1b15b2f1e6bdbfa8694275352f4dae6006952e0d6a3'
 MAX_SOURCE_EVENTS=64
 MAX_SOURCE_BYTES=4_000_000
 SCHEMA="""CREATE TABLE source_events(revision INTEGER PRIMARY KEY CHECK(revision>=1),
     operation_id TEXT UNIQUE NOT NULL, release_revision INTEGER NOT NULL,
     release_digest TEXT NOT NULL, request TEXT NOT NULL, previous_digest TEXT NOT NULL,
     event_digest TEXT UNIQUE NOT NULL, receipt TEXT NOT NULL)"""
+
+
+def _repair_base(revision):
+    # Finite initial-delivery repair edges only.
+    if revision == 1:
+        return 'TRANSITION', 287, _DELIVERY_287, None
+    if revision == 2:
+        return DELIVERY_REPAIR, 288, _DELIVERY_288, _DELIVERY_288_EVENT
+    raise Denied('SOURCE_DELIVERY_REPAIR_SCOPE')
 
 
 def request(value,store):
@@ -37,8 +48,10 @@ def request(value,store):
         sc.fields(detail, ('predecessorOperationId', 'predecessorEventDigest'))
         sc.uuid_id(detail['predecessorOperationId'])
         sc.hex_id(detail['predecessorEventDigest'], 64)
-        sc.need(value['parentRequestId'] is None and p['expectedSourceRevision'] == 1
-                and p['baseSha'] == _DELIVERY_287 and p['number'] > 287
+        _, number, base, event = _repair_base(p['expectedSourceRevision'])
+        sc.need(value['parentRequestId'] is None and p['baseSha'] == base
+                and p['number'] > number
+                and (event is None or detail['predecessorEventDigest'] == event)
                 and value['operationId'] == delivery_repair_id(
                     detail['predecessorOperationId'], value['observation']['mergeSha']),
                 'SOURCE_DELIVERY_REPAIR_SCOPE')
@@ -55,12 +68,14 @@ def delivery_repair_id(predecessor_id, merge_sha):
     return str(uuid.uuid5(uuid.UUID(predecessor_id), 'registry-delivery-repair-v1:' + merge_sha))
 
 
-def delivery_repair_predecessor(events):
-    prior = next(iter(events.values()), None)
-    sc.need(prior is not None and prior[0]['kind'] == 'TRANSITION'
-            and prior[0]['proposal']['number'] == 287
-            and prior[1]['sourceCursor'] == _DELIVERY_287
-            and prior[1]['sourceRevision'] == 1 and prior[2] == 0,
+def delivery_repair_predecessor(events, revision=1):
+    kind, number, cursor, event = _repair_base(revision)
+    prior = next((row for row in events.values()
+                  if row[1]['sourceRevision'] == revision), None)
+    sc.need(prior is not None and prior[0]['kind'] == kind
+            and prior[0]['proposal']['number'] == number
+            and prior[1]['sourceCursor'] == cursor and prior[2] == 0
+            and (event is None or prior[1]['eventDigest'] == event),
             'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
     return prior
 
@@ -110,8 +125,8 @@ def replay(store,db,seen):
             sc.need(p['baseSha']==cursor and p['catalogSha256']==catalog and
                     p['profileDigest']==profile, 'SOURCE_CURSOR_OR_EPOCH_CHANGED')
             if req['kind'] == DELIVERY_REPAIR:
-                _, predecessor, _ = delivery_repair_predecessor(events)
-                sc.need(rev == 2 and anchor == 0 and req['transition'] == {
+                _, predecessor, _ = delivery_repair_predecessor(events, rev-1)
+                sc.need(anchor == 0 and req['transition'] == {
                     'predecessorOperationId': predecessor['operationId'],
                     'predecessorEventDigest': predecessor['eventDigest'],
                 }, 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')

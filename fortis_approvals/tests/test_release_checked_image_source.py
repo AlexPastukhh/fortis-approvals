@@ -49,7 +49,7 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertIn("Protect-Directory $Directory", SCRIPT)
         saver = SCRIPT.split("function Save-Checked-Image {", 1)[1].split("function Assert-Checked-Image-Binding {", 1)[0]
         record = saver.index("$Record=[ordered]@")
-        write = saver.index("if($Maintenance){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}")
+        write = saver.index("if($Maintenance -or $script:CorrectivePair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}")
         self.assertIn("sourceReceipt=$Receipt", saver[record:write])
         self.assertLess(saver.index("Protect-Directory $Directory"), write)
         self.assertIn("checkedImageId", SCRIPT)

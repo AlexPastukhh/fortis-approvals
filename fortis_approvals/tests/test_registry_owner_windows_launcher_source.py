@@ -69,7 +69,7 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
     def test_powershell_herestring_syntax_static_only(self):
         self.assertEqual(len(re.findall(r"^ *\$PythonRunner=@'$",self.source,re.M)),2)
         self.assertEqual(len(re.findall(r"^'@$",self.source,re.M)),2)
-        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),7)
+        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),8)
 
     def test_successor_preparation_is_bound_to_a_dedicated_inactive_clone(self):
         self.assertIn('$SuccessorWrite -and -not $ConfirmProvision', self.source)
@@ -88,9 +88,24 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertIn('REGISTRY_BOOTSTRAP_REPAIR_EVIDENCE_REQUIRED', self.source)
         self.assertIn('REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED', self.source)
         self.assertIn("('type=volume,src='+$ValidatorVolume+", self.source)
-        self.assertIn("$Receipt.predecessorReceipt.sourceRevision -ne 1", self.source)
-        self.assertIn("$Receipt.sourceRepairReceipt.sourceRevision -ne 2", self.source)
+        self.assertIn("[ValidateSet('1','2')][int]$RepairPredecessorRevision=1", self.source)
+        self.assertIn("REGISTRY_BOOTSTRAP_REPAIR_REVISION_ACTION_DENIED", self.source)
+        self.assertIn("$Receipt.predecessorReceipt.sourceRevision -ne $RepairPredecessorRevision", self.source)
+        self.assertIn("$Receipt.sourceRepairReceipt.sourceRevision -ne ($RepairPredecessorRevision+1)", self.source)
         self.assertIn("$Receipt.sourceRepairReceipt.deploymentAuthorized -ne $false", self.source)
+
+    def test_corrective_preview_is_readonly_no_restart_and_explicit(self):
+        self.assertIn('REGISTRY_BOOTSTRAP_CORRECTIVE_PREVIEW_DENIED',self.source)
+        self.assertIn('REGISTRY_BOOTSTRAP_CORRECTIVE_PREVIEW_VOLUME_ATTACHED',self.source)
+        self.assertIn("$Name+='-preview'",self.source)
+        self.assertIn("$Restart='--restart=no'",self.source)
+        self.assertIn("$StateAccess=',readonly'",self.source)
+        self.assertIn("volume-nocopy'+$StateAccess",self.source)
+        self.assertIn("'--corrective-preview-sha',$SourceSha",self.source)
+        self.assertIn("$Verb=@('create')",self.source)
+        self.assertIn('REGISTRY_BOOTSTRAP_CORRECTIVE_WRITER_NOT_PRISTINE',self.source)
+        self.assertIn('created|no|0001-01-01T00:00:00Z',self.source)
+        self.assertIn('$CorrectivePreview -and $CorrectiveWriter',self.source)
 
     def test_managed_start_is_explicit_and_preserves_private_volumes(self):
         self.assertIn('REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED', self.source)
