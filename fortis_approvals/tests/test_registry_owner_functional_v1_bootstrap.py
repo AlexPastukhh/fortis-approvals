@@ -243,6 +243,20 @@ class OwnerFunctionalV1BootstrapTests(unittest.TestCase):
         self.assertFalse(self.state_path.exists())
 
 
+class OwnerSuccessorBackupArgumentsTests(unittest.TestCase):
+    def test_missing_pins_denied_before_capture(self):
+        with patch.object(boot, '_successor_inputs') as source:
+            with self.assertRaises(Denied):
+                boot.main(['--action', 'BackupSuccessor'])
+            source.assert_not_called()
+
+    def test_legacy_action_cannot_select_backup_arguments(self):
+        with patch.object(boot, 'run') as legacy:
+            with self.assertRaisesRegex(Denied, 'REGISTRY_BACKUP_ARGUMENTS'):
+                boot.main(['--action', 'Verify', '--expected-profile-sha256', 'a'*64])
+            legacy.assert_not_called()
+
+
 class OwnerBootstrapRuntimeConfinementTests(unittest.TestCase):
     """Test the REAL guard, independently from runner OS security profile."""
 
