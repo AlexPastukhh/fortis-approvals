@@ -1337,11 +1337,33 @@ class ImpactTests(unittest.TestCase):
                 incumbent_choices=old_choices,incumbent_scope=old_scope,opt_in=opt_in,
                 release_active=reopening)
             return core
+        def change_policy(core, cookie, csrf, coord, revision, desired):
+            actor,service,operation,target=coord
+            candidate={'actor':actor,'provider':service,'operation':operation,'target':target,
+                       'scope':'exact','expectedPolicy':'DENY','desiredPolicy':desired,
+                       'expectedRevision':revision,'expectedPolicyVersion':core.policy_version,
+                       'reasonCode':'ISOLATED_SCOPE_REVIEW'}
+            code,change,_=self.call('/v1/owner/policy/editor/begin',{'candidate':candidate},
+                                     cookie=cookie,csrf=csrf)
+            self.assertEqual(code,200,change)
+            code,saved,_=self.call('/v1/owner/policy/editor/finish',{'ceremonyId':change['ceremonyId'],
+                'change':change['change'],'response':self.key.assert_(change)},cookie=cookie,csrf=csrf)
+            self.assertEqual(code,200,saved)
+
         core=build(transition=True,companion=companion_digest)
+        retained_policies={}
         if corrective:
-            # Initial delivery completed in the fixture, but no product
-            # approval or semantic policy edit has happened. Freeze the
-            # isolated source, retain its bytes and open a separate clone.
+            # Reproduce the owner's reported partial configuration before
+            # copying the source. No provider execution or product approval.
+            cookie,csrf=G2WebAuthnTest.login(self)
+            for service,op,target,policy in (
+                    ('release','merge_and_register','scope','ASK'),
+                    ('github','merge_pull_request','fortis-approvals','ASK'),
+                    ('github','list_pull_requests','fortis-approvals','ALLOW')):
+                coord=('owner-actor',service,op,target)
+                self.assertIn(coord,coords)
+                change_policy(core,cookie,csrf,coord,len(retained_policies),policy)
+                retained_policies[coord]=policy
             self.assertEqual(endpoint.writes,0)
             before = snapshot(core, lambda db: authority_witness(core,db))
             frozen_companion = snapshot(core,inspect_companion)
@@ -1461,23 +1483,14 @@ class ImpactTests(unittest.TestCase):
         # Real owner HTTP inventory, with the installed Registry extension
         # and reviewed successor sharing the provider name.
         initial=snapshot(core,lambda db:authority_witness(core,db))
-        inventory_rows({coord:'DENY' for coord in coords})
+        inventory_rows({coord:retained_policies.get(coord,'DENY') for coord in coords})
         self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),initial)
-        desired_policies={}
-        for revision,coord in enumerate(sorted(coords)):
-            actor,service,operation,target=coord
+        desired_policies=dict(retained_policies)
+        for coord in sorted(coords-set(retained_policies)):
+            operation=coord[2]
             desired='ALLOW' if operation in ('list_components','get_component','list_pull_requests','plan_batch') else 'ASK'
+            change_policy(core,cookie,csrf,coord,len(desired_policies),desired)
             desired_policies[coord]=desired
-            candidate={'actor':actor,'provider':service,'operation':operation,'target':target,
-                       'scope':'exact','expectedPolicy':'DENY','desiredPolicy':desired,
-                       'expectedRevision':revision,'expectedPolicyVersion':core.policy_version,
-                       'reasonCode':'ISOLATED_SCOPE_REVIEW'}
-            code,change,_=self.call('/v1/owner/policy/editor/begin',{'candidate':candidate},
-                                     cookie=cookie,csrf=csrf)
-            self.assertEqual(code,200,change)
-            code,saved,_=self.call('/v1/owner/policy/editor/finish',{'ceremonyId':change['ceremonyId'],
-                'change':change['change'],'response':self.key.assert_(change)},cookie=cookie,csrf=csrf)
-            self.assertEqual(code,200,saved)
 
         inventory_rows(desired_policies)
         start=perf_counter()

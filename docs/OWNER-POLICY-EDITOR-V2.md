@@ -220,6 +220,13 @@ Focused Python regression passed 24 cases, including actual owner HTTP
 inventory with the packaged Registry extension and successor, exact row
 uniqueness, existing DENY, policy edit/readback and isolated revision 3→4
 product flow. UI fixtures cover filtering and contextual display.
+A focused follow-up models three exact owner policy edits (merge_and_register
+ASK, GitHub merge_pull_request ASK and list_pull_requests ALLOW) before the
+separate staged copy. The compiled authority, policy revision, full Core and
+policy history and inventory values remain identical across reopening, then
+only the remaining fixture policies are edited before the ordinary product
+flow. PASS in 24.887s. The prior fixture assumed no owner edits before copying;
+this is not a readback of the owner's actual policy state.
 The real GitHub/host effects remain fixtures; source delivery and live Portal
 acceptance are not established. Do not merge this Gateway change outside
 an approved source-lineage and maintenance handover, or use it to bypass the
