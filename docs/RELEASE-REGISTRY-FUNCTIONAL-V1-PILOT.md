@@ -1922,3 +1922,51 @@ The local Source CI runner completed 193 suites with zero failures and
 20 skipped Python cases, followed by 16 passing Node tests. The compatible
 successor validator fixture was tested in a separate run. Remote exact-head
 CI and Windows checks remain delivery gates.
+
+### Post-T4 local schema-four recovery checkpoint (source candidate)
+
+The owner-observed #289 Registry revision 3 backup and independent inactive
+restore passed without stopping either live process. The existing schema-three
+backup contract remains unchanged. The new owner-only bootstrap actions
+`BackupSuccessor` and `VerifySuccessorBackup` use the already packaged Registry
+image and the same stable read-only SQLite/WAL snapshot helper as corrective
+staging. They are source candidates, not an accepted image or a new runtime
+service, permission, deployment, or automatic restore.
+
+Use the existing confined owner one-shot container and change fence. For
+capture, mount the exact live state and sealed Registry config read-only at
+their existing paths and one new private 0700 Registry-owned backup volume
+read-write at `/run/fortis-registry-backup`. For verification, mount **only**
+that backup read-only at the same path and provide private bounded writable
+scratch. Both actions require the independently observed exact source revision,
+cursor, combined event digest and full sealed config hash:
+
+```text
+python -B -m fortis_approvals.registry.owner_functional_v1_bootstrap
+  --action BackupSuccessor
+  --expected-profile-sha256 PROFILE --expected-source-revision REVISION
+  --expected-source-sha CURSOR --expected-event-digest EVENT
+```
+
+The verify action uses the same pins, `--action VerifySuccessorBackup`, and
+`--expected-manifest-sha256` from the retained capture receipt. These are
+argument descriptions, not authorization or executable host commands.
+Capture fails on a nonempty destination or changed source, preserves the
+private config and initial source proofs, and returns a digest only. Verify
+materializes a separate inactive copy, checks the bytes, SQLite integrity and
+full replay projection, and leaves the original backup unchanged. A failure
+retains partial material for owner readback; never blindly rerun or overwrite.
+The new manifest format is v2; it does not claim compatibility with the earlier
+one-off #289 v1 receipt.
+
+The separately retained Gateway state/backup, reader, validator, maintenance
+interlock and ordinary-merge proof volume remain necessary recovery resources.
+No off-host recovery, rollback protection, current host acceptance, restored
+listener activation or permission to replace a newer Registry is implied.
+Focused local tests: 29 passed, including real Git/SQLite source lineage
+through revisions 3 and 4, WAL copy, preserved original receipts, independent
+inactive restore and rejection of stale checkpoint, tampering and overwrite.
+Host mount guards and the ordinary merge receipt in that recovery fixture are
+fixtures, not live proof. Full exact-head GitHub CI, owner review and the first
+actual E2 remain pending; merging this source does not install it or authorize
+a deployment.

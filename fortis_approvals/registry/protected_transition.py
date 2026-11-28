@@ -332,7 +332,6 @@ def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoin
     accounting, source approval, listener start or effect occurs here.
     """
     import os
-    import sqlite3
     from ..r7_registry_reader_mount import _exact_mountinfo
     from .release_event_journal import ReleaseEventJournal
     from .state_journal import _private
@@ -349,13 +348,7 @@ def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoin
         kw=dict(expected_revision=2,expected_source_sha=sources._DELIVERY_288)
         sc.need(corrective_checkpoint(domain,**kw)==expected_checkpoint,
                 'SOURCE_CORRECTIVE_STAGE_SOURCE_CHANGED')
-        fd=os.open(target,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
-        os.close(fd)
-        # SQLite backup retains committed WAL pages, not transient SHM.
-        with copy._read_only_db() as db, closing(sqlite3.connect(target)) as dst:
-            db.backup(dst)
-            sc.need(dst.execute('PRAGMA journal_mode=WAL').fetchone()==('wal',),
-                    'SOURCE_CORRECTIVE_STAGE_WAL_REQUIRED')
+        _copy_database(copy, target)
         new=ReleaseEventJournal(target,instance_id=journal.instance_id,scope=journal.scope,
             expected_legacy=journal.expected_legacy,transition_digest=journal.transition_digest)
         target_domain=staged_domain(new,root,pins)
@@ -446,3 +439,212 @@ def account_on_clone(domain, db, request):
     receipt = sources.append(domain.store,db,req,view['operations'])
     domain._project(db)
     return receipt
+
+
+def _copy_database(journal, target):
+    """SQLite backup from a private stable snapshot; never replace a file."""
+    import os
+    import sqlite3
+    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
+    with journal._read_only_db() as db, closing(sqlite3.connect(target)) as dst:
+        db.backup(dst, pages=128)
+        sc.need(dst.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',),
+                'SOURCE_CORRECTIVE_STAGE_WAL_REQUIRED')
+        sc.need(dst.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
+                'REGISTRY_BACKUP_INTEGRITY')
+
+
+# Local owner recovery checkpoint, not a deployment or independent rollback witness.
+_LOCAL_BACKUP_LIMIT = 64 * 1024 * 1024
+_LOCAL_BACKUP_FORMAT = 'fortis-registry-v4-local-backup-v2'
+
+
+def _backup_write(path, raw):
+    import os
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                           0o600), 'wb') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _backup_sync(path):
+    import os
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _backup_db_bytes(path):
+    from .state_journal import _private
+    _private(path)
+    sc.need({p.name for p in path.parent.iterdir()} == {path.name}
+            and 0 < path.stat().st_size <= _LOCAL_BACKUP_LIMIT,
+            'REGISTRY_BACKUP_DATABASE_INVALID')
+    return _owner_runtime_bytes(path, _LOCAL_BACKUP_LIMIT)
+
+
+def _backup_config(root, expected_profile):
+    from .local_candidate_read_service import _load_owner_config, _check_successor_profile
+    cfg = _load_owner_config(str(root / 'profile.json'), allow_semantic=True)
+    _check_successor_profile(cfg, expected_profile)
+    names = {'profile.json', 'legacy-release-profile.json', 'successor-release-profile.json',
+             'semantic-peer.key', 'semantic-frame.key', 'transition-evidence.json',
+             'transition-main.bundle'}
+    for prefix in ('delivery-repair', 'delivery-repair-2'):
+        pair = {prefix + '-evidence.json', prefix + '-main.bundle'}
+        present = {p.name for p in root.iterdir()} & pair
+        sc.need(not present or present == pair, 'REGISTRY_BACKUP_CONFIG_SET')
+        names |= present
+    sc.need({p.name for p in root.iterdir()} == names, 'REGISTRY_BACKUP_CONFIG_SET')
+    data = {name: _owner_runtime_bytes(root / name, MAX_BUNDLE if name.endswith('.bundle')
+                                     else 262144) for name in sorted(names)}
+    pins = cfg['semantic']
+    for name, pin in (('profile.json', expected_profile),
+                      ('legacy-release-profile.json', pins['legacyProfileDigest']),
+                      ('successor-release-profile.json', pins['successorProfileDigest']),
+                      ('semantic-peer.key', pins['peerKeyDigest']),
+                      ('semantic-frame.key', pins['frameKeyDigest'])):
+        sc.need(hashlib.sha256(data[name]).hexdigest() == pin, 'REGISTRY_BACKUP_CONFIG_PIN')
+    return cfg, data
+
+
+def _backup_journal(path, cfg):
+    from .release_event_journal import ReleaseEventJournal
+    return ReleaseEventJournal(path, instance_id=cfg['instanceId'], scope=cfg['scope'],
+        expected_legacy=cfg['semantic']['legacyWitness'],
+        transition_digest=cfg['semantic']['transitionDigest'])
+
+
+def _backup_view(journal, root, cfg, files, expected):
+    sc.fields(expected, ('sourceRevision', 'sourceCursor', 'eventDigest'))
+    sc.revision(expected['sourceRevision'])
+    sc.hex_id(expected['sourceCursor'], 40)
+    sc.hex_id(expected['eventDigest'], 64)
+    view = staged_domain(journal, root, cfg['semantic']).snapshot()
+    sc.need(not view['sourceTransitionPending'] and
+            {k: view[k] for k in expected} == expected, 'REGISTRY_BACKUP_CHECKPOINT_CHANGED')
+    # Initial-delivery proof files are part of the private configuration.
+    # Ordinary merge proof bundles remain in the existing evidence volume.
+    rows = sorted(view['sourceOperations'].values(), key=lambda row: row[1]['sourceRevision'])
+    used = set()
+    for req, receipt, _ in rows:
+        if req['kind'] not in ('TRANSITION', sources.DELIVERY_REPAIR):
+            continue
+        prefix = ('transition' if req['kind'] == 'TRANSITION' else
+                  {2: 'delivery-repair', 3: 'delivery-repair-2'}[receipt['sourceRevision']])
+        raw = files.get(prefix + '-evidence.json')
+        bundle = files.get(prefix + '-main.bundle')
+        sc.need(raw is not None and bundle is not None, 'REGISTRY_BACKUP_EVIDENCE_MISSING')
+        envelope = sc.loads_strict(raw)
+        sc.need(hashlib.sha256(raw).hexdigest() == req['evidenceDigest']
+                and envelope['proposal'] == req['proposal']
+                and envelope['observation'] == req['observation']
+                and hashlib.sha256(bundle).hexdigest() == envelope['bundleSha256'],
+                'REGISTRY_BACKUP_EVIDENCE_CHANGED')
+        used.update((prefix + '-evidence.json', prefix + '-main.bundle'))
+    sc.need(used == {name for name in files if name.endswith(('-evidence.json', '-main.bundle'))},
+            'REGISTRY_BACKUP_EVIDENCE_SET')
+    return {**expected, 'instanceId': journal.instance_id,
+            'scopeDigest': sc.digest(journal.scope), 'snapshotRevision': view['snapshotRevision'],
+            'viewDigest': sc.digest(view)}
+
+
+def _backup_hashes(files):
+    return {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+
+
+def capture_local_successor_backup(journal, config_root, *, backup_root, expected_profile, expected):
+    """Owner-quiescent RO source, fresh private RW backup mount, no live writes.
+
+    A changing source or partial output is STOP. The caller must enforce the
+    owner change fence and preserve the separate Gateway/evidence/validator
+    resources. A separate invocation must verify an inactive restore.
+    """
+    import os
+    from ..r7_registry_reader_mount import _exact_mountinfo
+    from .state_journal import _private
+    backup_root = Path(backup_root)
+    _private(backup_root, True)
+    _check_owner_readonly_mount(config_root)
+    sc.need(_exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(), backup_root, b'rw')
+            and not os.statvfs(backup_root).f_flag & os.ST_RDONLY
+            and not list(backup_root.iterdir()), 'REGISTRY_BACKUP_NOT_FRESH')
+    cfg, files = _backup_config(config_root, expected_profile)
+    sc.need(cfg['registryStatePath'] == str(journal.path) and cfg['instanceId'] == journal.instance_id
+            and cfg['scope'] == journal.scope and journal.path.name == 'registry.sqlite',
+            'REGISTRY_BACKUP_SCOPE_CHANGED')
+    sc.need(sum(p.stat().st_size for p in journal.path.parent.iterdir()) <= _LOCAL_BACKUP_LIMIT,
+            'REGISTRY_BACKUP_DATABASE_LIMIT')
+    with _corrective_snapshot_copy(journal) as snapshot:
+        checkpoint = _backup_view(snapshot, config_root, cfg, files, expected)
+        state, config = backup_root / 'state', backup_root / 'config'
+        state.mkdir(mode=0o700)
+        config.mkdir(mode=0o700)
+        target = state / journal.path.name
+        _copy_database(snapshot, target)
+        for name, raw in files.items():
+            _backup_write(config / name, raw)
+        sc.need(_backup_config(config_root, expected_profile) == (cfg, files),
+                'REGISTRY_BACKUP_CONFIG_CHANGED')
+    raw_db = _backup_db_bytes(target)
+    manifest = {'schema': _LOCAL_BACKUP_FORMAT, 'checkpoint': checkpoint,
+                'databaseSha256': hashlib.sha256(raw_db).hexdigest(),
+                'databaseBytes': len(raw_db), 'configHashes': _backup_hashes(files)}
+    raw = sc.canonical(manifest).encode()
+    _backup_write(backup_root / 'manifest.json', raw)
+    for path in (target, state, config, backup_root):
+        _backup_sync(path)
+    return {'result': 'REGISTRY_LOCAL_BACKUP_CAPTURED', 'manifestSha256': hashlib.sha256(raw).hexdigest(),
+            'databaseSha256': manifest['databaseSha256'], 'checkpoint': checkpoint,
+            'restoreVerified': False, 'admissionAllowed': False}
+
+
+def verify_local_successor_backup(backup_root, *, expected_profile, expected_manifest, expected):
+    """Read-only backup, independent scratch materialization and full replay."""
+    backup_root = Path(backup_root)
+    _check_owner_readonly_mount(backup_root)
+    sc.hex_id(expected_manifest, 64)
+    sc.need({p.name for p in backup_root.iterdir()} == {'state', 'config', 'manifest.json'},
+            'REGISTRY_BACKUP_ROOT_CHANGED')
+    raw = _owner_runtime_bytes(backup_root / 'manifest.json', 262144)
+    sc.need(hashlib.sha256(raw).hexdigest() == expected_manifest, 'REGISTRY_BACKUP_MANIFEST_PIN')
+    manifest = sc.loads_strict(raw)
+    sc.fields(manifest, ('schema', 'checkpoint', 'databaseSha256', 'databaseBytes', 'configHashes'))
+    sc.need(sc.canonical(manifest).encode() == raw and manifest['schema'] == _LOCAL_BACKUP_FORMAT,
+            'REGISTRY_BACKUP_MANIFEST_CHANGED')
+    cfg, files = _backup_config(backup_root / 'config', expected_profile)
+    database = backup_root / 'state' / 'registry.sqlite'
+    from .state_journal import _private
+    _private(database.parent, True)
+    data = _backup_db_bytes(database)
+    sc.need(hashlib.sha256(data).hexdigest() == manifest['databaseSha256']
+            and len(data) == manifest['databaseBytes']
+            and _backup_hashes(files) == manifest['configHashes'], 'REGISTRY_BACKUP_BYTES_CHANGED')
+    with tempfile.TemporaryDirectory(prefix='registry-restore-') as name:
+        root = Path(name)
+        config = root / 'config'
+        config.mkdir(mode=0o700)
+        for filename, content in files.items():
+            _backup_write(config / filename, content)
+        restored = root / 'registry.sqlite'
+        _backup_write(restored, data)
+        sc.need(_backup_config(config, expected_profile) == (cfg, files),
+                'REGISTRY_BACKUP_RESTORE_CONFIG_CHANGED')
+        journal = _backup_journal(restored, cfg)
+        with journal._read_only_db() as db:
+            sc.need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
+                    'REGISTRY_BACKUP_INTEGRITY')
+        checkpoint = _backup_view(journal, config, cfg, files, expected)
+        sc.need(checkpoint == manifest['checkpoint'], 'REGISTRY_BACKUP_RESTORE_CHANGED')
+    sc.need(_backup_db_bytes(database) == data
+            and _backup_config(backup_root / 'config', expected_profile) == (cfg, files)
+            and _owner_runtime_bytes(backup_root / 'manifest.json', 262144) == raw,
+            'REGISTRY_BACKUP_READBACK_CHANGED')
+    return {'result': 'REGISTRY_LOCAL_BACKUP_INACTIVE_RESTORE_VERIFIED',
+            'manifestSha256': expected_manifest, 'databaseSha256': manifest['databaseSha256'],
+            'checkpoint': checkpoint, 'restoreVerified': True, 'admissionAllowed': False,
+            'integrityModel': 'LOCAL_EVENT_CHAIN_ONLY'}

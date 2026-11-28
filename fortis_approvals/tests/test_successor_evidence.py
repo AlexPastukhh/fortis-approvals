@@ -623,6 +623,52 @@ class ImpactTests(unittest.TestCase):
             # by unlinking the journal. This is the actual preview boundary.
             self.assertEqual(second_repair(),second_result)
             self.assertEqual(state_path.read_bytes(),after_second)
+            # Owner recovery uses the same real schema-four journal and
+            # protected source proof files, not a schema-three restore.
+            # Only mount guards are substituted in the local fixture.
+            backup_root = self.root / 'local-backup'
+            backup_root.mkdir(mode=0o700)
+            live = protected._backup_journal(state_path, cfg)
+            expected = {k: final_view[k] for k in ('sourceRevision', 'sourceCursor', 'eventDigest')}
+            before_config = {p.name: p.read_bytes() for p in config_root.iterdir()}
+            with patch('fortis_approvals.r7_registry_reader_mount._exact_mountinfo',
+                       return_value=True):
+                captured = protected.capture_local_successor_backup(live, config_root,
+                    backup_root=backup_root, expected_profile=profile_file_sha, expected=expected)
+                self.assertFalse(captured['restoreVerified'])
+                self.assertFalse(captured['admissionAllowed'])
+                with self.assertRaisesRegex(Denied, 'REGISTRY_BACKUP_NOT_FRESH'):
+                    protected.capture_local_successor_backup(live, config_root,
+                        backup_root=backup_root, expected_profile=profile_file_sha, expected=expected)
+            def verify_backup(**overrides):
+                params = dict(expected_profile=profile_file_sha,
+                    expected_manifest=captured['manifestSha256'], expected=expected)
+                params.update(overrides)
+                return protected.verify_local_successor_backup(backup_root, **params)
+            backup_files = {p.relative_to(backup_root): p.read_bytes()
+                            for p in backup_root.rglob('*') if p.is_file()}
+            verified = verify_backup()
+            self.assertTrue(verified['restoreVerified'])
+            self.assertFalse(verified['admissionAllowed'])
+            self.assertEqual(verified['checkpoint'], captured['checkpoint'])
+            self.assertEqual(verified['checkpoint']['viewDigest'], sc.digest(final_view))
+            with self.assertRaisesRegex(Denied, 'REGISTRY_BACKUP_MANIFEST_PIN'):
+                verify_backup(expected_manifest='0'*64)
+            with self.assertRaisesRegex(Denied, 'REGISTRY_BACKUP_CHECKPOINT_CHANGED'):
+                verify_backup(expected={**expected, 'sourceRevision': 2})
+            for path in ('state/registry.sqlite', 'config/delivery-repair-2-main.bundle'):
+                item = backup_root / path
+                original_bytes = item.read_bytes()
+                item.write_bytes(original_bytes + b'corrupt')
+                try:
+                    with self.assertRaisesRegex(Denied, 'REGISTRY_BACKUP_BYTES_CHANGED'):
+                        verify_backup()
+                finally:
+                    item.write_bytes(original_bytes)
+            self.assertEqual({p.relative_to(backup_root): p.read_bytes()
+                             for p in backup_root.rglob('*') if p.is_file()}, backup_files)
+            self.assertEqual(state_path.read_bytes(), after_second)
+            self.assertEqual({p.name: p.read_bytes() for p in config_root.iterdir()}, before_config)
             # Preview uses the actual entrypoint and the same sealed profile,
             # but physically read-only state and no mutable frame admission.
             with self.assertRaisesRegex(Denied,'REGISTRY_SEMANTIC_READONLY_STATE_REQUIRED'):
@@ -671,6 +717,54 @@ class ImpactTests(unittest.TestCase):
                 signed('SOURCE_PREFLIGHT',{'proposal':next_proposal})
             self.assertEqual(state_path.read_bytes(),after_second)
 
+            # A normal source event after the two initial-delivery repairs
+            # must be restorable too. Real Git/impact proof, fixture receipt;
+            # the separate owner portal test covers original child identity.
+            (self.source/'src.py').write_text('raise RuntimeError("ordinary source fixture")\n')
+            self.git.run(['add','src.py'], cwd=self.source)
+            product_tree = self.git.text(['write-tree'], cwd=self.source)
+            product_head = commit(product_tree, [next_merge], 'ordinary head')
+            product_merge = commit(product_tree, [next_merge,product_head], 'ordinary merge')
+            from fortis_approvals.integrations.github.gateway.retained_impact import _records
+            product_paths = _records(self.git, self.source, next_merge, product_head, next_merge)
+            product_proposal = {**next_proposal, 'number':290, 'baseSha':next_merge,
+                'headSha':product_head, 'treeSha':product_tree, 'expectedSourceRevision':3,
+                'pathsDigest':sc.digest(product_paths)}
+            product_post = {**next_post, 'number':290, 'headSha':product_head,
+                'treeSha':product_tree, 'mergeSha':product_merge, 'mainSha':product_merge,
+                'parents':[next_merge,product_head], 'pathsDigest':product_proposal['pathsDigest']}
+            product_req = {'operationId':str(uuid.uuid4()), 'parentRequestId':str(uuid.uuid4()),
+                'kind':'MERGE', 'proposal':product_proposal, 'observation':product_post,
+                'evidenceDigest':'a'*64, 'transition':None}
+            from fortis_approvals.registry.release_domain import ReleaseDomain
+            old_profile, new_profile = protected._read_release_profiles(config_root)
+            domain = ReleaseDomain(live, old_profile,
+                expected_profile_digest=cfg['semantic']['legacyProfileDigest'],
+                successor_profile=new_profile,
+                expected_successor_profile_digest=cfg['semantic']['successorProfileDigest'],
+                source_verify=lambda req: self.verifier.verify_registered_merge(
+                    req, read_merged_body=lambda *_: next_observed['body']))
+            # The changed path remains the same; the proposal is verified
+            # independently against the raw new Git objects.
+            fourth = domain.register_source(product_req)
+            self.assertEqual(fourth['sourceRevision'],4)
+            product_view = domain.snapshot()
+            product_expected = {k:product_view[k] for k in expected}
+            with self.assertRaisesRegex(Denied,'REGISTRY_BACKUP_CHECKPOINT_CHANGED'):
+                verify_backup(expected=product_expected)
+            next_backup = self.root/'post-merge-backup'
+            next_backup.mkdir(mode=0o700)
+            with patch('fortis_approvals.r7_registry_reader_mount._exact_mountinfo',
+                       return_value=True):
+                captured_fourth = protected.capture_local_successor_backup(live, config_root,
+                    backup_root=next_backup, expected_profile=profile_file_sha,
+                    expected=product_expected)
+            verified_fourth = protected.verify_local_successor_backup(next_backup,
+                expected_profile=profile_file_sha, expected_manifest=captured_fourth['manifestSha256'],
+                expected=product_expected)
+            self.assertEqual(verified_fourth['checkpoint']['viewDigest'],sc.digest(product_view))
+            self.assertEqual(verified_fourth['checkpoint']['sourceRevision'],4)
+            self.assertEqual(verify_backup(),verified)
 
 
     def test_owner_portal_exact_merge_register_and_shared_read(self):

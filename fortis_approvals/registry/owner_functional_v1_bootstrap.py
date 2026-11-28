@@ -365,11 +365,49 @@ def account_delivery_repair(expected_profile_sha256, *, repair_evidence_sha256, 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', required=True,
-                        choices=('Preview', 'Provision', 'Verify'))
+                        choices=('Preview', 'Provision', 'Verify', 'BackupSuccessor', 'VerifySuccessorBackup'))
     parser.add_argument('--expected-spec-sha256')
+    parser.add_argument('--expected-profile-sha256')
+    parser.add_argument('--expected-manifest-sha256')
+    parser.add_argument('--expected-source-revision', type=int)
+    parser.add_argument('--expected-source-sha')
+    parser.add_argument('--expected-event-digest')
     args = parser.parse_args(argv)
     import json
-    output = run(args.action, expected_spec_sha256=args.expected_spec_sha256)
+    if args.action in ('BackupSuccessor', 'VerifySuccessorBackup'):
+        _need(args.expected_spec_sha256 is None, 'REGISTRY_BACKUP_ARGUMENTS')
+        from .protected_transition import (capture_local_successor_backup,
+            verify_local_successor_backup, _backup_journal)
+        from ..integrations.registry_contracts import semantic_contract as sc
+        expected = {'sourceRevision': args.expected_source_revision,
+                    'sourceCursor': args.expected_source_sha,
+                    'eventDigest': args.expected_event_digest}
+        sc.revision(expected['sourceRevision'])
+        sc.hex_id(expected['sourceCursor'], 40)
+        sc.hex_id(expected['eventDigest'], 64)
+        sc.hex_id(args.expected_profile_sha256, 64)
+        _runtime_confinement()
+        uid, gid = os.geteuid(), os.getegid()
+        _need(uid > 1 and gid > 1 and os.getresuid() == (uid,) * 3
+              and os.getresgid() == (gid,) * 3 and os.getgroups() in ([], [gid])
+              and os.statvfs('/').f_flag & os.ST_RDONLY,
+              'REGISTRY_BACKUP_RUNTIME_IDENTITY')
+        backup_root = Path('/run/fortis-registry-backup')
+        _private_directory(backup_root, uid, gid, 0o700)
+        if args.action == 'BackupSuccessor':
+            _need(args.expected_manifest_sha256 is None, 'REGISTRY_BACKUP_ARGUMENTS')
+            cfg, root, _ = _successor_inputs(args.expected_profile_sha256)
+            output = capture_local_successor_backup(_backup_journal(STATE_PATH, cfg), root,
+                backup_root=backup_root, expected_profile=args.expected_profile_sha256, expected=expected)
+        else:
+            output = verify_local_successor_backup(backup_root,
+                expected_profile=args.expected_profile_sha256,
+                expected_manifest=args.expected_manifest_sha256, expected=expected)
+    else:
+        _need(all(value is None for value in (args.expected_profile_sha256,
+                  args.expected_manifest_sha256, args.expected_source_revision,
+                  args.expected_source_sha, args.expected_event_digest)), 'REGISTRY_BACKUP_ARGUMENTS')
+        output = run(args.action, expected_spec_sha256=args.expected_spec_sha256)
     print(json.dumps(output, sort_keys=True, separators=(',', ':')))
     return 0
 
