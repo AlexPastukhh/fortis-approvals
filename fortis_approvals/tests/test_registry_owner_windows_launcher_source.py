@@ -19,7 +19,7 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertIn('Registry-Owner-Bootstrap.ps1', CATALOG.read_text())
         self.assertIn('## Windows owner bootstrap launcher', RUNBOOK.read_text())
         self.assertIn('[CmdletBinding()]', self.source)
-        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','StartManaged')]", self.source)
+        self.assertIn("[ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','StartManaged')]", self.source)
 
     def test_no_hidden_admin_or_second_service_effect(self):
         src='\n'.join(line for line in self.source.lower().splitlines() if not line.lstrip().startswith('#'))
@@ -69,13 +69,13 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
     def test_powershell_herestring_syntax_static_only(self):
         self.assertEqual(len(re.findall(r"^ *\$PythonRunner=@'$",self.source,re.M)),2)
         self.assertEqual(len(re.findall(r"^'@$",self.source,re.M)),2)
-        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),6)
+        self.assertEqual(self.source.count('Invoke-Registry-Bootstrap-DockerRead -Arguments @('),7)
 
     def test_successor_preparation_is_bound_to_a_dedicated_inactive_clone(self):
-        self.assertIn('$PrepareSuccessor -and -not $ConfirmProvision', self.source)
+        self.assertIn('$SuccessorWrite -and -not $ConfirmProvision', self.source)
         self.assertIn("('fortis-registry-state-e13b-'+$Id)", self.source)
         self.assertIn("('fortis-registry-config-e13b-'+$Id)", self.source)
-        self.assertIn("if($PrepareSuccessor){$VolumeNames=@($StateVolume,$ConfigVolume)}", self.source)
+        self.assertIn("if($SuccessorWrite){$VolumeNames=@($StateVolume,$ConfigVolume)}", self.source)
         self.assertIn("$Name='fortis-registry-successor-'+$Id", self.source)
         cmd = self.source.split("$DockerArgs+=@('--name',('fortis-registry-successor-'+$Id),", 1)[1]
         cmd = cmd.split("$SpecLine=''", 1)[0]
@@ -83,6 +83,14 @@ class RegistryOwnerWindowsLauncherSourceTests(unittest.TestCase):
         self.assertNotIn('$SocketMount', cmd)
         self.assertIn("$Receipt.sourceTransitionPending -ne (-not $AccountTransition)", self.source)
         self.assertIn("$Receipt.sourceTransitionReceipt.sourceCursor -cne $SourceSha", self.source)
+
+    def test_delivery_repair_requires_exact_pins_and_source_only_receipt(self):
+        self.assertIn('REGISTRY_BOOTSTRAP_REPAIR_EVIDENCE_REQUIRED', self.source)
+        self.assertIn('REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED', self.source)
+        self.assertIn("('type=volume,src='+$ValidatorVolume+", self.source)
+        self.assertIn("$Receipt.predecessorReceipt.sourceRevision -ne 1", self.source)
+        self.assertIn("$Receipt.sourceRepairReceipt.sourceRevision -ne 2", self.source)
+        self.assertIn("$Receipt.sourceRepairReceipt.deploymentAuthorized -ne $false", self.source)
 
     def test_managed_start_is_explicit_and_preserves_private_volumes(self):
         self.assertIn('REGISTRY_BOOTSTRAP_MANAGED_START_CONFIRMATION_REQUIRED', self.source)

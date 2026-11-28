@@ -3,7 +3,7 @@
 # StartManaged adopts the existing pilot on the normal Docker restart policy.
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','StartManaged')][string]$Action='Plan',
+    [ValidateSet('Plan','Preview','Provision','Verify','PrepareSuccessor','AccountDeliveryRepair','StartManaged')][string]$Action='Plan',
     [string]$SourceRoot='',
     [string]$SourceSha='',
     [string]$RegistryImageId='',
@@ -15,7 +15,7 @@ param(
     [switch]$ConfirmProvision,
     [string]$PlannerKeySha256='',
     [string]$SuccessorReleaseNonce='', [string]$SuccessorProfileSha256='',
-    [string]$TransitionEvidenceSha256='',
+    [string]$TransitionEvidenceSha256='', [string]$RepairEvidenceSha256='',
     [switch]$ConfirmManagedStart
 )
 $ErrorActionPreference='Stop'
@@ -53,8 +53,16 @@ function Test-Registry-Bootstrap-ReadOnlyMount {
 
 $ManagedStart=$Action -ceq 'StartManaged'
 $PrepareSuccessor=$Action -ceq 'PrepareSuccessor'
+$RepairDelivery=$Action -ceq 'AccountDeliveryRepair'
+$SuccessorWrite=$PrepareSuccessor -or $RepairDelivery
 $SuccessorStart=$ManagedStart -and [bool]$SuccessorReleaseNonce
-$Successor=$PrepareSuccessor -or $SuccessorStart
+$Successor=$SuccessorWrite -or $SuccessorStart
+if($RepairDelivery -ne [bool]$RepairEvidenceSha256){
+    throw 'REGISTRY_BOOTSTRAP_REPAIR_EVIDENCE_REQUIRED'
+}
+if($RepairDelivery){
+    Assert-Registry-Bootstrap-Input 'REPAIR_EVIDENCE_SHA256' $RepairEvidenceSha256 '^[0-9a-f]{64}$'
+}
 $AccountTransition=[bool]$TransitionEvidenceSha256
 if($AccountTransition){
     if(-not $PrepareSuccessor){throw 'REGISTRY_BOOTSTRAP_TRANSITION_ACTION_DENIED'}
@@ -72,7 +80,7 @@ if($Successor){
 } elseif($ManagedStart){
     Assert-Registry-Bootstrap-Input 'PLANNER_KEY_SHA256' $PlannerKeySha256 '^[0-9a-f]{64}$'
 }
-if (($ManagedStart -or $PrepareSuccessor) -and ($SpecPath -or $ExpectedSpecSha256)) {
+if (($ManagedStart -or $SuccessorWrite) -and ($SpecPath -or $ExpectedSpecSha256)) {
     throw 'REGISTRY_BOOTSTRAP_MANAGED_START_SPEC_NOT_SUPPORTED'
 }
 
@@ -84,13 +92,13 @@ if ($Action -ceq 'Plan') {
     Write-Host 'No Docker commands, host writes, volume creation or privileges performed by Plan.'
     return
 }
-if ($ConfirmProvision -and $Action -cne 'Provision' -and -not $PrepareSuccessor) {
+if ($ConfirmProvision -and $Action -cne 'Provision' -and -not $SuccessorWrite) {
     throw 'REGISTRY_BOOTSTRAP_PROVISION_FLAG_INVALID'
 }
 if ($Action -ceq 'Provision' -and -not $ConfirmProvision) {
     throw 'REGISTRY_BOOTSTRAP_INDEPENDENT_PROVISION_GO_REQUIRED'
 }
-if ($PrepareSuccessor -and -not $ConfirmProvision) {
+if ($SuccessorWrite -and -not $ConfirmProvision) {
     throw 'REGISTRY_BOOTSTRAP_INDEPENDENT_PROVISION_GO_REQUIRED'
 }
 
@@ -107,9 +115,9 @@ if($Successor){
         throw 'REGISTRY_BOOTSTRAP_SUCCESSOR_CLONE_VOLUME_REQUIRED'
     }
     $ExpectedSocket='fortis-registry-read-'+$Id
-    if($PrepareSuccessor){$VolumeNames=@($StateVolume,$ConfigVolume)}
+    if($SuccessorWrite){$VolumeNames=@($StateVolume,$ConfigVolume)}
 }
-if($SuccessorStart -or $AccountTransition){
+if($SuccessorStart -or $AccountTransition -or $RepairDelivery){
     $ValidatorVolume='fortis-registry-source-'+$Id
     $VolumeNames+=@($ValidatorVolume)
 }
@@ -133,7 +141,7 @@ if ([IO.Path]::GetFullPath($PSScriptRoot) -cne $ExpectedScriptRoot) {
 if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
     throw 'REGISTRY_BOOTSTRAP_SOURCE_GIT_MISSING'
 }
-if (-not $ManagedStart -and -not $PrepareSuccessor) {
+if (-not $ManagedStart -and -not $SuccessorWrite) {
     Assert-Registry-Bootstrap-Input 'SPEC_SHA' $ExpectedSpecSha256 '^[0-9a-f]{64}$'
     if (-not $SpecPath -or -not (Test-Path -LiteralPath $SpecPath -PathType Leaf)) {
         throw 'REGISTRY_BOOTSTRAP_SPEC_UNAVAILABLE'
@@ -178,6 +186,17 @@ if ($OSType.Count -ne 1 -or $OSType[0] -cne 'linux') {
 $Image=Invoke-Registry-Bootstrap-DockerRead -Arguments @('image','inspect','--format','{{.Id}}|{{.Config.User}}|{{.Os}}|{{.Architecture}}',$RegistryImageId)
 if ($Image.Count -ne 1 -or $Image[0] -cne ($RegistryImageId+'|20002:20002|linux|amd64')) {
     throw 'REGISTRY_BOOTSTRAP_IMAGE_IDENTITY_INVALID'
+}
+if ($RepairDelivery) {
+    $Labels=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
+        'image','inspect','--format','{{json .Config.Labels}}',$RegistryImageId)
+    if ($Labels.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED' }
+    $Metadata=$Labels[0] | ConvertFrom-Json
+    if ($null -eq $Metadata -or
+       -not $Metadata.PSObject.Properties['org.opencontainers.image.revision'] -or
+       $Metadata.'org.opencontainers.image.revision' -cne $SourceSha) {
+        throw 'REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED'
+    }
 }
 foreach ($Name in $VolumeNames) {
     $Volume=Invoke-Registry-Bootstrap-DockerRead -Arguments @('volume','inspect','--format','{{.Name}}|{{.Driver}}|{{.Scope}}',$Name)
@@ -272,7 +291,7 @@ print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 '@
 $StateFlag='readonly'
 $ConfigFlag='readonly'
-if($PrepareSuccessor){$StateFlag=''}
+if($SuccessorWrite){$StateFlag=''}
 if ($Action -ceq 'Provision') {
     $StateFlag=''
     $ConfigFlag=''
@@ -282,31 +301,35 @@ $ConfigMount=('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtim
 if ($StateFlag) { $StateMount+=',readonly' }
 if ($ConfigFlag) { $ConfigMount+=',readonly' }
 $SocketMount=('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy,readonly')
-$BootstrapMemory=if($AccountTransition){'512m'}else{'128m'}
+$BootstrapMemory=if($AccountTransition -or $RepairDelivery){'512m'}else{'128m'}
 $DockerArgs=@(
     'run','-i','--rm','--pull=never','--network=none','--read-only',
     '--user','20002:20002','--cap-drop','ALL',
     '--security-opt','no-new-privileges:true','--pids-limit','64','--memory',$BootstrapMemory
 )
-if($PrepareSuccessor){
-    # Reserve the managed name so preparation and startup cannot overlap.
+if($SuccessorWrite){
+    # Reserve the managed name so accounting and startup cannot overlap.
     $PythonRunner=@'
 import json, sys
 sys.path.insert(0, '/opt/fortis')
-from fortis_approvals.registry.owner_functional_v1_bootstrap import prepare_successor
-evidence = sys.argv[2] if len(sys.argv) > 2 else None
-source = sys.argv[3] if evidence is not None else None
-result = prepare_successor(sys.argv[1], transition_evidence_sha256=evidence, source_sha=source)
+from fortis_approvals.registry.owner_functional_v1_bootstrap import account_delivery_repair, prepare_successor
+profile, action = sys.argv[1:3]
+evidence, source = sys.argv[3:] if len(sys.argv) > 3 else (None, None)
+if action == 'AccountDeliveryRepair':
+    result = account_delivery_repair(profile, repair_evidence_sha256=evidence, source_sha=source)
+else:
+    result = prepare_successor(profile, transition_evidence_sha256=evidence, source_sha=source)
 print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 '@
-    if($AccountTransition){
+    if($AccountTransition -or $RepairDelivery){
         $DockerArgs+=@('--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=256m',
             '--mount',('type=volume,src='+$ValidatorVolume+',dst=/run/fortis-registry-source,volume-nocopy,readonly'))
     }
     $DockerArgs+=@('--name',('fortis-registry-successor-'+$Id),
         '--mount',$StateMount,'--mount',$ConfigMount,
-        '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,$SuccessorProfileSha256)
+        '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,$SuccessorProfileSha256,$Action)
     if($AccountTransition){$DockerArgs+=@($TransitionEvidenceSha256,$SourceSha)}
+    if($RepairDelivery){$DockerArgs+=@($RepairEvidenceSha256,$SourceSha)}
     $SpecLine=''
 } else {
     $DockerArgs+=@(
@@ -320,7 +343,7 @@ print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 Write-Host ('REGISTRY_BOOTSTRAP_OWNER_ACTION='+$Action)
 Write-Host ('REGISTRY_BOOTSTRAP_SOURCE_SHA='+$SourceSha)
 Write-Host ('REGISTRY_BOOTSTRAP_IMAGE_ID='+$RegistryImageId)
-if($PrepareSuccessor){
+if($SuccessorWrite){
     Write-Host ('REGISTRY_BOOTSTRAP_SUCCESSOR_PROFILE_SHA256='+$SuccessorProfileSha256)
 } else {
     Write-Host ('REGISTRY_BOOTSTRAP_SPEC_SHA256='+$ExpectedSpecSha256)
@@ -337,6 +360,24 @@ if ($Output.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_OUTPUT_NOT_EXACT' }
 try {
     $Receipt=$Output[0] | ConvertFrom-Json -ErrorAction Stop
 } catch { throw 'REGISTRY_BOOTSTRAP_OUTPUT_INVALID_JSON' }
+if($RepairDelivery){
+    if($Receipt.result -cne 'SOURCE_ONLY_REGISTRY_DELIVERY_REPAIR_ACCOUNTED' -or
+       $Receipt.profileSha256 -cne $SuccessorProfileSha256 -or
+       $Receipt.repairEvidenceSha256 -cne $RepairEvidenceSha256 -or
+       $Receipt.transitionDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Receipt.legacyPrefixDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       $Receipt.hostAccepted -ne $false -or $Receipt.admissionAllowed -ne $false -or
+       $Receipt.predecessorReceipt.kind -cne 'TRANSITION' -or $Receipt.predecessorReceipt.sourceRevision -ne 1 -or
+       $Receipt.sourceRepairReceipt.kind -cne 'DELIVERY_REPAIR' -or
+       $Receipt.sourceRepairReceipt.sourceRevision -ne 2 -or
+       $Receipt.sourceRepairReceipt.sourceCursor -cne $SourceSha -or
+       $Receipt.sourceRepairReceipt.deploymentAuthorized -ne $false){
+        throw 'REGISTRY_BOOTSTRAP_REPAIR_RESULT_INVARIANT_FAILED_STOP'
+    }
+    Write-Host $Output[0]
+    Write-Host 'REGISTRY_BOOTSTRAP_DELIVERY_REPAIR_SOURCE_ONLY_PASS'
+    return
+}
 if($PrepareSuccessor){
     if($Receipt.result -cne 'SOURCE_ONLY_REGISTRY_SUCCESSOR_PREPARED' -or
        $Receipt.profileSha256 -cne $SuccessorProfileSha256 -or

@@ -230,13 +230,14 @@ class ReleaseDomain:
                         'source':{'sourceSha':receipt['sourceCursor'],'catalogCommitSha':catalog_commit,
                                   'catalogSha256':catalog,'artifactSha256':None},
                         'provenance':{'TRANSITION':'REVIEWED_TRANSITION','MERGE':'ACCOUNTED_MERGE',
-                                      'EXTERNAL_MERGE':'ACCOUNTED_EXTERNAL_MERGE'}[req['kind']],
+                                      'EXTERNAL_MERGE':'ACCOUNTED_EXTERNAL_MERGE',
+                                      sources.DELIVERY_REPAIR:'REVIEWED_DELIVERY_REPAIR'}[req['kind']],
                         'sourceRevision':receipt['sourceRevision'],
                         'sourceEventDigest':receipt['eventDigest'],
                         'evidenceDigest':req['evidenceDigest'],
                         'pullRequest':{'repository':p['repository'],'number':p['number'],
                                        'headSha':p['headSha'],'baseSha':p['baseSha']},
-                        'evidenceVerified':req['kind'] in ('MERGE','EXTERNAL_MERGE')}
+                        'evidenceVerified':req['kind'] in ('MERGE','EXTERNAL_MERGE',sources.DELIVERY_REPAIR)}
                     self._add_actions(state,state['desired']['recordId'],row['actions'])
                     previous={sc.canonical(dep):dep for dep in state['sourceRequirements']}
                     previous.update({sc.canonical(dep):dep for dep in p['dependencies']})
@@ -542,6 +543,7 @@ class ReleaseDomain:
         after an ambiguous acknowledgement never repeats upstream merge.
         """
         req=sources.request(value,self.store)
+        sc.need(req['kind'] != sources.DELIVERY_REPAIR, 'SOURCE_DELIVERY_REPAIR_OFFLINE_REQUIRED')
         prior=self.snapshot()['sourceOperations'].get(req['operationId'])
         if prior is not None:
             if prior[0]!=req:

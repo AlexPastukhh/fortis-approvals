@@ -287,7 +287,7 @@ class ImpactTests(unittest.TestCase):
             manifest['pr'].update({k:proposal[k] for k in ('number','baseSha','headSha','treeSha',
                                    'bodyDigest','impactDigest','pathsDigest','ciDigest')})
             manifest['successor'].update(catalogSha256=catalog_sha,validatorRevision=self.pin,
-                                         actionRevision='8c9abefdfbe4699aae97b9363a2a66c596680e62')
+                                         actionRevision='8b82564728c55807c57d1c9e1f0f974ea14fd6d6')
             scope={'repository':tc.REPOSITORY,'enrollmentId':manifest['transitionId'],
                    'baselineSha':baseline,'baselineDigest':'a'*64,'catalogSha256':catalog_sha,
                    'bindingDigest':'b'*64,'policyReferenceDigest':'c'*64}
@@ -379,6 +379,94 @@ class ImpactTests(unittest.TestCase):
                 prepare()
             self.assertEqual(domain.source_operation(manifest['transitionId']),accepted)
 
+            # The repair uses a new real Git merge with the exact staged
+            # transition as first parent. The retained source event stays intact.
+            from copy import deepcopy
+            from fortis_approvals.registry import source_event_journal as source_events
+            fixture(source_events, '_DELIVERY_287', merge)
+            (self.source/'src.py').write_text('raise RuntimeError("repair code must not execute")\n')
+            self.git.run(['add','src.py'], cwd=self.source)
+            repair_tree = self.git.text(['write-tree'], cwd=self.source)
+            repair_head = commit(repair_tree, [merge], 'repair head')
+            repair_merge = commit(repair_tree, [merge,repair_head], 'repair merge')
+            observed_repair = {**observed,'number':288,'baseSha':merge,'headSha':repair_head,
+                               'treeSha':repair_tree}
+            repair_impact = self.verifier.verify(observed_repair)
+            repair_ci = {**deepcopy(ci),'number':288,'baseSha':merge,'headSha':repair_head,
+                         'validatedImpactDigest':sc.digest(repair_impact)}
+            for check in repair_ci['checks']:
+                check.update(headSha=repair_head,appId=15368,appSlug='github-actions')
+            repair_proposal = {**proposal,'number':288,'baseSha':merge,'headSha':repair_head,
+                               'treeSha':repair_tree,'expectedSourceRevision':1,
+                               'ciDigest':sc.digest(repair_ci)}
+            repair_post = {**post,'number':288,'headSha':repair_head,'treeSha':repair_tree,
+                           'mergeSha':repair_merge,'mainSha':repair_merge,'parents':[merge,repair_head],
+                           'ciDigest':repair_proposal['ciDigest']}
+
+            def repair_bundle(merge_sha):
+                self.git.run(['branch','-f','transfer',merge_sha],cwd=self.source)
+                self.git.run(['bundle','create',bundle_path,'refs/heads/transfer'],cwd=self.source)
+                return write('delivery-repair-main.bundle',bundle_path.read_bytes())
+
+            repair_evidence = {'predecessorReceipt':accepted,'proposal':repair_proposal,
+                               'observation':repair_post,'ci':repair_ci,'body':observed_repair['body'],
+                               'bundleSha256':repair_bundle(repair_merge)}
+
+            def repair(evidence, source=repair_merge):
+                pin = write('delivery-repair-evidence.json',evidence)
+                return boot.account_delivery_repair(profile_file_sha,repair_evidence_sha256=pin,source_sha=source)
+
+            before_repair = state_path.read_bytes()
+            wrong_predecessor = {**repair_evidence,'predecessorReceipt':{**accepted,'eventDigest':'0'*64}}
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_PREDECESSOR'):
+                repair(wrong_predecessor)
+            wrong_ci = deepcopy(repair_evidence)
+            wrong_ci['ci']['checks'][0]['appId'] = 1
+            wrong_pin = sc.digest(wrong_ci['ci'])
+            wrong_ci['proposal']['ciDigest'] = wrong_ci['observation']['ciDigest'] = wrong_pin
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_CI_CHANGED'):
+                repair(wrong_ci)
+            bad_merge = commit(repair_tree,[base,repair_head],'skipped transition')
+            bad_ancestry = {**repair_evidence,
+                'observation':{**repair_post,'mergeSha':bad_merge,'mainSha':bad_merge},
+                'bundleSha256':repair_bundle(bad_merge)}
+            with self.assertRaisesRegex(Denied,'SUCCESSOR_MERGE_GIT_OBJECT_CHANGED'):
+                repair(bad_ancestry,bad_merge)
+            self.assertEqual(state_path.read_bytes(),before_repair)
+            self.assertEqual(repair_bundle(repair_merge),repair_evidence['bundleSha256'])
+
+            result = repair(repair_evidence)
+            self.assertEqual(result['predecessorReceipt'],accepted)
+            self.assertEqual(result['legacyPrefixDigest'],witness['prefixDigest'])
+            self.assertFalse(result['admissionAllowed'])
+            source_receipt = result['sourceRepairReceipt']
+            self.assertEqual(source_receipt['kind'],'DELIVERY_REPAIR')
+            self.assertEqual(source_receipt['sourceRevision'],2)
+            self.assertEqual(source_receipt['sourceCursor'],repair_merge)
+            self.assertFalse(source_receipt['deploymentAuthorized'])
+            after_repair = state_path.read_bytes()
+            self.assertEqual(repair(repair_evidence),result)
+            self.assertEqual(state_path.read_bytes(),after_repair)
+
+            reopened = read_service_via_entrypoint(config_path,readonly=False,expected_profile=profile_file_sha)
+            view = reopened.frames.service.domain.snapshot()
+            self.assertEqual(view['sourceCursor'],repair_merge)
+            self.assertEqual(view['sourceOperations'][accepted['operationId']][1],accepted)
+            req, saved, _ = view['sourceOperations'][source_receipt['operationId']]
+            self.assertEqual(saved,source_receipt)
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_OFFLINE_REQUIRED'):
+                reopened.frames.service.domain.register_source(req)
+            state = next(iter(view['states'].values()))
+            self.assertEqual(state['desired']['provenance'],'REVIEWED_DELIVERY_REPAIR')
+            self.assertIsNone(state['installed'])
+            self.assertEqual(original.path.read_bytes(),before)
+            running_domain = reopened.frames.service.domain
+            with self.assertRaisesRegex(Stale,'SOURCE_PREVIEW_STALE'):
+                running_domain.source_preflight(repair_proposal)
+            next_pr = {**repair_proposal,'number':289,'baseSha':repair_merge,
+                       'expectedSourceRevision':2}
+            self.assertEqual(running_domain.source_preflight(next_pr)['sourceCursor'],repair_merge)
+
     def test_owner_portal_exact_merge_register_and_shared_read(self):
         self._owner_portal_merge()
 
@@ -440,11 +528,13 @@ class ImpactTests(unittest.TestCase):
         lineage.addCleanup=self.addCleanup
         gateway_config = owner_scope = registry_instance = None
         if kernel_peer:
-            from fortis_approvals.tests.test_r7_registry_reader_mount import functional_mount_config
+            from fortis_approvals.tests.test_r7_registry_reader_mount import (
+                functional_mount_config, incumbent_286_ci_profile)
             registry_instance = str(uuid.uuid4())
+            incumbent_profile = incumbent_286_ci_profile()
             gateway_config, owner_scope = functional_mount_config(
-                baseline_sha=lc.BASELINE, catalog_sha=BASE_CATALOG,
-                validator_revision=self.pin, instance_id=registry_instance)
+                baseline_sha=lc.BASELINE, catalog_sha=BASE_CATALOG, validator_revision=self.pin,
+                instance_id=registry_instance, ci_profile=incumbent_profile)
         lineage.setUp(successor=(profile,self.catalog_text), owner_scope=owner_scope,
                       instance_id=registry_instance)
         transition=lineage.transition()
@@ -607,15 +697,18 @@ class ImpactTests(unittest.TestCase):
             incumbent_peer._instance, incumbent_peer._scope = lineage.instance, lineage.witness['scopeDigest']
             incumbent_peer._owner_pidfd = None
             incumbent_peer._peer_key, incumbent_peer._check_identity = b'p'*32, lambda: None
-            incumbent_peer._functional_config = FunctionalRegistryConfiguration(
-                gateway_config, b'p'*32, scope_digest=incumbent_peer._scope)
-            old, owner, self.portal, _ = server.build_r7_unified_candidate(
-                state=runtime_root, owner_origin=gateway_origin, ingress_host=gateway_host,
-                ingress_grant=machine_grant, sonar_transport=server.SonarHTTPTransport(
-                    region='eu', bearer_token='local-sonar-fixture-only'),
-                organizations=('pilot',), project_keys=('pilot',), github_pilot=github_config,
-                github_transport=endpoint, extensions=extensions, unified_policy_source_opt_in=opt_in,
-                registry_candidate_reader=incumbent_peer)
+            # The incumbent binary treats the retained policy as current.
+            from fortis_approvals.integrations.github.gateway import registry_review_policy
+            with patch.object(registry_review_policy, 'policy', return_value=incumbent_profile):
+                incumbent_peer._functional_config = FunctionalRegistryConfiguration(
+                    gateway_config, b'p'*32, scope_digest=incumbent_peer._scope)
+                old, owner, self.portal, _ = server.build_r7_unified_candidate(
+                    state=runtime_root, owner_origin=gateway_origin, ingress_host=gateway_host,
+                    ingress_grant=machine_grant, sonar_transport=server.SonarHTTPTransport(
+                        region='eu', bearer_token='local-sonar-fixture-only'),
+                    organizations=('pilot',), project_keys=('pilot',), github_pilot=github_config,
+                    github_transport=endpoint, extensions=extensions, unified_policy_source_opt_in=opt_in,
+                    registry_candidate_reader=incumbent_peer)
             old_scope = old.authority.scope_binding
             old_choices = dict(old.authority.choices)
             old_policies = dict(old.policies)
@@ -860,6 +953,10 @@ class ImpactTests(unittest.TestCase):
                     peer = load_peer(released)
                 transport = peer._semantic_transport
                 if transition:
+                    self.assertEqual(peer._functional_config.value, gateway_config)
+                    with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
+                        registry_review_policy.policy_reference(
+                            lambda: gateway_config['policyReference'], owner_scope['policyReferenceDigest'])
                     with self.assertRaisesRegex(Denied,'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED'):
                         load_peer(released,interlock='0'*64,incumbent_core=incumbent_core)
                     before = incumbent_core.read_bytes()

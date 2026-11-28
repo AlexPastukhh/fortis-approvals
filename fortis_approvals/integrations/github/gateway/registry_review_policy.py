@@ -22,7 +22,12 @@ FIELDS={'schemaVersion','repository','enrollmentId','baselineSha','revision',
         'maxReviewToMergeSeconds','clockToleranceSeconds','profile'}
 
 
-def policy_reference(reader, pin):
+# Exact P5 workflow policy sealed by the #286 enrollment. The successor
+# preserves it for authority replay; new review still requires current CI.
+_INCUMBENT_P5_PROFILE_DIGEST = '730399a8b4b89a971ead08435c5ed3a7904a9fde531840614438f870d0cb568b'
+
+
+def policy_reference(reader, pin, *, preserve_incumbent=False):
     _need(_hex(pin,64),'P5_REGISTRY_POLICY_PIN_INVALID')
     try:
         value=reader()
@@ -38,7 +43,9 @@ def policy_reference(reader, pin):
               and 0<value['maxReviewToMergeSeconds']<=86400
               and type(value['clockToleranceSeconds']) is int
               and 0<=value['clockToleranceSeconds']<=60
-              and value['profile']==policy() and _hash(value)==pin,
+              and (value['profile']==policy()
+                   or (preserve_incumbent and _hash(value['profile'])==_INCUMBENT_P5_PROFILE_DIGEST))
+              and _hash(value)==pin,
               'P5_REGISTRY_POLICY_REFERENCE_MISMATCH')
         return loads_strict(canonical(value))
     except Denied:

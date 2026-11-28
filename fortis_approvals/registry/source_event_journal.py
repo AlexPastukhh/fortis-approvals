@@ -3,10 +3,14 @@
 Release event anchors interleave source and target events without rewriting
 the old v3 prefix or target revision sequence. No live ingress.
 """
+import uuid
+
 from ..core import Conflict, Denied, Stale
 from ..integrations.registry_contracts import semantic_contract as sc
 from ..integrations.registry_contracts import source_lineage_contract as lc
 
+DELIVERY_REPAIR = 'DELIVERY_REPAIR'
+_DELIVERY_287 = '87867ef670b5f8ae16645dbc2c25ea19a5e15e0e'
 MAX_SOURCE_EVENTS=64
 MAX_SOURCE_BYTES=4_000_000
 SCHEMA="""CREATE TABLE source_events(revision INTEGER PRIMARY KEY CHECK(revision>=1),
@@ -19,7 +23,7 @@ def request(value,store):
     sc.fields(value,('operationId','kind','parentRequestId','proposal','observation',
                      'evidenceDigest','transition'))
     sc.uuid_id(value['operationId'])
-    sc.need(value['kind'] in ('TRANSITION','MERGE','EXTERNAL_MERGE'))
+    sc.need(value['kind'] in ('TRANSITION','MERGE','EXTERNAL_MERGE',DELIVERY_REPAIR))
     p=lc.proposal(value['proposal'])
     sc.need(p['repository']==store.scope['repository'])
     lc.observation(value['observation'],p)
@@ -28,6 +32,16 @@ def request(value,store):
         sc.need(value['parentRequestId'] is None)
         lc.transition(value['transition'],p,value['observation'],store.expected_legacy,
                       store.scope,store.transition_digest)
+    elif value['kind'] == DELIVERY_REPAIR:
+        detail = value['transition']
+        sc.fields(detail, ('predecessorOperationId', 'predecessorEventDigest'))
+        sc.uuid_id(detail['predecessorOperationId'])
+        sc.hex_id(detail['predecessorEventDigest'], 64)
+        sc.need(value['parentRequestId'] is None and p['expectedSourceRevision'] == 1
+                and p['baseSha'] == _DELIVERY_287 and p['number'] > 287
+                and value['operationId'] == delivery_repair_id(
+                    detail['predecessorOperationId'], value['observation']['mergeSha']),
+                'SOURCE_DELIVERY_REPAIR_SCOPE')
     else:
         sc.uuid_id(value['parentRequestId'])
         sc.need(value['transition'] is None)
@@ -35,6 +49,20 @@ def request(value,store):
             sc.need(value['operationId']==lc.external_operation(value['parentRequestId']))
     sc.need(len(sc.canonical(value).encode())<=131072)
     return sc.loads_strict(sc.canonical(value))
+
+
+def delivery_repair_id(predecessor_id, merge_sha):
+    return str(uuid.uuid5(uuid.UUID(predecessor_id), 'registry-delivery-repair-v1:' + merge_sha))
+
+
+def delivery_repair_predecessor(events):
+    prior = next(iter(events.values()), None)
+    sc.need(prior is not None and prior[0]['kind'] == 'TRANSITION'
+            and prior[0]['proposal']['number'] == 287
+            and prior[1]['sourceCursor'] == _DELIVERY_287
+            and prior[1]['sourceRevision'] == 1 and prior[2] == 0,
+            'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
+    return prior
 
 
 def release_anchor(store,seen,revision):
@@ -79,9 +107,16 @@ def replay(store,db,seen):
         if rev==1:
             sc.need(req['kind']=='TRANSITION' and anchor==0,'SOURCE_TRANSITION_FIRST_REQUIRED')
         else:
-            sc.need(req['kind'] in ('MERGE','EXTERNAL_MERGE') and p['baseSha']==cursor and
-                    p['catalogSha256']==catalog and p['profileDigest']==profile,
-                    'SOURCE_CURSOR_OR_EPOCH_CHANGED')
+            sc.need(p['baseSha']==cursor and p['catalogSha256']==catalog and
+                    p['profileDigest']==profile, 'SOURCE_CURSOR_OR_EPOCH_CHANGED')
+            if req['kind'] == DELIVERY_REPAIR:
+                _, predecessor, _ = delivery_repair_predecessor(events)
+                sc.need(rev == 2 and anchor == 0 and req['transition'] == {
+                    'predecessorOperationId': predecessor['operationId'],
+                    'predecessorEventDigest': predecessor['eventDigest'],
+                }, 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
+            else:
+                sc.need(req['kind'] in ('MERGE','EXTERNAL_MERGE'), 'SOURCE_CURSOR_OR_EPOCH_CHANGED')
         calculated=sc.digest([previous,rev,anchor,anchor_digest,sc.digest(req)])
         result={'schemaVersion':4,'instanceId':store.instance_id,'operationId':ident,
                 'sourceRevision':rev,'sourceCursor':o['mergeSha'],'eventDigest':calculated,
