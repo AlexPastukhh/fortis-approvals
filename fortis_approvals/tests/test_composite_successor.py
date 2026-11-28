@@ -211,6 +211,42 @@ class SuccessorTests(unittest.TestCase):
             with self.subTest(pin=pin),self.assertRaisesRegex(Denied,'PRESERVATION_PIN_CHANGED'):
                 sealed_companion(core.path,**{**args,pin:'f'*64})
 
+    def test_frozen_staged_witness_preserves_completed_parent_and_policy_history(self):
+        from fortis_approvals.extensions.composite_preservation import inspect_staged_successor
+
+        core = self.install()
+        initial_digest = digest(snapshot(core, inspect_companion))
+        for child in CHILDREN:
+            self.change(child, 'DENY', 'ASK')
+        self.change(PARENT, 'DENY', 'ALLOW')
+        self.assertEqual(core.client('machine', 'submit', self.request())['state'], 'EXECUTED')
+        history = self.history.seal()
+        evidence = ReviewedHistoryEvidence(history, expected_digest=digest(history))
+        verify_history = lambda db: evidence.verify_successor_storage(db, core.authority.sha)
+        grown = snapshot(core, inspect_companion)
+        self.assertEqual(grown['parentStates'], {'EXECUTED': 1})
+        current_digest = digest(grown)
+        before = core.path.read_bytes()
+        with self.assertRaisesRegex(Denied, 'COMPOSITE_PRESERVATION_PIN_CHANGED'):
+            inspect_staged_successor(core.path, expected_digest=current_digest,
+                                     verify_history=verify_history)
+        with self.assertRaisesRegex(Denied, 'COMPOSITE_PRESERVATION_PIN_CHANGED'):
+            inspect_staged_successor(core.path, expected_digest=initial_digest,
+                                     verify_history=verify_history, require_empty=False)
+        self.assertEqual(inspect_staged_successor(core.path, expected_digest=current_digest,
+                        verify_history=verify_history, require_empty=False, require_quiescent=True), {
+            'schemaDigest': grown['schemaDigest'], 'companionDigest': current_digest,
+            'authorityWitnessDigest': digest(snapshot(core, verify_history)),
+        })
+        # A pinned witness of an unresolved parent is still not quiescent.
+        pending={**grown,'parentStates':{'UNCERTAIN':1}}
+        from unittest.mock import patch
+        with patch('fortis_approvals.extensions.composite_preservation.inspect_companion',return_value=pending):
+            with self.assertRaisesRegex(Denied,'MAINTENANCE_COMPOSITE_NOT_QUIESCENT'):
+                inspect_staged_successor(core.path,expected_digest=digest(pending),
+                    verify_history=verify_history,require_empty=False,require_quiescent=True)
+        self.assertEqual(core.path.read_bytes(), before)
+
     def test_unready_and_generic_install_refused(self):
         core = self.candidate_core()
         with self.assertRaises(Denied):

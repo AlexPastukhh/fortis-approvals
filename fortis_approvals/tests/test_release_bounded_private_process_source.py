@@ -51,7 +51,7 @@ class BoundedReleaseProcessSourceTests(unittest.TestCase):
         self.assertIn("if($Payload.action -ceq 'clone')",helper)
         self.assertIn("$Native['DiagnosticDockerClone']=$true",helper)
         self.assertIn("$Native['WaitTimeoutMs']=1800000",helper)
-        self.assertIn("('inspect','uncertain_growth_snapshot','uncertain_growth_review')",helper)
+        self.assertIn("('inspect','uncertain_growth_snapshot','uncertain_growth_review','successor_freeze_inspect','successor_freeze_apply_verify')",helper)
         self.assertIn("$Native['WaitTimeoutMs']=900000",helper)
         self.assertIn("State-Helper",source)
         self.assertIn("$WaitEcho=Private-Process",source)
@@ -103,9 +103,10 @@ class BoundedReleaseProcessSourceTests(unittest.TestCase):
             "Step 'STOP_SOURCE'",
             "Step 'ATTEMPT_POINTER_SAVED'",
         )
-        offsets = [source.index(marker) for marker in markers]
+        offsets = [source.index(marker) for marker in markers[:-1]]
+        offsets.append(source.index(markers[-1], offsets[-1]))
         self.assertEqual(offsets, sorted(offsets))
-        self.assertIn("Save\nStep 'PREPARED_RECORD_SAVED'", source)
+        self.assertIn("Save -FlushToDisk:([bool]$script:CorrectivePair)\nStep 'PREPARED_RECORD_SAVED'", source)
         self.assertIn(
             "Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}",
             source,

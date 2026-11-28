@@ -368,6 +368,48 @@ class RegistryTrustedMountTests(unittest.TestCase):
         with self.assertRaises(Denied):self.load(source='c'*64)
         with self.assertRaises(Denied):self.load(socket_ok=False)
 
+    def test_bootstrap_material_exact_copy_partial_recovery_and_ro_readback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'prepared';target=Path(folder)/'final'
+            for root in (source,target):root.mkdir(mode=0o700)
+            original={'profile.json':b'old-profile','planner.key':b'x'*32}
+            def write(root,name,raw):
+                path=root/name;path.write_bytes(raw);path.chmod(0o600)
+            for name,raw in original.items():write(source,name,raw)
+            limits={'profile.json':100,'planner.key':32}
+            pins={n:hashlib.sha256(raw).hexdigest() for n,raw in original.items()}
+            final={'profile.json':b'new-profile'}
+            with patch.object(mount,'_check_owner_readonly_mount'):
+                target_pin=mount.inspect_bootstrap_empty_profile_target(target)
+            def seal(verify=False,expected_target=target_pin):
+                with patch.object(mount,'_check_owner_readonly_mount'),patch.object(mount,'_exact_mountinfo',return_value=True),patch.object(mount.os,'statvfs',return_value=SimpleNamespace(f_flag=os.ST_RDONLY if verify else 0)):
+                    return mount._seal_bootstrap_material(source,target,limits,pins,final,verify_only=verify,expected_target=expected_target)
+            with self.assertRaisesRegex(Denied,'BOOTSTRAP_MATERIAL_INCOMPLETE'):seal(True)
+            with self.assertRaisesRegex(Denied,'BOOTSTRAP_MATERIAL_TARGET_CHANGED'):
+                seal(expected_target={**target_pin,'inode':target_pin['inode']+1})
+            self.assertFalse(list(target.iterdir()))
+            write(target,'.profile.json.pending',b'wrong')
+            with self.assertRaisesRegex(Denied,'BOOTSTRAP_MATERIAL_CHANGED'):seal()
+            self.assertEqual(set(p.name for p in target.iterdir()),{'.profile.json.pending'})
+            write(target,'.profile.json.pending',b'new-')
+            def interrupted(*a,**kw):
+                raise OSError('fixture lost ACK before rename')
+            with patch.object(mount.os,'replace',side_effect=interrupted):
+                with self.assertRaisesRegex(OSError,'lost ACK'):seal()
+            self.assertEqual((target/'.profile.json.pending').read_bytes(),b'new-profile')
+            actual=seal()
+            self.assertEqual(seal(True),actual)
+            with patch.object(mount.os,'replace',side_effect=AssertionError('replaced completed material')):
+                self.assertEqual(seal(),actual)
+            self.assertEqual({p.name:p.read_bytes() for p in source.iterdir()},original)
+            self.assertEqual(actual,{n:hashlib.sha256(raw).hexdigest() for n,raw in {**original,**final}.items()})
+            write(source,'planner.key',b'y'*32)
+            with self.assertRaisesRegex(Denied,'BOOTSTRAP_MATERIAL_SOURCE_CHANGED'):seal(True)
+            write(source,'planner.key',original['planner.key'])
+            write(target,'profile.json',b'changed')
+            with self.assertRaisesRegex(Denied,'BOOTSTRAP_MATERIAL_CHANGED'):seal()
+            self.assertEqual((target/'profile.json').read_bytes(),b'changed')
+
     def test_registry_image_is_private_and_catalog_explicit(self):
         root=Path(__file__).resolve().parents[2]
         recipe=(root/'fortis_approvals/deploy/Dockerfile-Registry-Read-Candidate').read_text()
@@ -426,6 +468,9 @@ class RegistryTrustedMountTests(unittest.TestCase):
                  'from fortis_approvals.registry.protected_source_write import ProtectedSourceWrite;'
                  'from fortis_approvals.registry.release_domain import ReleaseDomain;'
                  'from fortis_approvals.registry.release_event_journal import ReleaseEventJournal;'
+                 'from fortis_approvals.registry.owner_functional_v1_bootstrap import bootstrap_phase_plan,seal_bootstrap_registry_material;'
+                 'from fortis_approvals.integrations.registry_contracts.maintenance_contract import hold_snapshot,bootstrap_final_handoff;'
+                 'assert bootstrap_phase_plan.__module__.endswith("maintenance_contract");'
                  'print("INACTIVE_REGISTRY_IMAGE_IMPORT_PASS")']
             result=subprocess.run(cmd, capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)

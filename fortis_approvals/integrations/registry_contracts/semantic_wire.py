@@ -13,7 +13,7 @@ from . import source_lineage_contract as lc
 MAX_REQUEST=65536
 MAX_REPLY=270000
 ACTIONS=('READ','WRITE','BEGIN_GROUP','HOLD_SNAPSHOT','PROFILE','SOURCE_PREFLIGHT',
-         'SOURCE_REGISTER','SOURCE_LOOKUP','SOURCE_REGISTER_EXTERNAL','SOURCE_LOOKUP_EXTERNAL')
+         'SOURCE_REGISTER','SOURCE_LOOKUP','SOURCE_REGISTER_EXTERNAL','SOURCE_LOOKUP_EXTERNAL','CONTROLLER_PAIRED_BEGIN')
 
 
 def _tag(key,label,value):
@@ -49,6 +49,10 @@ def request(value,*,instance,scope,generation):
         sc.need(len(set(ids))==len(ids))
         sc.uuid_id(body['parentRequestId'])
         sc.need(body['assertionSource'] in ('OWNER_DIRECT','OWNER_TRANSCRIBED'))
+    elif act=='CONTROLLER_PAIRED_BEGIN':
+        sc.fields(body,('intentDigest','readback'))
+        sc.hex_id(body['intentDigest'],64)
+        sc.need(type(body['readback']) is bool)
     elif act=='SOURCE_PREFLIGHT':
         sc.fields(body,('proposal',))
         lc.proposal(body['proposal'])
@@ -63,6 +67,9 @@ def request(value,*,instance,scope,generation):
     elif act=='SOURCE_LOOKUP':
         sc.fields(body,('context','proposal'))
         lc.source_context(body['context'],body['proposal'])
+    elif act=='PROFILE' and body!={}:
+        sc.fields(body,('sourceCheckpoint',))
+        sc.need(body['sourceCheckpoint'] is True,'SEMANTIC_WIRE_BINDING')
     else:
         sc.need(body=={})
     sc.need(len(sc.canonical(value).encode())<=MAX_REQUEST-128,'SEMANTIC_WIRE_LIMIT')

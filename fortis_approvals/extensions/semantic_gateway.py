@@ -77,12 +77,22 @@ class GatewayRegistrySemanticTransport:
         return self._call(actor,'BEGIN_GROUP',{'params':params,'operationIds':operation_ids,
                       'parentRequestId':parent_id,'assertionSource':assertion_source})
 
+    def controller_paired_begin(self,intent_digest,*,readback):
+        # Private owner helper only. The independently protected intent
+        # on the Registry mount is required even with a valid frame key.
+        return self._call(self.internal_actor,'CONTROLLER_PAIRED_BEGIN',
+                          {'intentDigest':intent_digest,'readback':readback})
+
     def maintenance_snapshot(self):
         return self._call(self.internal_actor,'HOLD_SNAPSHOT',{})
 
-    def profile(self):
-        result = self._call(self.internal_actor, 'PROFILE', {})
+    def profile(self, *, source_checkpoint=False):
+        sc.need(type(source_checkpoint) is bool)
+        body = {'sourceCheckpoint': True} if source_checkpoint else {}
+        result = self._call(self.internal_actor, 'PROFILE', body)
         fields = {'profileDigest', 'sourceRevision'}
+        if source_checkpoint:
+            fields.add('sourceCheckpoint')
         if type(result) is dict and 'sourceDelivery' in result:
             sc.fields(result['sourceDelivery'], ('device','inode','policyAuthorityDigest','interlockDigest'))
             for pin in ('policyAuthorityDigest','interlockDigest'):
@@ -94,6 +104,14 @@ class GatewayRegistrySemanticTransport:
         sc.fields(result, fields)
         sc.hex_id(result['profileDigest'], 64)
         sc.revision(result['sourceRevision'])
+        if source_checkpoint:
+            checkpoint = result['sourceCheckpoint']
+            sc.fields(checkpoint, ('sourceCursor', 'snapshotRevision', 'eventDigest', 'registryDigest'))
+            sc.hex_id(checkpoint['sourceCursor'], 40)
+            sc.revision(checkpoint['snapshotRevision'])
+            sc.need(checkpoint['snapshotRevision'] >= result['sourceRevision'])
+            for field in ('eventDigest', 'registryDigest'):
+                sc.hex_id(checkpoint[field], 64)
         return result
 
     def profile_digest(self):

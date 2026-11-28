@@ -1,5 +1,6 @@
 """Isolated transition bindings and old-prefix preservation tests."""
 import copy
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -168,8 +169,8 @@ class LegacyPrefixTests(unittest.TestCase):
         path = self.root / 'clone.sqlite'
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
-        with sqlite3.connect(self.path.as_uri()+'?mode=ro', uri=True) as src:
-            with sqlite3.connect(path) as dst:
+        with closing(sqlite3.connect(self.path.as_uri()+'?mode=ro', uri=True)) as src:
+            with closing(sqlite3.connect(path)) as dst, dst:
                 src.backup(dst)
                 dst.execute('PRAGMA journal_mode=WAL')
         return local.FunctionalV1CandidateJournal(

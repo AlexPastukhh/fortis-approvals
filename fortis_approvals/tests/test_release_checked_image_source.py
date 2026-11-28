@@ -49,7 +49,7 @@ class CheckedImageSourceTests(unittest.TestCase):
         self.assertIn("Protect-Directory $Directory", SCRIPT)
         saver = SCRIPT.split("function Save-Checked-Image {", 1)[1].split("function Assert-Checked-Image-Binding {", 1)[0]
         record = saver.index("$Record=[ordered]@")
-        write = saver.index("if($Maintenance -or $script:CorrectivePair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}")
+        write = saver.index("if($Maintenance -or $script:CorrectivePair -or $script:BootstrapPair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}")
         self.assertIn("sourceReceipt=$Receipt", saver[record:write])
         self.assertLess(saver.index("Protect-Directory $Directory"), write)
         self.assertIn("checkedImageId", SCRIPT)
@@ -119,7 +119,7 @@ class CheckedImageSourceTests(unittest.TestCase):
         final = SCRIPT.index('if($CheckedImageRecord){Verify-Checked-Image $Source $Report}', proof)
         stop = SCRIPT.index("Docker-Text @('stop','--timeout','20',$Old.Id)", final)
         self.assertTrue(early < admission < preflight < merged < proof < final < stop)
-        self.assertIn('$PreStopReceipt=if($Auto -and $CheckedImageRecord)', SCRIPT[preflight:merged])
+        self.assertIn('elseif($Auto -and $CheckedImageRecord)', SCRIPT[preflight:merged])
         self.assertIn('FORTIS_CHECKED_IMAGE_PREFLIGHT_SELFTEST_PASS', SCRIPT)
 
     def test_previous_image_is_pre_stop_precondition(self):

@@ -395,6 +395,25 @@ class SemanticRepoBroker(RepoIntentBroker):
             if query['operation']=='get_operation' and type(query.get('params')) is dict and set(query['params'])=={'repository','operationId'}:
                 return self.base.read(credential,query)
             return self.access.read(self.core.auth.authenticate(credential),query,credential=credential)
+        from ..workflow.adapters import NativeGitHubAdapter
+        if (type(query) is dict and (query.get('service'),query.get('operation'))==('github','list_branches')
+                and type(self.base.read_adapters.get('github')) is NativeGitHubAdapter):
+            # Exact native controller read: ALLOW traverses only the typed
+            # GET adapter. ASK stays reserved and may never create or
+            # consume a Core approval during State Freeze.
+            q=self.base.authorize_read(credential,query)
+            actor=self.core.auth.authenticate(credential)
+            coordinate=Coordinate('github','list_branches')
+            if self.core._policy(actor,q)=='ALLOW':
+                version=self.core.policy_version
+                self.access.gate.passive_read(coordinate)
+                result=self.base.read(credential,q,passive_only=True)
+                self.access.gate.passive_read(coordinate)
+                sc.need(self.core._policy(actor,self.base.authorize_read(credential,q))=='ALLOW'
+                        and self.core.policy_version==version,'POLICY_CHANGED')
+                return result
+            with self.access.gate.reserve(coordinate):
+                return self.base.read(credential,q)
         return self.base.read(credential,query)
 
     def submit(self,credential,intent):

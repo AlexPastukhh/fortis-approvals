@@ -1087,7 +1087,9 @@ def admit(container, expected, *, pilot):
     reg_profile = expected.get('registryReaderVolume', '')
     reg_socket = expected.get('registrySocketVolume', '')
     reg_successor = expected.get('registrySuccessorDelivery', False)
-    require(type(reg_successor) is bool, 'PILOT_REGISTRY_SUCCESSOR_VOLUME_DENIED')
+    reg_latest = expected.get('registryLatestPin', False)
+    require(type(reg_successor) is bool and type(reg_latest) is bool
+            and (not reg_latest or reg_successor), 'PILOT_REGISTRY_SUCCESSOR_VOLUME_DENIED')
     expected_socket = 'fortis-registry-read'
     if reg_successor and type(reg_nonce) is str and reg_nonce:
         expected_socket += '-' + reg_nonce.replace('-', '')
@@ -1109,7 +1111,10 @@ def admit(container, expected, *, pilot):
         if reg_successor:
             evidence = 'fortis-registry-source-evidence-' + reg_nonce.replace('-', '')
             desired.add(('volume', evidence, '/run/fortis-registry-source-evidence', True))
-            desired.add(('volume', 'fortis-r7-maintenance-interlock', '/run/r7-maintenance', False))
+            interlock='fortis-r7-maintenance-interlock-v2' if reg_latest else 'fortis-r7-maintenance-interlock'
+            desired.add(('volume', interlock, '/run/r7-maintenance', False))
+            if reg_latest:
+                desired.add(('volume','fortis-r7-maintenance-anchor','/run/r7-maintenance-anchor',False))
     if pilot:
         require(bool(re.fullmatch('fortis-github-pilot-state-[0-9a-f]{32}', expected['stateVolume'])), 'PILOT_DEDICATED_STATE_REQUIRED')
         require(bool(re.fullmatch('fortis-github-pilot-token-[0-9a-f]{32}', expected['tokenVolume'])), 'PILOT_DEDICATED_TOKEN_REQUIRED')
@@ -1235,22 +1240,117 @@ def verify_file_pr_receipts(scenario, root='/state/private'):
                 prRequestId=scenario['prRequestId'], commitSha=scenario['commitSha'], pullRequestNumber=scenario['pullRequestNumber'])
 
 
-def successor_interlock_publish(value, *, root=None):
+def successor_interlock_seed(value, *, source_root=None, root=None, latest_root=None):
+    """One bounded #289 bootstrap of the operational interlock, no reset.
+
+    The host independently verifies the incumbent primary/backup/authority,
+    stopped source, exact old RO mount, fresh operational volumes and durable
+    Pending intent under its existing controller lock. This helper copies
+    only the pinned original record; Pending precedes every new record and
+    Committed follows the independent host commit. No listener is started.
+    """
+    import fcntl
+    from contextlib import ExitStack
+    if __name__=='__main__':
+        sys.path.insert(0,'/opt/fortis')
+    from fortis_approvals.extensions.maintenance_interlock_reader import (
+        MOUNT,LATEST_MOUNT,_read_record,read_owner_interlock)
+    from fortis_approvals.r7_registry_reader_mount import _exact_mountinfo
+    from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
+    from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
+    sc.fields(value,('action','mode','record','digest'))
+    require(value['action']=='successor_interlock_seed' and value['mode'] in ('readback','seed','commit'),
+            'PILOT_INTERLOCK_SEED_REQUEST_INVALID')
+    record=mc.validate_record(value['record'])
+    # Only the retained genesis of the exact accepted #289 pair. A later
+    # ordinary release must continue the operational record, never seed it.
+    require(value['digest']==sc.digest(record)
+            and value['digest']=='9dd0e18b2f10e5180fccd5831ff6528e973813d0fe0cf29a826bc20c750a18a3'
+            and record['phase']=='NORMAL' and record['sequence']==0,
+            'PILOT_INTERLOCK_SEED_PREDECESSOR_CHANGED')
+    source_root=Path('/run/r7-maintenance-source') if source_root is None else source_root
+    root=MOUNT if root is None else root
+    latest_root=LATEST_MOUNT if latest_root is None else latest_root
+    def read_source():
+        return read_owner_interlock(instance_id=record['registryInstanceId'],
+            scope_digest=record['scopeDigest'],generation=record['generation'],
+            expected_digest=value['digest'],root=source_root)
+    require(read_source()==record,'PILOT_INTERLOCK_SEED_PREDECESSOR_CHANGED')
+    pending=mc.latest_projection(record,committed=False,registry_digest=None)
+    committed={**pending,'state':'Committed'}
+    mountinfo=Path('/proc/self/mountinfo').read_bytes()
+    require(os.geteuid()==0,'PILOT_INTERLOCK_WRITER_MOUNT_REQUIRED')
+    with ExitStack() as stack:
+        def open_root(path):
+            require(_exact_mountinfo(mountinfo,path,b'rw'),'PILOT_INTERLOCK_WRITER_MOUNT_REQUIRED')
+            fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            stack.callback(os.close,fd)
+            meta=os.fstat(fd)
+            require(meta.st_uid==0 and stat.S_IMODE(meta.st_mode)==0o555
+                    and not os.fstatvfs(fd).f_flag & os.ST_RDONLY,
+                    'PILOT_INTERLOCK_WRITER_MOUNT_REQUIRED')
+            return fd,(meta.st_dev,meta.st_ino)
+        dirfd,identity=open_root(root)
+        latestfd,latest_identity=open_root(latest_root)
+        old=source_root.stat(follow_symlinks=False)
+        require(len({identity,latest_identity,(old.st_dev,old.st_ino)})==3,
+                'PILOT_INTERLOCK_SEED_MOUNT_ALIAS')
+        # Shared directory reservation prevents a seed when a receiver is
+        # active. The host also excludes every other mount holder.
+        fcntl.flock(dirfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        fcntl.flock(latestfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        def optional_record(fd):
+            names=set(os.listdir(fd))
+            require(names<= {'record.json'},'PILOT_INTERLOCK_SEED_NOT_FRESH')
+            return _read_record(fd) if names else None
+        current=optional_record(dirfd)
+        projection=optional_record(latestfd)
+        require((current is None and projection in (None,pending))
+                or (current==record and projection in (pending,committed)),
+                'PILOT_INTERLOCK_SEED_PREDECESSOR_CHANGED')
+        if value['mode']=='seed' and current is None:
+            if projection is None:
+                _replace_interlock_record(latestfd,sc.canonical(pending).encode())
+                projection=optional_record(latestfd)
+                require(projection==pending,'PILOT_INTERLOCK_SEED_UNCONFIRMED')
+            os.fsync(latestfd)
+            _replace_interlock_record(dirfd,sc.canonical(record).encode())
+            current=optional_record(dirfd)
+            require(current==record,'PILOT_INTERLOCK_SEED_UNCONFIRMED')
+        if current==record:
+            os.fsync(dirfd)
+        if value['mode']=='commit':
+            require(current==record and projection in (pending,committed),
+                    'PILOT_INTERLOCK_SEED_COMMIT_DENIED')
+            if projection==pending:
+                _replace_interlock_record(latestfd,sc.canonical(committed).encode())
+                projection=optional_record(latestfd)
+            require(projection==committed,'PILOT_INTERLOCK_SEED_UNCONFIRMED')
+            os.fsync(latestfd)
+        require(optional_record(dirfd)==current and optional_record(latestfd)==projection
+                and read_source()==record,'PILOT_INTERLOCK_SEED_UNCONFIRMED')
+        return {'position':'SEEDED' if current==record else 'EMPTY',
+                'digest':value['digest'],'latest':projection}
+
+
+def successor_interlock_publish(value, *, root=None, latest_root=None):
     """Compare-and-replace on the controller's dedicated volume."""
     import fcntl
     if __name__=='__main__':
         sys.path.insert(0,'/opt/fortis')
-    from fortis_approvals.extensions.maintenance_interlock_reader import MOUNT, _read_record
+    from fortis_approvals.extensions.maintenance_interlock_reader import MOUNT, LATEST_MOUNT, _read_record
     from fortis_approvals.r7_registry_reader_mount import _exact_mountinfo
     from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
     from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
 
-    sc.fields(value,('action','mode','previous','next'))
+    dynamic='latest' in value
+    sc.fields(value,('action','mode','previous','next','latest') if dynamic else ('action','mode','previous','next'))
     require(value['action']=='successor_interlock_publish'
-            and value['mode'] in ('publish','readback'),'PILOT_INTERLOCK_REQUEST_INVALID')
+            and value['mode'] in (('publish','readback','commit') if dynamic else ('publish','readback')),
+            'PILOT_INTERLOCK_REQUEST_INVALID')
     previous=mc.validate_record(value['previous'])
     proposed=mc.validate_transition(previous,value['next'])
-    require(proposed['phase'] in ('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP'),
+    require(dynamic or proposed['phase'] in ('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP'),
             'PILOT_INTERLOCK_PHASE_DENIED')
     root=MOUNT if root is None else root
     require(os.geteuid()==0 and _exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),root,b'rw'),
@@ -1269,6 +1369,9 @@ def successor_interlock_publish(value, *, root=None):
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             current=mc.validate_record(_read_record(dirfd))
             require(current in (previous,proposed),'PILOT_INTERLOCK_PREDECESSOR_CHANGED')
+            if dynamic:
+                return _publish_latest_phase(value,dirfd,current,previous,proposed,
+                    LATEST_MOUNT if latest_root is None else latest_root)
             if current==previous and value['mode']=='publish':
                 if proposed['phase']!='DRAINING':
                     fcntl.flock(dirfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -1286,7 +1389,68 @@ def successor_interlock_publish(value, *, root=None):
         os.close(dirfd)
 
 
-def _replace_interlock_record(dirfd, data):
+def _publish_latest_phase(value, dirfd, current, previous, proposed, root):
+    """The owner host commits its durable anchor BETWEEN publish and commit.
+
+    This projection never self-authorizes from record.json. If the owner
+    process dies, readback reports old/next and Pending/Committed; a pending
+    projection blocks both runtimes. Caller must verify its independent host
+    anchor before committing the projection. No generic init/reset here.
+    """
+    import fcntl
+    from fortis_approvals.extensions.maintenance_interlock_reader import _read_record
+    from fortis_approvals.r7_registry_reader_mount import _exact_mountinfo
+    from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
+    from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
+    sc.fields(value['latest'],('previousRegistryDigest','nextRegistryDigest'))
+    old=mc.latest_projection(previous,committed=True,registry_digest=value['latest']['previousRegistryDigest'])
+    pending=mc.latest_projection(proposed,committed=False,registry_digest=value['latest']['nextRegistryDigest'])
+    committed={**pending,'state':'Committed'}
+    require(os.geteuid()==0 and _exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),root,b'rw'),
+            'PILOT_LATEST_PIN_WRITER_MOUNT_REQUIRED')
+    latestfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        meta=os.fstat(latestfd);original=os.fstat(dirfd)
+        require(meta.st_uid==0 and stat.S_IMODE(meta.st_mode)==0o555
+                and (meta.st_dev,meta.st_ino)!=(original.st_dev,original.st_ino)
+                and not os.fstatvfs(latestfd).f_flag & os.ST_RDONLY,
+                'PILOT_LATEST_PIN_WRITER_MOUNT_REQUIRED')
+        projection=_read_record(latestfd)
+        require((current==previous and projection in (old,pending)) or
+                (current==proposed and projection in (pending,committed)),
+                'PILOT_LATEST_PIN_PREDECESSOR_CHANGED')
+        if value['mode']=='publish' and current==previous:
+            if proposed['phase']!='DRAINING':
+                fcntl.flock(dirfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if projection==old:
+                _replace_interlock_record(latestfd,sc.canonical(pending).encode())
+                require(_read_record(latestfd)==pending,'PILOT_LATEST_PIN_WRITE_UNCONFIRMED')
+            os.fsync(latestfd)
+            _replace_interlock_record(dirfd,sc.canonical(proposed).encode())
+            require(_read_record(dirfd)==proposed,'PILOT_INTERLOCK_WRITE_UNCONFIRMED')
+            current,projection=proposed,pending
+        if current==proposed:
+            os.fsync(dirfd)
+        if value['mode']=='commit':
+            require(current==proposed and projection in (pending,committed),
+                    'PILOT_LATEST_PIN_COMMIT_DENIED')
+            if projection==pending:
+                _replace_interlock_record(latestfd,sc.canonical(committed).encode())
+                projection=_read_record(latestfd)
+            require(projection==committed,'PILOT_LATEST_PIN_WRITE_UNCONFIRMED')
+            os.fsync(latestfd)
+        elif projection==committed:
+            # Recover a committed projection whose final directory fsync
+            # may have lost its ACK. A readback is sufficient for the host.
+            os.fsync(latestfd)
+        require(_read_record(latestfd)==projection and _read_record(dirfd)==current,
+                'PILOT_LATEST_PIN_WRITE_UNCONFIRMED')
+        return {'position':'NEXT' if current==proposed else 'PREVIOUS','phase':current['phase'],
+                'digest':sc.digest(current),'latest':projection}
+    finally:os.close(latestfd)
+
+
+def _replace_interlock_record(dirfd, data, *, target='record.json'):
     name='.record-'+uuid.uuid4().hex
     fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=dirfd)
     try:
@@ -1295,13 +1459,86 @@ def _replace_interlock_record(dirfd, data):
             record.flush()
             os.fchmod(record.fileno(),0o444)
             os.fsync(record.fileno())
-        os.replace(name,'record.json',src_dir_fd=dirfd,dst_dir_fd=dirfd)
+        os.replace(name,target,src_dir_fd=dirfd,dst_dir_fd=dirfd)
     except BaseException:
         try:
             os.unlink(name,dir_fd=dirfd)
         except FileNotFoundError:
             pass
         raise
+
+
+def successor_begin_intent(value, *, root=None, latest_root=None):
+    """Project one protected host intent onto the existing owner anchor.
+
+    Only the fixed root-owned volume is writable; the live Registry and
+    Gateway see it read-only. Same-intent readback is idempotent. At the
+    same NORMAL predecessor a new intent requires a revoked predecessor
+    and the controller's authenticated absence readback. Revocation does
+    not erase a committed pair.
+    """
+    if __name__=='__main__':sys.path.insert(0,'/opt/fortis')
+    from fortis_approvals.extensions.maintenance_interlock_reader import (
+        MOUNT,LATEST_MOUNT,_read_record,read_owner_interlock,InterlockReservations)
+    from fortis_approvals.r7_registry_reader_mount import _exact_mountinfo
+    from fortis_approvals.integrations.registry_contracts import maintenance_contract as mc
+    from fortis_approvals.integrations.registry_contracts import semantic_contract as sc
+    root=MOUNT if root is None else root
+    latest_root=LATEST_MOUNT if latest_root is None else latest_root
+    import time
+    mode=value.get('mode','project')
+    require(mode in ('project','revoke','replace'),'PILOT_CONTROLLER_BEGIN_INVALID')
+    fields={'action','intent'} | ({'mode'} if 'mode' in value else set())
+    if mode=='replace':fields.add('absence')
+    sc.fields(value,fields)
+    require(value['action']=='successor_begin_intent','PILOT_CONTROLLER_BEGIN_INVALID')
+    intent=value['intent'];pair=mc.ordinary_pair_intent(intent);normal=intent['normal']
+    require(os.geteuid()==0 and _exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),latest_root,b'rw'),
+            'PILOT_CONTROLLER_BEGIN_MOUNT_REQUIRED')
+    def phase(fd):
+        actual=read_owner_interlock(instance_id=normal['registryInstanceId'],scope_digest=normal['scopeDigest'],
+            generation=normal['generation'],expected_digest=sc.digest(normal),root=root)
+        require(actual==normal and _read_record(fd)==mc.latest_projection(normal,committed=True,registry_digest=None),
+                'PILOT_CONTROLLER_BEGIN_PREDECESSOR_CHANGED')
+    with InterlockReservations(root).exclusive() as exclusive:
+        require(exclusive,'PILOT_CONTROLLER_BEGIN_BUSY')
+        fd=os.open(latest_root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            meta=os.fstat(fd);old=root.stat(follow_symlinks=False)
+            require(meta.st_uid==0 and stat.S_IMODE(meta.st_mode)==0o555
+                    and (meta.st_dev,meta.st_ino)!=(old.st_dev,old.st_ino)
+                    and not os.fstatvfs(fd).f_flag & os.ST_RDONLY,
+                    'PILOT_CONTROLLER_BEGIN_MOUNT_REQUIRED')
+            phase(fd)
+            try:previous=mc.controller_begin_projection(_read_record(fd,name='begin.json',maximum=65536))
+            except FileNotFoundError:previous=None
+            proposed={'intent':intent,'revoked':False}
+            if mode=='revoke':
+                require(previous is not None and previous['intent']==intent
+                        and (previous['revoked'] or int(time.time())>intent['authorization']['recordedAt']+300),
+                        'PILOT_CONTROLLER_BEGIN_REVOKE_DENIED')
+                proposed['revoked']=True
+            elif previous is not None and previous['intent']==intent:
+                # A normal replay cannot undo a revocation. Readback remains.
+                proposed=previous
+            elif previous is not None:
+                if mode=='replace':
+                    mc.begin_replacement(previous,value['absence'],intent)
+                else:
+                    require(previous['intent']['normal']['sequence']<normal['sequence'],
+                            'PILOT_CONTROLLER_BEGIN_INTENT_EXISTS')
+            elif mode=='replace':
+                raise RuntimeError('PILOT_CONTROLLER_BEGIN_INTENT_EXISTS')
+            if previous!=proposed:
+                raw=sc.canonical(proposed).encode()
+                require(len(raw)<=65536,'PILOT_CONTROLLER_BEGIN_LIMIT')
+                _replace_interlock_record(fd,raw,target='begin.json')
+            os.fsync(fd)
+            require(_read_record(fd,name='begin.json',maximum=65536)==proposed,
+                    'PILOT_CONTROLLER_BEGIN_UNCONFIRMED')
+            phase(fd)
+            return {'intentDigest':sc.digest(intent),'pairDigest':sc.digest(pair),'revoked':proposed['revoked']}
+        finally:os.close(fd)
 
 
 def successor_freeze_inspect(value):
@@ -1311,9 +1548,9 @@ def successor_freeze_inspect(value):
         sys.path.insert(0,'/opt/fortis')
     from fortis_approvals.extensions.composite_preservation import sealed_companion
     from fortis_approvals.extensions.maintenance_interlock_reader import (
-        InterlockReservations, read_owner_interlock)
+        InterlockReservations, read_owner_interlock, read_latest_interlock, read_controller_begin)
     from fortis_approvals.r7_registry_reader_mount import _check_owner_readonly_mount
-    from fortis_approvals.integrations.registry_contracts import maintenance_seal as seal
+    from fortis_approvals.integrations.registry_contracts import maintenance_seal as seal, maintenance_contract as mc, semantic_contract as sc
 
     require(value['action'] in ('successor_freeze_inspect','successor_freeze_apply_verify'),
             'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
@@ -1325,24 +1562,62 @@ def successor_freeze_inspect(value):
     fields.update({'checkSeal','draining','frozen'} if apply else {'drain'})
     if apply and 'prepareStop' in value:
         fields.add('prepareStop')
+    stopped='stoppedIntent' in value
+    if stopped:
+        require(apply and 'latestPin' in value and 'prepareStop' not in value,
+                'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+        fields.add('stoppedIntent')
+    dynamic='latestPin' in value
+    if dynamic:
+        fields.add('latestPin')
+        require(value['latestPin'] is True,'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+    prepare='prepare' in value
+    if prepare:
+        require(dynamic and not apply,'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+        fields=(fields-{'stateDigest','workerAttestationDigest'})|{'prepare'}
     require(set(value)==fields,'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
     root=Path('/source')
     _check_owner_readonly_mount(root)
 
     def record():
-        return read_owner_interlock(instance_id=value['instanceId'],scope_digest=value['scopeDigest'],
-            generation=value['generation'],expected_digest=value['interlockDigest'])
+        pins=dict(instance_id=value['instanceId'],scope_digest=value['scopeDigest'],
+                  generation=value['generation'])
+        if dynamic:
+            current,projection=read_latest_interlock(**pins)
+            require(projection['interlockDigest']==value['interlockDigest']
+                    and projection['registryDigest']==value['registryDigest'],
+                    'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+            return current
+        return read_owner_interlock(**pins,expected_digest=value['interlockDigest'])
 
     with InterlockReservations().exclusive() as drained:
         require(drained,'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
         before=record()
-        require(before['phase']==('CHECK_SEALED' if apply else 'DRAINING'),
+        require(before['phase']==('APPLY_STOP' if stopped else 'CHECK_SEALED' if apply else 'DRAINING'),
                 'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
         require(before['attempt']['attemptId']==value['attemptId']
                 and before['attempt']['restrictionDigest']==value['restrictionDigest']
                 and before['attempt']['subject']==value['subject']
                 and before['attempt']['source']['sourceSha']==value['targetSourceSha'],
                 'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
+        if prepare:
+            owner=value['prepare']
+            sc.fields(owner,('intentDigest','sourceRecordDigest','ownerConfirmed','begin'))
+            sc.need(owner['ownerConfirmed'] is True,'PILOT_SUCCESSOR_WORKER_ATTESTATION_REQUIRED')
+            projection=read_controller_begin(expected_digest=owner['intentDigest'])
+            intent=projection['intent'];pair=mc.ordinary_pair_intent(intent)
+            begin=owner['begin'];auth=intent['authorization']
+            sc.fields(begin,('result','intentDigest','pair','receipts','checkpoint','holdSnapshot','draining','registryDigest'))
+            sc.need(auth['sourceRecordDigest']==owner['sourceRecordDigest']
+                    and begin['result']=='PROTECTED_PAIR_BEGIN_READBACK_ONLY'
+                    and begin['intentDigest']==owner['intentDigest'] and begin['pair']==pair
+                    and begin['draining']==before==mc.paired_draining_record(intent['normal'],pair,
+                        begin['receipts'],begin['holdSnapshot'],target_generation=auth['targetGeneration'],
+                        recorded_at=auth['recordedAt'])
+                    and begin['registryDigest']==value['registryDigest']==sc.digest(begin['holdSnapshot'])
+                    and intent['compatibility']['gateway']['companion']['schemaDigest']==value['coreSchemaDigest']
+                    and intent['compatibility']['gateway']['companion']['companionDigest']==value['companionDigest'],
+                    'PILOT_SUCCESSOR_FREEZE_BEGIN_CHANGED')
         state=inspect_state(root,github=True,native=True,require_exact_uncertain=True,
             preserve_uncertain_ids=value['preserveUncertainIds'],require_exact_claimed=True,
             preserve_claimed_ids=value['preserveClaimedIds'],require_exact_approved=True)
@@ -1350,9 +1625,26 @@ def successor_freeze_inspect(value):
             expected_schema_digest=value['coreSchemaDigest'],
             expected_companion_digest=value['companionDigest'])
         require(record()==before,'PILOT_SUCCESSOR_DRAIN_UNCONFIRMED')
+        if prepare:
+            sc.need(read_controller_begin(expected_digest=owner['intentDigest'])==projection,
+                    'PILOT_SUCCESSOR_FREEZE_BEGIN_CHANGED')
+            # The actual state receipt is produced once under the same
+            # exclusive drain, not a second caller-supplied digest.
+            value={k:v for k,v in value.items() if k!='prepare'}
+            value.update(stateDigest=sc.digest(state),
+                workerAttestationDigest=sc.digest({'ownerConfirmed':True,
+                    'sourceRecordDigest':owner['sourceRecordDigest'],
+                    'intentDigest':owner['intentDigest'],'drain':value['drain']}))
         if apply:
+            checked=before
+            if stopped:
+                checked=seal.checked_transitions(value['checkSeal'],value['draining'])['checked']
+                stop=value['stoppedIntent']
+                prepared={k:stop[k] for k in ('sourceRecordDigest','checkedRecordDigest','targetImageId')}
+                require(stop==seal.apply_stop_plan(checked,value['checkSeal'],prepared) and before==stop['next'],
+                        'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
             binding=seal.verify_apply_binding(value['checkSeal'],value['draining'],
-                value['frozen'],before,state,companion,
+                value['frozen'],checked,state,companion,
                 expected_registry_digest=value['registryDigest'],
                 worker_attestation_digest=value['workerAttestationDigest'])
         else:
@@ -1367,6 +1659,7 @@ def successor_freeze_inspect(value):
                 'PILOT_SUCCESSOR_FREEZE_BINDING_INVALID')
         transitions=seal.checked_transitions(binding,value['draining'] if apply else before)
         result={'sourceReceipt':state,'seal':binding,'transitions':transitions}
+        if prepare:result['payload']=value
         if 'prepareStop' in value:
             result['stopIntent']=seal.apply_stop_plan(before,binding,value['prepareStop'])
         return result
@@ -1392,6 +1685,10 @@ def main():
         require_exact_approved=value.get('requireExactApproved',False))
     elif action == 'successor_interlock_publish':
         result=successor_interlock_publish(value)
+    elif action == 'successor_begin_intent':
+        result=successor_begin_intent(value)
+    elif action == 'successor_interlock_seed':
+        result=successor_interlock_seed(value)
     elif action in ('successor_freeze_inspect','successor_freeze_apply_verify'):
         result=successor_freeze_inspect(value)
     elif action == 'uncertain_growth_snapshot': result = uncertain_growth_snapshot(

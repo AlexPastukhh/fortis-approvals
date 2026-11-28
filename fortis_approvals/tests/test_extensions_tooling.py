@@ -52,6 +52,76 @@ class ToolingTests(unittest.TestCase):
             result=check_config({'schemaVersion':1,'providers':{}})
         self.assertEqual(result['status'],'READY');self.assertEqual(result['operations'],[])
 
+    def test_frozen_probe_only_reviewed_allow_get_with_exact_witness(self):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from fortis_approvals.extensions.cli import frozen_probe, DEFAULT_ACTOR
+        from fortis_approvals.extensions.runtime import ExtensionRuntime, ExtensionConfig
+        from fortis_approvals.extensions.vault import Secret
+        from fortis_approvals.integrations.mirror.tests.test_extension import sample
+        from fortis_approvals.integrations.mirror.tls import MirrorPinnedAPI
+        config={'schemaVersion':1,'providers':{'mirror':{
+            'credentials':{'link':'fixture-link'},
+            'operations':{'get_repository':{'policy':'ALLOW','targets':['fortis-approvals']}}}}}
+        vault=Mock()
+        vault.get.return_value=Secret(str(uuid.uuid4()),'synthetic-token-never-output')
+        vault.readiness.return_value={'configured':True,'ready':True,'status':'READY'}
+        runtime=ExtensionRuntime(ExtensionConfig(config),providers=discover(('mirror',)),
+            actors=(DEFAULT_ACTOR,),default_actor=DEFAULT_ACTOR,vault=vault)
+        client=Mock()
+        catalog=runtime.catalog_for(DEFAULT_ACTOR)
+        client.catalog.return_value=catalog
+        probe={'service':'mirror','operation':'get_repository','target':'fortis-approvals','params':{}}
+        value={'configurationDigest':runtime.digest,'interlockDigest':'a'*64,
+               'profileDigest':'b'*64,'probes':[probe]}
+        delivery={'profileDigest':value['profileDigest'],'maintenancePhase':'STAGED_TARGET_FROZEN'}
+        holds={'holds':[{'blockedOperations':[]}]}
+        gate=Mock()
+        gate.verify_startup.return_value=({'phase':'STAGED_TARGET_FROZEN'},holds,
+                                         {'interlockDigest':value['interlockDigest']})
+        successor=SimpleNamespace(_raw=json.dumps({'latestPin':True,'frozenHandoff':{}}),
+                                  _maintenance_gate=lambda *_:gate)
+        with patch.dict(os.environ,{'FORTIS_EXTENSIONS_CONFIG':json.dumps(config),
+                                     'FORTIS_RELEASE_NONCE':str(uuid.uuid4())}), \
+             patch('os.geteuid',return_value=10001), \
+             patch('fortis_approvals.extensions.runtime.CredentialVault',return_value=vault), \
+             patch('fortis_approvals.extensions.staging.ReleaseGate.record_status',
+                   return_value={'active':False,'markerPresent':False}), \
+             patch('fortis_approvals.extensions.maintenance_interlock_reader.InterlockReservations.reserve',
+                   side_effect=lambda:nullcontext()), \
+             patch('fortis_approvals.r7_unified_server._installed_policy_source_digest',return_value='c'*64), \
+             patch('fortis_approvals.r7_registry_reader_mount.load_owner_registry_reader',
+                   return_value=SimpleNamespace(_successor_config=successor)), \
+             patch('fortis_approvals.r7_registry_reader_mount.reviewed_successor_delivery',
+                   return_value=delivery), \
+             patch.object(MirrorPinnedAPI,'call',return_value=sample()) as upstream:
+            self.assertEqual(frozen_probe(value,client),
+                {'status':'READ_PROBES_PASS','count':1,'mutationEffectsVerified':False})
+            self.assertEqual(upstream.call_args.args,('get_repo',))
+            self.assertEqual(upstream.call_args.kwargs['path'],{'repo_id':'fortis-approvals'})
+            with self.assertRaisesRegex(Denied,'RELEASE_FROZEN_PROBE_UNREVIEWED'):
+                frozen_probe({**value,'probes':[{**probe,'target':'other'}]},client)
+            catalog['operations'][0]['policy']='ASK'
+            with self.assertRaisesRegex(Denied,'INTEGRATION_UNSAFE_PROBE'):
+                frozen_probe(value,client)
+            catalog['operations'][0]['policy']='ALLOW'
+            holds['holds'][0]['blockedOperations']=[{'service':'mirror','operation':'get_repository'}]
+            with self.assertRaisesRegex(Denied,'RELEASE_FROZEN_PROBE_RESTRICTED'):
+                frozen_probe(value,client)
+            self.assertEqual(upstream.call_count,1)
+
+    def test_frozen_probe_preflight_preserves_exact_retained_set(self):
+        from fortis_approvals.extensions.cli import check_frozen_probes
+        probe={'service':'mirror','operation':'get_repository','target':'fortis-approvals','params':{}}
+        retained=json.dumps([probe])
+        self.assertEqual(check_frozen_probes({'retained':retained,'requested':retained})['count'],1)
+        for requested in ('[]',json.dumps([probe,probe]),json.dumps([{**probe,'target':'other'}])):
+            with self.assertRaises(Denied):
+                check_frozen_probes({'retained':retained,'requested':requested})
+        with self.assertRaises(Denied):
+            check_frozen_probes({'retained':'[]','requested':retained})
+
     def test_activation_marker_rejects_missing_wrong_metadata_and_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker=Path(tmp)/'marker';nonce=str(uuid.uuid4());digest='a'*64

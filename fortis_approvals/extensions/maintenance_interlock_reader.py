@@ -15,17 +15,18 @@ from ..r7_registry_reader_mount import _check_owner_readonly_mount
 from ..integrations.registry_contracts.maintenance_contract import bind_record
 
 MOUNT=Path('/run/r7-maintenance')
+LATEST_MOUNT=Path('/run/r7-maintenance-anchor')
 _MAX_BYTES=8192
 
 
-def _read_record(dirfd):
-    fd=os.open('record.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=dirfd)
+def _read_record(dirfd, *, name='record.json', maximum=_MAX_BYTES):
+    fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=dirfd)
     with os.fdopen(fd,'rb') as source:
         info=os.fstat(source.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1
-                or stat.S_IMODE(info.st_mode)!=0o444 or not 0<info.st_size<=_MAX_BYTES):
+                or stat.S_IMODE(info.st_mode)!=0o444 or not 0<info.st_size<=maximum):
             raise Denied('MAINTENANCE_INTERLOCK_FILE')
-        raw=source.read(_MAX_BYTES+1)
+        raw=source.read(maximum+1)
         if len(raw)!=info.st_size:
             raise Denied('MAINTENANCE_INTERLOCK_FILE')
     return loads_strict(raw)
@@ -52,6 +53,69 @@ def read_owner_interlock(*, instance_id, scope_digest, generation,
     except Exception:
         raise Denied('MAINTENANCE_STATE_UNKNOWN') from None
 
+
+
+def _read_owner_latest(root):
+    """Root-owned projection on its own exact read-only mount."""
+    if not isinstance(root,Path) or not root.is_absolute() or root.is_symlink():
+        raise Denied('MAINTENANCE_LATEST_PIN_DIRECTORY')
+    _check_owner_readonly_mount(root)
+    fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        info=os.fstat(fd)
+        if info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o555:
+            raise Denied('MAINTENANCE_LATEST_PIN_DIRECTORY')
+        pin=_read_record(fd)
+        current=root.stat(follow_symlinks=False)
+        if (info.st_dev,info.st_ino)!=(current.st_dev,current.st_ino):
+            raise Denied('MAINTENANCE_LATEST_PIN_DIRECTORY')
+        return pin,(info.st_dev,info.st_ino)
+    finally:os.close(fd)
+
+
+def read_latest_interlock(*, instance_id, scope_digest, generation,
+                          root=MOUNT, latest_root=LATEST_MOUNT):
+    """Never take an expected digest from the interlock itself.
+
+    A missing, pending, stale, mixed or aliased projection is restrictive.
+    The protected controller independently verifies its host anchor and both
+    exact mounts before starting/returning a generation.
+    """
+    from ..integrations.registry_contracts.maintenance_contract import bind_latest_projection
+    try:
+        latest,identity=_read_owner_latest(latest_root)
+        info=root.stat(follow_symlinks=False)
+        original=(info.st_dev,info.st_ino)
+        if latest['state']!='Committed' or original==identity:
+            raise Denied('MAINTENANCE_LATEST_PIN_CHANGED')
+        record=read_owner_interlock(instance_id=instance_id,scope_digest=scope_digest,
+            generation=generation,expected_digest=latest['interlockDigest'],root=root)
+        bind_latest_projection(latest,record)
+        after=root.stat(follow_symlinks=False)
+        if (after.st_dev,after.st_ino)!=original or _read_owner_latest(latest_root)!=(latest,identity):
+            raise Denied('MAINTENANCE_LATEST_PIN_CHANGED')
+        return record,latest
+    except Exception:
+        raise Denied('MAINTENANCE_STATE_UNKNOWN') from None
+
+
+def read_controller_begin(*, expected_digest=None, root=LATEST_MOUNT):
+    """Read the fixed root-owned intent, never a path or proof from a frame."""
+    from ..integrations.registry_contracts import semantic_contract as sc
+    from ..integrations.registry_contracts.maintenance_contract import controller_begin_projection
+    if expected_digest is not None:sc.hex_id(expected_digest,64)
+    _check_owner_readonly_mount(root)
+    fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        info=os.fstat(fd)
+        sc.need(info.st_uid==0 and stat.S_IMODE(info.st_mode)==0o555,
+                'MAINTENANCE_CONTROLLER_BEGIN_MOUNT_REQUIRED')
+        projection=controller_begin_projection(_read_record(fd,name='begin.json',maximum=65536))
+        sc.need((expected_digest is None or sc.digest(projection['intent'])==expected_digest)
+                and (info.st_dev,info.st_ino)==(root.stat().st_dev,root.stat().st_ino),
+                'MAINTENANCE_CONTROLLER_BEGIN_CHANGED')
+        return projection
+    finally:os.close(fd)
 
 
 class InterlockReservations:

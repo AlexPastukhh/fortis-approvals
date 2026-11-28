@@ -4,11 +4,12 @@ from pathlib import Path
 from ..core import Denied
 from ..integrations.registry.read_contract import REPOSITORY
 from ..integrations.registry_contracts import semantic_contract as sc
-from ..integrations.registry_contracts.maintenance_contract import startup_handoff
+from ..integrations.registry_contracts.maintenance_contract import (
+    bind_startup_handoff, startup_handoff, staged_registry_profile)
 from .composite_authority import ContextEnrollment, ProviderGuard
 from .composite_successor import ReviewedHistoryEvidence, ReviewedRegistrySuccessor
 from .maintenance_gate import MaintenanceGate
-from .maintenance_interlock_reader import InterlockReservations, read_owner_interlock
+from .maintenance_interlock_reader import InterlockReservations, read_owner_interlock, read_latest_interlock
 from .semantic_enrollment import SemanticEnrollment
 
 # Exact reviewed #288 enrollment source; not a new-image identity or a
@@ -20,26 +21,65 @@ _RETAINED_288_ENROLLMENT_SOURCE = 'df205501660cfc92619bb7bbda1e52df3e207a29fba9e
 def project_corrective_profiles(gateway, registry, composition, *,
                                 expected_gateway_digest, expected_registry_digest,
                                 new_source_digest, nonce, peer_key_digest,
-                                frame_key_digest):
-    """Project the paired owner seals for the retained #288 enrollment.
+                                frame_key_digest, expected_gateway_source_digest=None):
+    return _project_retained_profiles(gateway,registry,composition,
+        expected_gateway_digest=expected_gateway_digest,expected_registry_digest=expected_registry_digest,
+        new_source_digest=new_source_digest,nonce=nonce,peer_key_digest=peer_key_digest,
+        frame_key_digest=frame_key_digest,expected_gateway_source_digest=expected_gateway_source_digest,
+        staged=False)
 
-    No policy, history, catalog, interlock or scope change. The caller must
-    independently verify old seals, actual installed image digest, immutable
-    material and stored authority before writing fresh, separate volumes.
+
+def _project_retained_profiles(gateway, registry, composition, *,
+                                expected_gateway_digest, expected_registry_digest,
+                                new_source_digest, nonce, peer_key_digest,
+                                frame_key_digest, expected_gateway_source_digest, staged):
+    """Project the paired owner seals without changing the retained enrollment.
+
+    The original invocation takes the exact recovered #288 profile. An
+    installed successor requires an independently checked source digest and
+    retains its stored enrollment source. The caller verifies the incumbent
+    image, stored authority and protected profile pins before writing volumes.
     """
     for value in (expected_gateway_digest, expected_registry_digest,
                   new_source_digest, peer_key_digest, frame_key_digest):
         sc.hex_id(value,64)
     sc.uuid_id(nonce)
+    if expected_gateway_source_digest is None:
+        expected_gateway_source_digest = _RETAINED_288_ENROLLMENT_SOURCE
+        expected_composition_versions = (1,)
+    else:
+        sc.hex_id(expected_gateway_source_digest,64)
+        expected_composition_versions = (2,3) if staged else (2,)
     sc.need(sc.digest(gateway)==expected_gateway_digest
             and sc.digest(registry)==expected_registry_digest
             and gateway['schemaVersion']==5 and registry['schemaVersion']==3
-            and gateway['gatewaySourceDigest']==_RETAINED_288_ENROLLMENT_SOURCE
+            and gateway['gatewaySourceDigest']==expected_gateway_source_digest
+            and new_source_digest!=expected_gateway_source_digest
             and sc.digest(composition)==gateway['successorSha256']
-            and composition['schemaVersion']==1 and composition['transition'] is False
-            and composition['frozenHandoff'] is None
+            and composition['schemaVersion'] in expected_composition_versions
+            and composition['transition'] is False
+            and (composition['frozenHandoff'] is None or (staged and composition['schemaVersion']==3))
             and nonce!=gateway['releaseNonce'],
             'R7_REGISTRY_CORRECTIVE_SOURCE_SEAL_CHANGED')
+    _assert_retained_profile_pair(gateway,registry,composition)
+    pins=registry['semantic']
+    sc.need(peer_key_digest!=frame_key_digest
+            and not {peer_key_digest,frame_key_digest}&{pins['peerKeyDigest'],pins['frameKeyDigest']},
+            'R7_REGISTRY_CORRECTIVE_PAIR_CHANGED')
+    ProtectedRegistrySuccessor(composition,source_digest=expected_gateway_source_digest)
+    successor={**composition,'schemaVersion':composition['schemaVersion'] if composition['schemaVersion']==3 else 2,
+               'retainedEnrollmentSourceDigest':composition.get(
+                   'retainedEnrollmentSourceDigest',expected_gateway_source_digest)}
+    ProtectedRegistrySuccessor(successor,source_digest=new_source_digest)
+    target_gateway={**gateway,'releaseNonce':nonce,'gatewaySourceDigest':new_source_digest,
+                    'plannerKeySha256':peer_key_digest,'semanticFrameKeySha256':frame_key_digest,
+                    'successorSha256':sc.digest(successor)}
+    target_registry={**registry,'semantic':{**pins,'peerKeyDigest':peer_key_digest,
+                                            'frameKeyDigest':frame_key_digest}}
+    return {'gateway':target_gateway,'registry':target_registry,'successor':successor}
+
+
+def _assert_retained_profile_pair(gateway,registry,composition):
     pins=registry['semantic']
     writer=registry['sourceWrite']
     sc.need(gateway['instanceId']==registry['instanceId']
@@ -50,36 +90,123 @@ def project_corrective_profiles(gateway, registry, composition, *,
             and gateway['socketPath']==registry['socketPath']
             and gateway['plannerKeySha256']==pins['peerKeyDigest']
             and gateway['semanticFrameKeySha256']==pins['frameKeyDigest']
-            and peer_key_digest!=frame_key_digest
-            and not {peer_key_digest,frame_key_digest}&{pins['peerKeyDigest'],pins['frameKeyDigest']}
             and writer['ownerActor']==composition['ownerPrincipal']
             and writer['policyAuthorityDigest']==composition['successorDigest']
+            and ('latestPin' in writer)==(composition['schemaVersion']==3)
+            and ('latestPin' not in writer or writer['latestPin'] is True)
             and all(writer[key]==composition[key] for key in
                     ('target','interlockDigest','validatorRevision','impactBinding','buildPins')),
             'R7_REGISTRY_CORRECTIVE_PAIR_CHANGED')
-    ProtectedRegistrySuccessor(composition,source_digest=gateway['gatewaySourceDigest'])
-    successor={**composition,'schemaVersion':2,
-               'retainedEnrollmentSourceDigest':gateway['gatewaySourceDigest']}
+
+
+def project_staged_profiles(gateway, registry, composition, *,
+                            expected_gateway_digest, expected_registry_digest,
+                            expected_gateway_source_digest, new_source_digest,
+                            nonce, peer_key_digest, frame_key_digest,
+                            handoff, staged_record, staged_companion_digest):
+    """Project a frozen receiver from independently checked controller pins.
+
+    This is only material projection: the controller must authenticate the
+    phase/hold and companion pins and verify actual image/source, mounts and
+    lineage. The receiving runtime still checks the exact Registry hold.
+    No authority change or phase publication is performed here.
+    """
+    projected = _project_retained_profiles(
+        gateway, registry, composition,
+        expected_gateway_digest=expected_gateway_digest,
+        expected_registry_digest=expected_registry_digest,
+        expected_gateway_source_digest=expected_gateway_source_digest,
+        new_source_digest=new_source_digest, nonce=nonce,
+        peer_key_digest=peer_key_digest, frame_key_digest=frame_key_digest, staged=True)
+    return _bind_staged_profiles(projected,handoff=handoff,staged_record=staged_record,
+                                 staged_companion_digest=staged_companion_digest)
+
+
+def _bind_staged_profiles(projected,*,handoff,staged_record,staged_companion_digest):
+    gateway=projected['gateway']
+    new_source_digest=gateway['gatewaySourceDigest']
+    handoff = startup_handoff(handoff)
+    record = bind_startup_handoff(handoff, staged_record)
+    sc.hex_id(staged_companion_digest,64)
+    sc.need(handoff['role']=='staged_target'
+            and record['registryInstanceId']==gateway['instanceId']
+            and record['scopeDigest']==gateway['scopeDigest']
+            and record['attempt']['sourceGeneration']==gateway['semanticGeneration'],
+            'R7_REGISTRY_STAGED_PAIR_CHANGED')
+    generation, pin = record['generation'], handoff['interlockDigest']
+    successor = projected['successor']
+    successor.update(schemaVersion=3,latestPin=True,frozenHandoff=handoff,interlockDigest=pin,
+                     companionDigest=staged_companion_digest)
     ProtectedRegistrySuccessor(successor,source_digest=new_source_digest)
-    target_gateway={**gateway,'releaseNonce':nonce,'gatewaySourceDigest':new_source_digest,
-                    'plannerKeySha256':peer_key_digest,'semanticFrameKeySha256':frame_key_digest,
-                    'successorSha256':sc.digest(successor)}
-    target_registry={**registry,'semantic':{**pins,'peerKeyDigest':peer_key_digest,
-                                            'frameKeyDigest':frame_key_digest}}
-    return {'gateway':target_gateway,'registry':target_registry,'successor':successor}
+    projected['gateway'].update(semanticGeneration=generation,
+                                successorSha256=sc.digest(successor))
+    projected['registry']=staged_registry_profile(projected['registry'],
+        handoff=handoff,staged_record=record)
+    return projected
+
+
+def project_bootstrap_final_profiles(gateway, registry, composition, *, checked,
+                                     authorization, seed, begin, publication):
+    """Bind already-reviewed fresh #289 successor material to the frozen phase.
+
+    The host must independently replay the original begin and authenticate
+    the current APPLY_STOP publication before using this projection.
+    Reuse the staged profile binder; do not generate another nonce/key pair
+    or re-enroll authority. The preliminary profiles are exact Check pins.
+    """
+    from ..integrations.registry_contracts.maintenance_contract import bootstrap_final_handoff
+    final=bootstrap_final_handoff(checked,authorization,seed,begin,publication)
+    return _project_prepared_profiles(gateway,registry,composition,checked=checked,final=final,ordinary=False)
+
+
+def _project_prepared_profiles(gateway,registry,composition,*,checked,final,ordinary):
+    handoff,staged_record=final['handoff'],final['record']
+    g,r=checked['gateway'],checked['registry']
+    sc.need(sc.digest(gateway)==g['profileDigest']
+            and sc.digest(registry)==r['profileDigest']
+            and gateway['schemaVersion']==5 and registry['schemaVersion']==3
+            and composition['schemaVersion']==(3 if ordinary else 2) and composition['transition'] is False
+            and (ordinary or composition['frozenHandoff'] is None)
+            and sc.digest(composition)==gateway['successorSha256']
+            and gateway['releaseNonce']==g['releaseNonce']
+            and gateway['gatewaySourceDigest']==g['sourceDigest'],
+            'R7_REGISTRY_BOOTSTRAP_FINAL_PROFILE_CHANGED')
+    _assert_retained_profile_pair(gateway,registry,composition)
+    pins=registry['semantic']
+    binding={'instanceId':registry['instanceId'],'scopeDigest':sc.digest(registry['scope']),
+        'profileDigest':pins['successorProfileDigest'],'generation':pins['generation'],
+        'internalActor':pins['internalActor'],'peerKeyDigest':pins['peerKeyDigest'],
+        'frameKeyDigest':pins['frameKeyDigest'],'socketPath':registry['socketPath'],
+        'readerUid':registry['readerUid'],'readerGid':registry['readerGid'],
+        'authorityDigest':registry['sourceWrite']['policyAuthorityDigest'],
+        'interlockDigest':registry['sourceWrite']['interlockDigest']}
+    sc.need(binding==r['binding'] and pins['peerKeyDigest']!=pins['frameKeyDigest']
+            and gateway['readerUid']==registry['readerUid'] and gateway['readerGid']==registry['readerGid']
+            and staged_record['attempt']['subject']==r['items']['gateway']['subject']
+            and staged_record['attempt']['source']==r['items']['gateway']['source'],
+            'R7_REGISTRY_BOOTSTRAP_FINAL_PROFILE_CHANGED')
+    ProtectedRegistrySuccessor(composition,source_digest=g['sourceDigest'])
+    # Deep canonical copy: do not mutate a nested original profile/pin.
+    projected=sc.loads_strict(sc.canonical({'gateway':gateway,'registry':registry,'successor':composition}))
+    return _bind_staged_profiles(projected,handoff=handoff,staged_record=staged_record,
+                                 staged_companion_digest=composition['companionDigest'])
 
 
 class ProtectedRegistrySuccessor:
     def __init__(self, value, *, source_digest):
         sc.need(type(value) is dict and type(value.get('schemaVersion')) is int
-                and value['schemaVersion'] in (1, 2), 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
-        retained = value['schemaVersion'] == 2
+                and value['schemaVersion'] in (1, 2, 3), 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
+        retained = value['schemaVersion'] in (2,3)
+        dynamic = value['schemaVersion']==3
         fields = ('schemaVersion', 'repository', 'target', 'ownerPrincipal',
                   'context', 'contextDigest', 'semantic', 'semanticDigest',
                   'successorDigest', 'companionDigest', 'interlockDigest',
                   'transition', 'frozenHandoff', 'validatorRevision',
                   'impactBinding', 'buildPins', 'ciPolicy', 'ciPolicyDigest')
-        sc.fields(value, fields + (('retainedEnrollmentSourceDigest',) if retained else ()))
+        sc.fields(value, fields + (('retainedEnrollmentSourceDigest',) if retained else ())
+                  + (('latestPin',) if dynamic else ()))
+        sc.need(not dynamic or (value['latestPin'] is True and value['frozenHandoff'] is not None),
+                'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
         sc.need(value['repository'] == REPOSITORY and type(value['transition']) is bool,
                 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
         sc.hex_id(source_digest, 64)
@@ -124,21 +251,35 @@ class ProtectedRegistrySuccessor:
                     generation=transport.generation)
         phase_pin = config['interlockDigest']
 
+        dynamic=config.get('latestPin') is True
+        def read_latest():return read_latest_interlock(**pins)
         def read_phase():
+            if dynamic:
+                record,projection=read_latest()
+                return record,projection['interlockDigest']
             return read_owner_interlock(**pins, expected_digest=phase_pin), phase_pin
 
         return MaintenanceGate(**pins, read_interlock=read_phase,
                                read_holds=transport.maintenance_snapshot,
-                               shared_reservations=InterlockReservations())
+                               shared_reservations=InterlockReservations(),
+                               read_latest=read_latest if dynamic else None)
 
-    def _delivery(self, reader, config, *, readonly):
+    def _delivery(self, reader, config, *, readonly, profile=None):
         from ..integrations.registry_contracts import merge_evidence
         binding = merge_evidence.mount_binding(
             merge_evidence.MOUNT, uid=reader._reader[0], gid=reader._registry[2], readonly=readonly)
+        dynamic=config.get('latestPin') is True
+        def phase_pin():
+            if not dynamic:return config['interlockDigest']
+            _,projection=read_latest_interlock(instance_id=reader._instance,scope_digest=reader._scope,
+                                                generation=reader._semantic_transport.generation)
+            return projection['interlockDigest']
         expected = {**binding, 'policyAuthorityDigest':config['successorDigest'],
-                    'interlockDigest':config['interlockDigest']}
-        sc.need(reader._semantic_transport.profile().get('sourceDelivery') == expected,
-                'SOURCE_EVIDENCE_BINDING_CHANGED')
+                    'interlockDigest':phase_pin()}
+        if profile is None:
+            profile = reader._semantic_transport.profile()
+        sc.need(profile.get('sourceDelivery') == expected and
+                (not dynamic or phase_pin()==expected['interlockDigest']), 'SOURCE_EVIDENCE_BINDING_CHANGED')
         return expected
 
     def inspect_existing_companion(self, reader, path):
@@ -147,29 +288,65 @@ class ProtectedRegistrySuccessor:
 
         config = sc.loads_strict(self._raw)
         history = reader._policy_history
-        sc.need(reader._successor_config is self and config['schemaVersion'] == 2
-                and not config['transition'] and config['frozenHandoff'] is None
-                and type(history) is ReviewedHistoryEvidence,
+        sc.need(reader._successor_config is self and config['schemaVersion'] in (2,3)
+                and not config['transition'] and type(history) is ReviewedHistoryEvidence,
                 'R7_REGISTRY_SUCCESSOR_TRANSITION_REQUIRED')
         return inspect_staged_successor(
             path, expected_digest=config['companionDigest'],
-            verify_history=lambda db: history.verify_successor_storage(db, config['successorDigest']))
+            verify_history=lambda db: history.verify_successor_storage(db, config['successorDigest']),
+            require_empty=config['frozenHandoff'] is None)
 
-    def checked_delivery(self, reader, *, expected_interlock_digest, incumbent_core=None, scratch_root=None):
+    def checked_delivery(self, reader, *, expected_interlock_digest, incumbent_core=None,
+                         scratch_root=None, running_source=False):
         """Existing Check/Apply read-only helper. Performs no startup or write."""
         from .composite_preservation import project_staged_companion
 
         config = sc.loads_strict(self._raw)
-        sc.need(reader._successor_config is self and config['interlockDigest'] == expected_interlock_digest,
+        dynamic=config.get('latestPin') is True
+        sc.need(type(running_source) is bool and (not running_source or
+                (dynamic and incumbent_core is None)),'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED')
+        sc.hex_id(expected_interlock_digest,64)
+        sc.need(reader._successor_config is self and
+                (dynamic or config['interlockDigest']==expected_interlock_digest),
                 'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED')
         gate = self._maintenance_gate(reader, config)
         handoff = config['frozenHandoff']
-        gate.verify_startup(handoff)
-        binding = self._delivery(reader, config, readonly=True)
-        receipt = {'sourceDelivery':binding, 'companionDigest':config['companionDigest'],
-                   'generation':reader._semantic_transport.generation}
+        transport = reader._semantic_transport
+
+        def read_delivery():
+            verified=(gate.verify_running_source_delivery() if running_source
+                      else gate.verify_startup(handoff))
+            expected_registry=None
+            if dynamic:
+                record,holds,projection=verified
+                sc.need(projection['interlockDigest']==expected_interlock_digest,
+                        'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED')
+                expected_registry=sc.digest(holds)
+            elif handoff is not None:
+                expected_registry=handoff['registryDigest']
+            profile = transport.profile(source_checkpoint=True) if expected_registry is not None else transport.profile()
+            delivery = {'sourceDelivery': self._delivery(reader, config, readonly=True, profile=profile)}
+            sc.need(delivery['sourceDelivery']['interlockDigest']==expected_interlock_digest,
+                    'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED')
+            if expected_registry is not None:
+                checkpoint = profile['sourceCheckpoint']
+                # Bind to the current authenticated replay, not the original
+                # staged handoff after a lawful completion/source advance.
+                sc.need(profile['profileDigest'] == reader._semantic_profile_digest
+                        and checkpoint['registryDigest'] == expected_registry,
+                        'R7_REGISTRY_SUCCESSOR_CHECKPOINT_CHANGED')
+                delivery['registryCheckpoint'] = {
+                    'profileDigest': profile['profileDigest'], 'sourceRevision': profile['sourceRevision'],
+                    **checkpoint,
+                }
+            if dynamic:
+                delivery.update(latestPin=True,maintenancePhase=record['phase'])
+            return delivery
+
+        delivery = read_delivery()
+        receipt = {**delivery, 'companionDigest':config['companionDigest'],
+                   'generation':transport.generation}
         if incumbent_core is not None:
-            sc.need(handoff is None, 'R7_REGISTRY_SUCCESSOR_TRANSITION_REQUIRED')
             history = reader._policy_history
             sc.need(type(history) is ReviewedHistoryEvidence, 'R7_REGISTRY_SUCCESSOR_PROFILE_DENIED')
             if config['transition']:
@@ -178,8 +355,7 @@ class ProtectedRegistrySuccessor:
                     verify_history=history.verify_incumbent_storage, scratch_root=scratch_root)
             else:
                 receipt['existingCompanion'] = self.inspect_existing_companion(reader, incumbent_core)
-            gate.verify_startup(handoff)
-            sc.need(self._delivery(reader, config, readonly=True) == binding, 'SOURCE_EVIDENCE_BINDING_CHANGED')
+            sc.need(read_delivery() == delivery, 'SOURCE_EVIDENCE_BINDING_CHANGED')
         return receipt
 
     def compose(self, reader, *, state, project_key, github_pilot, credential_generation):

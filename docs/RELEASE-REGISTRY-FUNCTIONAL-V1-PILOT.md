@@ -1922,3 +1922,807 @@ The local Source CI runner completed 193 suites with zero failures and
 20 skipped Python cases, followed by 16 passing Node tests. The compatible
 successor validator fixture was tested in a separate run. Remote exact-head
 CI and Windows checks remain delivery gates.
+
+### I4 — exact image identity at protected completion
+
+A source merge produces Desired before the image exists. The hold binds the
+source and catalog at begin; its artifact digest can still be unknown.
+Protected completion requires the controller receipt and the independent
+target readback to identify the same exact image and the same source lineage.
+An artifact already pinned by the hold must match both. The completion
+projection carries the verified image and preserves the original attempt
+across all phase transitions. Tests cover the missing and mismatched
+artifact and changed source or catalog. The protected verifier, Registry
+event wiring, dependency readback and host completion are still open.
+
+### I4 — retained profiles and frozen companion witness
+
+The paired profile projector also accepts an installed schema-2 successor
+when the trusted caller supplies the exact incumbent Gateway source digest
+and both independently verified profile digests. The new seal retains the
+original enrollment source and the existing authority, context and
+semantic pins. It binds the new image source and release nonce and
+requires fresh peer and frame keys.
+
+For a reviewed staged handoff, the existing read-only companion check
+replays the stored authority and the entire companion against the exact
+staged digest, including completed requests and receipts. The historical
+path still requires an empty companion. The local tests exercise a second
+profile projection and a nonempty companion with policy history.
+
+A frozen Check can also ask the authenticated internal Registry peer for the
+source cursor, source/snapshot revisions and event digest. The Registry
+derives the hold digest from the same read-only replay. Check verifies it
+against the protected handoff. Repository cursor and release Desired can
+differ after an accounted no-deployment merge; the selected attempt source
+continues to be verified through the hold. A delivery requiring a specific
+cursor binds it in its protected controller receipt. When inspecting the
+companion, Check re-reads the whole proof afterwards. Ordinary profile
+reads keep their existing shape.
+This proves the staged peer's accounted source and hold. Runtime
+compatibility, live Installed and readiness to stop the incumbent require
+their existing independent evidence. Host provisioning, protected begin and
+ordinary phase publication remain open.
+
+For an already installed successor, the same paired profile projector now
+also has a frozen-target projection. It binds the independently supplied
+STAGED_TARGET_FROZEN record and startup handoff to the incumbent instance,
+scope and source generation, sets the same distinct target generation and
+interlock pin on both profiles, and seals the fresh companion digest. The
+original enrollment, authority, history pins and historical corrective
+projection remain unchanged. The caller must independently verify the
+controller record, hold snapshot, companion and exact source/image before
+using this material. This is not a host writer or proof of a paired begin.
+The focused fixture and existing gate regressions passed 15 tests, including
+mixed instance/scope/generation and stale interlock refusal, and the previous
+isolated revision 3-to-4 product flow. The projection is not yet invoked by
+the Windows controller. A pre-stop Check must not pretend the target is
+already in STAGED_TARGET_FROZEN; actual target admission and later restart
+require the independently protected phase handover and latest-pin transport.
+
+### Bounded #289 bootstrap source accounting (owner-approved development)
+
+The installed #289 semantic enrollment cannot admit the delivery's production
+subjects, and its installed writer/controller cannot perform a normal paired
+begin. The two historical delivery repairs are exhausted. The owner accepted
+source development of a distinct bootstrap migration, not live merge or host
+GO. `BOOTSTRAP_MIGRATION` is restricted to the exact #289 source receipt and
+revision 3, with no release events before its append. It is not a Composite
+receipt or a deployment authorization. The retained authority, catalog and
+profile pins are unchanged. Existing repair verification and the confined
+SQLite clone helper are reused. The pre-merge review pins the whole proposal,
+exact source prefix, authority and independently witnessed owner/backup/primary
+references; separate post-merge evidence binds that review and exact Git edge,
+CI, body, impact and bundle. The owner controller must authenticate those pins,
+review ceremony, source/target identities and writer exclusion before invoking
+the inactive-only account helper. Hash fields alone do not authenticate them.
+The offline helper rereads the full committed journal and original receipts;
+exact retry returns the original receipt, no live source register is admitted.
+Local real Git/bundle + SQLite fixture and source-lineage regressions: 12 PASS,
+43.377s. Owner proof/mounts are fixtures, not a host rehearsal. Protected host
+entrypoint, paired begin, phase publication, completion and Return remain open.
+
+### Protected paired begin (local domain and gate)
+
+The narrow owner-controller pair is exactly Gateway production plus Registry
+non-production in the reviewed repository, not a public group lifecycle.
+The intent binds the current replay checkpoint, both exact Desired/CAS inputs,
+prepared image digests, and two independent controller/compatibility evidence
+references. The trusted verifier must authenticate and independently validate
+those references; ordinary semantic operations cannot dispatch this event.
+Two deterministic per-target events are appended in one SQLite transaction,
+with contiguous replay and an exact shared pair digest. Only Gateway's
+specific dependency on the Registry in the same pair can use this proof in
+place of prior DEPLOYED. All other dependency, subject, scope and overlap
+checks remain; unrelated holds refuse the pair. Begin never creates Installed
+or pins Desired artifact from a staged image. Later technical observation must
+match the exact prepared artifact and coverage. The gate accepts either its
+original sole hold or the exact two-member pair, not a surviving member or
+additional hold. Completion cannot clear the interlock while either paired
+hold remains. 50 focused source/domain/journal/gate tests passed (12.405s),
+including atomic rollback, original receipt recovery, cursor ahead of Desired,
+frozen handoff/Return, stale proof, incorrect prepared artifact and conflicts.
+The fixture verifier is synthetic; protected host evidence acquisition,
+private writer composition, latest phase pin, pair completion and actual
+controller delivery remain open. No policy enrollment is extended.
+
+### Independent latest phase pin (local publisher and runtime composition)
+
+The protected host publication record remains authoritative. Its current
+phase/generation/sequence, interlock digest and exact frozen Registry digest
+are projected on a second fixed, root-owned read-only mount, not in a release
+rollback volume. The runtime cannot derive its own expected digest from the
+interlock. Missing, Pending, stale, mixed or aliased mounts fail closed.
+The publisher retains the existing shared reservation/publish locks; publish
+first persists Pending projection, then the exact next interlock. Only after
+the host independently persists Committed may it commit the projection.
+Readback/recovery distinguishes previous/next and Pending/Committed, without
+resetting the chain or blindly replaying. Static compatibility mode remains
+restricted to its original phases. Schema-3 successor composition and matching
+Registry writer opt into the current pin; initial staging still pins the exact
+handoff, later restart requires current phase/hold and Gateway activation
+marker, and Return requires the source generation. Ordinary effect policy is
+unchanged. A subsequent projection preserves original enrollment/authority.
+Local publisher/reader fixture 7 PASS, including a real rename/fsync fault and
+old generation refusal; changed runtime composition 31 PASS (30.228s), including
+existing packaged-peer E2 fixture, both profile readers, Backup/Promote phases,
+activation and exact hold proof. Owner host mounts, authenticated bootstrap
+seed, actual durable Windows publication and controller integration are not yet
+proved. The old #289 static reader cannot return after its shared record is
+advanced; the one-time bootstrap must retain the old interlock and introduce
+the new operational interlock on a distinct stable volume, or prove an equally
+safe compatible recovery path. No new generation may start merely because
+its projected material exists.
+
+### Host publication v2 and paired close (local source checkpoint)
+
+The existing protected controller has a v2 publication branch that binds
+the exact source record, previous/next phase and independent Registry pin.
+It durably saves Pending, verifies the mounted result, durably saves
+Committed and only then commits the projection. A retry resolves both
+lost acknowledgements by exact readback. The helper allows only the two
+fixed operational volume names for this mode, checks both volumes and
+writer exclusion; the v1 publication branch remains unchanged. PS7 syntax
+and isolated old/new publication selftests passed, including lost publish
+and commit acknowledgements and changed-pin denial. 15 source regressions
+passed. This does not prove Windows PS5.1, actual Docker mounts or host
+provisioning. The v2 anchor seed, lifecycle callers and protected target
+handoff remain to be composed.
+
+Successful paired closure reuses the original exact pair intent and the
+existing protected observation model. Two deterministic close events
+are appended in one transaction only after both exact prepared artifacts
+have accepted technical observations and all current action coverage is
+verified. Ordinary individual close cannot close either paired hold.
+Replay checks contiguity, pair identity, target CAS and exact accepted
+evidence; second-append failure rolls back the pair. Identical readback
+returns original receipts. Return or failed deployment is not successful
+completion. The trusted controller verifier must still supply real
+independent per-target evidence and phase authorization. 12 lineage tests
+and 45 domain/journal/planner/gate regressions passed locally. In particular
+the host must reconcile a changed Registry replay during observation/close
+and a lost acknowledgement before NORMAL from independent evidence; a
+restart at an earlier frozen digest cannot be treated as readiness.
+
+### Bootstrap launcher, operational seed and v2 Check (source checkpoint)
+
+The existing Windows owner Registry launcher now has a distinct
+AccountBootstrapMigration action. It requires separately pinned review and
+post-merge evidence, clean exact Windows main, the matching immutable Registry
+image source, the existing owner GO, nonce-bound inactive state/config/source
+volumes and no holders. It dispatches only the existing confined source
+accounting helper and verifies the exact #289 predecessor, revision-4
+receipt/checkpoint and explicit false host/deployment admission. It does not
+prepare the clone, authenticate the owner review or start a service.
+
+A bounded interlock seed helper copies the exact original retained NORMAL
+record, verified against the independently pinned old read-only mount, onto
+two distinct fresh operational mounts. It first writes Pending projection,
+then the original record; only the independently durable owner host commit
+permits committing the projection. Exact readback handles interrupted seed.
+No general genesis, reset or rollback is supported, and the old record is
+not modified. The host seed orchestration, writer exclusion and volume
+provisioning still need to be wired.
+
+The existing Check/Apply pre-stop path can consume a protected v2 context:
+its independent Registry digest is forwarded to each Check publication,
+and its sealed inspector mounts and checks both operational volumes under
+the existing exclusive reservation, before and after the same inspection.
+The v1 path is preserved. No new readiness claim or actual source stop.
+43 focused tests and three isolated PS7 Check selftests passed; actual
+Windows PS5.1, Docker mount identity, authenticated controller evidence and
+staged lifecycle remain unproved.
+
+### Host seed orchestration and completion recovery (source checkpoint)
+
+The existing controller includes an internal seed orchestration function
+(not a separately selectable action). It binds the exact accepted #289
+release/primary records and original retained publication, requires the
+old Gateway and Registry stopped with no automatic restart, preserves
+the historical preview, reuses the all-holder alias guard and confines
+the helper to the old RO mount and two fixed fresh operational mounts.
+It persists and verifies host Pending before seed and host Committed
+before projection commit; exact readback recovers both lost ACKs.
+Ordinary v2 publication refuses a Pending seed. The isolated PS7
+orchestration selftest passed; actual owner admission, physical stop,
+mount creation and the normal controller caller remain open.
+
+Protected completion recovery reuses the exact paired close request
+projection and full journal replay. The read-only recovery witness requires
+both original close receipts at the current tip, unchanged source
+revision/cursor/profile, no holds, and both matching accepted observation
+receipts. Later source or release events invalidate that witness.
+The existing confined RO SQLite scratch replay handles the frozen DB/WAL
+without mutating the source or invoking a writer. This is readback evidence,
+not NORMAL authorization: the host must bind it to its independently
+retained COMPLETION_PENDING intent and real post-promote proof. 52 local
+lineage/domain/journal/controller regressions passed, including denial
+before close, exact recovery after close and refusal after a new source
+event. The operational path through protected writer, phase publication,
+activation/Return and actual Windows proof is still incomplete.
+
+### Publication predecessor recovery and integrated bootstrap clone
+
+Before replacing a committed v2 phase intent, the controller now reconciles
+that exact predecessor's mounted projection using its retained original
+transition. An already committed readback fsyncs both directories and needs
+no additional commit helper invocation. A lost ACK before the projection
+commit is recovered before saving the next Pending intent. Apply's protected
+pre-stop verification also reconciles its exact CHECK_SEALED phase; the
+binding-only reader remains nonmutating. Old v1 behavior is unchanged.
+
+AccountBootstrapMigration now composes the existing confined clone helper
+with source accounting, rather than assuming an independently prepared
+database. The owner launcher mounts only the exact accepted #289 state/config
+volumes read-only, checks the known holder set, and retains the new nonce-bound
+inactive target. The helper pins the original Registry profile, checks retained
+instance, scope, profile, authority and grants, rejects aliasing, copies a
+fresh target or verifies the incumbent prefix when recovering a prior copy.
+The source is never altered. This is staging, not stopped-source proof: the
+controller must independently verify exclusion and unchanged source after
+actual stop. The initial #289 static runtime cannot participate in the new
+operational DRAINING; its bounded cutover must retain a pre-effect owner
+review/Check, prove physical freeze and then seal the frozen pair, rather
+than fabricate a live drain or reuse the exhausted corrective exemption.
+PS7 v1/v2 publication selftests and 44 focused source/real Git/SQLite
+fixture tests passed; the first fixture reused a directory with WAL/SHM
+sidecars and was corrected to use a separate fresh directory without
+deleting sidecars. No live host proof, trusted pair writer, actual cutover,
+post-Apply completion or Return is implied.
+
+### Current phase delivery admission and physical bootstrap freeze
+
+The v3 receiver's immutable staged handoff remains the startup pin for
+STAGED_TARGET_FROZEN, not a forever-current Registry checkpoint. The
+read-only delivery helper verifies the current independently pinned phase
+and binds the authenticated PROFILE replay to the same hold snapshot.
+Subsequent frozen phases and NORMAL, including later source-only merges,
+are checked against current state. Already-running draining source
+inspection is distinct from startup: DRAINING through APPLY_STOP can be
+inspected read-only, but cannot admit a restart or new effect.
+
+Use one protected host publication file
+`maintenance-publication-v2.json` for the operational interlock chain,
+outside both rollback and mounted projection volumes. No historical v1
+file is fallback authority. The owner controller reads it against the exact
+retained release record/source lineage and rechecks after the actual
+packaged-image preflight. Compare current phase/Registry pin separately
+from retained image/profile, companion, evidence device/inode and authority
+pins. A completed later release must explicitly rebind this one anchor to
+the new source record before a new ordinary attempt; rebinding and recovery
+callers are not yet integrated. Old v1 immutable images receive their
+original preflight arguments. The Gateway create/admit and staged collector
+paths now select both fixed RO operational mounts only on verified v2
+delivery and check the frozen peer before and after preparation.
+
+Before any seed write the bounded #289 bootstrap now requires an exact
+pre-effect Check SHA and durable attempt pointer, original source/pointer
+and image binding, worker quiescence, full frozen Gateway receipt equality
+and replay of the retained stopped Registry revision-3 checkpoint. It
+rejects a changed Gateway receipt, Registry checkpoint or primary/backup
+pointer before seeding, and rechecks the stopped source identities after
+the full receipt. This does not create the pre-effect Check or authorize
+the physical stop. The caller must persist the original Check references
+before the first stop. The guarded private pair writer, bootstrap
+pre-effect Check/stop orchestration, Registry receiver creation and
+post-Apply Backup/Promote/completion/Return remain open; the mandatory
+pre-stop deny is unchanged. 80 local regressions and isolated PS7
+publication/runtime/frozen-proof fixtures passed. Real PS5.1, mount
+identities and owner-host lifecycle have not been accepted.
+
+### First bootstrap pre-effect Check and private paired begin
+
+The one-time `Check -Bootstrap289` source path uses the existing manual
+prebuilt-image Check and nonce, exact Gateway and Registry image IDs,
+Registry profile SHA256, review SHA256 and independently collected
+post-merge evidence SHA256. It is not ordinary live successor Check:
+no DRAINING is claimed for static #289, no target listener starts, no
+hold is opened and no deployment is authorized. It confirms the exact
+retained source/pointers, running incumbent identities, original
+revision-3 Registry replay, worker quiescence and inactive target volume
+exclusion. The packaged Gateway probe validates both sealed profiles,
+fresh distinct peer/frame keys, unchanged enrollment and retained
+companion/authority on the read-only incumbent Core. The packaged
+Registry probe replays the inactive revision-4 accounted clone, reads
+the exact migration receipt and both verified Desired/CAS items, and
+compares its private binding to the Gateway binding. Compatibility
+includes both immutable artifact IDs. The previously accepted #289
+Gateway backup receipt and Registry backup manifest/bytes are read back;
+the final Check rechecks source/candidate and record pins without
+re-reading the full backup a second time. The existing durable Check
+record binds the result; report is `BOOTSTRAP_CHECKED_ONLY` with
+`deploymentAuthorized=false`. A later fresh Check may not silently
+reuse an already-seeded operational anchor.
+
+The offline private paired writer reuses the actual protected
+`ReleaseDomain.protected_begin_pair`, exact original Check inputs,
+independent seeded NORMAL projection and exclusive stable-inode
+reservation. It verifies source accounting, review/prefix, both Desired
+items and exact compatibility digest; its fixed controller actor and
+deterministic pair IDs make a lost ACK an exact two-receipt readback.
+Neither Installed nor host admission is asserted. The original source
+accounting guard still requires a pre-product journal; only the narrow
+prefix replay is shared for paired begin recovery. No new RPC, service,
+database or reusable repair authority is introduced.
+
+These are source/local proofs, not authenticated owner GO or actual
+Windows Check acceptance. The pre-effect Check is connected to the
+existing controller; the stopped-source attempt/GO authentication and
+private writer invocation must still be integrated with seed, final
+profile projection, Registry receiver creation and protected Return
+before enabling Apply. In particular a supplied owner-review proof
+digest is a binding/reference, not proof by itself. Independent
+technical observations, Backup/Promote/completion callers and anchor
+rebind remain required. The explicit pre-stop gate stays closed.
+Local SQLite paired begin and lost ACK, immutable backup readback,
+packaged retained authority/E2 fixture, source and controller
+regressions passed (see canonical plan for run details).
+
+### Durable owner intent, private writer bridge and bootstrap phase plan
+
+The first bootstrap controller needs an independently retained owner
+pre-merge review, not only the review digest supplied with an inactive
+clone. The Registry's checked replay now returns a digest of the complete
+review object except its own `ownerReviewProofDigest` (canonical JSON,
+SHA256), avoiding circular hashing. The internal owner bridge checks an
+existing ACL-protected JSON record under the owner Fortis root using the
+ordinary protected record reader. The exact four-field record has
+`schema: fortis-registry-bootstrap-review-v1`,
+`decision: APPROVE_BOOTSTRAP_MERGE`, `reviewContentDigest` and
+`reviewedAt` (positive integer Unix seconds). Its exact file SHA256 is
+the review's ownerReviewProofDigest. The record must be independently
+created and retained before the actual reviewed merge; the local timestamp
+alone is not independent proof of chronology. The owner additionally
+confirms the exact Check hash interactively at Apply. No proof record is
+fabricated from the post-merge Check.
+
+The internal bridge consumes the original protected attempt and pointer
+with the Check path/hash, owner review record path, stable owner GO,
+sourceReceipt and exact checked image/profile/evidence. The GO pins the
+attempt UUID, Check/source/compatibility/review/evidence/proof digests,
+new generation and recorded time. The existing seed helper revalidates
+actual stopped #289 and full frozen source equality. The private
+networkless Registry writer mounts only its inactive state RW, runtime
+config RO and the two independent operational mounts RO. It derives
+canonical authorization from the retained GO and full frozen receipt,
+replays the exact paired begin and saves its result through the existing
+bounded, durable attempt serializer. The same intent recovers lost ACK;
+a changed GO, review or result is not a new permitted begin. The old
+Registry, Gateway and static interlock are not modified by the writer.
+
+The writer's phase plan is tied to actual two original begin receipts,
+the exact hold snapshot, owner intent and seeded NORMAL record. It uses
+the existing transition validator and derives the same five planned
+phases from DRAINING through STAGED_TARGET_FROZEN, with proof kind
+BOOTSTRAP_PHYSICAL_FREEZE. These source phase names are a planned
+offline publication chain after physical stop, not an attestation of
+live DRAINING by #289. A lone surviving hold, changed generation or
+changed seed is refused. Final handoff is a projection only; it is not
+publication, startup, Installed, or deployment admission. The bootstrap
+Gateway Check also uses the existing companion quiescence predicate:
+pinned unresolved composite parents are not admissible.
+
+These internal functions have local real SQLite and isolated PS7
+fixture evidence, not actual Windows execution. The pre-merge proof
+creation/admission before clone accounting, top-level Apply durable
+attempt/stop and Return orchestration, phase publication with real
+material/readback and final profiles/receiver provisioning remain open.
+The existing pre-stop deny remains. No owner live GO, policy expansion
+or new public operation.
+
+### Prepared physical cutover and early Return (source/local)
+
+Bootstrap Check now requires the existing independently protected review
+record path in addition to the previously reviewed hashes, and binds it
+into the immutable Check. Explicit checked-image Apply reaches the same
+read-only source/compatibility/review checks, but still refuses before any
+attempt or stop while the final receiver path is unavailable. No owner GO
+is solicited for this incomplete delivery.
+
+The internal Prepared driver uses the existing record and attempt pointer:
+exact owner GO, fresh compatibility and original Check source receipt,
+bounded durable save, pointer last, readback before the first effect. The
+physical helper verifies the retained #289 primary and old Registry
+identities; only those identities allow the transient disabled-restart
+policy. Stop Gateway first, then Registry; read back actual state even if
+a Docker command reports an error, never blindly repeat a satisfied effect.
+The existing frozen Check then proves unchanged original Gateway receipt
+and revision-3 Registry. The original source record and static interlock
+are unchanged. The early Return is now dispatched by the existing Return
+route for a bootstrap Prepared attempt; it excludes any new receiver or
+activation marker, starts Registry first and verifies original checkpoint
+and live peer, then restores Gateway and original restart policies.
+A late Gateway receipt change denies freeze but does not require restoring
+older bytes when no candidate receiver or activation exists. Return retains
+the inactive clone, any paired holds and operational anchor; no cleanup,
+closure or automatic reseed. A repeated already-Returned readback performs
+no new effects. Later receiver Return still needs its separate exact
+pre-activation/activation proof; early Return must not be used for it.
+
+The private begin result can be independently recovered on an exact RO
+journal replay instead of reissuing a writer after uncertain ACK. Existing
+stable main/WAL copy is used if sidecars remain; no sidecar deletion or
+immutable read of uncheckpointed bytes. The controller reads the same
+original two events and phase plan; before publication it compares the
+protected attempt's stored result. The first four planned phases are
+published by the existing Pending/Committed publisher under the controller
+lock. Re-entry reconciles the exact current prefix and publishes only the
+missing suffix to APPLY_STOP. STAGED_TARGET_FROZEN is not published by this
+helper, because final receiver material and mount proof are still needed.
+No fictitious live DRAINING proof or Installed assertion.
+
+Local PS7 extracted actual-function fixtures cover Prepared save/pointer
+ordering, changed source/compatibility before effects, partial stop and
+Return, lost Docker and writer ACK, already-returned readback, changed hold
+readback, and Pending publication recovery. The existing Windows PS5.1
+serializer, actual owner proof chronology, Docker host stop/start and
+mount behavior are not proved by these fixtures. Full top-level Apply
+invocation of the Prepared driver, final generation profiles/Registry
+receiver creation and later Return/Backup/Promote/completion/anchor rebind
+are still open. Integrate and remove redundant full freeze inspections
+only when the connected protected controller path establishes the same
+lock, identity and exclusion; do not reduce evidence merely for timing.
+
+### Bootstrap final profile sealing — source/local checkpoint (2026-11-28)
+
+After the protected paired begin and committed APPLY_STOP, the internal
+Prepared driver now seals the final Registry and Gateway material. The
+shared maintenance contract reconstructs the exact phase plan from the
+original seed, authorization, pair and two begin receipts, and verifies the
+committed host publication and exact predecessor. It projects the next
+handoff without publishing STAGED_TARGET_FROZEN. The already reviewed
+nonce, key pair, authority and retained profiles remain bound; only the
+required final generation/handoff pins change. The pure hold/phase
+validation is shared by both image packages, avoiding the previously
+unavailable Gateway-only import in the Registry image.
+
+For this bounded bootstrap, retain the preliminary config/evidence in
+`fortis-registry-config-e13b-<id>-prepared` and
+`fortis-r7-registry-reader-<id>-prepared`, separately from the standard
+final config volumes. Check requires the independently prepared final
+roots to be empty, private, correctly owned and pinned by device/inode.
+The helpers read preliminary files and the frozen state read-only and
+write only the corresponding final config root under the existing owner
+lock. They check exact allowlists, file digests, mount/holder identity and
+the current APPLY_STOP anchor; incomplete exact file prefixes can resume,
+but unknown or changed files are refused. Each final seal is independently
+read back RO before recording its digest and cross-profile binding in the
+durable attempt. No additional key rotation, state database or service is
+introduced. The existing original-volume provisioning procedure does not
+automatically provision these two additional config/evidence roots;
+actual owner preparation, ownership/mount proof and capacity admission
+are still required. Retain the prepared roots on Return and during
+recovery; no automatic deletion or reseed.
+
+Local validation: 112 focused Python tests PASS, separate integrated
+retained Gateway/Registry fixture PASS, seven extracted actual PS7
+selftest groups PASS; isolated packaged-source import checks cover both
+image layouts. These are not Docker image builds or Windows PS5.1/host
+acceptance. The original host Review chronology remains unproved.
+Actual receiver creation, durable receiver ID and independent readback,
+publication of STAGED_TARGET_FROZEN, top-level Apply connection, later
+Return/Backup/Promote, technical close and single-anchor NORMAL rebind
+remain open. Apply still denies before the protected attempt/GO/stop;
+the internal Prepared driver does not authorize an actual deployment.
+
+Review correction: the two pre-effect Check invocations must mount the
+respective standard final profile roots at /target, read-only and
+volume-nocopy. The initial local sealing tests exercised the helpers,
+but did not cover these actual Docker arguments. The missing mounts
+are now connected and covered by the existing controller source test.
+The runtime acceptance boundary is unchanged. For the next connected
+cutover increment, create and inspect the dormant receiver before
+publishing STAGED_TARGET_FROZEN, start only against the committed
+generation/hold pin, then independently authenticate its peer and
+checkpoint. Use the existing controller lifecycle and exact-ID recovery;
+do not add another independently selectable deployment route.
+
+### Connected bootstrap Apply / Resume / pre-activation Return (local checkpoint)
+
+The existing Apply driver now consumes the durable Prepared transition,
+rather than treating its internal helpers as a separate deployment. Before
+any receiver effect Check requires the exact named volumes. The controller
+records the deterministic nonce-bound Registry container intent, creates
+it dormant with restart=no and an exact attempt label, inspects the full
+image/command/UID/mount identity, and durably records the ID. A lost
+create ACK can only reconcile the exact never-started container, not
+another process or configuration. The existing latest-pin publisher then
+commits STAGED_TARGET_FROZEN; only after both projections match does the
+controller start the receiver. Its authenticated Gateway-side PROFILE
+and hold/companion replay must match the original paired begin, source
+checkpoint, final profile and generation. An existing sealed result
+from this same continuous lock can be reused before create; a re-entry
+without that result independently reads the sealed material again.
+
+The verified delivery is saved in the Gateway runtime DTO before the
+ordinary clone, collector and Gateway creation. The existing Resume
+path verifies the receiver/phase, real activation marker and exact
+candidate; a lost Gateway create ACK adopts only the never-started
+exact run and records the ID before start. Activation ACK is checked
+against the independent marker, not retried blindly. Persist activation
+before restoring Registry restart policy and publishing current.json.
+An already Complete record recovers only the missing pointer, never
+replays activation. Before activation, Return checks the retained original
+and actual marker, stops the exact new Gateway before its Registry, then
+restores the original Registry before Gateway. A present/unknown marker
+denies rollback; no clone, hold, evidence or anchor is deleted.
+
+Local connected controller fixtures exercise create/start/publication ACK
+loss, checkpoint/anchor rejection, failed probe and pre-activation Return,
+activation ACK and current-pointer recovery. They run actual PowerShell
+functions with simulated Docker effects, not Windows/Docker acceptance.
+The public bootstrap Apply gate remains until Backup/Promote, protected
+technical pair close and NORMAL/anchor rebind consume this same attempt
+and phase proof. The ordinary successor Apply gate also remains; do not
+substitute the one-time #289 bootstrap for the ordinary lifecycle.
+A Prepared interruption before Gateway create uses the safe Return unless
+the exact continuing pre-create boundary can be independently resumed.
+No source/host publication or operational GO is implied.
+
+### Connected bootstrap Backup / Promote / technical completion (local checkpoint)
+
+The existing Backup and Promote entry points now consume the same protected
+bootstrap attempt. Backup commits BACKUP_FROZEN, disables restart and stops
+the new Gateway then Registry, clones the Gateway using the existing state
+helper, and independently verifies a bounded local Registry state reserve.
+Check additionally binds the empty owner-prepared
+`fortis-registry-bootstrap-backup-<id>` volume by device/inode (UID/GID
+20002, mode 0700, exact RO Check mount). It must be provisioned and its
+capacity verified by the owner; retain it and the exact sealed config.
+This is a pre-close recovery reserve, not a new general backup service or
+independent host-loss recovery proof. The new pair restarts Registry-first
+against the authenticated frozen checkpoint; the old pair remains retained.
+
+Promote binds the immutable release and verified backup, saves the intended
+primary transition before rename, independently reads the exact resulting
+container identities, and writes the primary pointer. No rollback to the
+old pair after activation. Completion binds fresh live health/peer
+observations, exact protected Apply/Backup/Primary record hashes and
+independently reread frozen state/reserve. Stop the new pair with restart
+disabled before closing. Publish COMPLETION_PENDING first. The confined
+Registry helper atomically records both technical observations and both
+close events; readback of exact receipts is independently RO and is tried
+before any possible write. A failure on the last write rolls back the
+whole transaction. Only verified empty holds and the exact replayed
+checkpoint can project NORMAL. Rebind the existing host anchor to the
+current immutable release without resetting sequence or replacing the
+operational volumes; commit NORMAL and start Registry, authenticate its
+checkpoint, then start Gateway. Lost acknowledgements reconcile the
+same durable intent; unused stale pre-pending observations are retained
+and refreshed, not silently reused for a new write. An unresolved stale
+pending write fails closed.
+
+Local SQLite tests exercise the real reserve, proof projection, atomic
+rollback and lost-close-ACK replay. The connected extracted PS7 fixture
+runs actual Backup, Promote and completion functions against simulated
+Docker effects and journal replies: reserve/rename/close/NORMAL ACK loss,
+no duplicate clone or closure, exact restart ordering, and same-intent
+re-entry. These are local source checks, not owner Windows PS5.1/Docker
+acceptance, and do not establish host timings. Ordinary successor
+convergence (including subsequent maintenance), exact pre-merge review
+creation/admission, owner provisioning and real host acceptance remain
+open. Both top-level Apply gates remain before any deployment effect.
+
+### Re-audit corrections (2026-11-29)
+
+Latest-pin receiver admission consumes the exact protected Check's existing
+companion witness and the incumbent runtime's nonce-bound state volume.
+The #288-only historical exception remains limited to its original path.
+After committed NORMAL and exact primary/completion binding and live peer
+admission, a later ordinary Gateway Backup no longer enters the original
+bootstrap BACKUP_FROZEN attempt. It does not claim another paired Registry
+reserve. An incomplete NORMAL restart remains a Promote recovery, not a
+new backup.
+
+For an expired COMPLETION_PENDING write, independently replay the stopped
+Registry before any effect. Exact existing receipts recover the original
+completion even after expiry; absence requires all four operation IDs
+absent and the exact held checkpoint unchanged. Persist the original
+no-effect witness and next RECOVERY_HOLD before publication. Only the same
+held target generation, exact pair and already activated Gateway can
+restart passively for fresh observations; retain the superseded proof.
+The existing atomic close and NORMAL path then consumes the renewed
+pending proof, not expired evidence. Partial/conflicting/unknown outcomes
+do not renew, write or clear holds. No old-source rollback or new actor
+authority. The two Apply gates remain pending ordinary successor
+convergence and final source/host acceptance.
+
+#### Ordinary successor begin — local controller checkpoint (2026-11-29)
+
+The ordinary path must not use the bounded #289 repair or a second SQLite
+writer. The manual prebuilt Check with exact `-SuccessorRegistryImage` and
+`-SuccessorRegistryProfileSha256`, current latest-pin source, new nonce and
+worker-quiescence confirmation independently checks prepared Gateway and
+Registry material, retained authority, a stable RO Registry copy/replay,
+both exact Desired records and live authenticated checkpoint. It returns
+`SUCCESSOR_PAIR_PREFLIGHT_ONLY`, not READY, while ordinary Apply/Return
+remain incomplete. No hold, owner GO, phase or attempt is created by that
+public Check.
+
+The internal controller producer saves the exact owner-confirmed intent
+before publishing root-owned `begin.json` on the existing operational
+anchor (no new volume). The private authenticated
+`CONTROLLER_PAIRED_BEGIN` frame is internal-only and carries just the
+intent digest and readback flag. It uses the existing Registry writer,
+exclusive interlock reservation and atomic paired begin. The mount,
+authority, source NORMAL and complete predecessor must match; stale
+unapplied intent is denied. Exact receipts at the replay tip permit
+idempotent recovery; the protected context is saved before the existing
+DRAINING publisher. No public Registry mutation method or policy grant
+was added. Local SQLite and strict PowerShell fixtures test the connected
+begin/readback path, not owner host execution.
+
+An expired unused intent is revoked on the same protected anchor under
+the same exclusive reservation before decisive Registry readback. A
+revoked intent cannot issue a new effect (even after clock rollback);
+already committed receipts remain recoverable. Only authenticated absence
+with a current checkpoint/hold snapshot matching a fresh candidate
+permits an owner-confirmed replacement. The previous context and absence
+readback are retained durably before replacement. The sole Registry
+writer may recover its private listener at NORMAL with the exact original
+pair and at the exact committed DRAINING phase; Gateway startup and new
+source effects remain blocked. Durable DRAINING publication recovery
+checks exact retained container identity even if a pending phase blocked
+the peer's startup, before requiring live drain evidence.
+
+The internal ordinary controller reads authenticated drain status and
+produces the existing freeze payload under the existing exclusive
+inspector. It binds the mounted owner intent, original paired receipts,
+committed current phase, exact hold digest and prepared companion. The
+state digest comes from the actual protected receipt. The worker digest
+binds explicit owner quiescence confirmation and observed drain; it is
+not an independently proven worker-quiescence claim. The payload is
+persisted for the existing Check verifier. Local SQLite, phase-file and
+PowerShell fixtures exercise expiry, replacement and begin ACK loss,
+restart, busy drain and frozen payload; Docker effects remain simulated.
+
+Remaining before effectful ordinary Check: connect the protected Check
+record and phase transitions to staged Apply/Return and post-completion;
+reuse the fresh inspector result within the continuous controller lock
+where possible, without removing independent verification after phase
+publication or re-entry. Recovery of a stopped/unhealthy Gateway is not
+proved by Registry-only startup. Retain both Apply gates and current
+read-only preflight until the full safe path is connected. Prepared
+volume provisioning, actual pre-merge owner review and Windows/Docker
+acceptance are still required.
+
+### Ordinary frozen handover integration — local development checkpoint
+
+The protected ordinary context now binds four distinct prepared final
+roots, the original paired begin receipts, one frozen Check, its source
+receipt and a durable Apply-stop intent. The common controller can use
+the fresh inspector result under its existing lock, publish the checked
+phases, then independently compare the stopped state at exact APPLY_STOP.
+The ordinary state copy uses the same confined SQLite copy/replay primitive
+as the backup path; final Registry/Gateway material uses the existing
+profile binder and independent read-only seal. Historic bootstrap evidence
+is retained, not issued again. A retained recorded ancestor may hold only
+its exact canonical read-only operational mounts when exited with restart
+disabled; no arbitrary holder or new global operational volume is allowed.
+
+The local ordinary journal/phase-file fixture reaches STAGED_TARGET_FROZEN
+and verifies the copied state by independent replay and retry. A separate
+extension of the completed bootstrap journal fixture proves that the next
+ordinary Registry material retains historical evidence and reseals without
+another migration. Common controller code is wired for a protected
+ordinary prepared attempt, stopped source, receiver and Resume, and the
+post-activation branch uses the actual previous receiver and primary
+record instead of the #289 special pins. These are source connections, not
+a passing ordinary end-to-end Docker lifecycle. The ordinary Return branch
+explicitly refuses the historical bootstrap return; the exact recovery
+phase/readback and source restart still need integration and fault tests.
+Both Apply barriers and read-only public ordinary Check remain. Neither
+real owner review/GO, actual Windows PS5.1/Docker effects, nor deployment
+admission is implied.
+
+### Ordinary Return and Check re-entry — local development checkpoint
+
+Ordinary Return now uses the common controller, original protected Check,
+paired receipts and current phase. It excludes the inactive target, checks
+the original stopped source by independent read-only replay, persists the
+recovery intent and publishes source-generation RECOVERY_HOLD before
+starting the original Registry and Gateway. Both holds remain; Return
+does not declare successful completion or NORMAL. Exact retry recovers
+lost publication/start acknowledgements without repeating a completed
+effect. Changed source evidence or an activation marker fails closed.
+The ordinary Check re-entry uses the durable original context rather than
+a new NORMAL-only compatibility probe; a fresh intent requires proven
+absence of the previous effect.
+
+Local journal/phase-file and simulated controller fault tests PASS.
+The packaged ordinary Gateway seal also preserves enrollment and authority
+on the next generation; actual host effects remain untested. Still required:
+composed ordinary successful Check/Apply/Backup/Promote/completion, recovery
+of a stopped Gateway before Check, and exact owner pre-merge review and
+volume provisioning. Public Check remains read-only, both Apply barriers
+remain; no deployment admission or policy activation is implied.
+
+### Stopped-source Check recovery and staged passive verification
+
+The existing durable ordinary context permits readback of an already
+committed paired begin after the Gateway stops. It does not permit a new
+begin, revocation or replacement from a stopped source. After committed
+DRAINING, retain the stopped Gateway with restart disabled and, if needed,
+restore only the exact Registry listener to recover the existing drain
+witness; verify both identities and the same publication before sealing.
+This is not admission to restart the Gateway while its generation is held.
+Manual paired Return requires the owner quiescence attestation, as does
+the other protected recovery path.
+
+The exact native GitHub list_branches ALLOW uses the existing typed GET
+adapter and rechecks policy, grant and maintenance restrictions; ASK remains
+reserved and cannot create approval rows during freeze. The authenticated
+metadata catalog is passive. The shared staged controller uses an owner-local
+technical probe for the reviewed Mirror get_repository on fortis-approvals,
+not the audited extension call. It checks the sealed current target phase,
+profile, inactive marker, effective ALLOW, credential readiness and restrictions,
+uses the existing fixed GET handler, and independently rechecks the witness.
+Other probe coordinates are not silently skipped or enabled. The actual owner
+probe set still needs exact review before delivery.
+
+Focused source and isolated fault tests PASS, not actual Windows/Docker
+acceptance. The complete ordinary public Check/Apply/Backup/Promote/NORMAL
+path remains open: specifically source admission and native preflight if the
+Gateway is already stopped, and a connected successful lifecycle proof.
+Public ordinary Check remains preflight-only; both Apply barriers remain.
+
+### Ordinary lifecycle convergence (2026-11-29, candidate source)
+
+The exact latest-pin ordinary Check now binds the protected source and the
+native GitHub read witness before its existing explicit owner BEGIN, then
+resumes the durable drain/freeze/Check record. Apply requires that exact
+Check and separate owner APPLY. An already stopped held Gateway is not
+restarted for native preflight: the original witness remains bound to the
+same source/intent and the staged Gateway must pass the native read afresh
+before activation. The retained owner probe JSON and requested probe JSON
+must match the reviewed closed list before any new paired begin; unsupported
+coordinates stop rather than silently drop checks. No new provider probe or
+permission is introduced. Actual #289 evidence establishes Mirror TLS,
+GitHub TLS and OwnerShell mTLS; the exact last Windows probe JSON is not
+present in the retained local transcript.
+
+The ordinary candidate follows the shared Prepared/stop/copy/seal/receiver/
+Resume/Backup/Promote/completion path, with no second bootstrap migration.
+After durable Prepared readback the controller reloads the JSON record to
+preserve the ordinary dispatch discriminator. The journal fixture follows a
+second release through the staged SQLite copy, reserve, close, independent
+readback after lost ACK, and new-generation NORMAL, with the held old
+journal unchanged. Strict PowerShell fixtures cover the ordinary Check
+publication, stopped-source Apply, Prepared dispatch, state-copy/seal,
+and post-lifecycle retry boundaries. These are local journal and simulated
+controller proofs, not a single real Windows/Docker execution or installed
+acceptance. The candidate exact ordinary source entrypoint is wired; the
+historical/static maintenance Apply denial and #289 bootstrap Apply barrier
+remain. No publication, owner installation, live policy change, or E2 GO
+until the remaining exact pre-merge/provisioning proof and required gates.
+
+### One bounded delivery from #289 (2026-11-29, source candidate)
+
+The earlier unconditional #289 bootstrap Apply barrier is superseded at
+source level. The ordinary lifecycle is unchanged; historical/static
+maintenance without an exact successor still stops. Bootstrap requires
+the exact protected Check and original owner review, and a distinct
+`APPLY BOOTSTRAP <CheckHash>` confirmation before the persisted attempt
+and physical source stop. Reuse the same protected pair controller,
+receiver, Resume, Backup/Promote and completion; never a second migration.
+
+Before the inactive clone is even copied, AccountBootstrapMigration now
+authenticates the original owner ACL-protected review file, checks its
+hash against the canonical review and requires reviewedAt < mergedAt.
+The merge timestamp is independently observed by the owner from GitHub,
+not a new trusted remote timestamp API; no proof is made from local clock
+alone. The exact accepted Git parents, tree, body, CI and Registry prefix
+remain mandatory and are independently replayed. A protected review is
+created only for the actual open, reviewed, exact-head successful PR;
+no fabricated review for the current uncommitted candidate.
+
+The bounded owner preparation package is retained outside Git under
+Workfiles/registry-bootstrap289-delivery-20261129. It uses existing
+protected record writer and release lock, exact current #289 runtime
+and backup pins, original source/profile/authority, existing native
+typed READ, existing root and material writers, and AccountBootstrapMigration.
+New nonce roots and two fixed latest-pin roots must be fresh, distinct,
+unheld and independently inspected. Actual Windows/Docker execution,
+owner PR/rules/merge timestamp, fresh capacity and exact retained probes
+are still required. Local preparation tests do not establish host
+acceptance, and no policy, publication, merge, or installation is authorized.

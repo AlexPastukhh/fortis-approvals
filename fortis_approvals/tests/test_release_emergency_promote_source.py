@@ -268,7 +268,7 @@ class EmergencyPromoteSourceTests(unittest.TestCase):
         self.assertLess(rename, pointer)
 
     def test_admit_keeps_real_image_identity_and_only_offline_mount_substitution(self):
-        admit = section(MANAGE, "function Admit {", "function Admit-Source {")
+        admit = section(MANAGE, "\nfunction Admit {", "\nfunction Admit-Source {")
         self.assertIn("[string]$VerifiedPromoteRescueImage=''", admit)
         self.assertIn("$Action -cne 'Promote'", admit)
         self.assertIn("$MountPreflightImageId -cne $VerifiedPromoteRescueImage", admit)

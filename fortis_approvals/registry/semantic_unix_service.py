@@ -17,7 +17,7 @@ from .local_candidate_read_service import (PrivateCandidateReadService,_absolute
 
 class SemanticFrameService:
     def __init__(self,service,*,frame_key,generation,authorize,provenance,internal_actor,
-                 source_authorize=None,external_source_authorize=None,source_reservation=None,source_delivery=None):
+                 source_authorize=None,external_source_authorize=None,source_reservation=None,source_delivery=None,controller_begin=None):
         sc.need(type(service) is SemanticRegistry and type(frame_key) is bytes and len(frame_key)==32
                 and callable(authorize) and callable(provenance) and type(internal_actor) is str)
         sc.hex_id(generation,64)
@@ -31,6 +31,8 @@ class SemanticFrameService:
         self.source_reservation = source_reservation
         sc.need(source_delivery is None or callable(source_delivery))
         self.source_delivery = source_delivery
+        sc.need(controller_begin is None or callable(controller_begin))
+        self.controller_begin=controller_begin
         self.store=service.domain.store
         self.pins={'instance':self.store.instance_id,'scope':self.store.expected_legacy['scopeDigest'],
                    'generation':generation}
@@ -50,6 +52,10 @@ class SemanticFrameService:
             sc.need(self.provenance(actor)==b['assertionSource'],'SEMANTIC_WIRE_PROVENANCE')
             result=self.service.begin_group(actor,b['params'],operation_ids=b['operationIds'],
                 parent_id=b['parentRequestId'],assertion_source=b['assertionSource'])
+        elif act=='CONTROLLER_PAIRED_BEGIN':
+            sc.need(actor==self.internal_actor and self.controller_begin is not None,
+                    'MAINTENANCE_CONTROLLER_BEGIN_DENIED')
+            result=self.controller_begin(self.service.domain,b)
         elif act in ('SOURCE_REGISTER_EXTERNAL','SOURCE_LOOKUP_EXTERNAL'):
             from ..integrations.registry_contracts.source_lineage_contract import external_operation
             sc.need(actor!=self.internal_actor and self.provenance(actor)=='OWNER_DIRECT'
@@ -105,8 +111,14 @@ class SemanticFrameService:
                 result = self.service.domain.maintenance_snapshot()
             else:
                 sc.need(act == 'PROFILE', 'SEMANTIC_WIRE_BINDING')
-                view = self.service.domain.snapshot()
+                domain = self.service.domain
+                view = domain.snapshot()
                 result = {k: view[k] for k in ('profileDigest', 'sourceRevision')}
+                if b.get('sourceCheckpoint'):
+                    result['sourceCheckpoint'] = {
+                        **{k: view[k] for k in ('sourceCursor', 'snapshotRevision', 'eventDigest')},
+                        'registryDigest': sc.digest(domain._maintenance_snapshot(view)),
+                    }
                 if self.source_delivery is not None:
                     result['sourceDelivery'] = self.source_delivery()
         return wire.reply(self.key,req,result)
@@ -242,6 +254,8 @@ def owner_semantic_reader(config,root,*,corrective_preview_sha=None):
             and current['profileDigest']==pins['successorProfileDigest']
             and all(scope<=set(current['states']) for scope in grants.values()),
             'SEMANTIC_STARTUP_STATE_NOT_ACCEPTED')
+    if source_writer is not None:
+        source_writer.verify_startup(domain,current)
     peer_key=private_planner_key(root/'semantic-peer.key',pins['peerKeyDigest'])
     frame_key=private_planner_key(root/'semantic-frame.key',pins['frameKeyDigest'])
 
@@ -257,6 +271,8 @@ def owner_semantic_reader(config,root,*,corrective_preview_sha=None):
             return (actor,body['operation']) in grants
         if action in ('PROFILE','HOLD_SNAPSHOT'):
             return actor==internal
+        if action=='CONTROLLER_PAIRED_BEGIN':
+            return actor==internal and source_writer is not None and source_writer._dynamic
         return source_writer is not None and action in ('SOURCE_PREFLIGHT','SOURCE_REGISTER','SOURCE_LOOKUP')
 
     service=SemanticRegistry(domain,authorize=can_read,clock=lambda:0)
@@ -264,6 +280,7 @@ def owner_semantic_reader(config,root,*,corrective_preview_sha=None):
         authorize=admit,provenance=lambda _:None,internal_actor=internal,
         source_authorize=source_writer.authorize if source_writer is not None and not preview else None,
         source_reservation=source_writer.reservations.reserve if source_writer is not None and not preview else None,
-        source_delivery=source_writer.delivery_binding if source_writer is not None else None)
+        source_delivery=source_writer.delivery_binding if source_writer is not None else None,
+        controller_begin=source_writer.controller_begin if source_writer is not None and source_writer._dynamic and not preview else None)
     return PrivateSemanticUnixService(frames=frames,socket_path=config['socketPath'],
         reader_uid=config['readerUid'],reader_gid=config['readerGid'],peer_key=peer_key)

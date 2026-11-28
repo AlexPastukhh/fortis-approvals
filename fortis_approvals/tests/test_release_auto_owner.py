@@ -111,16 +111,33 @@ class AutoOwnerSourceTests(unittest.TestCase):
                         verify.index('Assert-Checked-Image-Binding $Record.binding $Expected'))
         self.assertLess(verify.index('Same-Json $Record.maintenanceSeal $Maintenance.checkSeal'),
                         verify.index('Read-SuccessorFreezeSeal $Maintenance'))
-        stop=SOURCE.index("throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'")
         prepare=SOURCE.index('Verify-Checked-Image $SourceForOwnerShell $Report -PrepareSuccessorStop')
         save=SOURCE.index('Save-SuccessorApplyStopIntent $StopIntent',prepare)
+        stop=SOURCE.index("throw 'RELEASE_SUCCESSOR_STAGED_HANDOVER_UNAVAILABLE'",save)
         self.assertLess(prepare,save)
         self.assertLess(save,stop)
         self.assertLess(stop,SOURCE.index("Step 'STOP_SOURCE';Assert-Release-Production"))
 
+    def test_ordinary_entrypoint_uses_protected_check_and_exact_stopped_source(self):
+        dispatch=SOURCE[ SOURCE.index("if($Report.status -cne 'READY')"): ]
+        self.assertLess(dispatch.index('Assert-PairedReleaseProbes $SourceForOwnerShell'),
+                        dispatch.index('Prepare-SuccessorMaintenanceContext $SourceForOwnerShell $OrdinaryCandidate -Report $Report'))
+        self.assertIn("if(-not $OrdinaryPairRequested){",dispatch)
+        self.assertIn("if($Bootstrap289 -and $Action -ceq 'Apply')",dispatch)
+        preflight=dispatch.split("Step 'REPO_CLIENT_PREFLIGHT'",1)[1].split("Step 'PREVIOUS_IMAGE_RETENTION_PREFLIGHT'",1)[0]
+        self.assertIn('binding.ordinaryNativeRead',preflight)
+        self.assertIn("if($Rows.gateway.State.Status -ceq 'running'){Assert-NativeRepoRead}",preflight)
+        self.assertIn("Read-OrdinarySuccessorSource $Source -PublicationRecovery",preflight)
+        self.assertNotIn("Docker-Text @('start'",preflight)
+        self.assertLess(dispatch.index('Save-OrdinaryPreparedAttempt $Source $Report $StopIntent'),
+                        dispatch.index('Invoke-BootstrapPreparedTransition'))
+        resume=SOURCE.split('\nfunction Resume-Target {',1)[1].split('\nfunction ',1)[0]
+        self.assertIn('Assert-NativeRepoRead',resume)
+        self.assertIn("'probe-frozen'",resume)
+
     def test_successor_publication_keeps_pending_intent_until_exact_readback(self):
-        publish=SOURCE.split('function Publish-SuccessorInterlock',1)[1].split(
-            'function Read-SuccessorMaintenanceContext',1)[0]
+        publish=SOURCE.split('\nfunction Publish-SuccessorInterlock {',1)[1].split(
+            '\nfunction Read-SuccessorMaintenanceContext {',1)[0]
         check=SOURCE.split('function Read-SuccessorMaintenanceContext',1)[1].split('function Ensure-Vault',1)[0]
         self.assertIn("if(-not (Same-Json $Anchor.next $Next))",publish)
         self.assertLess(publish.index("state='Pending'"),publish.index("mode='readback'"))

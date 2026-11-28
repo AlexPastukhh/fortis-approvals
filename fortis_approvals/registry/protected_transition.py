@@ -65,6 +65,23 @@ def _reviewed_workflows(ci, proposal, validator_revision):
     return workflows
 
 
+def _verify_action_pin(git, repo, head, action_revision):
+    workflow = git.run(['--no-replace-objects','cat-file','blob',
+                        head+':.github/workflows/release-impact.yml'],
+                       cwd=repo)[1]
+    sc.need(0<len(workflow)<=65536, 'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
+    try:
+        steps = yaml.safe_load(workflow)['jobs']['release-impact']['steps']
+    except (KeyError,TypeError,ValueError,yaml.YAMLError):
+        raise Denied('SOURCE_TRANSITION_ACTION_PIN_CHANGED') from None
+    sc.need(type(steps) is list and all(type(step) is dict for step in steps),
+            'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
+    uses = [step['uses'] for step in steps if isinstance(step.get('uses'),str)
+            and step['uses'].lower().startswith(_ACTION.lower())]
+    sc.need(uses==[_ACTION+action_revision],
+            'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
+
+
 def _verify_git(*, config, base_catalog, action_revision, proposal, observation,
                 body, bundle, workflows, gap=None):
     writer = config['sourceWrite']
@@ -95,20 +112,7 @@ def _verify_git(*, config, base_catalog, action_revision, proposal, observation,
                 len(row)==3 and (row[0],row[2])==(item['mergeSha'],item['headSha'])
                 for row,item in zip(rows,gap['merges'])), 'SOURCE_TRANSITION_GIT_GAP_CHANGED')
 
-        workflow = git.run(['--no-replace-objects','cat-file','blob',
-                            proposal['headSha']+':.github/workflows/release-impact.yml'],
-                           cwd=repo)[1]
-        sc.need(0<len(workflow)<=65536, 'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
-        try:
-            steps = yaml.safe_load(workflow)['jobs']['release-impact']['steps']
-        except (KeyError,TypeError,ValueError,yaml.YAMLError):
-            raise Denied('SOURCE_TRANSITION_ACTION_PIN_CHANGED') from None
-        sc.need(type(steps) is list and all(type(step) is dict for step in steps),
-                'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
-        uses = [step['uses'] for step in steps if isinstance(step.get('uses'),str)
-                and step['uses'].lower().startswith(_ACTION.lower())]
-        sc.need(uses==[_ACTION+action_revision],
-                'SOURCE_TRANSITION_ACTION_PIN_CHANGED')
+        _verify_action_pin(git,repo,proposal['headSha'],action_revision)
         impact = SuccessorImpact(validator_repository=VALIDATOR_MOUNT/'validator.git',
             validator_revision=writer['validatorRevision'], source_repository=repo,
             state_root=work, repository=proposal['repository'], binding=writer['impactBinding'],
@@ -170,6 +174,32 @@ def _repair_material(revision):
     return 'delivery-repair' if revision == 1 else 'delivery-repair-2'
 
 
+def _retained_source_evidence(root, name, request):
+    raw = _owner_runtime_bytes(root/name,262144)
+    sc.need(hashlib.sha256(raw).hexdigest()==request['evidenceDigest'],
+            'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
+    evidence = sc.loads_strict(raw)
+    sc.need(evidence['proposal']==request['proposal']
+            and evidence['observation']==request['observation']
+            and sc.digest(evidence['ci'])==request['proposal']['ciDigest'],
+            'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
+    return evidence
+
+
+def _same_delivery_ci(ci, previous_ci, proposal, validator_revision, *, error):
+    workflows = _reviewed_workflows(ci,proposal,validator_revision)
+
+    def workflow_pins(proof):
+        return sorted((run['workflowId'],run['workflowPath'],run['workflowSha256'],
+                       sorted(job['name'] for job in run['jobs'])) for run in proof['runs'])
+
+    sc.need(all(ci[k]==previous_ci[k] for k in ('policyDigest','rulesDigest','compositionDigest'))
+            and workflow_pins(ci)==workflow_pins(previous_ci)
+            and all(check.get('appId')==15368 and check.get('appSlug')=='github-actions'
+                    for check in ci['checks']),error)
+    return workflows
+
+
 def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected_source_sha,
                              retained_transition, retained_predecessor):
     """Verify the same protected scope and CI epoch on the next Git edge."""
@@ -187,20 +217,9 @@ def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected
     sc.need(envelope['predecessorReceipt'] == receipt, 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
     transition_request, transition_receipt, _ = retained_transition
 
-    def retained_evidence(name, request):
-        raw = _owner_runtime_bytes(root/name, 262144)
-        sc.need(hashlib.sha256(raw).hexdigest() == request['evidenceDigest'],
-                'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
-        evidence = sc.loads_strict(raw)
-        sc.need(evidence['proposal'] == request['proposal']
-                and evidence['observation'] == request['observation']
-                and sc.digest(evidence['ci']) == request['proposal']['ciDigest'],
-                'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
-        return evidence
-
-    original = retained_evidence('transition-evidence.json', transition_request)
+    original = _retained_source_evidence(root,'transition-evidence.json',transition_request)
     if receipt['sourceRevision'] == 2:
-        previous = retained_evidence('delivery-repair-evidence.json', predecessor)
+        previous = _retained_source_evidence(root,'delivery-repair-evidence.json',predecessor)
         sc.need(previous['predecessorReceipt'] == transition_receipt,
                 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
 
@@ -219,17 +238,8 @@ def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected
             'SOURCE_DELIVERY_REPAIR_RUNTIME_PINS_CHANGED')
 
     ci, previous_ci = envelope['ci'], original['ci']
-    workflows = _reviewed_workflows(ci, proposal, writer['validatorRevision'])
-
-    def workflow_pins(proof):
-        return sorted((run['workflowId'], run['workflowPath'], run['workflowSha256'],
-                       sorted(job['name'] for job in run['jobs'])) for run in proof['runs'])
-
-    sc.need(all(ci[key] == previous_ci[key] for key in ('policyDigest','rulesDigest','compositionDigest'))
-            and workflow_pins(ci) == workflow_pins(previous_ci)
-            and all(check.get('appId') == 15368 and check.get('appSlug') == 'github-actions'
-                    for check in ci['checks']),
-            'SOURCE_DELIVERY_REPAIR_CI_CHANGED')
+    workflows = _same_delivery_ci(ci,previous_ci,proposal,writer['validatorRevision'],
+                                  error='SOURCE_DELIVERY_REPAIR_CI_CHANGED')
 
     bundle = _owner_runtime_bytes(root/(material+'-main.bundle'), MAX_BUNDLE)
     sc.need(hashlib.sha256(bundle).hexdigest() == envelope['bundleSha256'],
@@ -247,6 +257,172 @@ def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected
         'transition': {'predecessorOperationId': receipt['operationId'],
                        'predecessorEventDigest': receipt['eventDigest']},
     }
+
+
+def bootstrap_prefix(view, store):
+    """The exact pre-product prefix, also checked on a readback of its one append."""
+    rows = sorted(view['sourceOperations'].values(),key=lambda row:row[1]['sourceRevision'])
+    sc.need(view['sourceRevision'] in (3,4) and view['snapshotRevision']==view['sourceRevision']
+            and not view['operations'] and not view['sourceTransitionPending']
+            and len(rows)==view['sourceRevision'] and all(row[2]==0 for row in rows)
+            and all(state['activeAttempt'] is None and state['installed'] is None
+                    and state['ownerReported'] is None for state in view['states'].values())
+            and (len(rows)==3 or rows[3][0]['kind']==sources.BOOTSTRAP_MIGRATION),
+            'SOURCE_BOOTSTRAP_STATE_CHANGED')
+    return bootstrap_source_prefix(view,store)
+
+
+def bootstrap_source_prefix(view,store):
+    # Also used to read back the exact first paired begin after ACK loss.
+    # This never relaxes bootstrap_prefix's pre-product accounting guard.
+    prior=sources.bootstrap_predecessor(view['sourceOperations'])
+    rows=sorted(view['sourceOperations'].values(),key=lambda row:row[1]['sourceRevision'])
+    sc.need(len(rows) in (3,4) and all(row[2]==0 for row in rows)
+            and (len(rows)==3 or rows[3][0]['kind']==sources.BOOTSTRAP_MIGRATION),
+            'SOURCE_BOOTSTRAP_STATE_CHANGED')
+    return {'instanceId':store.instance_id,'scopeDigest':sc.digest(store.scope),
+            'legacyWitnessDigest':sc.digest(store.expected_legacy),
+            'transitionDigest':store.transition_digest,'sourcePrefixDigest':sc.digest(rows[:3]),
+            'predecessorReceipt':prior[1]}
+
+
+def _pinned_bootstrap_material(root,name,pin):
+    sc.hex_id(pin,64)
+    raw=_owner_runtime_bytes(root/name,262144)
+    sc.need(hashlib.sha256(raw).hexdigest()==pin,'SOURCE_BOOTSTRAP_EVIDENCE_PIN_CHANGED')
+    value=sc.loads_strict(raw)
+    sc.need(sc.canonical(value).encode()==raw,'SOURCE_BOOTSTRAP_EVIDENCE_INVALID')
+    return value
+
+
+def read_bootstrap_review(root, expected_review_sha256):
+    review=_pinned_bootstrap_material(root,'bootstrap-review.json',expected_review_sha256)
+    sc.fields(review,('schemaVersion','prefix','proposal','authorityDigest',
+                      'authorityWitnessDigest','primaryRecordDigest','gatewayBackupDigest',
+                      'registryBackupDigest','ownerReviewProofDigest'))
+    sc.need(type(review['schemaVersion']) is int and review['schemaVersion']==1,
+            'SOURCE_BOOTSTRAP_REVIEW_CHANGED')
+    for k in ('authorityDigest','authorityWitnessDigest','primaryRecordDigest',
+              'gatewayBackupDigest','registryBackupDigest','ownerReviewProofDigest'):
+        sc.hex_id(review[k],64)
+    return review
+
+
+def prepare_bootstrap_review_candidate(verifier, observed, ci, *, predecessor, action_revision):
+    """Offline candidate projection, before owner review. No source event or merge.
+
+    The caller obtains fresh native typed PR/body/CI evidence and the exact
+    local Git objects through the existing reviewed source workflow. The
+    owner still independently verifies the current predecessor and rules.
+    """
+    sc.need(type(verifier) is SuccessorImpact,'SOURCE_BOOTSTRAP_REVIEW_CHANGED')
+    old=predecessor['proposal']
+    sc.need(observed['baseSha']==predecessor['observation']['mergeSha']==sources._BOOTSTRAP_BASE
+            and observed['number']>289 and observed['catalogSha256']==old['catalogSha256']
+            and verifier.profile_digest==old['profileDigest']
+            and verifier.repository==old['repository'],
+            'SOURCE_BOOTSTRAP_REVIEW_CHANGED')
+    impact=verifier.verify(observed)
+    # This field is the local pinned-validator result, not a reported
+    # GitHub check. A supplied value must agree; derive once if omitted.
+    impact_digest=sc.digest(impact)
+    sc.need(ci.get('validatedImpactDigest') in (None,impact_digest),
+            'SOURCE_BOOTSTRAP_CI_IMPACT_CHANGED')
+    ci={**ci,'validatedImpactDigest':impact_digest}
+    p={k:observed[k] for k in ('repository','number','baseSha','headSha','treeSha',
+                              'catalogSha256','bodyDigest','impactDigest','pathsDigest')}
+    p.update({k:impact[k] for k in ('profileDigest','classification','targets','dependencies')})
+    p= lineage.proposal({**p,'expectedSourceRevision':3,'ciDigest':sc.digest(ci),
+                         'dependencyDigest':sc.digest(impact['dependencies'])})
+    from ..integrations.registry_contracts.maintenance_contract import paired_subjects
+    required=list(paired_subjects(p['repository']).values())
+    sc.need(p['classification']=='deployment'
+            and all(any(r['subject']==subject and 'image-rebuild' in r['actions']
+                        for r in p['targets']) for subject in required)
+            and ci['validatedImpactDigest']==sc.digest(impact),
+            'SOURCE_BOOTSTRAP_REVIEW_CHANGED')
+    workflows=_same_delivery_ci(ci,predecessor['ci'],p,verifier.revision,
+                                error='SOURCE_BOOTSTRAP_CI_CHANGED')
+    verifier.verify_workflows(p['headSha'],workflows)
+    with tempfile.TemporaryDirectory(dir=verifier.state,prefix='bootstrap-review-') as tmp:
+        git=Git(Path(tmp)/'git',protocols='file')
+        _verify_action_pin(git,verifier.source,p['headSha'],action_revision)
+    return {'proposal':p,'ci':ci}
+
+
+def verify_bootstrap_owner_review(review, raw, *, merged_at):
+    # The owner controller reads the original ACL-protected record, never
+    # a post-merge reconstruction. merged_at is the independently observed
+    # GitHub merge timestamp retained by the owner, not a local clock proof.
+    sc.need(type(raw) is bytes and 0<len(raw)<=4096
+            and hashlib.sha256(raw).hexdigest()==review['ownerReviewProofDigest'],
+            'SOURCE_BOOTSTRAP_OWNER_REVIEW_CHANGED')
+    proof=sc.loads_strict(raw)
+    sc.fields(proof,('schema','decision','reviewContentDigest','reviewedAt'))
+    sc.need(proof['schema']=='fortis-registry-bootstrap-review-v1'
+            and proof['decision']=='APPROVE_BOOTSTRAP_MERGE'
+            and proof['reviewContentDigest']==sc.digest({k:v for k,v in review.items()
+                                                        if k!='ownerReviewProofDigest'})
+            and type(proof['reviewedAt']) is int and type(merged_at) is int
+            and 0<proof['reviewedAt']<merged_at,
+            'SOURCE_BOOTSTRAP_OWNER_REVIEW_ORDER_UNPROVEN')
+    return proof
+
+
+def reviewed_bootstrap_migration(root, config, *, expected_review_sha256,
+                                 expected_evidence_sha256, expected_source_sha, view, store):
+    """Owner-pinned pre-merge review + independently observed exact merge.
+
+    The controller must authenticate and retain the review and evidence pins,
+    actual host backup/authority records, exclusive clone and quiescence. This
+    verifier checks their binding, not owner identity or permission to stop.
+    No public ingress or generic historical accounting.
+    """
+    sc.hex_id(expected_source_sha,40)
+    review=read_bootstrap_review(root,expected_review_sha256)
+    evidence=_pinned_bootstrap_material(root,'bootstrap-evidence.json',expected_evidence_sha256)
+    sc.fields(evidence,('reviewDigest','observation','ci','body','bundleSha256','mergedAt'))
+    sc.need(type(evidence['mergedAt']) is int and evidence['mergedAt']>0,
+            'SOURCE_BOOTSTRAP_OWNER_REVIEW_ORDER_UNPROVEN')
+    sc.need(evidence['reviewDigest']==expected_review_sha256
+            and review['prefix']==bootstrap_prefix(view,store),'SOURCE_BOOTSTRAP_REVIEW_CHANGED')
+    proposal = lineage.proposal(review['proposal'])
+    observed = lineage.observation(evidence['observation'],proposal)
+    first, first_receipt, _ = sources.delivery_repair_predecessor(view['sourceOperations'])
+    second, second_receipt, _ = sources.delivery_repair_predecessor(view['sourceOperations'],2)
+    third, third_receipt, _ = sources.bootstrap_predecessor(view['sourceOperations'])
+    original = _retained_source_evidence(root,'transition-evidence.json',first)
+    prior = _retained_source_evidence(root,'delivery-repair-evidence.json',second)
+    last = _retained_source_evidence(root,'delivery-repair-2-evidence.json',third)
+    manifest = first['transition']['manifest']
+    writer = config['sourceWrite']
+    sc.need(prior['predecessorReceipt']==first_receipt and last['predecessorReceipt']==second_receipt
+            and proposal['baseSha']==third_receipt['sourceCursor']
+            and proposal['expectedSourceRevision']==3 and proposal['number']>289
+            and proposal['classification']=='deployment'
+            and observed['mergeSha']==expected_source_sha
+            and proposal['catalogSha256']==third['proposal']['catalogSha256']
+            and proposal['profileDigest']==third['proposal']['profileDigest']==config['semantic']['successorProfileDigest']
+            and writer['validatorRevision']==manifest['successor']['validatorRevision']
+            and review['authorityDigest']==writer['policyAuthorityDigest']==manifest['successor']['authorityDigest'],
+            'SOURCE_BOOTSTRAP_RUNTIME_PINS_CHANGED')
+    ci=evidence['ci']
+    workflows=_same_delivery_ci(ci,original['ci'],proposal,writer['validatorRevision'],
+                                error='SOURCE_BOOTSTRAP_CI_CHANGED')
+    bundle=_owner_runtime_bytes(root/'bootstrap-main.bundle',MAX_BUNDLE)
+    sc.need(hashlib.sha256(bundle).hexdigest()==evidence['bundleSha256'],'SOURCE_BOOTSTRAP_BUNDLE_CHANGED')
+    body=evidence['body']
+    sc.need(type(body) is str and 0<len(body.encode())<=20000,'SOURCE_TRANSITION_BODY_INVALID')
+    impact=_verify_git(config=config,base_catalog=proposal['catalogSha256'],
+        action_revision=manifest['successor']['actionRevision'],proposal=proposal,
+        observation=observed,body=body,bundle=bundle,workflows=workflows)
+    sc.need(ci['validatedImpactDigest']==sc.digest(impact),'SOURCE_TRANSITION_CI_IMPACT_CHANGED')
+    return sources.request({'operationId':sources.bootstrap_migration_id(third_receipt['operationId'],expected_source_sha),
+        'kind':sources.BOOTSTRAP_MIGRATION,'parentRequestId':None,'proposal':proposal,
+        'observation':observed,'evidenceDigest':expected_evidence_sha256,
+        'transition':{'schemaVersion':1,'predecessorOperationId':third_receipt['operationId'],
+                      'predecessorEventDigest':third_receipt['eventDigest'],
+                      'reviewDigest':expected_review_sha256}},store)
 
 
 def staged_domain(journal, root, pins):
@@ -324,6 +500,18 @@ def frozen_corrective_checkpoint(journal, root, pins, *, expected_revision, expe
             expected_revision=expected_revision,expected_source_sha=expected_source_sha)
 
 
+def frozen_paired_completion_readback(journal, root, pins, *, pair, items, actor):
+    """Reuse the confined RO snapshot replay after uncertain completion.
+
+    The controller must establish writer exclusion and authenticate the
+    independently retained completion intent. No active restore, journal
+    write, startup admission or publication is performed here.
+    """
+    _check_owner_readonly_mount(root)
+    with _corrective_snapshot_copy(journal) as copy:
+        return staged_domain(copy,root,pins).protected_pair_completion_readback(pair,items,actor=actor)
+
+
 def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoint):
     """Clone the pre-product journal onto one fresh private inactive volume.
 
@@ -331,6 +519,25 @@ def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoin
     the exclusive host preparation lock. Original mounts are RO. No
     accounting, source approval, listener start or effect occurs here.
     """
+    def checkpoint(domain, view):
+        store=domain.store
+        return corrective_checkpoint_view(view,instance_id=store.instance_id,scope=store.scope,
+            legacy_witness=store.expected_legacy,transition_digest=store.transition_digest,
+            expected_revision=2,expected_source_sha=sources._DELIVERY_288)
+    return _stage_registry_snapshot(journal,root,pins,target=target,
+                                    expected_checkpoint=expected_checkpoint,checkpoint=checkpoint)
+
+
+def stage_bootstrap_registry(journal, root, pins, *, target, expected_prefix):
+    """Use the same confined clone path, restricted to the exact #289 prefix."""
+    def checkpoint(domain,view):
+        sc.need(view['sourceRevision']==3,'SOURCE_BOOTSTRAP_STATE_CHANGED')
+        return bootstrap_prefix(view,domain.store)
+    return _stage_registry_snapshot(journal,root,pins,target=target,
+                                    expected_checkpoint=expected_prefix,checkpoint=checkpoint)
+
+
+def _stage_registry_snapshot(journal, root, pins, *, target, expected_checkpoint, checkpoint):
     import os
     import sqlite3
     from ..r7_registry_reader_mount import _exact_mountinfo
@@ -346,8 +553,7 @@ def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoin
             and not list(target.parent.iterdir()), 'SOURCE_CORRECTIVE_TARGET_NOT_FRESH')
     with _corrective_snapshot_copy(journal) as copy:
         domain=staged_domain(copy,root,pins)
-        kw=dict(expected_revision=2,expected_source_sha=sources._DELIVERY_288)
-        sc.need(corrective_checkpoint(domain,**kw)==expected_checkpoint,
+        sc.need(checkpoint(domain,domain.snapshot())==expected_checkpoint,
                 'SOURCE_CORRECTIVE_STAGE_SOURCE_CHANGED')
         fd=os.open(target,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
         os.close(fd)
@@ -360,9 +566,7 @@ def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoin
             expected_legacy=journal.expected_legacy,transition_digest=journal.transition_digest)
         target_domain=staged_domain(new,root,pins)
         with new._db() as db:
-            view=target_domain._project(db)
-            result=corrective_checkpoint_view(view,instance_id=new.instance_id,scope=new.scope,
-                legacy_witness=new.expected_legacy,transition_digest=new.transition_digest,**kw)
+            result=checkpoint(target_domain,target_domain._project(db))
         sc.need(result==expected_checkpoint,'SOURCE_CORRECTIVE_STAGE_CLONE_CHANGED')
         sc.need(set(p.name for p in target.parent.iterdir())=={target.name},
                 'SOURCE_CORRECTIVE_STAGE_UNCHECKPOINTED')

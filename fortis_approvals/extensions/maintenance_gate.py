@@ -13,7 +13,8 @@ import uuid
 from ..core import Denied
 from ..integrations.registry_contracts import semantic_contract as sc
 from ..integrations.registry_contracts.maintenance_contract import (
-    bind_record, bind_startup_handoff, validate_transition,
+    bind_record, bind_startup_handoff, validate_transition, paired_subjects, paired_operation_id, matching_holds,
+    latest_startup, hold_snapshot, maintenance_coordinate,
 )
 
 
@@ -23,9 +24,7 @@ class Coordinate:
     operation: str
 
     def __post_init__(self):
-        for v in (self.service,self.operation):
-            sc.need(type(v) is str and 0<len(v)<=64 and
-                    all(c.isascii() and (c.islower() or c.isdigit() or c in '_-') for c in v))
+        maintenance_coordinate(self.service,self.operation)
 
 
 @dataclass(frozen=True)
@@ -34,47 +33,21 @@ class Reservation:
     coordinate: Coordinate | None
 
 
-def hold_snapshot(value):
-    """Trusted Registry-derived aggregate, not a public filtered READ DTO."""
-    sc.fields(value,('instanceId','scopeDigest','snapshotRevision','eventDigest','holds'))
-    sc.uuid_id(value['instanceId'])
-    sc.hex_id(value['scopeDigest'],64)
-    sc.revision(value['snapshotRevision'])
-    sc.hex_id(value['eventDigest'],64)
-    sc.need(type(value['holds']) is list and len(value['holds'])<=200)
-    seen=set()
-    for hold in value['holds']:
-        sc.fields(hold,('attemptId','subject','source','restrictionDigest','stateFreeze',
-                        'blockedOperations'))
-        sc.uuid_id(hold['attemptId'])
-        sc.subject(hold['subject'])
-        sc.source(hold['source'])
-        sc.hex_id(hold['restrictionDigest'],64)
-        sc.need(hold['attemptId'] not in seen and type(hold['stateFreeze']) is bool)
-        seen.add(hold['attemptId'])
-        sc.need(type(hold['blockedOperations']) is list and len(hold['blockedOperations'])<=100)
-        coords=set()
-        for op in hold['blockedOperations']:
-            sc.fields(op,('service','operation'))
-            coord=Coordinate(**op)
-            sc.need(coord not in coords)
-            coords.add(coord)
-    return sc.loads_strict(sc.canonical(value))
-
-
 class MaintenanceGate:
     def __init__(self, *, instance_id, scope_digest, generation, read_interlock,
-                 read_holds, shared_reservations=None):
+                 read_holds, shared_reservations=None, read_latest=None):
         sc.uuid_id(instance_id)
         sc.hex_id(scope_digest,64)
         sc.hex_id(generation,64)
-        sc.need(callable(read_interlock) and callable(read_holds))
+        sc.need(callable(read_interlock) and callable(read_holds)
+                and (read_latest is None or callable(read_latest)))
         self.instance_id,self.scope_digest,self.generation=instance_id,scope_digest,generation
         self._interlock,self._holds=read_interlock,read_holds
         from .maintenance_interlock_reader import InterlockReservations
         sc.need(shared_reservations is None or type(shared_reservations) is InterlockReservations,
                 'MAINTENANCE_RESERVATION_REQUIRED')
         self._shared=shared_reservations
+        self._latest=read_latest
         self._lock=RLock()
         self._active={}
         self._last_interlock=None
@@ -112,26 +85,66 @@ class MaintenanceGate:
         except Exception:
             raise Denied('MAINTENANCE_STATE_UNKNOWN') from None
 
-    def verify_startup(self,handoff=None):
+    def verify_startup(self,handoff=None,*,release_active=None):
         """Read-only admission before serving a reviewed runtime."""
-        if handoff is not None:
+        frozen=handoff is not None or self._latest is not None
+        if frozen:
             sc.need(self._shared is not None,'MAINTENANCE_RESERVATION_REQUIRED')
-        shared=self._shared.reserve() if handoff is not None else nullcontext()
+        shared=self._shared.reserve() if frozen else nullcontext()
         with shared,self._lock:
             sc.need(not self._local_uncertain,'MAINTENANCE_STATE_UNKNOWN')
             record,holds=self._snapshot()
+            if self._latest is not None:
+                current,projection=self._latest()
+                sc.need(current==record,'MAINTENANCE_STATE_UNKNOWN')
+                latest_startup(record,projection,holds)
+                phase=record['phase']
+                if phase=='STAGED_TARGET_FROZEN':
+                    sc.need(handoff is not None,'MAINTENANCE_STARTUP_HANDOFF_REQUIRED')
+                    bind_startup_handoff(handoff,record)
+                    sc.need(handoff['registryDigest']==projection['registryDigest'],
+                            'MAINTENANCE_STARTUP_HOLD_CHANGED')
+                else:
+                    # The pre-construction read can validate phase first;
+                    # install rechecks the actual root-owned activation marker.
+                    sc.need(release_active is not False,'MAINTENANCE_STARTUP_HANDOFF_REQUIRED')
+                    if phase in ('BACKUP_FROZEN','PROMOTE_FROZEN','COMPLETION_PENDING') or (
+                            phase=='RECOVERY_HOLD' and record['generation']==record['attempt']['targetGeneration']):
+                        sc.need(handoff is not None and record['attempt']['attemptId']==handoff['attemptId']
+                                and record['attempt']['restrictionDigest']==handoff['restrictionDigest'],
+                                'MAINTENANCE_STARTUP_HANDOFF_CHANGED')
+                # The controller's read-only delivery preflight must bind
+                # its PROFILE replay to this exact verified phase/hold view.
+                return record,holds,projection
             if handoff is None:
                 sc.need(record['phase']=='NORMAL' and not any(h['stateFreeze'] for h in holds['holds']),
                         'MAINTENANCE_STARTUP_HANDOFF_REQUIRED')
                 return
             current=bind_startup_handoff(handoff,record)
             attempt=current['attempt']
-            sc.need(sc.digest(holds)==handoff['registryDigest'] and len(holds['holds'])==1,
+            sc.need(sc.digest(holds)==handoff['registryDigest'] and matching_holds(holds['holds'],attempt),
                     'MAINTENANCE_STARTUP_HOLD_CHANGED')
-            hold=holds['holds'][0]
-            sc.need(hold['stateFreeze'] and all(hold[k]==attempt[k] for k in
-                    ('attemptId','subject','source','restrictionDigest')),
+
+    def verify_running_source_delivery(self):
+        """Read-only inspection of an already running, draining source.
+
+        Not startup admission: a process restart in these phases must still
+        fail verify_startup. The owner controller checks the live identity.
+        """
+        from ..integrations.registry_contracts.maintenance_contract import bind_latest_projection
+        sc.need(self._latest is not None and self._shared is not None,
+                'MAINTENANCE_RESERVATION_REQUIRED')
+        with self._shared.reserve(),self._lock:
+            sc.need(not self._local_uncertain,'MAINTENANCE_STATE_UNKNOWN')
+            record,holds=self._snapshot()
+            current,projection=self._latest()
+            sc.need(current==record,'MAINTENANCE_STATE_UNKNOWN')
+            bind_latest_projection(projection,record)
+            sc.need(record['phase'] in ('DRAINING','FROZEN_BEFORE_CHECK','CHECK_SEALED','APPLY_STOP')
+                    and sc.digest(holds)==projection['registryDigest']
+                    and matching_holds(holds['holds'],record['attempt']),
                     'MAINTENANCE_STARTUP_HOLD_CHANGED')
+            return record,holds,projection
 
     def _decision(self,coordinate):
         if self._local_uncertain:
@@ -149,10 +162,11 @@ class MaintenanceGate:
                 raise Denied('RELEASE_MAINTENANCE')
 
     def passive_read(self,coordinate):
-        """For independently proved passive semantic reads ONLY."""
+        """Only reviewed passive operations; not a new policy grant."""
         from ..integrations.registry_contracts.semantic_contract import READ_METHODS
-        sc.need(type(coordinate) is Coordinate and coordinate.service=='registry'
-                and coordinate.operation in READ_METHODS)
+        sc.need(type(coordinate) is Coordinate and (
+            (coordinate.service=='registry' and coordinate.operation in READ_METHODS)
+            or (coordinate.service,coordinate.operation)==('github','list_branches')))
         with self._lock:
             if self._local_uncertain:
                 raise Denied('MAINTENANCE_STATE_UNKNOWN')
@@ -259,15 +273,12 @@ class MaintenanceGate:
                 return {'status':'UNKNOWN','reservations':len(self._active),'ready':False}
             phase=record['phase']
             attempt=record['attempt']
-            matching=bool(attempt and any(
-                h['attemptId']==attempt['attemptId'] and h['subject']==attempt['subject']
-                and h['source']==attempt['source'] and h['restrictionDigest']==attempt['restrictionDigest']
-                and h['stateFreeze'] for h in holds['holds']))
+            matching=matching_holds(holds['holds'],attempt)
             return {'status':phase,'reservations':len(self._active),
                     'interlockDigest':sc.digest(record),'registryDigest':sc.digest(holds),
                     'attemptId':attempt['attemptId'] if attempt else None,
                     'generation':record['generation'],
-                    'ready':drained and matching and len(holds['holds'])==1 and not self._local_uncertain
+                    'ready':drained and matching and not self._local_uncertain
                     and phase=='DRAINING'}
 
     def completion(self, *, expected_attempt, expected_operation, verify, write):
@@ -286,7 +297,8 @@ class MaintenanceGate:
                 sc.need(type(result) is dict and result.get('result')!='UNKNOWN_OUTCOME'
                         and result.get('operationId')==expected_operation,'MAINTENANCE_COMPLETION_UNKNOWN')
                 _,current=self._snapshot()
-                sc.need(not any(h['attemptId']==expected_attempt for h in current['holds']),
+                sc.need(not any(h['attemptId']==expected_attempt or h.get('pairId')==expected_attempt
+                                for h in current['holds']),
                         'MAINTENANCE_COMPLETION_HOLD_REMAINS')
                 return result
             except Exception:

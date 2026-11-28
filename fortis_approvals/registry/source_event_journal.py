@@ -10,6 +10,10 @@ from ..integrations.registry_contracts import semantic_contract as sc
 from ..integrations.registry_contracts import source_lineage_contract as lc
 
 DELIVERY_REPAIR = 'DELIVERY_REPAIR'
+BOOTSTRAP_MIGRATION = 'BOOTSTRAP_MIGRATION'
+# The reviewed #289 starting point, not a reusable historical repair route.
+_BOOTSTRAP_BASE = '073d6f8701595e499eac5a1fa0cbe90accb05819'
+_BOOTSTRAP_EVENT = '9a256ed2f8a9fd9e43806c8b756850936ee61a16adcde44be544a18f69f28658'
 _DELIVERY_287 = '87867ef670b5f8ae16645dbc2c25ea19a5e15e0e'
 _DELIVERY_288 = '5ab74dbd5f4f743b325bafd2444486180c3cdf7f'
 _DELIVERY_288_EVENT = '50b368d0fb366fd2dffec1b15b2f1e6bdbfa8694275352f4dae6006952e0d6a3'
@@ -34,7 +38,7 @@ def request(value,store):
     sc.fields(value,('operationId','kind','parentRequestId','proposal','observation',
                      'evidenceDigest','transition'))
     sc.uuid_id(value['operationId'])
-    sc.need(value['kind'] in ('TRANSITION','MERGE','EXTERNAL_MERGE',DELIVERY_REPAIR))
+    sc.need(value['kind'] in ('TRANSITION','MERGE','EXTERNAL_MERGE',DELIVERY_REPAIR,BOOTSTRAP_MIGRATION))
     p=lc.proposal(value['proposal'])
     sc.need(p['repository']==store.scope['repository'])
     lc.observation(value['observation'],p)
@@ -55,6 +59,18 @@ def request(value,store):
                 and value['operationId'] == delivery_repair_id(
                     detail['predecessorOperationId'], value['observation']['mergeSha']),
                 'SOURCE_DELIVERY_REPAIR_SCOPE')
+    elif value['kind'] == BOOTSTRAP_MIGRATION:
+        detail = value['transition']
+        sc.fields(detail, ('schemaVersion','predecessorOperationId','predecessorEventDigest','reviewDigest'))
+        sc.uuid_id(detail['predecessorOperationId'])
+        sc.hex_id(detail['reviewDigest'],64)
+        sc.need(type(detail['schemaVersion']) is int and detail['schemaVersion']==1
+                and value['parentRequestId'] is None and p['expectedSourceRevision']==3
+                and p['baseSha']==_BOOTSTRAP_BASE and p['number']>289
+                and detail['predecessorEventDigest']==_BOOTSTRAP_EVENT
+                and value['operationId']==bootstrap_migration_id(
+                    detail['predecessorOperationId'],value['observation']['mergeSha']),
+                'SOURCE_BOOTSTRAP_SCOPE')
     else:
         sc.uuid_id(value['parentRequestId'])
         sc.need(value['transition'] is None)
@@ -77,6 +93,19 @@ def delivery_repair_predecessor(events, revision=1):
             and prior[1]['sourceCursor'] == cursor and prior[2] == 0
             and (event is None or prior[1]['eventDigest'] == event),
             'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
+    return prior
+
+
+def bootstrap_migration_id(predecessor_id, merge_sha):
+    return str(uuid.uuid5(uuid.UUID(predecessor_id), 'registry-bootstrap-migration-v1:' + merge_sha))
+
+
+def bootstrap_predecessor(events):
+    prior = next((row for row in events.values() if row[1]['sourceRevision']==3),None)
+    sc.need(prior is not None and prior[0]['kind']==DELIVERY_REPAIR
+            and prior[0]['proposal']['number']==289 and prior[1]['sourceCursor']==_BOOTSTRAP_BASE
+            and prior[1]['eventDigest']==_BOOTSTRAP_EVENT and prior[2]==0,
+            'SOURCE_BOOTSTRAP_PREDECESSOR')
     return prior
 
 
@@ -130,6 +159,11 @@ def replay(store,db,seen):
                     'predecessorOperationId': predecessor['operationId'],
                     'predecessorEventDigest': predecessor['eventDigest'],
                 }, 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
+            elif req['kind']==BOOTSTRAP_MIGRATION:
+                _, predecessor, _ = bootstrap_predecessor(events)
+                sc.need(anchor==0 and req['transition']['predecessorOperationId']==predecessor['operationId']
+                        and req['transition']['predecessorEventDigest']==predecessor['eventDigest'],
+                        'SOURCE_BOOTSTRAP_PREDECESSOR')
             else:
                 sc.need(req['kind'] in ('MERGE','EXTERNAL_MERGE'), 'SOURCE_CURSOR_OR_EPOCH_CHANGED')
         calculated=sc.digest([previous,rev,anchor,anchor_digest,sc.digest(req)])
