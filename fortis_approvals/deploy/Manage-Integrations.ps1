@@ -2656,7 +2656,7 @@ function Assert-BootstrapGatewayLifecycleSelfTest {
         $Delivery=[pscustomobject]@{profileDigest=('a'*64);sourceDelivery=[pscustomobject]@{interlockDigest=('f'*64)}}
         $Digest='1'*64
         $Fixture=@{rows=@{};events=[Collections.Generic.List[string]]::new();pointer=$Source.path;gate=$false
-            failProbe=$true;losePointer=$true;loseActivationSave=$false;effects=0}
+            failProbe=$true;losePointer=$true;loseActivationSave=$false;effects=0;expectedProbes=@()}
         function Reset-Fixture {
             foreach($Id in @($Gid,$Rid,$OldGid,$OldRid)){
                 $Status=if($Id -ceq $Gid){'created'}elseif($Id -ceq $Rid){'running'}else{'exited'}
@@ -2730,9 +2730,10 @@ function Assert-BootstrapGatewayLifecycleSelfTest {
                     $ProbeArgs=ConvertFrom-Json -InputObject $InputText
                     if($ProbeArgs.interlockDigest -cne $Delivery.sourceDelivery.interlockDigest -or
                        $ProbeArgs.profileDigest -cne $Delivery.profileDigest -or $ProbeArgs.configurationDigest -cne $Digest -or
-                       @($ProbeArgs.probes).Count){throw 'FIXTURE_FROZEN_PROBE_INPUT'}
+                       -not (Same-Json $ProbeArgs.probes $Fixture.expectedProbes)){
+                        throw 'FIXTURE_FROZEN_PROBE_INPUT'}
                     if($Fixture.failProbe){throw 'FIXTURE_PROBE_FAILED'}
-                    return @{status='READ_PROBES_PASS';count=0}
+                    return @{status='READ_PROBES_PASS';count=$Fixture.expectedProbes.Count}
                 }
                 'activate' {
                     if(-not $Root -or -not $script:R.probesPassed -or $Fixture.gate){throw 'FIXTURE_ACTIVATION_ORDER'}
@@ -2785,6 +2786,8 @@ function Assert-BootstrapGatewayLifecycleSelfTest {
         $Effects=$Fixture.effects;Return-BootstrapPreparedPair
         if($Fixture.effects -ne $Effects){throw 'FIXTURE_RETURN_REPLAY'}
         Reset-Fixture;$Fixture.failProbe=$false
+        $Fixture.expectedProbes=@([pscustomobject]@{service='mirror';operation='get_repository';target='fortis-approvals';params=[pscustomobject]@{}})
+        $script:R.probes=ConvertTo-Json -InputObject $Fixture.expectedProbes -Depth 10 -Compress
         $null=Read-BootstrapGatewayCandidate @{attempt=$script:R}
         try {Resume-Target;throw 'FIXTURE_POINTER_LOSS_ACCEPTED'}catch{if($_.Exception.Message -cne 'FIXTURE_POINTER_ACK_LOST'){throw}}
         if($script:R.phase -cne 'Complete' -or -not $script:R.activated -or $Fixture.pointer -cne $Source.path){
@@ -7571,14 +7574,19 @@ function Resume-Target {
         if($RepoCatalog.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_REPO_CATALOG_MISMATCH'}
         if($Bootstrap){
             Assert-NativeRepoRead
+            # Windows PS5.1 emits the parsed JSON array as one pipeline
+            # object; PS7 enumerates it. Explicit foreach preserves the
+            # exact zero/one probe list on both, never a nested array.
+            $ParsedProbes=ConvertFrom-Json -InputObject $script:R.probes
+            $ProbeList=@(foreach($Item in $ParsedProbes){$Item})
             $ProbeInput=ConvertTo-Json -Compress -Depth 20 @{
                 configurationDigest=$script:R.configurationDigest
                 interlockDigest=$P.registryDelivery.sourceDelivery.interlockDigest
                 profileDigest=$P.registryDelivery.profileDigest
-                probes=@(ConvertFrom-Json -InputObject $script:R.probes)}
+                probes=$ProbeList}
             $Probe=Running-CLI $C.Id @('probe-frozen') $ProbeInput
             if($Probe.status -cne 'READ_PROBES_PASS' -or
-                $Probe.count -ne @(ConvertFrom-Json -InputObject $script:R.probes).Count){
+                $Probe.count -ne $ProbeList.Count){
                 throw 'RELEASE_SUCCESSOR_FROZEN_PROBE_UNCONFIRMED'
             }
         }else{$null=Running-CLI $C.Id @('probe') $script:R.probes}

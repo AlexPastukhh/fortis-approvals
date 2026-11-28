@@ -47,7 +47,7 @@ class P4CdOwnerSourceTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker,SCRIPT)
-        binding=SCRIPT.split('function Checked-Image-Binding',1)[1].split('function Save-Checked-Image',1)[0]
+        binding=SCRIPT.split('\nfunction Checked-Image-Binding',1)[1].split('function Save-Checked-Image',1)[0]
         self.assertIn('cdReadRepositories=$CdReadRepositories',binding)
         self.assertIn('PILOT_CD_READ_CONFIG_INVALID',HELPER)
         self.assertIn('PILOT_CD_READ_REQUIRES_NATIVE_SCOPE',HELPER)
