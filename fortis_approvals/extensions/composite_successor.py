@@ -6,6 +6,7 @@ The actual #286 source/scope/authority and controller transition still need
 their reviewed release-specific binding.
 """
 from copy import deepcopy
+import hashlib
 from types import MappingProxyType
 
 from ..core import Denied, canonical, loads_strict
@@ -87,24 +88,34 @@ class ReviewedHistory:
     def incumbent(self):
         return self._current
 
-    def verify_prefix(self, db, successor_digest):
-        """Check old immutable policy bytes even after new owner edits."""
-        rev = self._witness['policy']['revision']
-        count = self._witness['epochCount']
-        prefix = self._policy_prefix(db, rev)
+    @staticmethod
+    def _verify_prefix(db, *, witness, policy_events, legacy_digest, successor_digest):
+        # The protected history already pins the canonical incumbent choices.
+        # Share the exact epoch/prefix check with the read-only delivery
+        # preflight; startup additionally performs the compiled policy replay.
+        need(db.in_transaction and db.execute('PRAGMA query_only').fetchone()[0] == 1,
+             'TRANSITION_READ_ONLY_WITNESS_REQUIRED')
+        rev = witness['policy']['revision']
+        count = witness['epochCount']
+        prefix = ReviewedHistory._policy_prefix(db, rev)
         epochs = [list(row) for row in db.execute(
             'SELECT * FROM owner_local_policy_v2_authority_epochs ORDER BY id LIMIT ?',
             (count+2,))]
-        old = self._witness['policy']['authorityDigest']
-        tail = [count+1, rev, old, successor_digest,
-                canonical([[list(key), sorted(values)]
-                           for key, values in sorted(self.incumbent.choices.items())])]
-        meta = db.execute('SELECT revision,legacy_digest FROM owner_local_policy_v2_meta').fetchone()
-        need(prefix == self._policy_events and len(epochs) == count+1
-             and digest(epochs[:-1]) == self._witness['epochDigest']
-             and epochs[-1] == tail and meta[0] >= rev
-             and meta[1] == self._legacy_digest,
+        tail = [count+1, rev, witness['policy']['authorityDigest'], successor_digest]
+        meta = [tuple(row) for row in db.execute(
+            'SELECT revision,authority,legacy_digest FROM owner_local_policy_v2_meta')]
+        need(prefix == policy_events and len(epochs) == count+1
+             and digest(epochs[:-1]) == witness['epochDigest']
+             and epochs[-1][:4] == tail and type(epochs[-1][4]) is str
+             and hashlib.sha256(epochs[-1][4].encode()).hexdigest() == witness['choicesDigest']
+             and len(meta) == 1 and meta[0][0] >= rev
+             and meta[0][1:] == (successor_digest, legacy_digest),
              'COMPOSITE_HISTORICAL_PREFIX_CHANGED')
+
+    def verify_prefix(self, db, successor_digest):
+        """Check old immutable policy bytes even after new owner edits."""
+        self._verify_prefix(db, witness=self._witness, policy_events=self._policy_events,
+                            legacy_digest=self._legacy_digest, successor_digest=successor_digest)
 
     def reconstruct(self, core, choices, expected):
         item = self._admissions.get(expected)
@@ -159,6 +170,17 @@ class ReviewedHistoryEvidence:
              and [tuple(row) for row in meta] == [(value['legacyDigest'],)]
              and ReviewedHistory._policy_prefix(db, stored['policy']['revision']) == value['policyEvents'],
              'COMPOSITE_INCUMBENT_CLONE_CHANGED')
+
+    def verify_successor_storage(self, db, successor_digest):
+        """Read the already-installed successor; never append another epoch."""
+        value = loads_strict(self._raw)
+        stored = stored_authority_witness(db)
+        need(stored['policy']['authorityDigest'] == successor_digest,
+             'COMPOSITE_SUCCESSOR_MODE_MISMATCH')
+        ReviewedHistory._verify_prefix(db, witness=value['witness'],
+            policy_events=value['policyEvents'], legacy_digest=value['legacyDigest'],
+            successor_digest=successor_digest)
+        return stored
 
     def restore(self, core, db, *, current, previous_scope, predecessor):
         from .owner_policy_engine_v2 import _EPOCHS, _names
@@ -221,16 +243,19 @@ class CompositeUnifiedCore(MaintenanceCoreMixin, CompositeCoreMixin, UnifiedPoli
 
     def install_reviewed(self, *, history, enrollment, choices, scope_binding,
                          expected_predecessor_digest, expected_successor_digest,
-                         expected_companion_digest, transition, semantic_enrollment=None):
+                         expected_companion_digest, transition, semantic_enrollment=None,
+                         release_active=False):
         """Install/reopen the exact reviewed additive epoch on a clone.
 
         Companion schema must already be explicitly installed and checked.
         Independent pins and trusted incumbent history are supplied by the
-        reviewed release builder, never a request. Transition and restart
-        are distinct modes. Failed candidate must not serve or be reused
-        as an authorized source. No host operations here.
+        reviewed release builder, never a request. The transition flag permits
+        the first epoch only; persisted authority selects transition or reopen.
+        Failed candidate must not serve or be reused as an authorized source.
+        No host operations here.
         """
-        need(type(transition) is bool and type(history) is ReviewedHistory
+        need(type(transition) is bool and type(release_active) is bool
+             and type(history) is ReviewedHistory
              and not self._successor_ready and self.authority is None
              and type(self.adapters.get('registry')) is GroupAdapter
              and self.adapters['registry'].core is self
@@ -242,20 +267,26 @@ class CompositeUnifiedCore(MaintenanceCoreMixin, CompositeCoreMixin, UnifiedPoli
             self, predecessor=history.incumbent, enrollment=enrollment, choices=choices,
             scope_binding=scope_binding, expected_predecessor_digest=expected_predecessor_digest,
             expected_successor_digest=expected_successor_digest,semantic_enrollment=semantic_enrollment)
-        companion = self._read_only(inspect_companion)
-        need(digest(companion) == expected_companion_digest,
-             'COMPOSITE_COMPANION_PIN_CHANGED')
         self._reviewed_history = history
-        # The exact old stored authority is required for a transition.
-        # A restart never appends an epoch or initializes a new policy store.
+        # Use the same read snapshot for the authority, history and companion.
+        # An already activated release cannot install a predecessor again.
         with self._db() as db:
             db.execute('PRAGMA query_only=ON')
             db.execute('BEGIN')
-            meta = db.execute('SELECT authority FROM owner_local_policy_v2_meta').fetchall()
-            need([tuple(r) for r in meta] == [
-                (expected_predecessor_digest if transition else candidate.sha,)],
-                'COMPOSITE_SUCCESSOR_MODE_MISMATCH')
-            if transition:
+            meta = [tuple(r) for r in db.execute(
+                'SELECT authority FROM owner_local_policy_v2_meta')]
+            first_transition = (transition and not release_active and
+                                meta == [(expected_predecessor_digest,)])
+            need(first_transition or meta == [(candidate.sha,)],
+                 'COMPOSITE_SUCCESSOR_MODE_MISMATCH')
+            companion = inspect_companion(db)
+            # Exact sealed copy until activation. An active successor's
+            # journal can legitimately grow; retain full schema, replay,
+            # coverage and receipt validation, not equality to old data.
+            if not release_active or not companion['parents']:
+                need(digest(companion) == expected_companion_digest,
+                     'COMPOSITE_COMPANION_PIN_CHANGED')
+            if first_transition:
                 need(companion['parents'] == 0, 'COMPOSITE_TRANSITION_COMPANION_NOT_EMPTY')
                 previous = history.reconstruct(self, history.incumbent.choices,
                                                expected_predecessor_digest)
@@ -269,9 +300,9 @@ class CompositeUnifiedCore(MaintenanceCoreMixin, CompositeCoreMixin, UnifiedPoli
                 need(before == history.witness, 'COMPOSITE_INCUMBENT_CLONE_CHANGED')
         UnifiedPolicyCore.install_policy_authority(
             self, choices, scope_binding=deepcopy(scope_binding),
-            reviewed_upgrade_from=dict(history.incumbent.choices) if transition else None)
+            reviewed_upgrade_from=dict(history.incumbent.choices) if first_transition else None)
         need(self.authority.sha == candidate.sha, 'COMPOSITE_SUCCESSOR_PIN_MISMATCH')
-        if transition:
+        if first_transition:
             after = self._read_only(lambda db: authority_witness(self, db))
             compare_authority_epoch(history.witness, after,
                                     expected_successor_digest=candidate.sha)
@@ -389,7 +420,8 @@ class ReviewedRegistrySuccessor:
                                   active_owner=active)
 
     def install(self, *, core, portal, ingress, machine_base, native, reader,
-                incumbent_choices, incumbent_scope, opt_in, registry_predecessor=None):
+                incumbent_choices, incumbent_scope, opt_in, registry_predecessor=None,
+                release_active=False):
         from .composite_authority import ContextAdmission
         from .maintenance_ingress import MaintenanceIngress, RouteAdmission, owner_passive_route
         from .maintenance_transport import MaintenanceRegistryTransport
@@ -471,7 +503,8 @@ class ReviewedRegistrySuccessor:
             semantic_enrollment=self.semantic,choices=choices,scope_binding=scope,
             expected_predecessor_digest=history.incumbent.sha,
             expected_successor_digest=self.successor_digest,
-            expected_companion_digest=self.companion_digest,transition=self.transition)
+            expected_companion_digest=self.companion_digest,transition=self.transition,
+            release_active=release_active)
 
         portal.strong_operations |= frozenset((key[1],key[2]) for key,values
             in core.authority.choices.items() if 'ASK' in values)

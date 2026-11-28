@@ -23,7 +23,7 @@ from ..integrations.registry.owner_pinned_pidfd import kernel_live_peer, peer_pr
 from ..integrations.registry.read_contract import (PLANNER_OPERATION, PLANNER_FRAME_LIMIT,
     verify_planner_frame, private_planner_key)
 from .functional_v1_journal import FunctionalV1CandidateJournal
-from .state_journal import _hash, _need, _scope, _uuid, PLANNER
+from .state_journal import _hash, _hex, _need, _scope, _uuid, PLANNER
 
 _OPERATIONS = ('candidate.capabilities', 'candidate.head',
                'candidate.list_desired', 'candidate.original_operation')
@@ -531,21 +531,26 @@ def main(argv=None):
     parser.add_argument('--functional-planner-key-digest')
     parser.add_argument('--managed-startup', action='store_true')
     parser.add_argument('--expected-profile-sha256')
+    parser.add_argument('--corrective-preview-sha')
     args = parser.parse_args(argv)
     cfg = _load_owner_config(args.owner_config,allow_semantic=True)
     if args.expected_profile_sha256 is not None:
         _check_successor_profile(cfg, args.expected_profile_sha256)
+    if args.corrective_preview_sha is not None:
+        _need(cfg['schemaVersion']==3 and args.expected_profile_sha256 is not None
+              and _hex(args.corrective_preview_sha,40),
+              'REGISTRY_CORRECTIVE_PREVIEW_PIN_REQUIRED')
     if cfg['schemaVersion'] in (2,3):
         _need(args.functional_planner_key_digest is None and not args.managed_startup,
               'REGISTRY_PRIVATE_READ_CONFIG_INVALID')
         root=_readonly_owner_runtime(args.owner_config)
         readonly = bool(os.statvfs(cfg['registryStatePath']).f_flag & os.ST_RDONLY)
-        if cfg['schemaVersion'] == 2:
+        if cfg['schemaVersion'] == 2 or args.corrective_preview_sha is not None:
             _need(readonly, 'REGISTRY_SEMANTIC_READONLY_STATE_REQUIRED')
         else:
             _need(not readonly, 'REGISTRY_SEMANTIC_WRITE_STATE_REQUIRED')
         from .semantic_unix_service import owner_semantic_reader
-        owner_semantic_reader(cfg,root).serve()
+        owner_semantic_reader(cfg,root,corrective_preview_sha=args.corrective_preview_sha).serve()
         return 0
 
     planner_key=None

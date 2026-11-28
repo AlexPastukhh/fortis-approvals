@@ -16,7 +16,8 @@ param(
     [string]$PlannerKeySha256='',
     [string]$SuccessorReleaseNonce='', [string]$SuccessorProfileSha256='',
     [string]$TransitionEvidenceSha256='', [string]$RepairEvidenceSha256='',
-    [switch]$ConfirmManagedStart
+    [ValidateSet('1','2')][int]$RepairPredecessorRevision=1,
+    [switch]$ConfirmManagedStart, [switch]$CorrectivePreview, [switch]$CorrectiveWriter
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
@@ -57,6 +58,14 @@ $RepairDelivery=$Action -ceq 'AccountDeliveryRepair'
 $SuccessorWrite=$PrepareSuccessor -or $RepairDelivery
 $SuccessorStart=$ManagedStart -and [bool]$SuccessorReleaseNonce
 $Successor=$SuccessorWrite -or $SuccessorStart
+if(($CorrectivePreview -and $CorrectiveWriter) -or
+   (($CorrectivePreview -or $CorrectiveWriter) -and (-not $SuccessorStart -or
+    -not $ConfirmManagedStart -or $SourceSha -cnotmatch '^[0-9a-f]{40}$'))){
+    throw 'REGISTRY_BOOTSTRAP_CORRECTIVE_PREVIEW_DENIED'
+}
+if(-not $RepairDelivery -and $PSBoundParameters.ContainsKey('RepairPredecessorRevision')){
+    throw 'REGISTRY_BOOTSTRAP_REPAIR_REVISION_ACTION_DENIED'
+}
 if($RepairDelivery -ne [bool]$RepairEvidenceSha256){
     throw 'REGISTRY_BOOTSTRAP_REPAIR_EVIDENCE_REQUIRED'
 }
@@ -187,7 +196,7 @@ $Image=Invoke-Registry-Bootstrap-DockerRead -Arguments @('image','inspect','--fo
 if ($Image.Count -ne 1 -or $Image[0] -cne ($RegistryImageId+'|20002:20002|linux|amd64')) {
     throw 'REGISTRY_BOOTSTRAP_IMAGE_IDENTITY_INVALID'
 }
-if ($RepairDelivery) {
+if ($RepairDelivery -or $CorrectivePreview -or $CorrectiveWriter) {
     $Labels=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
         'image','inspect','--format','{{json .Config.Labels}}',$RegistryImageId)
     if ($Labels.Count -ne 1) { throw 'REGISTRY_BOOTSTRAP_REPAIR_IMAGE_SOURCE_CHANGED' }
@@ -218,6 +227,7 @@ foreach ($Name in $VolumeNames) {
                (Test-Registry-Bootstrap-ReadOnlyMount $Fields[2] $Name '/run/r7-maintenance')){
                 continue
             }
+            if($CorrectivePreview -or $CorrectiveWriter){throw 'REGISTRY_BOOTSTRAP_CORRECTIVE_PREVIEW_VOLUME_ATTACHED'}
             # Existing Gateway may retain the private socket as a reader.
             if ($Name -cne $SocketVolume -or -not (Test-Registry-Bootstrap-ReadOnlySocket $Fields[2] $Name)) {
                 throw ('REGISTRY_BOOTSTRAP_VOLUME_ALREADY_ATTACHED_'+$Name)
@@ -243,11 +253,26 @@ if ($ManagedStart) {
             '--mount',('type=volume,src='+$InterlockVolume+',dst=/run/r7-maintenance,volume-nocopy,readonly'))
         $ProofArgs=@('--expected-profile-sha256',$SuccessorProfileSha256)
     }
-    $StartArgs=@(
-        'run','-d','--pull=never','--name',$Name,'--restart=unless-stopped',
+    $Restart='--restart=unless-stopped'
+    $StateAccess=''
+    $Verb=@('run','-d')
+    if($CorrectiveWriter){
+        # Create BEFORE preview. This mounts no active writer, and a Docker
+        # restart must not start it. Only the paired controller may start it.
+        $Verb=@('create')
+        $Restart='--restart=no'
+    }
+    if($CorrectivePreview){
+        $Name+='-preview'
+        $Restart='--restart=no'
+        $StateAccess=',readonly'
+        $ProofArgs+=@('--corrective-preview-sha',$SourceSha)
+    }
+    $StartArgs=$Verb+@(
+        '--pull=never','--name',$Name,$Restart,
         '--init','--network=none','--read-only','--user','20002:20002',
         '--cap-drop','ALL','--security-opt','no-new-privileges:true','--pids-limit','64','--memory',$Memory,
-        '--mount',('type=volume,src='+$StateVolume+',dst=/run/fortis-registry-state,volume-nocopy'),
+        '--mount',('type=volume,src='+$StateVolume+',dst=/run/fortis-registry-state,volume-nocopy'+$StateAccess),
         '--mount',('type=volume,src='+$ConfigVolume+',dst=/run/fortis-registry-runtime,volume-nocopy,readonly'),
         '--mount',('type=volume,src='+$SocketVolume+',dst=/run/fortis-registry-read,volume-nocopy')
     ) + $Extra + @($RegistryImageId,'python','-m','fortis_approvals.registry.local_candidate_read_service',
@@ -255,6 +280,15 @@ if ($ManagedStart) {
     $RegistryId=@(& docker @StartArgs)
     if ($LASTEXITCODE -ne 0 -or $RegistryId.Count -ne 1 -or $RegistryId[0] -cnotmatch '^[0-9a-f]{64}$') {
         throw 'REGISTRY_BOOTSTRAP_MANAGED_START_UNKNOWN_INSPECT_ORIGINAL'
+    }
+    if($CorrectiveWriter){
+        $Created=Invoke-Registry-Bootstrap-DockerRead -Arguments @(
+            'inspect','--type','container','--format','{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}|{{.State.StartedAt}}',$RegistryId[0])
+        if($Created.Count -ne 1 -or $Created[0] -cne 'created|no|0001-01-01T00:00:00Z'){
+            throw 'REGISTRY_BOOTSTRAP_CORRECTIVE_WRITER_NOT_PRISTINE'
+        }
+        Write-Host ('REGISTRY_BOOTSTRAP_CORRECTIVE_WRITER_ID='+$RegistryId[0])
+        return
     }
     Write-Host ('REGISTRY_BOOTSTRAP_MANAGED_CONTAINER_ID='+$RegistryId[0])
     # Docker accepted the start. Normal protected Gateway Check verifies the
@@ -314,10 +348,12 @@ import json, sys
 sys.path.insert(0, '/opt/fortis')
 from fortis_approvals.registry.owner_functional_v1_bootstrap import account_delivery_repair, prepare_successor
 profile, action = sys.argv[1:3]
-evidence, source = sys.argv[3:] if len(sys.argv) > 3 else (None, None)
 if action == 'AccountDeliveryRepair':
-    result = account_delivery_repair(profile, repair_evidence_sha256=evidence, source_sha=source)
+    evidence, source, revision = sys.argv[3:]
+    result = account_delivery_repair(profile, repair_evidence_sha256=evidence,
+                                     source_sha=source, predecessor_revision=int(revision))
 else:
+    evidence, source = sys.argv[3:] if len(sys.argv) > 3 else (None, None)
     result = prepare_successor(profile, transition_evidence_sha256=evidence, source_sha=source)
 print(json.dumps(result, sort_keys=True, separators=(',', ':')))
 '@
@@ -329,7 +365,7 @@ print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         '--mount',$StateMount,'--mount',$ConfigMount,
         '--entrypoint','python',$RegistryImageId,'-I','-B','-c',$PythonRunner,$SuccessorProfileSha256,$Action)
     if($AccountTransition){$DockerArgs+=@($TransitionEvidenceSha256,$SourceSha)}
-    if($RepairDelivery){$DockerArgs+=@($RepairEvidenceSha256,$SourceSha)}
+    if($RepairDelivery){$DockerArgs+=@($RepairEvidenceSha256,$SourceSha,[string]$RepairPredecessorRevision)}
     $SpecLine=''
 } else {
     $DockerArgs+=@(
@@ -361,15 +397,17 @@ try {
     $Receipt=$Output[0] | ConvertFrom-Json -ErrorAction Stop
 } catch { throw 'REGISTRY_BOOTSTRAP_OUTPUT_INVALID_JSON' }
 if($RepairDelivery){
+    $ExpectedPriorKind=if($RepairPredecessorRevision -eq 1){'TRANSITION'}else{'DELIVERY_REPAIR'}
     if($Receipt.result -cne 'SOURCE_ONLY_REGISTRY_DELIVERY_REPAIR_ACCOUNTED' -or
        $Receipt.profileSha256 -cne $SuccessorProfileSha256 -or
        $Receipt.repairEvidenceSha256 -cne $RepairEvidenceSha256 -or
        $Receipt.transitionDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Receipt.legacyPrefixDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Receipt.hostAccepted -ne $false -or $Receipt.admissionAllowed -ne $false -or
-       $Receipt.predecessorReceipt.kind -cne 'TRANSITION' -or $Receipt.predecessorReceipt.sourceRevision -ne 1 -or
+       $Receipt.predecessorReceipt.kind -cne $ExpectedPriorKind -or
+       $Receipt.predecessorReceipt.sourceRevision -ne $RepairPredecessorRevision -or
        $Receipt.sourceRepairReceipt.kind -cne 'DELIVERY_REPAIR' -or
-       $Receipt.sourceRepairReceipt.sourceRevision -ne 2 -or
+       $Receipt.sourceRepairReceipt.sourceRevision -ne ($RepairPredecessorRevision+1) -or
        $Receipt.sourceRepairReceipt.sourceCursor -cne $SourceSha -or
        $Receipt.sourceRepairReceipt.deploymentAuthorized -ne $false){
         throw 'REGISTRY_BOOTSTRAP_REPAIR_RESULT_INVARIANT_FAILED_STOP'

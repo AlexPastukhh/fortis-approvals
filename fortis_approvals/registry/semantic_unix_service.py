@@ -186,12 +186,16 @@ def _read_release_profiles(root):
     return load_profile('legacy-release-profile.json'), load_profile('successor-release-profile.json')
 
 
-def owner_semantic_reader(config,root):
+def owner_semantic_reader(config,root,*,corrective_preview_sha=None):
     """Open the transitioned Registry with the exact protected runtime profile."""
     from .release_domain import ReleaseDomain, key
     from .release_event_journal import ReleaseEventJournal
     from ..integrations.registry.read_contract import private_planner_key
 
+    preview = corrective_preview_sha is not None
+    if preview:
+        sc.need(config['schemaVersion']==3, 'REGISTRY_CORRECTIVE_PREVIEW_PIN_REQUIRED')
+        sc.hex_id(corrective_preview_sha,40)
     pins=config['semantic']
     sc.fields(pins,('legacyWitness','transitionDigest','legacyProfileDigest',
                     'successorProfileDigest','generation','internalActor',
@@ -220,7 +224,7 @@ def owner_semantic_reader(config,root):
     legacy, successor = _read_release_profiles(root)
     journal=ReleaseEventJournal(config['registryStatePath'],instance_id=config['instanceId'],
         scope=config['scope'],expected_legacy=pins['legacyWitness'],
-        transition_digest=pins['transitionDigest'])
+        transition_digest=pins['transitionDigest'],immutable_snapshot=preview)
     source_writer = None
     if config['schemaVersion'] == 3:
         from .protected_source_write import ProtectedSourceWrite
@@ -229,7 +233,10 @@ def owner_semantic_reader(config,root):
             internal=internal, profile_digest=pins['successorProfileDigest'], producer_uid=config['readerUid'])
     domain=ReleaseDomain(journal,legacy,expected_profile_digest=pins['legacyProfileDigest'],
         successor_profile=successor,expected_successor_profile_digest=pins['successorProfileDigest'],
-        source_verify=source_writer.verify if source_writer is not None else None)
+        source_verify=source_writer.verify if source_writer is not None and not preview else None)
+    if preview:
+        from .protected_transition import corrective_checkpoint
+        corrective_checkpoint(domain,expected_revision=3,expected_source_sha=corrective_preview_sha)
     current=domain.snapshot()
     sc.need(current['sourceTransitionPending'] is False
             and current['profileDigest']==pins['successorProfileDigest']
@@ -244,6 +251,8 @@ def owner_semantic_reader(config,root):
                     and ('targetId' not in subject or key(subject) in allowed))
 
     def admit(actor,action,body):
+        if preview:
+            return actor==internal and action in ('PROFILE','HOLD_SNAPSHOT')
         if action=='READ':
             return (actor,body['operation']) in grants
         if action in ('PROFILE','HOLD_SNAPSHOT'):
@@ -253,8 +262,8 @@ def owner_semantic_reader(config,root):
     service=SemanticRegistry(domain,authorize=can_read,clock=lambda:0)
     frames=SemanticFrameService(service,frame_key=frame_key,generation=pins['generation'],
         authorize=admit,provenance=lambda _:None,internal_actor=internal,
-        source_authorize=source_writer.authorize if source_writer is not None else None,
-        source_reservation=source_writer.reservations.reserve if source_writer is not None else None,
+        source_authorize=source_writer.authorize if source_writer is not None and not preview else None,
+        source_reservation=source_writer.reservations.reserve if source_writer is not None and not preview else None,
         source_delivery=source_writer.delivery_binding if source_writer is not None else None)
     return PrivateSemanticUnixService(frames=frames,socket_path=config['socketPath'],
         reader_uid=config['readerUid'],reader_gid=config['readerGid'],peer_key=peer_key)

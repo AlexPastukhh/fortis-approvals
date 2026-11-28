@@ -1599,6 +1599,193 @@ start the isolated peer and obtain Check READY for the same source
 before any Apply approval. Windows accounting, Check and Apply remain
 open.
 
+### T4 — same-profile restart and exact recovered Gateway admission
+
+The first #288 Apply and independent Registry revision-two readback passed.
+Backup committed a verified clone, but the original Gateway exited on
+restart: the unchanged transition profile still required the predecessor
+authority. The owner verified the exact current/backup receipt, rehearsed
+reopen of a copy, and approved the same-image startup profile rebind.
+The original container is healthy; the independent typed catalog and
+GitHub main readback passed. #286 is retained and #288 is not promoted.
+
+The source correction treats transition as permission for the first epoch,
+not as an instruction to repeat it. The existing protected ReleaseGate
+distinguishes activated and staged state. Only an inactive exact predecessor
+with an approved transition can install the epoch. An exact successor
+reopens through the existing policy replay and historical prefix checks.
+The inactive snapshot and empty companion remain exactly pinned.
+A nonempty active companion is checked through the existing schema,
+parent coverage, journal replay, result and capture validation rather than
+equality to its original static snapshot. This is local structural integrity,
+not a new adversarial rollback proof. Check/Apply/State Freeze snapshot
+verification is unchanged. No new state table, provider grant or effect
+path is introduced.
+
+The controller admits the changed profile only after its existing exact
+image, runtime and Registry delivery/peer checks, for the observed #288
+recovery alone. The three owner-protected original release, rehearsal and
+rebind records are checked by exact SHA256 and bound runtime identity.
+No source, Check/Apply, backup or primary pointer is rewritten. Any other
+profile mismatch still fails closed.
+
+Local tests reproduce both original failures and verify unchanged-profile
+reopen before and after a Composite operation, no extra epoch or repeated
+provider effect, active predecessor rejection, staged pin enforcement
+and corrupt companion rejection. The existing private-Unix E2 fixture
+uses the original profile bytes at reopen and passes. The exact rebind
+controller fixture passes in PowerShell 7 with strict mode and no host
+effects. Actual Windows 5.1 controller and corrected packaged image
+delivery remain open. The first-transition controller contract does not
+yet establish a general successor-to-successor release; the next release
+must preserve the exact source-bound enrollment/authority, Registry
+lineage, maintenance and protected volume bindings. Do not treat this
+source checkpoint as delivery, promotion or live E2 acceptance.
+
+The existing inactive AccountDeliveryRepair path also supports exactly one
+additional corrective edge from the recorded #288 revision-two merge and
+its exact event digest. Both original evidence envelopes are retained and
+verified; the next envelope has separate material. No new event type,
+table, normal product route or deployment authority is introduced. Exact
+CI, Git ancestry, catalog/profile/rules and validator evidence remain
+mandatory; no release operations may have occurred. The local fixture
+verifies a third event, exact retry and negative predecessor/evidence cases.
+No actual third event has been written.
+
+The explicit successor composition v2 can retain only the verified #288
+enrollment source digest with transition disabled, while the independent
+outer seal pins the actual new image source. Both original enrollment
+pins, compiled stored authority and historical replay must still match.
+This preserves existing scope without an extra authority epoch. The
+retained enrollment fixture rejects changed grants, source and transition.
+The 62 registry regression cases and 3 final focused evidence cases passed
+in separate runs. Windows launcher parser and early authorization guards
+passed in PS7, not a Windows PS5.1 delivery test.
+
+The ordinary controller still rejects a successor delivery with an existing
+successor maintenance context and lacks the later protected handover phase
+sequence. A bounded corrective T4 continuation with independently proved
+State Freeze and the existing owner/protected release guarantees is a
+proposal requiring separate review, not an available or authorized delivery
+route. Otherwise complete ordinary I4 handover first. No publication or
+merge until accounting, deployment and recovery feasibility are resolved.
+
+The bounded corrective T4 preparation now has two complementary local
+preservation proofs. The existing real Git/SQLite repair fixture accounts the
+third event on a separate inactive copy; the original revision-two database
+and configuration remain unchanged. The new actual R7 factory fixture
+stages a copy with a fresh release nonce, synthetic new source digest and
+retained enrollment. The compiled authority, policy choices, Core history
+and empty companion are identical to the frozen source, with no new
+authority epoch or provider effect. A new release seals the actual stopped
+source companion, rather than reusing a pre-transition schema snapshot.
+The fixture substitutes host mount identity, owner activation and GitHub;
+it is not a packaged Windows delivery or combined lifecycle proof.
+
+The historical prefix validator is reused for read-only inspection of the
+already-migrated source. The controller accepts a distinct existingCompanion
+witness only for the exact recovered #288 source and rechecks that witness
+on the cloned state instead of performing another migration. The existing
+collector must be retained. The prior first-transition preflight is unchanged.
+The paired stop/activation/Return, current interlock anchor, private target
+staging and primary promotion integration remain open; the ordinary
+successor-maintenance denial is not removed. Local targeted checks passed,
+including wrong authority rejection and the extracted PS7 strict-mode
+preflight/recovery fixture. No Windows host effects or live third event.
+
+The next local increment verifies the paired Registry checkpoints: exact
+revision-two #288 and revision-three correction, unchanged first two
+source events, scope, instance, catalog, legacy witness and profile.
+No product release operations, installed or reported state is accepted.
+This is readback evidence, not authority to switch the pair.
+
+The existing owner bootstrap supports a bounded corrective preview on
+the separate target volume with restart disabled and physically read-only
+state. Only the internal PROFILE and HOLD_SNAPSHOT frames are admitted;
+there is no mutable frame or journal admission. The closed WAL database
+must have no sidecars, an exact WAL header and stable file identity
+under the dedicated read-only mount. SQLite immutable reading is confined
+to this preview; offline corrective accounting reads back the committed
+receipt and allows SQLite to close/checkpoint its own WAL, without
+manually removing sidecars. The focused real Git/SQLite fixture passed
+with negative tests for wrong source, prefix, writable preview and pending
+WAL. The 29 other wire/launcher/domain cases passed separately. The
+Windows launcher parser/early boundary passed in PS7. Actual host mount,
+paired controller Check/Apply/Return and primary promotion remain open.
+The original protected NORMAL interlock is not reset or republished by
+this code. No new runtime has been launched.
+
+The bounded corrective Check binds the exact recovered #288 source and
+original committed NORMAL publication without replacing the interlock.
+The owner bootstrap can prepare the target writer as a never-started,
+restart-disabled container before the non-writing preview starts.
+The existing Check binds independent target image/profile pins, the
+original Registry and both candidate container IDs, mount/holder
+admission and both replayed checkpoints, rechecking before record seal.
+No new product authority or writer is enabled by Check. The local
+Git/SQLite/launcher checks passed 10/10, the extracted PS7 strict-mode
+pair fixture and embedded Python syntax passed. The temporary source-only
+Apply denial has been replaced by an exact checked-image/owner-GO path
+after local paired switch and Return tests passed. This is not a Windows
+READY receipt or accepted delivery.
+
+The corrective attempt pins the original Check hash and both Registry
+checkpoints before any stop. The existing Apply stops the original
+Gateway first, then the original Registry, replays its frozen journal,
+stops Preview, verifies the staged target and starts the exact dormant
+writer. Frozen replay copies the main SQLite file and committed WAL into
+private scratch while the source remains read-only, rebuilding SHM on
+scratch. The actual managed schema-5 peer proof admits the restarted
+listener with its sealed key and live kernel identity. The existing
+staged Gateway activation and Return boundaries are retained.
+
+Return requires absence of the activation marker, stops the target
+Gateway and Registry before restoring the original Registry and Gateway,
+and verifies the original journal. A malformed or active marker denies
+Return. After activation, persist the activation evidence before enabling
+the target Registry restart policy and publishing the current pointer.
+Lost activation ACK or failed pointer publication is resolved by reading
+the actual marker and exact attempt, not replaying activation or probes.
+The local real Git/SQLite/WAL fixture, extracted PS7 strict-mode
+switch/Return/Resume fixture, 24 related regressions and 18 mount-admission
+tests passed in separate runs. Windows PS5.1, actual target material and
+host switching, Backup/Promote and live E2 acceptance remain open. No live
+effect or additional product authority was introduced.
+
+The corrective material projection checks the exact recovered source seals
+and matching authority, scope, instance, generation, interlock and key pins.
+It preserves the enrollment and policy history while projecting the fresh
+nonce, image source digest and distinct key digests. The packaged local
+Gateway/private peer fixture passed with separate projected config roots.
+The bounded Registry snapshot helper now also prepares a fresh inactive
+clone using SQLite backup from a stable main/WAL copy; full replay must
+match the original revision-two checkpoint. The real Git/SQLite fixture
+passed, including refusal of a nonempty target and unchanged source bytes.
+Related source regression (105 tests), R7/tooling regression (25 tests)
+and extracted PS7 switch/Return/Resume fixture passed in separate runs.
+The extended packaged Gateway/private Unix peer fixture also passed the
+joined revision-two source / revision-three corrective clone / revision-four
+ordinary Merge & Register path, including exact receipt preservation, shared
+Desired and same-profile reopen without repeating the merge. Historical
+receipts and provider/WebAuthn actions in that test are synthetic; the local
+Git/validator and peer paths are exercised. Owner material preparation now
+has a bounded Workfiles entrypoint template reusing the existing preparation,
+Bootstrap and Check helpers; syntax and static package pins are checked, not
+Windows execution. The actual accepted merge, image and repair evidence pins
+are required to open that entrypoint. Exact postmerge source/CI evidence,
+Windows mounts, Check/Apply, Backup and Promote remain pending. No new
+authority epoch or live effects were introduced.
+
+Publication boundary: the local Source CI Python runner completed
+252/252 units, with 251 passing and one existing native cleanup test
+timing out in its five-second owner HTTP call under parallel load.
+The exact failed test passed in isolation without source changes.
+The mandatory browser tests passed separately (18/18); the retained
+public validator gate passed 9/9. This is coverage across separate
+runs, not an all-green single CI run. Exact-head GitHub Source CI
+and Release Impact remain mandatory before the owner merge.
+
+
 ### I3 — owner recovery after a merge
 
 When GitHub has returned a verified receipt and Registry accounting has

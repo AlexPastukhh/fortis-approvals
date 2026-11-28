@@ -403,10 +403,10 @@ class ImpactTests(unittest.TestCase):
                            'mergeSha':repair_merge,'mainSha':repair_merge,'parents':[merge,repair_head],
                            'ciDigest':repair_proposal['ciDigest']}
 
-            def repair_bundle(merge_sha):
+            def repair_bundle(merge_sha, material='delivery-repair'):
                 self.git.run(['branch','-f','transfer',merge_sha],cwd=self.source)
                 self.git.run(['bundle','create',bundle_path,'refs/heads/transfer'],cwd=self.source)
-                return write('delivery-repair-main.bundle',bundle_path.read_bytes())
+                return write(material+'-main.bundle',bundle_path.read_bytes())
 
             repair_evidence = {'predecessorReceipt':accepted,'proposal':repair_proposal,
                                'observation':repair_post,'ci':repair_ci,'body':observed_repair['body'],
@@ -467,6 +467,212 @@ class ImpactTests(unittest.TestCase):
                        'expectedSourceRevision':2}
             self.assertEqual(running_domain.source_preflight(next_pr)['sourceCursor'],repair_merge)
 
+            # The next correction is prepared on an inactive separate
+            # copy. Keep the revision-two source readable for Return until
+            # activation, without exposing the new receipt as accepted.
+            frozen_state = state_path
+            frozen_config = config_root
+            frozen_files = {p.name:p.read_bytes() for p in frozen_config.iterdir()}
+            frozen_view = running_domain.snapshot()
+            state_path = self.state/'corrective'/'registry.sqlite'
+            state_path.parent.mkdir(mode=0o700)
+            shutil.copy2(frozen_state,state_path)
+            config_root=self.root/'corrective-config'
+            shutil.copytree(frozen_config,config_root)
+            config_path=config_root/'profile.json'
+            cfg={**cfg,'registryStatePath':str(state_path)}
+            profile_file_sha=write('profile.json',cfg)
+            fixture(boot,'STATE_PATH',state_path)
+            fixture(boot,'CONFIG_PATH',config_path)
+            self.assertEqual(state_path.read_bytes(),after_repair)
+            fixture(source_events, '_DELIVERY_288', repair_merge)
+            fixture(source_events, '_DELIVERY_288_EVENT', source_receipt['eventDigest'])
+            (self.source/'src.py').write_text('raise RuntimeError("restart repair fixture")\n')
+            self.git.run(['add','src.py'],cwd=self.source)
+            next_tree=self.git.text(['write-tree'],cwd=self.source)
+            next_head=commit(next_tree,[repair_merge],'restart repair head')
+            next_merge=commit(next_tree,[repair_merge,next_head],'restart repair merge')
+            next_observed={**observed_repair,'number':289,'baseSha':repair_merge,
+                           'headSha':next_head,'treeSha':next_tree}
+            next_impact=self.verifier.verify(next_observed)
+            next_ci={**deepcopy(repair_ci),'number':289,'baseSha':repair_merge,
+                     'headSha':next_head,'validatedImpactDigest':sc.digest(next_impact)}
+            for check in next_ci['checks']:
+                check['headSha']=next_head
+            next_proposal={**repair_proposal,'number':289,'baseSha':repair_merge,
+                           'headSha':next_head,'treeSha':next_tree,'expectedSourceRevision':2,
+                           'ciDigest':sc.digest(next_ci)}
+            next_post={**repair_post,'number':289,'headSha':next_head,'treeSha':next_tree,
+                       'mergeSha':next_merge,'mainSha':next_merge,'parents':[repair_merge,next_head],
+                       'ciDigest':next_proposal['ciDigest']}
+            next_evidence={'predecessorReceipt':source_receipt,'proposal':next_proposal,
+                           'observation':next_post,'ci':next_ci,'body':next_observed['body'],
+                           'bundleSha256':repair_bundle(next_merge,'delivery-repair-2')}
+
+            def second_repair(evidence=next_evidence, revision=2):
+                pin=write('delivery-repair-2-evidence.json',evidence)
+                return boot.account_delivery_repair(profile_file_sha,repair_evidence_sha256=pin,
+                    source_sha=next_merge,predecessor_revision=revision)
+
+            with patch.object(source_events,'_DELIVERY_288_EVENT','0'*64):
+                with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_PREDECESSOR'):
+                    second_repair()
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_SCOPE'):
+                second_repair(revision=3)
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_PREDECESSOR'):
+                second_repair({**next_evidence,'predecessorReceipt':accepted})
+            old_material=(config_root/'delivery-repair-evidence.json').read_bytes()
+            write('delivery-repair-evidence.json',b'{}')
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED'):
+                second_repair()
+            write('delivery-repair-evidence.json',old_material)
+            self.assertEqual(state_path.read_bytes(),after_repair)
+
+            second_result=second_repair()
+            third=second_result['sourceRepairReceipt']
+            self.assertEqual(second_result['predecessorReceipt'],source_receipt)
+            self.assertEqual(third['sourceRevision'],3)
+            self.assertEqual(third['sourceCursor'],next_merge)
+            self.assertFalse(third['deploymentAuthorized'])
+            after_second=state_path.read_bytes()
+            self.assertEqual(second_repair(),second_result)
+            self.assertEqual(state_path.read_bytes(),after_second)
+            self.assertEqual((config_root/'delivery-repair-evidence.json').read_bytes(),old_material)
+            final_view=read_service_via_entrypoint(
+                config_path,readonly=False,expected_profile=profile_file_sha).frames.service.domain.snapshot()
+            self.assertEqual(final_view['sourceCursor'],next_merge)
+            for original_receipt in (accepted,source_receipt,third):
+                self.assertEqual(final_view['sourceOperations'][original_receipt['operationId']][1],
+                                 original_receipt)
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_STAGED_STATE_CHANGED'):
+                repair(repair_evidence)
+            self.assertEqual(state_path.read_bytes(),after_second)
+            self.assertIsNone(next(iter(final_view['states'].values()))['installed'])
+            # Even after target preparation, the original source and its
+            # two receipts remain unchanged and independently readable.
+            self.assertEqual(frozen_state.read_bytes(),after_repair)
+            self.assertEqual({p.name:p.read_bytes() for p in frozen_config.iterdir()},frozen_files)
+            self.assertEqual(running_domain.snapshot(),frozen_view)
+            self.assertEqual(frozen_view['sourceRevision'],2)
+            self.assertNotIn(third['operationId'],frozen_view['sourceOperations'])
+            source_checkpoint=protected.corrective_checkpoint(running_domain,
+                expected_revision=2,expected_source_sha=repair_merge)
+            target_checkpoint=protected.corrective_checkpoint(
+                read_service_via_entrypoint(config_path,readonly=False,
+                    expected_profile=profile_file_sha).frames.service.domain,
+                expected_revision=3,expected_source_sha=next_merge)
+            self.assertEqual(protected.verify_corrective_pair(source_checkpoint,target_checkpoint,
+                expected_source_sha=next_merge),{'source':source_checkpoint,'target':target_checkpoint})
+            # Simulate the stopped-source RO mount. Real SQLite scratch
+            # replay must include committed WAL and leave original files
+            # byte-identical; the host mount guard is substituted here only.
+            import sqlite3
+            from contextlib import closing
+            from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+            wal_dir=self.root/'frozen-wal-fixture'
+            wal_dir.mkdir(mode=0o700)
+            wal_state=wal_dir/frozen_state.name
+            shutil.copy2(frozen_state,wal_state)
+            old_store=running_domain.store
+            wal_store=ReleaseEventJournal(wal_state,instance_id=old_store.instance_id,
+                scope=old_store.scope,expected_legacy=old_store.expected_legacy,
+                transition_digest=old_store.transition_digest)
+            with closing(sqlite3.connect(wal_state)) as db:
+                db.execute('PRAGMA wal_autocheckpoint=0')
+                db.execute('PRAGMA user_version=4')
+                db.commit()
+                wal=Path(str(wal_state)+'-wal')
+                self.assertGreater(wal.stat().st_size,32)
+                original={p.name:p.read_bytes() for p in wal_dir.iterdir()}
+                with patch.object(protected,'_check_owner_readonly_mount'):
+                    self.assertEqual(protected.frozen_corrective_checkpoint(
+                        wal_store,frozen_config,
+                        sc.loads_strict((frozen_config/'profile.json').read_bytes())['semantic'],
+                        expected_revision=2,expected_source_sha=repair_merge),source_checkpoint)
+                self.assertEqual({p.name:p.read_bytes() for p in wal_dir.iterdir()},original)
+                # Real stage helper copies the committed snapshot to a
+                # distinct empty target and verifies the exact source receipt.
+                target_root=self.root/'corrective-copy-fixture'
+                target_root.mkdir(mode=0o700)
+                with (patch.object(protected,'_check_owner_readonly_mount'),
+                      patch('fortis_approvals.r7_registry_reader_mount._exact_mountinfo',return_value=True)):
+                    self.assertEqual(protected.stage_corrective_registry(
+                        wal_store,frozen_config,
+                        sc.loads_strict((frozen_config/'profile.json').read_bytes())['semantic'],
+                        target=target_root/wal_state.name,expected_checkpoint=source_checkpoint),
+                        source_checkpoint)
+                    with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_TARGET_NOT_FRESH'):
+                        protected.stage_corrective_registry(wal_store,frozen_config,
+                            sc.loads_strict((frozen_config/'profile.json').read_bytes())['semantic'],
+                            target=target_root/wal_state.name,expected_checkpoint=source_checkpoint)
+                self.assertEqual({p.name:p.read_bytes() for p in wal_dir.iterdir()},original)
+
+            with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_STATE_CHANGED'):
+                protected.corrective_checkpoint(running_domain,expected_revision=3,
+                                                 expected_source_sha=next_merge)
+            with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_PAIR_CHANGED'):
+                protected.verify_corrective_pair(source_checkpoint,
+                    {**target_checkpoint,'sourcePrefixDigest':'0'*64},expected_source_sha=next_merge)
+            with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_PAIR_CHANGED'):
+                protected.verify_corrective_pair(source_checkpoint,target_checkpoint,
+                                                 expected_source_sha=repair_merge)
+            self.assertEqual(frozen_state.read_bytes(),after_repair)
+            self.assertEqual(state_path.read_bytes(),after_second)
+            # The earlier regular readback can leave empty SQLite sidecars.
+            # Exact offline accounting retry closes them via SQLite, never
+            # by unlinking the journal. This is the actual preview boundary.
+            self.assertEqual(second_repair(),second_result)
+            self.assertEqual(state_path.read_bytes(),after_second)
+            # Preview uses the actual entrypoint and the same sealed profile,
+            # but physically read-only state and no mutable frame admission.
+            with self.assertRaisesRegex(Denied,'REGISTRY_SEMANTIC_READONLY_STATE_REQUIRED'):
+                read_service_via_entrypoint(config_path,readonly=False,expected_profile=profile_file_sha,
+                                            corrective_preview_sha=next_merge)
+            with self.assertRaisesRegex(Denied,'SOURCE_CORRECTIVE_STATE_CHANGED'):
+                read_service_via_entrypoint(config_path,readonly=True,expected_profile=profile_file_sha,
+                                            corrective_preview_sha=repair_merge)
+            # A stale/uncheckpointed sidecar must not be silently ignored
+            # by immutable SQLite. Exercise the exact negative before reopen.
+            side=Path(str(state_path)+'-wal')
+            self.assertFalse(side.exists())
+            side.write_bytes(b'fixture')
+            side.chmod(0o600)
+            try:
+                with self.assertRaisesRegex(Denied,'REGISTRY_CORRECTIVE_PREVIEW_UNCHECKPOINTED'):
+                    read_service_via_entrypoint(config_path,readonly=True,expected_profile=profile_file_sha,
+                                                corrective_preview_sha=next_merge)
+            finally:
+                side.unlink()
+            preview=read_service_via_entrypoint(config_path,readonly=True,expected_profile=profile_file_sha,
+                                                corrective_preview_sha=next_merge)
+            with self.assertRaisesRegex(Denied,'REGISTRY_CORRECTIVE_PREVIEW_READ_ONLY'):
+                preview.frames.store._db()
+            self.assertIsNone(preview.frames.source_authorize)
+            self.assertIsNone(preview.frames.source_reservation)
+            self.assertIsNotNone(preview.frames.source_delivery)
+            actor=preview.frames.internal_actor
+            from fortis_approvals.integrations.registry_contracts import semantic_wire as wire
+            import uuid
+            def signed(action,body):
+                pins=preview.frames.pins
+                request=wire.request({'schemaVersion':2,'requestId':str(uuid.uuid4()),
+                    'instanceId':pins['instance'],'scopeDigest':pins['scope'],
+                    'generation':pins['generation'],'actor':actor,'action':action,'body':body},**pins)
+                frame=wire.seal(preview.frames.key,request)
+                # Same host mount substitution used at preview entrypoint;
+                # the database itself opens through real immutable SQLite.
+                with patch('fortis_approvals.r7_registry_reader_mount._check_owner_readonly_mount'):
+                    return wire.open_reply(preview.frames.key,request,preview.frames.dispatch(frame))
+            self.assertEqual(signed('HOLD_SNAPSHOT',{})['snapshotRevision'],3)
+            for op in ('WRITE','BEGIN_GROUP','SOURCE_REGISTER','SOURCE_REGISTER_EXTERNAL','SOURCE_PREFLIGHT','READ'):
+                self.assertFalse(preview.frames.authorize(actor,op,{}))
+                self.assertFalse(preview.frames.authorize('owner-actor',op,{}))
+            with self.assertRaisesRegex(Denied,'SEMANTIC_WIRE_SCOPE_DENIED'):
+                signed('SOURCE_PREFLIGHT',{'proposal':next_proposal})
+            self.assertEqual(state_path.read_bytes(),after_second)
+
+
+
     def test_owner_portal_exact_merge_register_and_shared_read(self):
         self._owner_portal_merge()
 
@@ -482,7 +688,11 @@ class ImpactTests(unittest.TestCase):
     def test_owner_portal_merge_and_shared_read_over_private_unix(self):
         self._owner_portal_merge(kernel_peer=True)
 
-    def _owner_portal_merge(self, *, base_race=False, partial=False, external=False, kernel_peer=False):
+    def test_corrective_staged_reopen_keeps_compiled_authority(self):
+        self._owner_portal_merge(kernel_peer=True, corrective=True)
+
+    def _owner_portal_merge(self, *, base_race=False, partial=False, external=False,
+                            kernel_peer=False, corrective=False):
         """Real source components with isolated Git, virtual passkey and synthetic GitHub."""
         from time import perf_counter
         from fortis_approvals.core import Authenticator
@@ -538,8 +748,35 @@ class ImpactTests(unittest.TestCase):
         lineage.setUp(successor=(profile,self.catalog_text), owner_scope=owner_scope,
                       instance_id=registry_instance)
         transition=lineage.transition()
-        transition['observation'].update(mergeSha=self.base,mainSha=self.base)
-        lineage.domain.register_source(transition)  # Synthetic predecessor fixture only.
+        from fortis_approvals.registry import source_event_journal as source_events
+        transition_base=source_events._DELIVERY_287 if corrective else self.base
+        transition['observation'].update(mergeSha=transition_base,mainSha=transition_base)
+        transition_receipt=lineage.domain.register_source(transition)  # Synthetic predecessor fixture only.
+
+        def fixture_repair(number, previous, cursor=None):
+            # Seed the already verified historical receipt in this product
+            # fixture. Actual evidence verification is covered by the existing
+            # real Git/bundle test; never use this path for host accounting.
+            req=lineage.merge(number=number)
+            if cursor is not None:
+                req['observation'].update(mergeSha=cursor,mainSha=cursor)
+            req.update(kind=source_events.DELIVERY_REPAIR,parentRequestId=None,
+                       operationId=source_events.delivery_repair_id(
+                           previous['operationId'],req['observation']['mergeSha']),
+                       transition={'predecessorOperationId':previous['operationId'],
+                                   'predecessorEventDigest':previous['eventDigest']})
+            with lineage.store._db() as db:
+                view=lineage.domain._project(db)
+                receipt=source_events.append(lineage.store,db,source_events.request(req,lineage.store),
+                                             view['operations'])
+                lineage.domain._project(db)
+            return receipt
+
+        if corrective:
+            repair_receipt=fixture_repair(288,transition_receipt)
+            self.enterContext(patch.object(source_events,'_DELIVERY_288',repair_receipt['sourceCursor']))
+            self.enterContext(patch.object(source_events,'_DELIVERY_288_EVENT',repair_receipt['eventDigest']))
+            self.assertEqual(lineage.domain.snapshot()['sourceRevision'],2)
 
         api=CheckProvider()
         api.head=self.head;api.base=self.base;api.ci_head=self.head
@@ -669,7 +906,9 @@ class ImpactTests(unittest.TestCase):
             provenance=lambda a:'OWNER_DIRECT',internal_actor='internal',
             source_authorize=lambda a,act,b:
                 (a=='internal' if act=='SOURCE_PREFLIGHT' else a=='owner-actor'))
-        opt_in=R7UnifiedPolicySourceOptIn('a'*64,lambda:'b'*64,
+        from fortis_approvals.extensions.successor_runtime import _RETAINED_288_ENROLLMENT_SOURCE
+        enrollment_source = _RETAINED_288_ENROLLMENT_SOURCE if corrective else 'a'*64
+        opt_in=R7UnifiedPolicySourceOptIn(enrollment_source,lambda:'b'*64,
                                         allow_all_method_policy_upgrade=True)
         if kernel_peer:
             from functools import partial
@@ -742,7 +981,7 @@ class ImpactTests(unittest.TestCase):
             raw = sc.canonical(gateway_config).encode()
             released = {
                 'schemaVersion':5, 'enabled':True, 'purpose':'registry-functional-successor-v1',
-                'releaseNonce':str(uuid.uuid4()), 'gatewaySourceDigest':'a'*64,
+                'releaseNonce':str(uuid.uuid4()), 'gatewaySourceDigest':enrollment_source,
                 'instanceId':lineage.instance, 'scopeDigest':lineage.witness['scopeDigest'],
                 'socketPath':str(self.root/'semantic-peer'/'registry.sock'),
                 'registryUid':os.geteuid(), 'registryGid':os.getegid(),
@@ -766,8 +1005,12 @@ class ImpactTests(unittest.TestCase):
             checkout_scratch = self.root/'controller-copy-scratch'
             checkout_scratch.mkdir(mode=0o700)
 
-            def load_peer(seal, *, interlock=None, incumbent_core=None):
-                write_mounted('profile.json', sc.canonical(seal).encode())
+            def load_peer(seal, *, interlock=None, incumbent_core=None, reuse=False):
+                if reuse:
+                    self.assertEqual((gateway_root/'profile.json').read_bytes(),
+                                     sc.canonical(seal).encode())
+                else:
+                    write_mounted('profile.json', sc.canonical(seal).encode())
                 # This fixture runs both ends as one UID. The real socket and
                 # managed peer proof still authenticate every exchange.
                 with patch.object(mount, '_check_owner_readonly_mount'), \
@@ -799,8 +1042,8 @@ class ImpactTests(unittest.TestCase):
                 MergeContextGrant('owner-actor','scope','registry','register_merge',
                      'scope',repo,recipe_digest))
         grant_rows=sorted([g.record() for g in grants],key=sc.canonical)
-        enrollment=ContextEnrollment(grants,source_digest='a'*64,
-            expected_digest=sc.digest({'schemaVersion':1,'sourceDigest':'a'*64,'grants':grant_rows}))
+        enrollment=ContextEnrollment(grants,source_digest=enrollment_source,
+            expected_digest=sc.digest({'schemaVersion':1,'sourceDigest':enrollment_source,'grants':grant_rows}))
         semantic_rows=[
             ('owner-actor',*action,'scope',{'repository':repo}),
             ('owner-actor',*action,'scope',lineage.subjects[0]),
@@ -811,8 +1054,8 @@ class ImpactTests(unittest.TestCase):
                                      for subject in ({'repository':repo},lineage.subjects[0]))
         semantic_rows=[dict(zip(('actor','service','operation','target','subject'),r))
                        for r in semantic_rows]
-        semantic=SemanticEnrollment(semantic_rows,source_digest='a'*64,
-            expected_digest=sc.digest({'schemaVersion':1,'sourceDigest':'a'*64,
+        semantic=SemanticEnrollment(semantic_rows,source_digest=enrollment_source,
+            expected_digest=sc.digest({'schemaVersion':1,'sourceDigest':enrollment_source,
                                        'grants':sorted(semantic_rows,key=sc.canonical)}))
         previous_schema=snapshot(old,legacy_schema_witness)
         if kernel_peer:
@@ -883,10 +1126,14 @@ class ImpactTests(unittest.TestCase):
                     selected = read_service_via_entrypoint(profile_path, readonly=False, expected_profile=digest)
                     # The sandbox uses one UID/GID on both sides.
                     selected.frames.source_authorize.__self__._identity['uid'] = os.geteuid()
-                    return start_kernel_semantic_peer(self, selected.frames, self.root, peer_key=b'p'*32)
+                    return start_kernel_semantic_peer(self, selected.frames, self.root,
+                                                      peer_key=(profile_path.parent/'semantic-peer.key').read_bytes())
 
-        def build(*, transition, companion, adapter=native):
-            nonlocal peer, transport, socket_peer, stop_peer, registry_config
+        server_pair = None
+
+        def build(*, transition, companion, adapter=native, reopening=False, rebind=False):
+            nonlocal peer, transport, socket_peer, stop_peer, registry_config, server_pair
+            initial = not reopening and not rebind
             from fortis_approvals.extensions.semantic_enrollment import OwnerPrincipalAuth
             if kernel_peer:
                 # Compute the expected staged successor pin from the incumbent
@@ -925,7 +1172,9 @@ class ImpactTests(unittest.TestCase):
                     'ciPolicy':sc.loads_strict(ci.policy), 'ciPolicyDigest':ci.pin,
                 }
 
-                if transition:
+                if rebind:
+                    config.update(schemaVersion=2, retainedEnrollmentSourceDigest=enrollment_source)
+                if initial:
                     source_config = {'ownerActor':'owner-actor', 'ownerName':owner.owner,
                         'target':'scope', 'policyAuthorityDigest':digest, 'interlockDigest':controller.pin,
                         'validatorRevision':self.pin, 'impactBinding':self.binding, 'buildPins':{}}
@@ -940,8 +1189,14 @@ class ImpactTests(unittest.TestCase):
                     released['successorSha256'] = sc.digest(payload)
                     return load_peer(released)
 
-                peer = mount_successor(config)
-                if transition:
+                if reopening:
+                    self.assertEqual(released['successorSha256'], sc.digest(config))
+                    self.assertEqual((gateway_root/'successor.json').read_bytes(),
+                                     sc.canonical(config).encode())
+                    peer = load_peer(released,reuse=True)
+                else:
+                    peer = mount_successor(config)
+                if initial:
                     for field, code in (
                         ('semanticFrameKeySha256', 'PLANNER_KEY'),
                         ('policyHistorySha256', 'POLICY_HISTORY_PIN_DENIED'),
@@ -952,7 +1207,26 @@ class ImpactTests(unittest.TestCase):
                             load_peer({**released, field:'0'*64})
                     peer = load_peer(released)
                 transport = peer._semantic_transport
-                if transition:
+                if rebind and not reopening:
+                    import sqlite3
+                    from contextlib import closing
+                    from fortis_approvals.extensions.transition_authority import stored_authority_witness
+                    frozen = Path(old.path)
+                    before_bytes = frozen.read_bytes()
+                    receipt = load_peer(released,interlock=controller.pin,incumbent_core=frozen,reuse=True)
+                    self.assertNotIn('legacyCompanion',receipt)
+                    self.assertEqual(receipt['existingCompanion'],{
+                        'schemaDigest':snapshot(old,inspect_companion)['schemaDigest'],
+                        'companionDigest':companion,
+                        'authorityWitnessDigest':sc.digest(snapshot(old,stored_authority_witness))})
+                    self.assertEqual(frozen.read_bytes(),before_bytes)
+                    drifted=self.root/'corrective-drift.sqlite'
+                    shutil.copy2(frozen,drifted)
+                    with closing(sqlite3.connect(drifted)) as db, db:
+                        db.execute('UPDATE owner_local_policy_v2_meta SET authority=?',('0'*64,))
+                    with self.assertRaisesRegex(Denied,'COMPOSITE_SUCCESSOR_MODE_MISMATCH'):
+                        load_peer(released,interlock=controller.pin,incumbent_core=drifted,reuse=True)
+                if initial:
                     self.assertEqual(peer._functional_config.value, gateway_config)
                     with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
                         registry_review_policy.policy_reference(
@@ -990,7 +1264,9 @@ class ImpactTests(unittest.TestCase):
                     release_nonce=released['releaseNonce'], bind_host='127.0.0.1',
                     github_pilot=github_config, extensions=extensions)
 
-                with (patch.object(server, '_owner_release_unified_policy', return_value=opt_in),
+                from fortis_approvals.extensions.staging import ReleaseGate
+                with (patch.object(ReleaseGate, 'ready', return_value=reopening),
+                      patch.object(server, '_owner_release_unified_policy', return_value=opt_in),
                       patch.object(server, 'build_r7_unified_candidate',
                                    wraps=server.build_r7_unified_candidate) as candidate,
                       patch.object(server, 'runtime_endpoints', return_value=(gateway_origin,gateway_host)),
@@ -998,7 +1274,7 @@ class ImpactTests(unittest.TestCase):
                       patch.object(server, 'OWNER_PORT', 0), patch.object(server, 'MACHINE_PORT', 0),
                       patch.object(successor_runtime, 'InterlockReservations', return_value=reservations),
                       patch.object(reservations, 'reserve', side_effect=nullcontext)):
-                    if transition:
+                    if initial:
                         invalid = mount_successor({**config, 'interlockDigest':'0'*64})
                         with self.assertRaisesRegex(Denied,'MAINTENANCE_STATE_UNKNOWN'):
                             server.create_servers(**options, registry_candidate_reader=invalid)
@@ -1012,6 +1288,7 @@ class ImpactTests(unittest.TestCase):
                                 server.create_servers(**options, registry_candidate_reader=peer)
                         candidate.assert_not_called()
                     owner_server, machine_server = server.create_servers(**options, registry_candidate_reader=peer)
+                server_pair = (owner_server, machine_server)
                 self.addCleanup(owner_server.server_close)
                 self.addCleanup(machine_server.server_close)
                 self.assertGreater(owner_server.server_port, 0)
@@ -1024,9 +1301,10 @@ class ImpactTests(unittest.TestCase):
                                         'HTTP_AUTHORIZATION':'Bearer '+machine_grant}, start)
 
                 self.ingress = ingress
-                blocked = {'service':'registry','operation':'list_components'}
-                self.assertEqual(SemanticAccessTests.http(self, '/v1/reads', blocked),
-                                 (403, {'error':'RELEASE_STAGED_MUTATIONS_BLOCKED'}))
+                if not reopening:
+                    blocked = {'service':'registry','operation':'list_components'}
+                    self.assertEqual(SemanticAccessTests.http(self, '/v1/reads', blocked),
+                                     (403, {'error':'RELEASE_STAGED_MUTATIONS_BLOCKED'}))
                 self.portal.gate.ready = lambda: True  # simulated owner activation for the local ports
                 # The gate callbacks are used after the factory returns as well.
                 reservations.reserve = nullcontext
@@ -1055,9 +1333,103 @@ class ImpactTests(unittest.TestCase):
             base_portal._extension_runtime=None
             self.portal,self.ingress=composition.install(core=core,portal=base_portal,
                 ingress=base_ingress,machine_base=base_ingress,native={'adapter':adapter},reader=peer,
-                incumbent_choices=old_choices,incumbent_scope=old_scope,opt_in=opt_in)
+                incumbent_choices=old_choices,incumbent_scope=old_scope,opt_in=opt_in,
+                release_active=reopening)
             return core
         core=build(transition=True,companion=companion_digest)
+        if corrective:
+            # Initial delivery completed in the fixture, but no product
+            # approval or semantic policy edit has happened. Freeze the
+            # isolated source, retain its bytes and open a separate clone.
+            self.assertEqual(endpoint.writes,0)
+            before = snapshot(core, lambda db: authority_witness(core,db))
+            frozen_companion = snapshot(core,inspect_companion)
+            self.assertEqual(frozen_companion['parents'],0)
+            old_gateway, old_state, old_seal = gateway_root, runtime_root, dict(released)
+            old_files = {p.name:p.read_bytes() for p in old_gateway.iterdir()}
+            for listener in server_pair:
+                listener.server_close()
+            stop_peer()
+            self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),before)
+            runtime_root=self.root/'corrective-state'
+            shutil.copytree(old_state,runtime_root)
+            gateway_root=self.root/'corrective-mount'
+            shutil.copytree(old_gateway,gateway_root)
+            new_source='9'*64
+            from fortis_approvals.extensions.successor_runtime import project_corrective_profiles
+            old_registry = sc.loads_strict(registry_config.read_bytes())
+            # The fixture's original initial transition has just been
+            # installed. Model the separately sealed #288 recovery profile.
+            old_composition={**sc.loads_strict(old_files['successor.json']),
+                             'transition':False,'companionDigest':sc.digest(frozen_companion)}
+            recovered_seal={**old_seal,'successorSha256':sc.digest(old_composition)}
+            old_registry_files={p.name:p.read_bytes() for p in registry_config.parent.iterdir()}
+            next_peer,next_frame=b'x'*32,b'y'*32
+            kw=dict(expected_gateway_digest=sc.digest(recovered_seal),
+                    expected_registry_digest=sc.digest(old_registry),new_source_digest=new_source,
+                    nonce=str(uuid.uuid4()),peer_key_digest=sha(next_peer),frame_key_digest=sha(next_frame))
+            # The test profile uses the same UID and fixture-specific
+            # socket path. Its generation is independently pinned.
+            projected=project_corrective_profiles(recovered_seal,old_registry,old_composition,**kw)
+            with self.assertRaisesRegex(Denied,'R7_REGISTRY_CORRECTIVE_SOURCE_SEAL_CHANGED'):
+                project_corrective_profiles(recovered_seal,old_registry,old_composition,
+                                            **{**kw,'expected_gateway_digest':'0'*64})
+            with self.assertRaisesRegex(Denied,'R7_REGISTRY_CORRECTIVE_PAIR_CHANGED'):
+                project_corrective_profiles(recovered_seal,old_registry,old_composition,
+                                            **{**kw,'peer_key_digest':old_registry['semantic']['peerKeyDigest']})
+            released=projected['gateway']
+            write_mounted('planner.key',next_peer)
+            write_mounted('semantic-frame.key',next_frame)
+            new_registry_root=self.root/'corrective-registry-config'
+            shutil.copytree(registry_config.parent,new_registry_root)
+            previous_registry_config=registry_config
+            registry_config=new_registry_root/'profile.json'
+            # Production volumes use the same path inside different
+            # containers. The fixture uses distinct local paths instead.
+            from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+            original_store=lineage.store
+            original_domain=lineage.domain
+            original_snapshot=original_domain.snapshot()
+            registry_state=self.root/'corrective-registry-state'
+            registry_state.mkdir(mode=0o700)
+            target_db=registry_state/original_store.path.name
+            shutil.copy2(original_store.path,target_db)
+            lineage.store=ReleaseEventJournal(target_db,instance_id=original_store.instance_id,
+                scope=original_store.scope,expected_legacy=original_store.expected_legacy,
+                transition_digest=original_store.transition_digest)
+            lineage.domain=lineage.reopen()
+            third_receipt=fixture_repair(289,repair_receipt,cursor=self.base)
+            self.assertEqual(lineage.domain.snapshot()['sourceRevision'],3)
+            self.assertEqual(original_domain.snapshot(),original_snapshot)
+            projected_registry={**projected['registry'],'registryStatePath':str(target_db)}
+            registry_config.write_bytes(sc.canonical(projected_registry).encode())
+            (new_registry_root/'semantic-peer.key').write_bytes(next_peer)
+            (new_registry_root/'semantic-frame.key').write_bytes(next_frame)
+            opt_in=R7UnifiedPolicySourceOptIn(new_source,lambda:'b'*64,
+                                            allow_all_method_policy_upgrade=True)
+            socket_peer,stop_peer=start_registry_writer(registry_config)
+            # This is a new release, not an ordinary restart: seal the
+            # actual stopped source, including its already installed epoch
+            # schema, rather than the pre-transition companion snapshot.
+            corrected=build(transition=False,companion=sc.digest(frozen_companion),rebind=True)
+            self.assertEqual(snapshot(corrected,inspect_companion),frozen_companion)
+            self.assertEqual(snapshot(corrected,lambda db:authority_witness(corrected,db)),before)
+            self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),before)
+            self.assertEqual({p.name:p.read_bytes() for p in old_gateway.iterdir()},old_files)
+            self.assertEqual({p.name:p.read_bytes() for p in previous_registry_config.parent.iterdir()},
+                             old_registry_files)
+            self.assertEqual((gateway_root/'successor.json').read_bytes(),
+                             sc.canonical(projected['successor']).encode())
+            self.assertEqual(released,projected['gateway'])
+            self.assertNotEqual(released['releaseNonce'],old_seal['releaseNonce'])
+            self.assertEqual(corrected.authority.sha,core.authority.sha)
+            self.assertEqual(dict(corrected.authority.choices),dict(core.authority.choices))
+            self.assertEqual(endpoint.writes,0)
+            # Original source profile is still usable if the staged target
+            # must be discarded; no provider effect or authority append.
+            self.assertEqual(original_domain.snapshot(),original_snapshot)
+            self.assertEqual(lineage.domain.snapshot()['sourceRevision'],3)
+            core=corrected
         cookie,csrf=G2WebAuthnTest.login(self)
 
         for revision,coord in enumerate(sorted(coords)):
@@ -1134,7 +1506,7 @@ class ImpactTests(unittest.TestCase):
             self.assertEqual(endpoint.writes,0)
             self.assertEqual(lineage.domain.snapshot()['sourceRevision'],2)
             return
-        if not (base_race or partial):
+        if not (base_race or partial or corrective):
             rejected={**decision,'decision':'reject'}
             code,challenge,_=self.call('/v1/owner/decision/begin',rejected,cookie=cookie,csrf=csrf)
             self.assertEqual(code,200,challenge)
@@ -1227,6 +1599,13 @@ class ImpactTests(unittest.TestCase):
         self.assertEqual((code,result.get('state')),(200,'EXECUTED'),result)
         self.assertEqual(lineage.domain.source_operation(second['stepId'])['sourceCursor'],merge)
         self.assertEqual(endpoint.writes,1)
+        if corrective:
+            self.assertEqual(p['expectedSourceRevision'],3)
+            self.assertEqual(lineage.domain.snapshot()['sourceRevision'],4)
+            self.assertEqual(lineage.domain.source_operation(second['stepId'])['kind'],'MERGE')
+            for receipt in (transition_receipt,repair_receipt,third_receipt):
+                self.assertEqual(lineage.domain.source_operation(receipt['operationId']),receipt)
+            self.assertEqual(original_domain.snapshot(),original_snapshot)
 
         query,ai,board=read_board()
         plan={**query,'operation':'plan_batch','params':{'items':[
@@ -1240,8 +1619,12 @@ class ImpactTests(unittest.TestCase):
             root=self.root,actor='agent-1',backend=None,store=None)
         if not kernel_peer:
             self.assertEqual(reopened_native.receipt(first['stepId']),native.receipt(first['stepId']))
-        reopened=build(transition=False,companion=sc.digest(snapshot(core,inspect_companion)),
-                       adapter=reopened_native)
+        before_restart = snapshot(core, lambda db: authority_witness(core, db))
+        reopened=build(transition=not corrective,
+                       companion=sc.digest(frozen_companion) if corrective else companion_digest,
+                       adapter=reopened_native,reopening=True,rebind=corrective)
+        self.assertEqual(snapshot(reopened, lambda db: authority_witness(reopened, db)),
+                         before_restart)
         self.assertEqual(reopened.execute(decision['requestId'])['state'],'EXECUTED')
         self.assertEqual(SemanticAccessTests.http(self,'/v1/reads',query),(200,ai))
         self.assertEqual(endpoint.writes,1)
@@ -1269,12 +1652,63 @@ class ImpactTests(unittest.TestCase):
             self.assertEqual(after_portal['data'],ai['data'])
             self.assertEqual(SemanticAccessTests.http(self,'/v1/reads',query),(200,ai))
             self.assertEqual(endpoint.writes,1)
+        if corrective:
+            self.assertEqual(lineage.domain.snapshot()['sourceRevision'],4)
+            self.assertEqual(original_domain.snapshot(),original_snapshot)
+            print('CORRECTIVE_REVISION_3_TO_4_PRODUCT_PASS')
         print('E2_LOCAL_TIMINGS discovery=%.3fs approval_to_merge_and_registry=%.3fs shared_reads=%.3fs'
               % (discovery_seconds,executed-discovered,perf_counter()-executed))
 
     def test_profile_pin_mismatch(self):
         self.verifier.profile_digest='f'*64
         with self.assertRaises(Denied):self.verifier.verify(self.observed)
+
+
+class RetainedEnrollmentTests(unittest.TestCase):
+    def test_exact_reviewed_source_rebind_does_not_change_enrollment(self):
+        from fortis_approvals.extensions.composite_authority import MergeContextGrant
+        from fortis_approvals.extensions.composite_contract import definition
+        from fortis_approvals.extensions.successor_runtime import (
+            ProtectedRegistrySuccessor, _RETAINED_288_ENROLLMENT_SOURCE)
+        from fortis_approvals.integrations.registry.read_contract import REPOSITORY
+
+        old = _RETAINED_288_ENROLLMENT_SOURCE
+        new = '9'*64  # synthetic newly packaged source, not a live image
+        recipe = definition('release','merge_and_register').definition_digest
+        context = [MergeContextGrant('owner','scope','github','merge_pull_request',
+                                      'fortis-approvals',REPOSITORY,recipe).record()]
+        semantic = [{'actor':'agent','service':'registry','operation':'list_components',
+                     'target':'scope','subject':{'repository':REPOSITORY}}]
+        def pin(rows):
+            return sc.digest({'schemaVersion':1,'sourceDigest':old,
+                              'grants':sorted(rows,key=sc.canonical)})
+        ci = {}
+        config = {'schemaVersion':1,'repository':REPOSITORY,'target':'scope',
+                  'ownerPrincipal':'owner','context':context,'contextDigest':pin(context),
+                  'semantic':semantic,'semanticDigest':pin(semantic),'successorDigest':'a'*64,
+                  'companionDigest':'b'*64,'interlockDigest':'c'*64,'transition':False,
+                  'frozenHandoff':None,'validatorRevision':'d'*40,'impactBinding':{},
+                  'buildPins':{},'ciPolicy':ci,'ciPolicyDigest':sc.digest(ci)}
+        original=ProtectedRegistrySuccessor(config,source_digest=old)
+        with self.assertRaisesRegex(Denied,'COMPOSITE_CONTEXT_PIN_MISMATCH'):
+            ProtectedRegistrySuccessor(config,source_digest=new)
+        retained={**config,'schemaVersion':2,'retainedEnrollmentSourceDigest':old}
+        revised=ProtectedRegistrySuccessor(retained,source_digest=new)
+        self.assertEqual(revised._source_digest,new)
+        self.assertEqual(revised.context.metadata(),original.context.metadata())
+        self.assertEqual(revised.semantic.metadata(),original.semantic.metadata())
+        for changed in ({'transition':True},{'retainedEnrollmentSourceDigest':'0'*64}):
+            with self.assertRaisesRegex(Denied,'R7_REGISTRY_RETAINED_ENROLLMENT_DENIED'):
+                ProtectedRegistrySuccessor({**retained,**changed},source_digest=new)
+        with self.assertRaisesRegex(Denied,'R7_REGISTRY_RETAINED_ENROLLMENT_DENIED'):
+            ProtectedRegistrySuccessor(retained,source_digest=old)
+        changed=[{**semantic[0],'actor':'other'}]
+        with self.assertRaisesRegex(Denied,'SEMANTIC_SCOPE_PIN_CHANGED'):
+            ProtectedRegistrySuccessor({**retained,'semantic':changed},source_digest=new)
+        changed_context=[{**context[0],'parent':['other',*context[0]['parent'][1:]],
+                          'child':['other',*context[0]['child'][1:]]}]
+        with self.assertRaisesRegex(Denied,'COMPOSITE_CONTEXT_PIN_MISMATCH'):
+            ProtectedRegistrySuccessor({**retained,'context':changed_context},source_digest=new)
 
 
 class CITests(unittest.TestCase):

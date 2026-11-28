@@ -1,4 +1,5 @@
-"""Owner-pinned evidence for the staged #286 transition and one delivery repair."""
+"""Owner-pinned evidence for the staged #286 transition and bounded initial-delivery repairs."""
+from contextlib import contextmanager, closing
 import hashlib
 import re
 import tempfile
@@ -164,34 +165,51 @@ def reviewed_transition(root, config, *, expected_evidence_sha256, expected_sour
             'transition':detail}
 
 
+def _repair_material(revision):
+    sc.need(revision in (1, 2), 'SOURCE_DELIVERY_REPAIR_SCOPE')
+    return 'delivery-repair' if revision == 1 else 'delivery-repair-2'
+
+
 def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected_source_sha,
-                             retained_transition):
+                             retained_transition, retained_predecessor):
     """Verify the same protected scope and CI epoch on the next Git edge."""
     sc.hex_id(expected_evidence_sha256, 64)
     sc.hex_id(expected_source_sha, 40)
-    raw = _owner_runtime_bytes(root/'delivery-repair-evidence.json', 262144)
+    predecessor, receipt, _ = retained_predecessor
+    material = _repair_material(receipt['sourceRevision'])
+    raw = _owner_runtime_bytes(root/(material+'-evidence.json'), 262144)
     sc.need(hashlib.sha256(raw).hexdigest() == expected_evidence_sha256,
             'SOURCE_DELIVERY_REPAIR_EVIDENCE_PIN_CHANGED')
     envelope = sc.loads_strict(raw)
     sc.fields(envelope, ('predecessorReceipt', 'proposal', 'observation', 'ci', 'body', 'bundleSha256'))
     sc.need(sc.canonical(envelope).encode() == raw, 'SOURCE_DELIVERY_REPAIR_EVIDENCE_INVALID')
 
-    predecessor, receipt, _ = retained_transition
     sc.need(envelope['predecessorReceipt'] == receipt, 'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
-    original_raw = _owner_runtime_bytes(root/'transition-evidence.json', 262144)
-    sc.need(hashlib.sha256(original_raw).hexdigest() == predecessor['evidenceDigest'],
-            'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
-    original = sc.loads_strict(original_raw)
-    sc.need(original['proposal'] == predecessor['proposal']
-            and original['observation'] == predecessor['observation']
-            and sc.digest(original['ci']) == predecessor['proposal']['ciDigest'],
-            'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
+    transition_request, transition_receipt, _ = retained_transition
+
+    def retained_evidence(name, request):
+        raw = _owner_runtime_bytes(root/name, 262144)
+        sc.need(hashlib.sha256(raw).hexdigest() == request['evidenceDigest'],
+                'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
+        evidence = sc.loads_strict(raw)
+        sc.need(evidence['proposal'] == request['proposal']
+                and evidence['observation'] == request['observation']
+                and sc.digest(evidence['ci']) == request['proposal']['ciDigest'],
+                'SOURCE_DELIVERY_REPAIR_ORIGINAL_EVIDENCE_CHANGED')
+        return evidence
+
+    original = retained_evidence('transition-evidence.json', transition_request)
+    if receipt['sourceRevision'] == 2:
+        previous = retained_evidence('delivery-repair-evidence.json', predecessor)
+        sc.need(previous['predecessorReceipt'] == transition_receipt,
+                'SOURCE_DELIVERY_REPAIR_PREDECESSOR')
 
     proposal = lineage.proposal(envelope['proposal'])
     observation = lineage.observation(envelope['observation'], proposal)
     writer = config['sourceWrite']
-    manifest = predecessor['transition']['manifest']
-    sc.need(proposal['baseSha'] == receipt['sourceCursor'] and proposal['expectedSourceRevision'] == 1
+    manifest = transition_request['transition']['manifest']
+    sc.need(proposal['baseSha'] == receipt['sourceCursor']
+            and proposal['expectedSourceRevision'] == receipt['sourceRevision']
             and proposal['number'] > predecessor['proposal']['number']
             and observation['mergeSha'] == expected_source_sha
             and proposal['catalogSha256'] == predecessor['proposal']['catalogSha256']
@@ -213,7 +231,7 @@ def reviewed_delivery_repair(root, config, *, expected_evidence_sha256, expected
                     for check in ci['checks']),
             'SOURCE_DELIVERY_REPAIR_CI_CHANGED')
 
-    bundle = _owner_runtime_bytes(root/'delivery-repair-main.bundle', MAX_BUNDLE)
+    bundle = _owner_runtime_bytes(root/(material+'-main.bundle'), MAX_BUNDLE)
     sc.need(hashlib.sha256(bundle).hexdigest() == envelope['bundleSha256'],
             'SOURCE_DELIVERY_REPAIR_BUNDLE_CHANGED')
     body = envelope['body']
@@ -236,6 +254,188 @@ def staged_domain(journal, root, pins):
     return ReleaseDomain(journal,legacy,expected_profile_digest=pins['legacyProfileDigest'],
                          successor_profile=successor,
                          expected_successor_profile_digest=pins['successorProfileDigest'])
+
+
+
+
+@contextmanager
+def _corrective_snapshot_copy(journal):
+    """Private scratch copy of a stable RO-mounted DB and WAL.
+
+    A running but owner-quiescent source may be copied for staging only.
+    File identities and full replay must match; this does not establish
+    writer exclusion. Admission still requires the later stopped replay.
+    """
+    import os
+    import shutil
+    import stat
+    from .release_event_journal import ReleaseEventJournal
+    from .state_journal import _private
+
+    source = journal.path
+    _check_owner_readonly_mount(source.parent)
+    journal._paths()
+
+    def identity(path):
+        st = path.lstat()
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns,
+                st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
+
+    def inputs():
+        paths = [source]
+        for suffix in ('-wal','-shm','-journal'):
+            item = Path(str(source)+suffix)
+            if item.exists() or item.is_symlink():
+                _private(item)
+                sc.need(suffix!='-journal','SOURCE_CORRECTIVE_ROLLBACK_JOURNAL')
+                paths.append(item)
+        return {item:identity(item) for item in paths}
+
+    before = inputs()
+    sc.need(sum(meta[2] for meta in before.values()) <= 536870912,
+            'SOURCE_CORRECTIVE_SCRATCH_LIMIT')
+    with tempfile.TemporaryDirectory(prefix='registry-frozen-') as scratch:
+        dest = Path(scratch)/source.name
+        for path, meta in before.items():
+            if path.name.endswith('-shm'):
+                continue
+            fd = os.open(path, os.O_RDONLY|os.O_NOFOLLOW)
+            with os.fdopen(fd,'rb') as stream:
+                st = os.fstat(stream.fileno())
+                sc.need((st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns,
+                         st.st_mode,st.st_uid,st.st_gid,st.st_nlink)==meta
+                        and stat.S_ISREG(st.st_mode),'SOURCE_CORRECTIVE_FROZEN_CHANGED')
+                outfd=os.open(Path(scratch)/path.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+                with os.fdopen(outfd,'wb') as out:
+                    shutil.copyfileobj(stream,out,length=1048576)
+                sc.need((Path(scratch)/path.name).stat().st_size==meta[2],
+                        'SOURCE_CORRECTIVE_FROZEN_CHANGED')
+        sc.need(inputs()==before,'SOURCE_CORRECTIVE_FROZEN_CHANGED')
+        copy = ReleaseEventJournal(dest,instance_id=journal.instance_id,scope=journal.scope,
+            expected_legacy=journal.expected_legacy,transition_digest=journal.transition_digest)
+        yield copy
+        sc.need(inputs()==before,'SOURCE_CORRECTIVE_FROZEN_CHANGED')
+
+
+def frozen_corrective_checkpoint(journal, root, pins, *, expected_revision, expected_source_sha):
+    """Replay a stopped source; the controller establishes writer exclusion."""
+    with _corrective_snapshot_copy(journal) as copy:
+        return corrective_checkpoint(staged_domain(copy,root,pins),
+            expected_revision=expected_revision,expected_source_sha=expected_source_sha)
+
+
+def stage_corrective_registry(journal, root, pins, *, target, expected_checkpoint):
+    """Clone the pre-product journal onto one fresh private inactive volume.
+
+    The caller pins the independently read original checkpoint and owns
+    the exclusive host preparation lock. Original mounts are RO. No
+    accounting, source approval, listener start or effect occurs here.
+    """
+    import os
+    import sqlite3
+    from ..r7_registry_reader_mount import _exact_mountinfo
+    from .release_event_journal import ReleaseEventJournal
+    from .state_journal import _private
+    target=Path(target)
+    _check_owner_readonly_mount(root)
+    _private(target.parent,True)
+    sc.need(target.is_absolute() and target.parent.resolve()==target.parent
+            and target.name==journal.path.name
+            and _exact_mountinfo(Path('/proc/self/mountinfo').read_bytes(),target.parent,b'rw')
+            and not os.statvfs(target.parent).f_flag & os.ST_RDONLY
+            and not list(target.parent.iterdir()), 'SOURCE_CORRECTIVE_TARGET_NOT_FRESH')
+    with _corrective_snapshot_copy(journal) as copy:
+        domain=staged_domain(copy,root,pins)
+        kw=dict(expected_revision=2,expected_source_sha=sources._DELIVERY_288)
+        sc.need(corrective_checkpoint(domain,**kw)==expected_checkpoint,
+                'SOURCE_CORRECTIVE_STAGE_SOURCE_CHANGED')
+        fd=os.open(target,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+        os.close(fd)
+        # SQLite backup retains committed WAL pages, not transient SHM.
+        with copy._read_only_db() as db, closing(sqlite3.connect(target)) as dst:
+            db.backup(dst)
+            sc.need(dst.execute('PRAGMA journal_mode=WAL').fetchone()==('wal',),
+                    'SOURCE_CORRECTIVE_STAGE_WAL_REQUIRED')
+        new=ReleaseEventJournal(target,instance_id=journal.instance_id,scope=journal.scope,
+            expected_legacy=journal.expected_legacy,transition_digest=journal.transition_digest)
+        target_domain=staged_domain(new,root,pins)
+        with new._db() as db:
+            view=target_domain._project(db)
+            result=corrective_checkpoint_view(view,instance_id=new.instance_id,scope=new.scope,
+                legacy_witness=new.expected_legacy,transition_digest=new.transition_digest,**kw)
+        sc.need(result==expected_checkpoint,'SOURCE_CORRECTIVE_STAGE_CLONE_CHANGED')
+        sc.need(set(p.name for p in target.parent.iterdir())=={target.name},
+                'SOURCE_CORRECTIVE_STAGE_UNCHECKPOINTED')
+        for path in (target,target.parent):
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+        return result
+
+
+def corrective_checkpoint(domain, *, expected_revision, expected_source_sha):
+    """Read-only pre-product T4 receipt for an original or a staged Registry.
+
+    This proves the exact source-event prefix, not Docker writer exclusion
+    or authorization to switch the pair. Both remain controller obligations.
+    """
+    store = domain.store
+    return corrective_checkpoint_view(domain.snapshot(), instance_id=store.instance_id,
+        scope=store.scope, legacy_witness=store.expected_legacy,
+        transition_digest=store.transition_digest, expected_revision=expected_revision,
+        expected_source_sha=expected_source_sha)
+
+
+def corrective_checkpoint_view(view, *, instance_id, scope, legacy_witness, transition_digest,
+                               expected_revision, expected_source_sha):
+    # Also consumes the independently replayed snapshot from the exact
+    # retained #288 image, which predates the corrective checkpoint helper.
+    sc.need(type(expected_revision) is int and expected_revision in (2, 3),
+            'SOURCE_CORRECTIVE_REVISION_DENIED')
+    sc.hex_id(expected_source_sha, 40)
+    sc.uuid_id(instance_id)
+    sc.hex_id(transition_digest, 64)
+    sc.need(legacy_witness['instanceId']==instance_id
+            and legacy_witness['scopeDigest']==sc.digest(scope),'SOURCE_CORRECTIVE_STATE_CHANGED')
+    prior = sources.delivery_repair_predecessor(view['sourceOperations'], 2)
+    rows = sorted(view['sourceOperations'].values(), key=lambda row: row[1]['sourceRevision'])
+    sc.need(view['sourceRevision'] == expected_revision
+            and view['snapshotRevision'] == expected_revision
+            and view['sourceCursor'] == expected_source_sha
+            and not view['operations'] and not view['sourceTransitionPending']
+            and len(rows) == expected_revision
+            and all(row[2] == 0 and not row[1]['deploymentAuthorized'] for row in rows)
+            and all(state['activeAttempt'] is None and state['installed'] is None
+                    and state['ownerReported'] is None for state in view['states'].values()),
+            'SOURCE_CORRECTIVE_STATE_CHANGED')
+    tail = rows[-1]
+    sc.need(tail[0]['kind'] == sources.DELIVERY_REPAIR
+            and (expected_revision == 2 or tail[0]['transition'] == {
+                'predecessorOperationId': prior[1]['operationId'],
+                'predecessorEventDigest': prior[1]['eventDigest']}),
+            'SOURCE_CORRECTIVE_EDGE_CHANGED')
+    return {'instanceId': instance_id, 'scopeDigest': sc.digest(scope),
+            'legacyWitnessDigest': sc.digest(legacy_witness),
+            'transitionDigest': transition_digest,
+            'catalogSha256': view['catalogSha256'], 'profileDigest': view['profileDigest'],
+            'sourcePrefixDigest': sc.digest(rows[:2]),
+            'sourceRevision': expected_revision, 'sourceCursor': expected_source_sha,
+            'eventDigest': view['eventDigest'], 'receipt': tail[1]}
+
+
+def verify_corrective_pair(source, target, *, expected_source_sha):
+    """Pair replayed checkpoints, never a new write or a deployment receipt."""
+    sc.hex_id(expected_source_sha, 40)
+    keys = ('instanceId', 'scopeDigest', 'legacyWitnessDigest', 'transitionDigest',
+            'catalogSha256', 'profileDigest', 'sourcePrefixDigest')
+    sc.need(source['sourceRevision'] == 2 and target['sourceRevision'] == 3
+            and source['sourceCursor'] == sources._DELIVERY_288
+            and source['receipt']['eventDigest'] == sources._DELIVERY_288_EVENT
+            and target['sourceCursor'] == expected_source_sha
+            and expected_source_sha != source['sourceCursor']
+            and all(source[k] == target[k] for k in keys),
+            'SOURCE_CORRECTIVE_PAIR_CHANGED')
+    return {'source': source, 'target': target}
 
 
 def account_on_clone(domain, db, request):

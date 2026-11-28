@@ -213,6 +213,23 @@ def projection_copy(source, *, scratch_root=None):
             yield copy
 
 
+def inspect_staged_successor(path, *, expected_digest, verify_history):
+    """Exact read-only witness for a pre-product, already-migrated source."""
+    hex_id(expected_digest, 64)
+    need(callable(verify_history), 'COMPOSITE_PRESERVATION_PIN_INVALID')
+    path = _companion_path(path)
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
+        authority = verify_history(db)
+        companion = inspect_companion(db)
+        need(companion['parents'] == 0 and digest(companion) == expected_digest,
+             'COMPOSITE_PRESERVATION_PIN_CHANGED')
+        return {'schemaDigest':companion['schemaDigest'], 'companionDigest':expected_digest,
+                'authorityWitnessDigest':digest(authority)}
+
+
 def project_staged_companion(path, *, expected_digest, verify_history=None, scratch_root=None):
     """Prove the proposed schema and history on a private disposable copy."""
     path = _companion_path(path)

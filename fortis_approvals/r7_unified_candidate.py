@@ -352,11 +352,17 @@ def build_r7_unified_candidate(*, state, owner_origin, ingress_host,
                 core,scope_binding,choices,
                 previous_functional_digests=functional.reviewed_authority_predecessor_digests())
         if reviewed_registry_successor is not None:
+            from .extensions.staging import ReleaseGate
+            gate = ReleaseGate(registry_candidate_reader._release_nonce, runtime.digest)
+            marker = gate.record_status()
+            release_active = marker['active']
+            if not release_active and marker['markerPresent']:
+                raise Denied('RELEASE_ACTIVATION_MARKER_INVALID')
             portal,ingress=reviewed_registry_successor.install(
                 core=core,portal=portal,ingress=ingress,machine_base=machine_base,
                 native=native,reader=registry_candidate_reader,incumbent_choices=choices,
                 incumbent_scope=scope_binding,opt_in=unified_policy_source_opt_in,
-                registry_predecessor=predecessor)
+                registry_predecessor=predecessor,release_active=release_active)
             return core,owner,portal,ingress
         core.install_policy_authority(
             choices, scope_binding=scope_binding,

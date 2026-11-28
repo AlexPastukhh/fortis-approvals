@@ -108,7 +108,7 @@ class RegistryStateJournalV2(RegistryStateJournal):
             if db is not None:db.close()
 
     @contextmanager
-    def _read_only_db(self):
+    def _read_only_db(self, *, immutable_snapshot=False):
         """Inspect existing v2 state without opening it for writes.
 
         A live writer/owner may change the WAL concurrently. This method is
@@ -118,13 +118,16 @@ class RegistryStateJournalV2(RegistryStateJournal):
         self._paths()
         db=None
         try:
-            db=sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True,
-                               timeout=3,isolation_level=None)
+            # Only the verified frozen schema-4 preview requests immutable
+            # mode; it proves the WAL header and absence of sidecars itself.
+            uri=self.path.as_uri()+'?mode=ro'+('&immutable=1' if immutable_snapshot else '')
+            db=sqlite3.connect(uri,uri=True,timeout=3,isolation_level=None)
             db.execute('PRAGMA query_only=ON')
             db.execute('PRAGMA trusted_schema=OFF')
             db.execute('PRAGMA foreign_keys=ON')
             db.execute('PRAGMA busy_timeout=3000')
-            _need(db.execute('PRAGMA journal_mode').fetchone()==('wal',),
+            expected_mode='delete' if immutable_snapshot else 'wal'
+            _need(db.execute('PRAGMA journal_mode').fetchone()==(expected_mode,),
                   'REGISTRY_STATE_WAL_REQUIRED')
             db.execute('BEGIN')  # Deferred read transaction, never IMMEDIATE.
             self._verify_schema(db)

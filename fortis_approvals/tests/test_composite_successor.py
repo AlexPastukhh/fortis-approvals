@@ -178,7 +178,11 @@ class SuccessorTests(unittest.TestCase):
             core, db, current=current, previous_scope=None, predecessor=None))
 
     def test_restart_replays_old_and_new_events_without_new_epoch(self):
-        core = self.install()
+        core = self.candidate_core()
+        sealed = self.args(core, transition=True)
+        core.install_reviewed(**sealed)
+        self.core = core
+        self.editor = self.make_editor(core)
         for child in CHILDREN:
             self.change(child, 'DENY', 'ASK')
         self.change(PARENT, 'DENY', 'ALLOW')
@@ -187,7 +191,9 @@ class SuccessorTests(unittest.TestCase):
         reopened = self.candidate_core()
         restored = self.restore_history(reopened)
         self.assertEqual(restored.seal(), self.history.seal())
-        reopened.install_reviewed(**{**self.args(reopened, transition=False), 'history':restored})
+        # Docker restart retains the exact original profile, including its
+        # first-transition permission and the original empty companion pin.
+        reopened.install_reviewed(**{**sealed, 'history':restored, 'release_active':True})
         self.assertTrue(reopened.successor_ready)
         self.assertEqual(snapshot(reopened, lambda db: authority_witness(reopened, db)), before)
         self.assertEqual(reopened.execute(result['requestId'])['result'], result['result'])
@@ -244,11 +250,56 @@ class SuccessorTests(unittest.TestCase):
             self.restore_history(reopened)
         self.assertFalse(reopened.successor_ready)
 
-    def test_no_repeat_transition_after_installed_epoch(self):
-        self.install()
+    def test_same_profile_restart_after_installed_epoch(self):
+        core = self.candidate_core()
+        sealed = self.args(core, transition=True)
+        core.install_reviewed(**sealed)
+        before = snapshot(core, lambda db: authority_witness(core, db))
         reopened = self.candidate_core()
+        reopened.install_reviewed(**sealed, release_active=True)
+        self.assertTrue(reopened.successor_ready)
+        self.assertEqual(snapshot(reopened, lambda db: authority_witness(reopened, db)), before)
+
+    def test_activated_predecessor_refused_without_migration(self):
+        core = self.candidate_core()
+        sealed = self.args(core, transition=True)
         with self.assertRaisesRegex(Denied, 'MODE_MISMATCH'):
-            reopened.install_reviewed(**self.args(reopened, transition=True))
+            core.install_reviewed(**sealed, release_active=True)
+        self.assertFalse(core.successor_ready)
+
+    def test_inactive_reopen_requires_original_companion_pin(self):
+        core = self.candidate_core()
+        sealed = self.args(core, transition=True)
+        core.install_reviewed(**sealed)
+        reopened = self.candidate_core()
+        with self.assertRaisesRegex(Denied, 'COMPANION_PIN_CHANGED'):
+            reopened.install_reviewed(**{**sealed, 'expected_companion_digest':'f'*64})
+        self.assertFalse(reopened.successor_ready)
+        reopened = self.candidate_core()
+        reopened.install_reviewed(**sealed)
+        self.assertTrue(reopened.successor_ready)
+
+    def test_active_reopen_rejects_corrupt_companion_after_growth(self):
+        core = self.candidate_core()
+        sealed = self.args(core, transition=True)
+        core.install_reviewed(**sealed)
+        self.core = core
+        self.editor = self.make_editor(core)
+        for child in CHILDREN:
+            self.change(child, 'DENY', 'ASK')
+        self.change(PARENT, 'DENY', 'ALLOW')
+        result = core.client('machine', 'submit', self.request())
+        self.assertEqual(result['state'], 'EXECUTED')
+        # A nonempty journal no longer matches the original snapshot, but
+        # its internal receipts and parent coverage remain mandatory.
+        with core._db() as db:
+            db.execute("DELETE FROM composite_step_events WHERE parent_id=?",
+                       (result['requestId'],))
+        reopened = self.candidate_core()
+        with self.assertRaises(Denied):
+            reopened.install_reviewed(**sealed, release_active=True)
+        self.assertFalse(reopened.successor_ready)
+        self.assertEqual(len(self.binding.effects), 2)
 
     def test_unreviewed_historical_digest_refused(self):
         core = self.install()

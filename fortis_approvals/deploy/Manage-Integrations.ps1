@@ -13,10 +13,12 @@ param(
     [string]$PreserveClaimedJobs='', [string]$PreserveApprovedRequest='', [switch]$ConfirmWorkerQuiescent,
     [string]$RegistryReturnContainerId='', [string]$RegistryReturnNonce='', [switch]$RegistryCrashRecovery,
     [string]$VaultVolume='fortis-review-secrets', [string]$Probes='', [switch]$Auto,
-    [string]$BackupIds='', [string]$RunIds='', [switch]$Preview
+    [string]$BackupIds='', [string]$RunIds='', [switch]$Preview, [switch]$Corrective288,
+    [string]$CorrectiveRegistryImage='', [string]$CorrectiveRegistryProfileSha256=''
 )
 $script:ReleaseClock=[Diagnostics.Stopwatch]::StartNew()
 $script:RegistryDelivery=$null
+$script:CorrectivePair=$null
 $ForwardParameters=@{}+ $PSBoundParameters
 . (Join-Path $PSScriptRoot 'Run-GitHub-Pilot-E2E.ps1') -Mode Functions
 # Windows PowerShell 5.1 only. Strict JSON DTO for Gateway release records.
@@ -797,12 +799,13 @@ function Write-Private {
     } finally {$script:R=$SavedR;$script:RecordPath=$SavedPath}
 }
 function Save {
+    param([switch]$FlushToDisk)
     # Exact release records only: never recursively serialize the live
     # PowerShell object graph. Abort pre-STOP_SOURCE on unknown/large types.
     Write-Host 'FORTIS_INTEGRATIONS_RECORD_BOUNDED_SERIALIZE_START'
     $JsonText=ConvertTo-BoundedReleaseJson $script:R
     Write-Host 'FORTIS_INTEGRATIONS_RECORD_BOUNDED_SERIALIZE_PASS'
-    Save-Record -SerializedJson $JsonText
+    Save-Record -SerializedJson $JsonText -FlushToDisk:$FlushToDisk
     Write-Host 'FORTIS_INTEGRATIONS_RECORD_PERSISTED'
 }
 function Python-Code {
@@ -1078,6 +1081,14 @@ function Assert-SuccessorPublicationSelfTest {
 }
 function Read-SuccessorMaintenanceContext {
     param($Source)
+    if($Corrective288){
+        # Explicit one-time initial delivery continuation, not a generic
+        # successor maintenance waiver. Original NORMAL anchor is checked
+        # before admitting any candidate; exact Check/Apply and owner GO
+        # are required by the existing release attempt.
+        $null=Read-Corrective288Anchor $Source
+        return
+    }
     $Generation=$Source.runtime.PSObject.Properties['maintenanceGeneration']
     if($null -eq $Generation){return}
     # A protected source opts in at provisioning. The receipt is updated only
@@ -1927,8 +1938,47 @@ print('FORTIS_REGISTRY_READER_MOUNT_SHA256=' + reviewed_registry_reader_mount_di
     return [string]$Matches[1]
 }
 
+function Read-Corrective288Anchor {
+    param($Source)
+    $Run='6ec445e6191543e7873275166922010b'
+    $Nonce='3ac0e38d-2618-4b51-8900-97107f727785'
+    $SourceHash='ea25b6d0769059e225c584a7a5518d6cedd0e8f3f138b1cb29f7194c09cc195c'
+    $PriorHash='f7cdb097e257e471bd19292286d2b876cef9d0eb3059b28f539986fec7cd290b'
+    $Digest='9dd0e18b2f10e5180fccd5831ff6528e973813d0fe0cf29a826bc20c750a18a3'
+    $Generation='906410832e42b5f8dc835e20c75fe79bfebbcbf9d149793111a3d67992f377aa'
+    if($Source.hash -ine $SourceHash -or $Source.runtime.runId -cne $Run -or
+       $Source.path -cne (Join-Path $ReleaseBase ($Run+'\record.json')) -or
+       $Source.runtime.registryReleaseNonce -cne $Nonce -or
+       $Source.runtime.maintenanceGeneration -cne $Generation -or
+       $Source.runtime.registryDelivery.sourceDelivery.interlockDigest -cne $Digest -or
+       (Read-Private $Pointer).record -cne $Source.path -or
+       (Test-Path -LiteralPath (Join-Path $ReleaseBase ('maintenance-'+$Run+'.json')))){
+        throw 'RELEASE_CORRECTIVE_288_SOURCE_CHANGED'
+    }
+    Assert-Registry288RecoveredProfile $Source.runtime '86722403363418162f179ccdbb14fa7368a5eede4e5c7ba6806cbb4402e92b17'
+    $Prior=Read-Private $Source.path
+    if($Prior.source.hash -ine $PriorHash -or
+       (Get-FileHash -LiteralPath $Prior.source.path -Algorithm SHA256).Hash -ine $PriorHash){
+        throw 'RELEASE_CORRECTIVE_288_SOURCE_CHANGED'
+    }
+    # Reuse the exact original genesis publication; do NOT create a new
+    # NORMAL record or write to the live shared interlock.
+    $Anchor=Read-Private (Join-Path $ReleaseBase ('maintenance-publication-'+$Nonce.Replace('-','')+'.json'))
+    if($Anchor.schema -cne 'fortis-successor-maintenance-publication-v1' -or
+       $Anchor.state -cne 'Committed' -or $Anchor.sourceRecordHash -ine $PriorHash -or
+       $Anchor.digest -cne $Digest -or $Anchor.record.schemaVersion -ne 1 -or
+       $Anchor.record.phase -cne 'NORMAL' -or $Anchor.record.generation -cne $Generation -or $Anchor.record.sequence -ne 0 -or
+       $Anchor.record.registryInstanceId -cne '08ef25a7-defb-4c7a-ac83-26ba8f994fc0' -or
+       $Anchor.record.scopeDigest -cne 'ec59ce507d1e0bb29cf94a9c8d1571367aca0549ddf60305031f7d6b409aefce' -or
+       $null -ne $Anchor.record.attempt -or $null -ne $Anchor.record.previousDigest -or
+       $null -ne $Anchor.record.proofDigest){
+        throw 'RELEASE_CORRECTIVE_288_ANCHOR_CHANGED'
+    }
+    return $Anchor
+}
 function Read-RegistrySuccessorAnchor {
     param($Source)
+    if($Corrective288){return (Read-Corrective288Anchor $Source)}
     # The existing controller journal owns the committed phase. Target
     # material is keyed by the owner-sealed release nonce, outside /state.
     $Id=$script:RegistryBoundReleaseNonce.Replace('-','')
@@ -1942,6 +1992,31 @@ function Read-RegistrySuccessorAnchor {
         throw 'RELEASE_REGISTRY_SUCCESSOR_ANCHOR_CHANGED'
     }
     return $Anchor
+}
+function Assert-RegistrySuccessorCompanionPreflight {
+    param($Result,[string]$IncumbentVolume)
+    $Legacy=$Result.PSObject.Properties['legacyCompanion']
+    $Existing=$Result.PSObject.Properties['existingCompanion']
+    if(-not $IncumbentVolume){
+        if($Legacy -or $Existing){throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'}
+        return
+    }
+    if([bool]$Legacy -eq [bool]$Existing){throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'}
+    if($Legacy){
+        if($Legacy.Value.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           $Legacy.Value.coreRowsDigest -cnotmatch '^[0-9a-f]{64}$'){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
+        }
+    } else {
+        # Only the existing #288 recovery continuation can use the retained
+        # successor preflight; no generic change to the maintenance gate.
+        if($IncumbentVolume -cne 'fortis-github-pilot-state-6ec445e6191543e7873275166922010b' -or
+           $Existing.Value.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           $Existing.Value.companionDigest -cne $Result.companionDigest -or
+           $Existing.Value.authorityWitnessDigest -cnotmatch '^[0-9a-f]{64}$'){
+            throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
+        }
+    }
 }
 function Image-RegistrySuccessor-Preflight {
     param([string]$ImageId,[string]$ReleaseNonce,[string]$InterlockDigest,[string]$IncumbentVolume='')
@@ -2000,11 +2075,10 @@ print(json.dumps(result,separators=(',',':'),sort_keys=True))
     if($Result.profileDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Result.companionDigest -cnotmatch '^[0-9a-f]{64}$' -or
        $Result.generation -cnotmatch '^[0-9a-f]{64}$' -or
-       $Result.sourceDelivery.interlockDigest -cne $InterlockDigest -or
-       ($IncumbentVolume -and ($Result.legacyCompanion.schemaDigest -cnotmatch '^[0-9a-f]{64}$' -or
-        $Result.legacyCompanion.coreRowsDigest -cnotmatch '^[0-9a-f]{64}$'))){
+       $Result.sourceDelivery.interlockDigest -cne $InterlockDigest){
         throw 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'
     }
+    Assert-RegistrySuccessorCompanionPreflight $Result $IncumbentVolume
     return $Result
 }
 function Read-RegistrySuccessorDelivery {
@@ -2014,6 +2088,15 @@ function Read-RegistrySuccessorDelivery {
     $Inputs=@{ImageId=$script:Image;ReleaseNonce=$script:RegistryBoundReleaseNonce
         InterlockDigest=$Anchor.digest;IncumbentVolume=$Source.runtime.stateVolume}
     $Result=Image-RegistrySuccessor-Preflight @Inputs
+    if($Result.PSObject.Properties['existingCompanion']){
+        if($Source.hash -ine 'ea25b6d0769059e225c584a7a5518d6cedd0e8f3f138b1cb29f7194c09cc195c'){
+            throw 'RELEASE_REGISTRY_288_REBIND_EVIDENCE_CHANGED'
+        }
+        Assert-Registry288RecoveredProfile $Source.runtime '86722403363418162f179ccdbb14fa7368a5eede4e5c7ba6806cbb4402e92b17'
+    }
+    if($Corrective288 -and -not $Result.PSObject.Properties['existingCompanion']){
+        throw 'RELEASE_CORRECTIVE_288_COMPANION_REQUIRED'
+    }
     $ReadBack=Read-RegistrySuccessorAnchor $Source
     if($null -eq $ReadBack -or -not (Same-Json $Anchor $ReadBack) -or
        $Result.generation -cne $Anchor.record.generation){
@@ -2021,6 +2104,490 @@ function Read-RegistrySuccessorDelivery {
     }
     return $Result
 }
+
+function Assert-CorrectiveRegistryContainer {
+    param($C,[string]$Nonce,[string]$Image,[string]$Profile,[string]$Role,[string]$Commit,
+          [ValidateSet('','created','running','exited')][string]$Status='',
+          [switch]$Accepted)
+    $Id=$Nonce.Replace('-','')
+    $Name='/fortis-registry-successor-'+$Id
+    $Restart='no';$ExpectedStatus='created';$StateWrite=$true
+    $Cmd=@('python','-m','fortis_approvals.registry.local_candidate_read_service',
+        '--owner-config','/run/fortis-registry-runtime/profile.json','--expected-profile-sha256',$Profile)
+    if($Role -ceq 'source'){$Restart='unless-stopped';$ExpectedStatus='running'}
+    elseif($Role -ceq 'preview'){
+        $Name+='-preview';$StateWrite=$false;$ExpectedStatus='running'
+        $Cmd+=@('--corrective-preview-sha',$Commit)
+    } elseif($Role -cne 'writer'){throw 'RELEASE_CORRECTIVE_REGISTRY_ROLE_INVALID'}
+    if($Status){$ExpectedStatus=$Status}
+    if($Accepted){
+        if($Role -cne 'writer' -or $ExpectedStatus -cne 'running'){throw 'RELEASE_CORRECTIVE_REGISTRY_ROLE_INVALID'}
+        $Restart='unless-stopped'
+    }
+    if($C.Id -cnotmatch '^[0-9a-f]{64}$' -or $C.Name -cne $Name -or $C.Image -cne $Image -or
+       $Image -cnotmatch '^sha256:[0-9a-f]{64}$' -or $Profile -cnotmatch '^[0-9a-f]{64}$' -or
+       $C.State.Status -cne $ExpectedStatus -or
+       ($Role -ceq 'writer' -and $ExpectedStatus -ceq 'created' -and $C.State.StartedAt -cne '0001-01-01T00:00:00Z') -or
+       $C.Config.User -cne '20002:20002' -or $C.HostConfig.NetworkMode -cne 'none' -or
+       $C.HostConfig.RestartPolicy.Name -cne $Restart -or $C.HostConfig.RestartPolicy.MaximumRetryCount -ne 0 -or
+       $C.HostConfig.Init -ne $true -or $C.HostConfig.ReadonlyRootfs -ne $true -or
+       $C.HostConfig.Privileged -ne $false -or @($C.HostConfig.CapAdd|Where-Object{$_}).Count -ne 0 -or
+       (@($C.HostConfig.CapDrop) -join ',') -cne 'ALL' -or
+       (@($C.HostConfig.SecurityOpt) -join ',') -cne 'no-new-privileges:true' -or
+       $C.HostConfig.PidsLimit -ne 64 -or $C.HostConfig.Memory -ne 536870912 -or
+       $C.Path -cne 'python' -or @($C.Config.Entrypoint|Where-Object{$_}).Count -ne 0 -or
+       -not (Same-Json @($C.Config.Cmd) $Cmd) -or
+       -not (Same-Json @($C.Args) @($Cmd[1..($Cmd.Count-1)])) -or @($C.Mounts).Count -ne 6){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_CONTAINER_CHANGED'
+    }
+    if($Role -cne 'source' -and $C.Config.Labels.'org.opencontainers.image.revision' -cne $Commit){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_IMAGE_SOURCE_CHANGED'
+    }
+    $Mounts=@(
+        @(('fortis-registry-state-e13b-'+$Id),'/run/fortis-registry-state',$StateWrite),
+        @(('fortis-registry-config-e13b-'+$Id),'/run/fortis-registry-runtime',$false),
+        @(('fortis-registry-read-'+$Id),'/run/fortis-registry-read',$true),
+        @(('fortis-registry-source-evidence-'+$Id),'/run/fortis-registry-source-evidence',$false),
+        @(('fortis-registry-source-'+$Id),'/run/fortis-registry-source',$false),
+        @('fortis-r7-maintenance-interlock','/run/r7-maintenance',$false))
+    foreach($Mount in $Mounts){
+        Assert-Volume $Mount[0]
+        $Found=@($C.Mounts|Where-Object{$_.Type -ceq 'volume' -and $_.Name -ceq $Mount[0] -and
+            $_.Source -ceq ('/var/lib/docker/volumes/'+$Mount[0]+'/_data') -and
+            $_.Destination -ceq $Mount[1] -and $_.RW -is [bool] -and $_.RW -eq $Mount[2]})
+        if($Found.Count -ne 1){throw 'RELEASE_CORRECTIVE_REGISTRY_MOUNT_CHANGED'}
+    }
+}
+function Assert-CorrectiveTargetHolders {
+    param([string]$Nonce,[string[]]$Allowed)
+    $Id=$Nonce.Replace('-','')
+    $Volumes=@(('fortis-registry-state-e13b-'+$Id),('fortis-registry-config-e13b-'+$Id),
+        ('fortis-registry-read-'+$Id),('fortis-registry-source-evidence-'+$Id),
+        ('fortis-registry-source-'+$Id),('fortis-r7-registry-reader-'+$Id))
+    $Ids=@((Docker-Text @('ps','-aq','--no-trunc')) -split '\r?\n'|Where-Object{$_})
+    foreach($C in @(Inspect-Containers $Ids)){
+        if($Allowed -ccontains $C.Id){continue}
+        foreach($M in $C.Mounts){
+            $NameField=$M.PSObject.Properties['Name']
+            $MountName=if($NameField){[string]$NameField.Value}else{''}
+            $SourceField=$M.PSObject.Properties['Source']
+            if(-not $SourceField){throw 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'}
+            $MountSource=[string]$SourceField.Value
+            foreach($V in $Volumes){
+                $Root='/var/lib/docker/volumes/'+$V+'/_data'
+                if($MountName -ceq $V -or ($MountSource -and ($MountSource -ceq $Root -or
+                   $MountSource.StartsWith($Root+'/',[StringComparison]::Ordinal) -or
+                   $Root.StartsWith($MountSource.TrimEnd('/')+'/',[StringComparison]::Ordinal)))){
+                    throw 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'
+                }
+            }
+        }
+    }
+}
+function Read-CorrectiveSourceSnapshot {
+    param([string]$Id,[string]$OldProfile)
+    $SourceCode=@'
+import hashlib,json,sys
+sys.path.insert(0,'/opt/fortis')
+from pathlib import Path
+from fortis_approvals.registry.local_candidate_read_service import _load_owner_config,_check_successor_profile,_readonly_owner_runtime
+from fortis_approvals.registry.owner_functional_v1_bootstrap import STATE_PATH
+from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+from fortis_approvals.registry.protected_transition import staged_domain
+p=json.load(sys.stdin)
+path='/run/fortis-registry-runtime/profile.json'
+root=_readonly_owner_runtime(path)
+cfg=_load_owner_config(path,allow_semantic=True)
+_check_successor_profile(cfg,p['profile'])
+if cfg['registryStatePath']!=str(STATE_PATH):raise RuntimeError('SOURCE_CORRECTIVE_PATH_CHANGED')
+pins=cfg['semantic']
+j=ReleaseEventJournal(STATE_PATH,instance_id=cfg['instanceId'],scope=cfg['scope'],
+    expected_legacy=pins['legacyWitness'],transition_digest=pins['transitionDigest'])
+v=staged_domain(j,root,pins).snapshot()
+if v['operations']:raise RuntimeError('SOURCE_CORRECTIVE_STATE_CHANGED')
+view={k:v[k] for k in ('sourceOperations','sourceRevision','snapshotRevision','sourceCursor','operations',
+    'sourceTransitionPending','catalogSha256','profileDigest','eventDigest')}
+view['states']={k:{f:s[f] for f in ('activeAttempt','installed','ownerReported')} for k,s in v['states'].items()}
+print(json.dumps({'view':view,'instance_id':j.instance_id,'scope':j.scope,
+    'legacy_witness':j.expected_legacy,'transition_digest':j.transition_digest},sort_keys=True,separators=(',',':')))
+'@
+    $Raw=Python-Code @('exec','-i','--user','20002:20002',$Id) $SourceCode (ConvertTo-Json -Compress @{profile=$OldProfile})
+    if($Raw.Length -gt 262144){throw 'RELEASE_CORRECTIVE_REGISTRY_SOURCE_EVIDENCE_TOO_LARGE'}
+    return $Raw
+}
+function Read-CorrectiveRegistryPair {
+    param($Source)
+    $Anchor=Read-Corrective288Anchor $Source
+    $OldNonce=$Source.runtime.registryReleaseNonce
+    $Nonce=$script:RegistryBoundReleaseNonce
+    if($Nonce -ceq $OldNonce -or $Nonce -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_NONCE_CHANGED'
+    }
+    $Old=Container 'abc934c2becc4066e739e4fac3cd276975dcd137a6b0acdae89b81d249df454d'
+    $OldProfile='a24fe5d8cf12971b381361d5a9fa56af6dafed679df0e076251d6f5c45d69201'
+    Assert-CorrectiveRegistryContainer $Old $OldNonce 'sha256:34f62160f05bd0b1986b6127ec8bb6d9e3ff3124d3550d70c3f98fdabfe27cc3' $OldProfile 'source' ''
+    $Name='fortis-registry-successor-'+$Nonce.Replace('-','')
+    $PreviewContainer=Container ($Name+'-preview')
+    $Writer=Container $Name
+    $Profile=$CorrectiveRegistryProfileSha256
+    $RegistryImage=$CorrectiveRegistryImage
+    Assert-CorrectiveRegistryContainer $Writer $Nonce $RegistryImage $Profile 'writer' $SourceSha
+    Assert-CorrectiveRegistryContainer $PreviewContainer $Nonce $RegistryImage $Profile 'preview' $SourceSha
+    if($Writer.Id -ceq $PreviewContainer.Id -or $Writer.Id -ceq $Old.Id -or
+       -not (Same-Json @($Writer.Config.Env) @($PreviewContainer.Config.Env))){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_CONTAINER_CHANGED'
+    }
+    Assert-CorrectiveTargetHolders $Nonce @($PreviewContainer.Id,$Writer.Id)
+    $OldId=$OldNonce.Replace('-','')
+    Assert-OnlyWriter ('fortis-registry-state-e13b-'+$OldId) $Old.Id
+    Assert-OnlyWriter ('fortis-registry-read-'+$OldId) $Old.Id
+    Assert-OnlyWriter ('fortis-registry-config-e13b-'+$OldId)
+    Assert-OnlyWriter ('fortis-registry-source-'+$OldId)
+    Assert-OnlyWriter ('fortis-registry-source-evidence-'+$OldId) $Source.runtime.pilotId
+    Assert-OnlyWriter 'fortis-r7-maintenance-interlock'
+    # Old image replays its own database. Send bounded ASCII evidence
+    # directly to the new preview's common checkpoint validator.
+    $Raw=Read-CorrectiveSourceSnapshot $Old.Id $OldProfile
+    $TargetCode=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.local_candidate_read_service import _load_owner_config,_check_successor_profile,_readonly_owner_runtime
+from fortis_approvals.registry.owner_functional_v1_bootstrap import STATE_PATH
+from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+from fortis_approvals.registry.protected_transition import staged_domain,corrective_checkpoint,corrective_checkpoint_view,verify_corrective_pair
+p=json.load(sys.stdin)
+path='/run/fortis-registry-runtime/profile.json'
+root=_readonly_owner_runtime(path)
+cfg=_load_owner_config(path,allow_semantic=True)
+_check_successor_profile(cfg,p['profile'])
+if cfg['registryStatePath']!=str(STATE_PATH):raise RuntimeError('SOURCE_CORRECTIVE_PATH_CHANGED')
+pins=cfg['semantic']
+j=ReleaseEventJournal(STATE_PATH,instance_id=cfg['instanceId'],scope=cfg['scope'],
+    expected_legacy=pins['legacyWitness'],transition_digest=pins['transitionDigest'],immutable_snapshot=True)
+source=corrective_checkpoint_view(**json.loads(p['source']),expected_revision=2,
+    expected_source_sha='5ab74dbd5f4f743b325bafd2444486180c3cdf7f')
+target=corrective_checkpoint(staged_domain(j,root,pins),expected_revision=3,expected_source_sha=p['commit'])
+print(json.dumps(verify_corrective_pair(source,target,expected_source_sha=p['commit']),sort_keys=True,separators=(',',':')))
+'@
+    $Payload=ConvertTo-Json -Compress @{profile=$Profile;commit=$SourceSha;source=$Raw}
+    $Pair=(Python-Code @('exec','-i','--user','20002:20002',$PreviewContainer.Id) $TargetCode $Payload)|ConvertFrom-Json
+    if($Pair.source.eventDigest -cne 'b3e80ca0f3bd1ae7f7fbcc15bed3942826af931dc025f9ec86f11534b368f634' -or
+       $Pair.target.sourceCursor -cne $SourceSha -or $Pair.source.instanceId -cne $Anchor.record.registryInstanceId -or
+       $Pair.source.scopeDigest -cne $Anchor.record.scopeDigest){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_PAIR_CHANGED'
+    }
+    Admit-Source (Container $Source.runtime.pilotId) $Source
+    Assert-CorrectiveTargetHolders $Nonce @($PreviewContainer.Id,$Writer.Id)
+    Assert-CorrectiveRegistryContainer (Container $Old.Id) $OldNonce $Old.Image $OldProfile 'source' ''
+    Assert-CorrectiveRegistryContainer (Container $Writer.Id) $Nonce $Writer.Image $Profile 'writer' $SourceSha
+    Assert-CorrectiveRegistryContainer (Container $PreviewContainer.Id) $Nonce $Writer.Image $Profile 'preview' $SourceSha
+    return [ordered]@{sourceRegistryId=$Old.Id;sourceRegistryImage=$Old.Image;sourceRegistryProfile=$OldProfile
+        targetRegistryId=$Writer.Id;targetPreviewId=$PreviewContainer.Id;targetRegistryImage=$Writer.Image
+        targetRegistryProfile=$Profile;anchorDigest=$Anchor.digest;checkpoints=$Pair}
+}
+
+
+
+# Read the exact stopped database, including committed WAL, or the new live
+# writer. No original file is modified by the frozen scratch replay.
+function Read-CorrectiveCheckpoint {
+    param([string]$Id,[string]$Nonce,[string]$Profile,[string]$Image,
+          [int]$Revision,[string]$Commit,[switch]$Frozen)
+    $Code=@'
+import json,sys
+sys.path.insert(0,'/opt/fortis')
+from fortis_approvals.registry.local_candidate_read_service import _load_owner_config,_check_successor_profile,_readonly_owner_runtime
+from fortis_approvals.registry.owner_functional_v1_bootstrap import STATE_PATH
+from fortis_approvals.registry.release_event_journal import ReleaseEventJournal
+from fortis_approvals.registry.protected_transition import staged_domain,corrective_checkpoint,frozen_corrective_checkpoint
+p=json.load(sys.stdin)
+path='/run/fortis-registry-runtime/profile.json'
+root=_readonly_owner_runtime(path)
+cfg=_load_owner_config(path,allow_semantic=True)
+_check_successor_profile(cfg,p['profile'])
+if cfg['registryStatePath']!=str(STATE_PATH):raise RuntimeError('SOURCE_CORRECTIVE_PATH_CHANGED')
+pins=cfg['semantic']
+j=ReleaseEventJournal(STATE_PATH,instance_id=cfg['instanceId'],scope=cfg['scope'],
+    expected_legacy=pins['legacyWitness'],transition_digest=pins['transitionDigest'])
+kw={'expected_revision':p['revision'],'expected_source_sha':p['commit']}
+result=(frozen_corrective_checkpoint(j,root,pins,**kw) if p['frozen']
+        else corrective_checkpoint(staged_domain(j,root,pins),**kw))
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
+'@
+    $Payload=ConvertTo-Json -Compress @{profile=$Profile;revision=$Revision;commit=$Commit;frozen=[bool]$Frozen}
+    if($Frozen){
+        $Suffix=$Nonce.Replace('-','')
+        $State='fortis-registry-state-e13b-'+$Suffix
+        $ConfigVolume='fortis-registry-config-e13b-'+$Suffix
+        Assert-Volume $State;Assert-Volume $ConfigVolume
+        Assert-OnlyWriter $State;Assert-OnlyWriter $ConfigVolume
+        if((Container $Id).State.Status -cnotin @('created','exited')){
+            throw 'RELEASE_CORRECTIVE_REGISTRY_NOT_FROZEN'
+        }
+        $Args=@('run','--rm','-i','--pull=never','--network','none','--read-only',
+            '--user','20002:20002','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+            '--pids-limit','32','--memory','1024m','--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=640m,uid=20002,gid=20002,mode=0700',
+            '--mount',('type=volume,source='+$State+',target=/run/fortis-registry-state,readonly,volume-nocopy'),
+            '--mount',('type=volume,source='+$ConfigVolume+',target=/run/fortis-registry-runtime,readonly,volume-nocopy'),$Image)
+    } else {
+        $Args=@('exec','-i','--user','20002:20002',$Id)
+    }
+    $Result=(Python-Code $Args $Code $Payload)|ConvertFrom-Json
+    if($Frozen){Assert-OnlyWriter $State;Assert-OnlyWriter $ConfigVolume}
+    return $Result
+}
+
+function Read-CorrectiveAttemptPair {
+    # The existing protected attempt/Check records own the exact pair.
+    $PairField=if($script:R -is [Collections.IDictionary]){$script:R['correctivePair']}
+        else{$P=$script:R.PSObject.Properties['correctivePair'];if($P){$P.Value}}
+    if(-not $PairField){return}
+    $Source=$script:R.source
+    $Anchor=Read-Corrective288Anchor $Source
+    if((Read-Private $AttemptPointer).record -cne $script:RecordPath -or
+       (Get-FileHash -LiteralPath $script:R.correctiveCheckRecord -Algorithm SHA256).Hash -ine $script:R.correctiveCheckHash){
+        throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'
+    }
+    $Checked=Read-Private $script:R.correctiveCheckRecord
+    if($Checked.schema -cne 'fortis-extension-image-check-v1' -or $Checked.phase -cne 'Ready' -or
+       -not (Same-Json $Checked.binding.correctivePair $PairField) -or
+       $Checked.binding.sourceHash -ine $Source.hash -or $Checked.binding.image -cne $script:R.runtime.image -or
+       $Checked.binding.registryReleaseNonce -cne $script:R.runtime.registryReleaseNonce -or
+       $Checked.binding.sourceSha -cne $PairField.checkpoints.target.sourceCursor -or
+       $Checked.binding.registryProfileDigest -cne $script:R.runtime.registryProfileDigest -or
+       $Checked.binding.configurationDigest -cne $script:R.configurationDigest -or
+       -not (Same-Json $Checked.binding.registryDelivery $script:R.runtime.registryDelivery) -or
+       -not (Same-Json $Checked.sourceReceipt $script:R.sourceReceipt) -or
+       $PairField.anchorDigest -cne $Anchor.digest){
+        throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'
+    }
+    foreach($Pin in @(@($Pointer,$Checked.binding.currentPointerHash),
+        @($PrimaryPointer,$Checked.binding.primaryPointerHash),
+        @((Join-Path $ReleaseBase 'primary-backup.json'),$Checked.binding.backupPointerHash))){
+        if((Get-FileHash -LiteralPath $Pin[0] -Algorithm SHA256).Hash -ine $Pin[1]){
+            throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'
+        }
+    }
+    return $PairField
+}
+
+function Assert-CorrectiveStoppedSource {
+    param($Pair)
+    $S=$script:R.source.runtime
+    if((Container $S.pilotId).State.Status -cne 'exited'){
+        throw 'RELEASE_CORRECTIVE_SOURCE_GATEWAY_RUNNING'
+    }
+    Assert-SourceUnchanged
+    Assert-CorrectiveTargetHolders $S.registryReleaseNonce @($Pair.sourceRegistryId,$S.pilotId)
+    $Old=Container $Pair.sourceRegistryId
+    Assert-CorrectiveRegistryContainer $Old $S.registryReleaseNonce $Pair.sourceRegistryImage $Pair.sourceRegistryProfile 'source' '' -Status 'exited'
+    $Frozen=Read-CorrectiveCheckpoint $Old.Id $S.registryReleaseNonce $Pair.sourceRegistryProfile $Pair.targetRegistryImage 2 $Pair.checkpoints.source.sourceCursor -Frozen
+    if(-not (Same-Json $Frozen $Pair.checkpoints.source)){
+        throw 'RELEASE_CORRECTIVE_FROZEN_SOURCE_CHANGED'
+    }
+}
+
+function Assert-CorrectiveTargetCheckpoint {
+    param($Pair,[switch]$Frozen)
+    $P=$script:R.runtime
+    $Commit=$Pair.checkpoints.target.sourceCursor
+    $Status=if($Frozen){'created'}else{'running'}
+    $Writer=Container $Pair.targetRegistryId
+    Assert-CorrectiveRegistryContainer $Writer $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Commit -Status $Status
+    $Preview=Container $Pair.targetPreviewId
+    Assert-CorrectiveRegistryContainer $Preview $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'preview' $Commit -Status 'exited'
+    $Allowed=@($Writer.Id,$Preview.Id)
+    if($P.pilotId){$Allowed+=$P.pilotId}
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce $Allowed
+    $Suffix=$P.registryReleaseNonce.Replace('-','')
+    $AllowedWriter=if($Frozen){''}else{$Writer.Id}
+    Assert-OnlyWriter ('fortis-registry-state-e13b-'+$Suffix) $AllowedWriter
+    Assert-OnlyWriter ('fortis-registry-read-'+$Suffix) $AllowedWriter
+    $Actual=Read-CorrectiveCheckpoint $Writer.Id $P.registryReleaseNonce $Pair.targetRegistryProfile $Pair.targetRegistryImage 3 $Commit -Frozen:$Frozen
+    if(-not (Same-Json $Actual $Pair.checkpoints.target)){
+        throw 'RELEASE_CORRECTIVE_TARGET_CHECKPOINT_CHANGED'
+    }
+}
+
+function Wait-CorrectiveRegistryListener {
+    param([string]$Id)
+    # Docker start ACK is not listener readiness. This bounded transport-only
+    # wait is followed by the full authenticated peer and journal admission.
+    $Code=@'
+import socket,stat,time
+from pathlib import Path
+path=Path('/run/fortis-registry-read/reader.sock')
+deadline=time.monotonic()+15
+while time.monotonic()<deadline:
+    try:
+        row=path.lstat()
+        if not (stat.S_ISSOCK(row.st_mode) and row.st_nlink==1 and
+                row.st_uid==20002 and row.st_gid==10001 and stat.S_IMODE(row.st_mode)==0o660):
+            raise RuntimeError('SOURCE_CORRECTIVE_LISTENER_IDENTITY')
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as peer:
+            peer.settimeout(1)
+            peer.connect(str(path))
+        after=path.lstat()
+        if (row.st_dev,row.st_ino)!=(after.st_dev,after.st_ino):
+            raise RuntimeError('SOURCE_CORRECTIVE_LISTENER_CHANGED')
+        print('CORRECTIVE_LISTENER_AVAILABLE')
+        break
+    except (FileNotFoundError,ConnectionRefusedError,TimeoutError):
+        time.sleep(0.25)
+else:
+    raise RuntimeError('SOURCE_CORRECTIVE_LISTENER_TIMEOUT')
+'@
+    $Observed=Python-Code @('exec','-i','--user','20002:20002',$Id) $Code '{}'
+    if($Observed -cne 'CORRECTIVE_LISTENER_AVAILABLE' -or (Container $Id).State.Status -cne 'running'){
+        throw 'RELEASE_CORRECTIVE_LISTENER_UNCONFIRMED'
+    }
+}
+
+function Switch-CorrectiveRegistryPair {
+    $Pair=Read-CorrectiveAttemptPair
+    if(-not $Pair){throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'}
+    $S=$script:R.source.runtime
+    $P=$script:R.runtime
+    if((Container $S.pilotId).State.Status -cne 'exited'){throw 'RELEASE_CORRECTIVE_SOURCE_GATEWAY_RUNNING'}
+    Assert-SourceUnchanged
+    Assert-CorrectiveTargetHolders $S.registryReleaseNonce @($Pair.sourceRegistryId,$S.pilotId)
+    Assert-CorrectiveRegistryContainer (Container $Pair.sourceRegistryId) $S.registryReleaseNonce $Pair.sourceRegistryImage $Pair.sourceRegistryProfile 'source' ''
+    Assert-CorrectiveRegistryContainer (Container $Pair.targetRegistryId) $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Pair.checkpoints.target.sourceCursor
+    Assert-CorrectiveRegistryContainer (Container $Pair.targetPreviewId) $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'preview' $Pair.checkpoints.target.sourceCursor
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce @($Pair.targetRegistryId,$Pair.targetPreviewId)
+    Step 'CORRECTIVE_STOP_SOURCE_REGISTRY'
+    $null=Docker-Text @('stop','--timeout','20',$Pair.sourceRegistryId)
+    Assert-CorrectiveStoppedSource $Pair
+    Step 'CORRECTIVE_STOP_READONLY_PREVIEW'
+    $null=Docker-Text @('stop','--timeout','20',$Pair.targetPreviewId)
+    Assert-CorrectiveTargetCheckpoint $Pair -Frozen
+    Step 'CORRECTIVE_START_TARGET_REGISTRY'
+    $null=Docker-Text @('start',$Pair.targetRegistryId)
+    Wait-CorrectiveRegistryListener $Pair.targetRegistryId
+    Assert-CorrectiveTargetCheckpoint $Pair
+    # Managed schema-5 authenticates the new live process by its independent
+    # key and kernel liveness, not the Preview's PID or socket inode.
+    $Delivery=Image-RegistrySuccessor-Preflight -ImageId $P.image -ReleaseNonce $P.registryReleaseNonce -InterlockDigest $Pair.anchorDigest -IncumbentVolume $S.stateVolume
+    if(-not (Same-Json $Delivery $P.registryDelivery)){throw 'RELEASE_CORRECTIVE_TARGET_PEER_CHANGED'}
+    Assert-CorrectiveStoppedSource $Pair
+}
+
+function Complete-CorrectiveRegistryPair {
+    param($Pair)
+    $P=$script:R.runtime;$S=$script:R.source.runtime
+    if((Container $S.pilotId).State.Status -cne 'exited' -or
+       (Container $Pair.sourceRegistryId).State.Status -cne 'exited' -or
+       (Container $Pair.targetPreviewId).State.Status -cne 'exited'){
+        throw 'RELEASE_CORRECTIVE_SOURCE_NOT_RETAINED'
+    }
+    $Writer=Container $Pair.targetRegistryId
+    $Accepted=$Writer.HostConfig.RestartPolicy.Name -ceq 'unless-stopped'
+    Assert-CorrectiveRegistryContainer $Writer $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Pair.checkpoints.target.sourceCursor -Status 'running' -Accepted:$Accepted
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce @($Writer.Id,$Pair.targetPreviewId,$P.pilotId)
+    Assert-OnlyWriter ('fortis-registry-state-e13b-'+$P.registryReleaseNonce.Replace('-','')) $Writer.Id
+    $GateInput=ConvertTo-Json -Compress @{nonce=$P.releaseNonce;configurationDigest=$script:R.configurationDigest}
+    $Gate=Image-CLI @('gate-record-status') $GateInput -StateVolume $P.stateVolume
+    if($Gate.active -ne $true -or $Gate.markerPresent -ne $true){
+        throw 'RELEASE_CORRECTIVE_ACTIVATION_UNCONFIRMED'
+    }
+    # No rollback after the durable activation marker, even if the command
+    # ACK or final record is lost. Read back an already-applied policy update.
+    if(-not $Accepted){
+        Step 'CORRECTIVE_ACCEPT_TARGET_REGISTRY'
+        $null=Docker-Text @('update','--restart=unless-stopped',$Writer.Id)
+    }
+    Assert-CorrectiveRegistryContainer (Container $Writer.Id) $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Pair.checkpoints.target.sourceCursor -Status 'running' -Accepted
+    Admit (Container $P.pilotId) $P
+}
+
+function Assert-CorrectiveGateAbsent {
+    param($P)
+    $Volumes=(Docker-Text @('volume','ls','--format','{{.Name}}')) -split '\r?\n'
+    if($Volumes -ccontains $P.stateVolume){
+        $InputText=ConvertTo-Json -Compress @{nonce=$P.releaseNonce;configurationDigest=$script:R.configurationDigest}
+        $Gate=Image-CLI @('gate-record-status') $InputText -StateVolume $P.stateVolume
+        # Invalid or unreadable marker is not evidence of non-activation.
+        if($Gate.active -ne $false -or $Gate.markerPresent -ne $false){
+            throw 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'
+        }
+    }
+}
+
+function Return-CorrectivePair {
+    param($Pair)
+    $S=$script:R.source.runtime;$P=$script:R.runtime
+    Assert-Release-Production
+    Assert-CorrectiveGateAbsent $P
+    $OldGateway=Container $S.pilotId
+    $OldRegistry=Container $Pair.sourceRegistryId
+    if($OldGateway.State.Status -cnotin @('running','exited') -or
+       $OldRegistry.State.Status -cnotin @('running','exited')){
+        throw 'RELEASE_CORRECTIVE_SOURCE_STATE_UNKNOWN'
+    }
+    if($OldRegistry.State.Status -ceq 'exited'){
+        Assert-CorrectiveStoppedSource $Pair
+    } else {
+        Assert-CorrectiveRegistryContainer $OldRegistry $S.registryReleaseNonce $Pair.sourceRegistryImage $Pair.sourceRegistryProfile 'source' ''
+        Admit $OldGateway $S -AllowUnhealthy
+        if($OldGateway.State.Status -ceq 'exited'){Assert-SourceUnchanged}
+    }
+    $Writer=Container $Pair.targetRegistryId;$Preview=Container $Pair.targetPreviewId
+    if($Writer.State.Status -cnotin @('created','exited','running') -or $Preview.State.Status -cnotin @('running','exited') -or
+       ($Writer.State.Status -ceq 'running' -and ($OldRegistry.State.Status -cne 'exited' -or $Preview.State.Status -cne 'exited'))){
+        throw 'RELEASE_CORRECTIVE_REGISTRY_STATE_UNKNOWN'
+    }
+    $Commit=$Pair.checkpoints.target.sourceCursor
+    Assert-CorrectiveRegistryContainer $Writer $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'writer' $Commit -Status $Writer.State.Status
+    Assert-CorrectiveRegistryContainer $Preview $P.registryReleaseNonce $Pair.targetRegistryImage $Pair.targetRegistryProfile 'preview' $Commit -Status $Preview.State.Status
+    $Names=(Docker-Text @('ps','-a','--format','{{.Names}}')) -split '\r?\n'
+    $Candidate=$null
+    if($Names -ccontains $P.pilotName){
+        $Candidate=Container $P.pilotName
+        if(-not $P.pilotId -or $Candidate.Id -cne $P.pilotId){throw 'RELEASE_CORRECTIVE_CANDIDATE_ID_UNKNOWN'}
+        Admit-ReturnCandidate $Candidate $P
+        if($Candidate.State.Status -cnotin @('created','exited','running')){throw 'RELEASE_CANDIDATE_STATE_UNKNOWN'}
+    } elseif($P.pilotId){throw 'RELEASE_CORRECTIVE_CANDIDATE_ID_UNKNOWN'}
+    $Allowed=@($Writer.Id,$Preview.Id)
+    if($Candidate){$Allowed+=$Candidate.Id}
+    Assert-CorrectiveTargetHolders $P.registryReleaseNonce $Allowed
+    # Recheck the marker before and after the final candidate stop.
+    Assert-CorrectiveGateAbsent $P
+    if($Candidate -and $Candidate.State.Status -ceq 'running'){
+        $null=Docker-Text @('stop','--timeout','20',$Candidate.Id)
+        if((Container $Candidate.Id).State.Status -cne 'exited'){throw 'RELEASE_STOP_UNCONFIRMED'}
+    }
+    Assert-CorrectiveGateAbsent $P
+    if($Writer.State.Status -ceq 'running'){$null=Docker-Text @('stop','--timeout','20',$Writer.Id)}
+    if($Preview.State.Status -ceq 'running'){$null=Docker-Text @('stop','--timeout','20',$Preview.Id)}
+    if((Container $Writer.Id).State.Status -cnotin @('created','exited') -or (Container $Preview.Id).State.Status -cne 'exited'){
+        throw 'RELEASE_CORRECTIVE_TARGET_STOP_UNCONFIRMED'
+    }
+    Assert-OnlyWriter ('fortis-registry-state-e13b-'+$P.registryReleaseNonce.Replace('-',''))
+    if($OldRegistry.State.Status -ceq 'exited'){
+        Assert-CorrectiveStoppedSource $Pair
+        Step 'CORRECTIVE_RETURN_SOURCE_REGISTRY'
+        $null=Docker-Text @('start',$OldRegistry.Id)
+        Wait-CorrectiveRegistryListener $OldRegistry.Id
+    }
+    Assert-CorrectiveRegistryContainer (Container $OldRegistry.Id) $S.registryReleaseNonce $Pair.sourceRegistryImage $Pair.sourceRegistryProfile 'source' ''
+    $ReadBack=(Read-CorrectiveSourceSnapshot $OldRegistry.Id $Pair.sourceRegistryProfile)|ConvertFrom-Json
+    if($ReadBack.view.sourceRevision -ne 2 -or $ReadBack.view.sourceCursor -cne $Pair.checkpoints.source.sourceCursor -or
+       $ReadBack.view.eventDigest -cne $Pair.checkpoints.source.eventDigest){
+        throw 'RELEASE_CORRECTIVE_RETURN_JOURNAL_CHANGED'
+    }
+    Admit $OldGateway $S -AllowUnhealthy
+    if($OldGateway.State.Status -ceq 'exited'){
+        Assert-SourceUnchanged
+        Step 'CORRECTIVE_RETURN_SOURCE_GATEWAY'
+        $null=Docker-Text @('start',$OldGateway.Id)
+    }
+    Wait-Healthy $OldGateway.Id
+    Admit (Container $OldGateway.Id) $S
+    Assert-Release-Production
+    $script:R.phase='Returned';Save -FlushToDisk
+    Write-Host 'FORTIS_INTEGRATIONS_RETURNED_SOURCE'
+}
+
 function Initialize-StagedRegistryCollector {
     param($Runtime)
     if(-not $Runtime.registryReaderVolume){return}
@@ -2041,10 +2608,18 @@ reader=load_owner_registry_reader(expected_release_nonce=p['nonce'],expected_sou
 if 'delivery' in p:
     from fortis_approvals.extensions.composite_preservation import prepare_staged_companion
     delivery=p['delivery']
-    prepare_staged_companion('/state/private/approvals.sqlite',
-        legacy=delivery['legacyCompanion'], expected_digest=delivery['companionDigest'],
-        verify_history=reader._policy_history.verify_incumbent_storage)
-print(json.dumps(prepare_staged_functional_state(reader,'/state/private'),sort_keys=True,separators=(',',':')))
+    if 'existingCompanion' in delivery:
+        if 'legacyCompanion' in delivery or reader._successor_config.inspect_existing_companion(
+                reader,'/state/private/approvals.sqlite') != delivery['existingCompanion']:
+            raise RuntimeError('REGISTRY_STAGED_SUCCESSOR_WITNESS_CHANGED')
+    else:
+        prepare_staged_companion('/state/private/approvals.sqlite',
+            legacy=delivery['legacyCompanion'], expected_digest=delivery['companionDigest'],
+            verify_history=reader._policy_history.verify_incumbent_storage)
+result=prepare_staged_functional_state(reader,'/state/private')
+if 'delivery' in p and 'existingCompanion' in p['delivery'] and result['result']!='P5_FUNCTIONAL_LOCAL_COLLECTOR_RETAINED':
+    raise RuntimeError('REGISTRY_STAGED_SUCCESSOR_COLLECTOR_CHANGED')
+print(json.dumps(result,sort_keys=True,separators=(',',':')))
 '@
     $Encoded=Code64 $Code
     $Wrapper="import base64;exec(compile(base64.b64decode('$Encoded'),'<registry-staged-collector>','exec'))"
@@ -2207,6 +2782,7 @@ function Checked-Image-Binding {
         confirmWorkerQuiescent=[bool]$ConfirmWorkerQuiescent
     }
     if($script:RegistryDelivery){$Binding['registryDelivery']=$script:RegistryDelivery}
+    if($script:CorrectivePair){$Binding['correctivePair']=$script:CorrectivePair}
     if($script:RegistryReturn){$Binding['registryReturn']=$script:RegistryReturn}
     if($script:RegistryCrash){$Binding['registryCrash']=$script:RegistryCrash}
     if($Maintenance){
@@ -2243,7 +2819,7 @@ function Save-Checked-Image {
     if($Maintenance -and (Test-Path -LiteralPath $Directory -PathType Container)){
         Assert-DirectoryAcl $Directory
     } else {Protect-Directory $Directory}
-    if($Maintenance){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}
+    if($Maintenance -or $script:CorrectivePair){Write-Private $Path $Record -FlushToDisk}else{Write-Private $Path $Record}
     return $Path
 }
 function Assert-Checked-Image-Binding {
@@ -2507,6 +3083,116 @@ function Assert-Previous-Image-Retained {
     Assert-Emergency-Rescue $Source
 }
 
+
+# Exact historical startup rebind, not a general exception for changed pins.
+# The same packaged #288 image and live Registry peer must already have passed
+# normal Admit checks. Original release, backup and primary records stay pinned.
+function Assert-Registry288RecoveredProfile {
+    param($P,[string]$Observed)
+    $Run='6ec445e6191543e7873275166922010b'
+    $Old='da63d73a34751d614ee4e96cd9cfb43bc99a9a1c79c0083cc1eb6e621dba2e40'
+    $New='86722403363418162f179ccdbb14fa7368a5eede4e5c7ba6806cbb4402e92b17'
+    if($P.runId -cne $Run -or $P.registryProfileDigest -cne $Old -or $Observed -cne $New){
+        throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'
+    }
+    $SourcePath=Join-Path $ReleaseBase ($Run+'\record.json')
+    $RecoveryPath=Join-Path $ReleaseBase 'startup-rebind-c0a789e16d3f41a4a4b9e230288c0f01\record.json'
+    $RehearsalPath=Join-Path $ReleaseBase 'startup-recovery-c0a789e16d3f41a4a4b9e230288c0f01\record.json'
+    $Pins=[ordered]@{}
+    $Pins[$SourcePath]='ea25b6d0769059e225c584a7a5518d6cedd0e8f3f138b1cb29f7194c09cc195c'
+    $Pins[$RecoveryPath]='3a8e8d4432e5ad2051fb26f77c879cb3343c73ce098ae0bd675d61095e1a8cdd'
+    $Pins[$RehearsalPath]='49310a7ab4cdb3db86134249806a3f22ad8633f3d1810b48c46726606febcb97'
+    $Records=@{}
+    foreach($Path in $Pins.Keys){
+        if((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Pins[$Path]){
+            throw 'RELEASE_REGISTRY_288_REBIND_EVIDENCE_CHANGED'
+        }
+        $Records[$Path]=Read-Private $Path
+        if((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Pins[$Path]){
+            throw 'RELEASE_REGISTRY_288_REBIND_EVIDENCE_CHANGED'
+        }
+    }
+    $Source=$Records[$SourcePath];$Recovery=$Records[$RecoveryPath];$Rehearsal=$Records[$RehearsalPath]
+    if($Source.schema -cne 'fortis-extension-release-v1' -or $Source.phase -cne 'Complete' -or
+       $Source.activated -ne $true -or $Recovery.schema -cne 'fortis-288-startup-rebind-v1' -or
+       $Recovery.phase -cne 'Recovered' -or $Recovery.ownerAction -cne 'RECOVER GATEWAY 288' -or
+       $Recovery.releaseRecord -cne $SourcePath -or $Recovery.releaseHash -cne $Pins[$SourcePath] -or
+       $Recovery.rehearsalRecord -cne $RehearsalPath -or $Recovery.rehearsalHash -cne $Pins[$RehearsalPath] -or
+       $Recovery.oldProfileDigest -cne $Old -or $Recovery.newProfileDigest -cne $New -or
+       $Recovery.configurationDigest -cne $Source.configurationDigest -or
+       $Rehearsal.phase -cne 'Rehearsed' -or $Rehearsal.proof.result -cne 'RECOVERY_REHEARSAL_PACKAGED_REOPEN_PASS'){
+        throw 'RELEASE_REGISTRY_288_REBIND_EVIDENCE_CHANGED'
+    }
+    foreach($Field in @('runId','pilotId','image','stateVolume','registryReaderVolume','registrySocketVolume',
+                        'releaseNonce','registryReleaseNonce','registryProfileDigest','maintenanceGeneration')){
+        if($P.$Field -cne $Source.runtime.$Field){throw 'RELEASE_REGISTRY_288_REBIND_RUNTIME_CHANGED'}
+    }
+    if(-not (Same-Json $P.registryDelivery $Source.runtime.registryDelivery) -or
+       $Recovery.gatewayId -cne $P.pilotId -or $Recovery.image -cne $P.image -or
+       $Recovery.stateVolume -cne $P.stateVolume -or $Recovery.readerVolume -cne $P.registryReaderVolume -or
+       $Recovery.releaseNonce -cne $P.releaseNonce){
+        throw 'RELEASE_REGISTRY_288_REBIND_RUNTIME_CHANGED'
+    }
+}
+
+
+function Assert-Registry288RecoveredProfileSelfTest {
+    $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-rebind-fixture'
+    $Run='6ec445e6191543e7873275166922010b'
+    $SourcePath=Join-Path $ReleaseBase ($Run+'\record.json')
+    $RecoveryPath=Join-Path $ReleaseBase 'startup-rebind-c0a789e16d3f41a4a4b9e230288c0f01\record.json'
+    $RehearsalPath=Join-Path $ReleaseBase 'startup-recovery-c0a789e16d3f41a4a4b9e230288c0f01\record.json'
+    $Old='da63d73a34751d614ee4e96cd9cfb43bc99a9a1c79c0083cc1eb6e621dba2e40'
+    $New='86722403363418162f179ccdbb14fa7368a5eede4e5c7ba6806cbb4402e92b17'
+    $Hashes=@{}
+    $Hashes[$SourcePath]='ea25b6d0769059e225c584a7a5518d6cedd0e8f3f138b1cb29f7194c09cc195c'
+    $Hashes[$RecoveryPath]='3a8e8d4432e5ad2051fb26f77c879cb3343c73ce098ae0bd675d61095e1a8cdd'
+    $Hashes[$RehearsalPath]='49310a7ab4cdb3db86134249806a3f22ad8633f3d1810b48c46726606febcb97'
+    $Runtime=[pscustomobject]@{runId=$Run;pilotId=('a'*64);image=('sha256:'+('b'*64));stateVolume='fixture-state'
+        registryReaderVolume='fixture-reader';registrySocketVolume='fixture-socket';releaseNonce='fixture-nonce'
+        registryReleaseNonce='fixture-nonce';registryProfileDigest=$Old;maintenanceGeneration=('c'*64)
+        registryDelivery=[ordered]@{profileDigest=$Old;generation=('c'*64)}}
+    $Values=@{}
+    $Values[$SourcePath]=[pscustomobject]@{schema='fortis-extension-release-v1';phase='Complete';activated=$true
+        configurationDigest=('d'*64);runtime=$Runtime}
+    $Values[$RecoveryPath]=[pscustomobject]@{schema='fortis-288-startup-rebind-v1';phase='Recovered';ownerAction='RECOVER GATEWAY 288'
+        releaseRecord=$SourcePath;releaseHash=$Hashes[$SourcePath];rehearsalRecord=$RehearsalPath;rehearsalHash=$Hashes[$RehearsalPath]
+        oldProfileDigest=$Old;newProfileDigest=$New;configurationDigest=('d'*64);gatewayId=$Runtime.pilotId
+        image=$Runtime.image;stateVolume=$Runtime.stateVolume;readerVolume=$Runtime.registryReaderVolume;releaseNonce=$Runtime.releaseNonce}
+    $Values[$RehearsalPath]=[pscustomobject]@{phase='Rehearsed';proof=@{result='RECOVERY_REHEARSAL_PACKAGED_REOPEN_PASS'}}
+    function Read-Private {param($Path) $Values[$Path]}
+    function Get-FileHash {param($LiteralPath,$Algorithm) [pscustomobject]@{Hash=$Hashes[$LiteralPath]}}
+    Assert-Registry288RecoveredProfile $Runtime $New
+    $Existing=[pscustomobject]@{companionDigest=('a'*64);existingCompanion=[pscustomobject]@{
+        schemaDigest=('b'*64);companionDigest=('a'*64);authorityWitnessDigest=('c'*64)}}
+    $Legacy=[pscustomobject]@{legacyCompanion=[pscustomobject]@{
+        schemaDigest=('a'*64);coreRowsDigest=('b'*64)}}
+    Assert-RegistrySuccessorCompanionPreflight $Existing ('fortis-github-pilot-state-'+$Run)
+    Assert-RegistrySuccessorCompanionPreflight $Legacy 'legacy-fixture'
+    $Rejected=$false
+    try {Assert-RegistrySuccessorCompanionPreflight $Existing 'other-state'}
+    catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_SUCCESSOR_PREFLIGHT_UNCONFIRMED'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_REGISTRY_288_REBIND_SELFTEST_FAILED'}
+    $Other=$Runtime|ConvertTo-Json -Depth 10|ConvertFrom-Json
+    $Other.pilotId='f'*64
+    $Cases=@(
+        @{runtime=$Runtime;digest=('0'*64);code='RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'},
+        @{runtime=$Other;digest=$New;code='RELEASE_REGISTRY_288_REBIND_RUNTIME_CHANGED'}
+    )
+    foreach($Case in $Cases){
+        $Rejected=$false
+        try {Assert-Registry288RecoveredProfile $Case.runtime $Case.digest}
+        catch {if($_.Exception.Message -cne $Case.code){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_REGISTRY_288_REBIND_SELFTEST_FAILED'}
+    }
+    $Hashes[$RecoveryPath]='0'*64
+    $Rejected=$false
+    try {Assert-Registry288RecoveredProfile $Runtime $New}
+    catch {if($_.Exception.Message -cne 'RELEASE_REGISTRY_288_REBIND_EVIDENCE_CHANGED'){throw};$Rejected=$true}
+    if(-not $Rejected){throw 'RELEASE_REGISTRY_288_REBIND_SELFTEST_FAILED'}
+    Write-Host 'FORTIS_REGISTRY_288_REBIND_SELFTEST_PASS'
+}
+
 function Admit {
     param($C,$P,[switch]$AllowUnhealthy,[switch]$AllowPendingIngress,
           [string]$MountPreflightImageId='', [string]$VerifiedPromoteRescueImage='',
@@ -2627,7 +3313,8 @@ function Admit {
                 -ReaderVolume $RegistryProtected.readerVolume
         }
         if($Observed -cne $RegistryProtected.profileDigest){
-            throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'
+            if(-not $Delivery){throw 'RELEASE_REGISTRY_PROFILE_OR_PEER_CHANGED'}
+            Assert-Registry288RecoveredProfile $P $Observed
         }
     }
 }
@@ -2755,6 +3442,8 @@ function Assert-SourceUnchanged {
 }
 function Return-Source {
     if($script:R.phase -ceq 'Complete' -or $script:R.activated){throw 'RELEASE_ACTIVE_RETURN_REQUIRES_REVIEW'}
+    $Pair=Read-CorrectiveAttemptPair
+    if($Pair){Return-CorrectivePair $Pair;return}
     Assert-Release-Production
     $P=$script:R.runtime
     $ReturnField=$script:R.PSObject.Properties['registryReturn']
@@ -2839,13 +3528,39 @@ function Complete-ActionCoreNetwork {
 }
 function Resume-Target {
     $P=$script:R.runtime;$C=Container $P.pilotName
+    $Corrective=Read-CorrectiveAttemptPair
+    if($Corrective){
+        if(-not $ConfirmWorkerQuiescent){throw 'RELEASE_CORRECTIVE_QUIESCENCE_REQUIRED'}
+        if($script:R.phase -ceq 'Complete'){
+            if(-not $script:R.activated -or -not $script:R.probesPassed -or
+               (Container $Corrective.targetRegistryId).HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                throw 'RELEASE_CORRECTIVE_COMPLETION_CHANGED'
+            }
+            Complete-CorrectiveRegistryPair $Corrective
+            Write-Private $Pointer @{schema=1;record=$script:RecordPath} -FlushToDisk
+            Write-Host 'FORTIS_CORRECTIVE_CURRENT_POINTER_COMPLETED'
+            return
+        }
+        if((Container $script:R.source.runtime.pilotId).State.Status -cne 'exited' -or
+           (Container $Corrective.sourceRegistryId).State.Status -cne 'exited' -or
+           (Container $Corrective.targetPreviewId).State.Status -cne 'exited'){
+            throw 'RELEASE_CORRECTIVE_SOURCE_NOT_RETAINED'
+        }
+        $InputText=ConvertTo-Json -Compress @{nonce=$P.releaseNonce;configurationDigest=$script:R.configurationDigest}
+        $GateRecord=Image-CLI @('gate-record-status') $InputText -StateVolume $P.stateVolume
+        if($GateRecord.markerPresent -ne $false -and $GateRecord.active -ne $true){
+            throw 'RELEASE_CORRECTIVE_ACTIVATION_UNCONFIRMED'
+        }
+        if(-not $GateRecord.active){Assert-CorrectiveTargetCheckpoint $Corrective}
+        elseif(-not $script:R.probesPassed){throw 'RELEASE_ACTIVE_WITHOUT_PROBE_RECEIPT'}
+    }
     $C=Complete-ActionCoreNetwork $C $P
     Admit $C $P -AllowUnhealthy
     if($C.State.Status -ceq 'created' -or $C.State.Status -ceq 'exited'){
         Assert-OnlyWriter $P.stateVolume;$null=Docker-Text @('start',$C.Id)
     }
     Wait-Healthy $C.Id;Admit (Container $C.Id) $P
-    $script:R.runtime.pilotId=$C.Id;$script:R.phase='Staged';Save
+    $script:R.runtime.pilotId=$C.Id;$script:R.phase='Staged';Save -FlushToDisk:([bool]$Corrective)
     $Gate=Running-CLI $C.Id @('gate-status')
     if($Gate.configurationDigest -cne $script:R.configurationDigest){throw 'RELEASE_RUNNING_DIGEST_MISMATCH'}
     if(-not $Gate.active){
@@ -2872,14 +3587,26 @@ function Resume-Target {
             Step 'VERIFY_STAGED_OWNER_SHELL_MTLS'
             Running-OwnerShell-Check $C.Id
         }
-        $script:R.probesPassed=$true;Save
-        Assert-SourceUnchanged;Assert-Release-Production
+        $script:R.probesPassed=$true;Save -FlushToDisk:([bool]$Corrective)
+        Assert-Release-Production
+        if($Corrective){
+            $null=Read-CorrectiveAttemptPair
+            Assert-CorrectiveStoppedSource $Corrective
+            Assert-CorrectiveTargetCheckpoint $Corrective
+            Assert-CorrectiveGateAbsent $P
+        }else{Assert-SourceUnchanged}
         Step 'ACTIVATE'
         $Activated=Running-CLI $C.Id @('activate') '' -Root
         if($Activated.status -cne 'ACTIVATED'){throw 'RELEASE_ACTIVATION_NOT_CONFIRMED'}
     } elseif(-not $script:R.probesPassed){throw 'RELEASE_ACTIVE_WITHOUT_PROBE_RECEIPT'}
-    $script:R.activated=$true;$script:R.phase='Complete';Save
-    Write-Private $Pointer @{schema=1;record=$script:RecordPath}
+    if($Corrective){
+        # Persist the irreversible boundary before enabling auto-restart or
+        # publishing current.json. Resume reads the actual marker after loss.
+        $script:R.activated=$true;Save -FlushToDisk
+        Complete-CorrectiveRegistryPair $Corrective
+    }
+    $script:R.activated=$true;$script:R.phase='Complete';Save -FlushToDisk:([bool]$Corrective)
+    Write-Private $Pointer @{schema=1;record=$script:RecordPath} -FlushToDisk:([bool]$Corrective)
     [ordered]@{record=$script:RecordPath;image=$P.image;configurationDigest=$script:R.configurationDigest
         active=$true;previousRetained=$true;productionUnchanged=$true;providerMutationAcceptance='PENDING_OR_NOT_APPLICABLE'}|ConvertTo-Json
     Write-Host 'FORTIS_INTEGRATIONS_ACTIVATED'
@@ -3555,6 +4282,368 @@ function Restore-RegistrySource {
 if($Service -and $Action -cne 'Credential'){throw 'CREDENTIAL_SERVICE_ACTION_INVALID'}
 if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or $PSVersionTable.PSEdition -cne 'Desktop'){throw 'RELEASE_WINDOWS_POWERSHELL_51_REQUIRED'}
 if(@(Json-Items '[{"Id":"one"},{"Id":"two"}]').Count -ne 2 -or @(Json-Items '[{"Id":"one"}]')[0].Id -cne 'one'){throw 'RELEASE_JSON_SELFTEST_FAILED'}
+function Assert-CorrectiveRegistryPairSelfTest {
+    $NonceVariable=Get-Variable -Name RegistryBoundReleaseNonce -Scope Script -ErrorAction SilentlyContinue
+    $PreviousNonce=if($NonceVariable){$NonceVariable.Value}else{''}
+    $RVariable=Get-Variable -Name R -Scope Script -ErrorAction SilentlyContinue
+    $PathVariable=Get-Variable -Name RecordPath -Scope Script -ErrorAction SilentlyContinue
+    $PreviousR=if($RVariable){$RVariable.Value}
+    $PreviousPath=if($PathVariable){$PathVariable.Value}
+    try { & {
+        $ReleaseBase=Join-Path ([IO.Path]::GetTempPath()) 'fortis-corrective-pair-fixture'
+        $Pointer=Join-Path $ReleaseBase 'current.json'
+        $Run='6ec445e6191543e7873275166922010b'
+        $OldNonce='3ac0e38d-2618-4b51-8900-97107f727785'
+        $Nonce='11111111-1111-4111-8111-111111111111'
+        $SourceSha='e'*40
+        $CorrectiveRegistryImage='sha256:'+('c'*64)
+        $CorrectiveRegistryProfileSha256='d'*64
+        $script:RegistryBoundReleaseNonce=$Nonce
+        $OldProfile='a24fe5d8cf12971b381361d5a9fa56af6dafed679df0e076251d6f5c45d69201'
+        $OldImage='sha256:34f62160f05bd0b1986b6127ec8bb6d9e3ff3124d3550d70c3f98fdabfe27cc3'
+        $OldId='abc934c2becc4066e739e4fac3cd276975dcd137a6b0acdae89b81d249df454d'
+        $Digest='9dd0e18b2f10e5180fccd5831ff6528e973813d0fe0cf29a826bc20c750a18a3'
+        $Generation='906410832e42b5f8dc835e20c75fe79bfebbcbf9d149793111a3d67992f377aa'
+        $SourceHash='ea25b6d0769059e225c584a7a5518d6cedd0e8f3f138b1cb29f7194c09cc195c'
+        $PriorHash='f7cdb097e257e471bd19292286d2b876cef9d0eb3059b28f539986fec7cd290b'
+        $SourcePath=Join-Path $ReleaseBase ($Run+'\record.json')
+        $PriorPath=Join-Path $ReleaseBase 'prior\record.json'
+        $Publication=Join-Path $ReleaseBase ('maintenance-publication-'+$OldNonce.Replace('-','')+'.json')
+        $Source=@{path=$SourcePath;hash=$SourceHash;runtime=[pscustomobject]@{
+            runId=$Run;registryReleaseNonce=$OldNonce;maintenanceGeneration=$Generation;pilotId=('a'*64)
+            registryDelivery=[pscustomobject]@{sourceDelivery=[pscustomobject]@{interlockDigest=$Digest}}}}
+        $Records=@{}
+        $Records[$Pointer]=[pscustomobject]@{record=$SourcePath}
+        $Records[$SourcePath]=[pscustomobject]@{source=[pscustomobject]@{path=$PriorPath;hash=$PriorHash}}
+        $Anchor=[pscustomobject]@{schema='fortis-successor-maintenance-publication-v1';state='Committed'
+            sourceRecordHash=$PriorHash;digest=$Digest;record=[pscustomobject]@{
+                schemaVersion=1;phase='NORMAL';sequence=0;generation=$Generation;attempt=$null;previousDigest=$null;proofDigest=$null
+                registryInstanceId='08ef25a7-defb-4c7a-ac83-26ba8f994fc0'
+                scopeDigest='ec59ce507d1e0bb29cf94a9c8d1571367aca0549ddf60305031f7d6b409aefce'}}
+        $Records[$Publication]=$Anchor
+        $Fixture=@{holders=$null;wrongEvent=$false;admissions=0}
+        function Read-Private {param($Path) $Records[$Path]}
+        function Get-FileHash {param($LiteralPath,$Algorithm) [pscustomobject]@{Hash=$PriorHash}}
+        function Test-Path {param($LiteralPath) $false}
+        function Assert-Registry288RecoveredProfile {}
+        function Assert-Volume {}
+        function Assert-OnlyWriter {}
+        function Admit-Source {$Fixture.admissions++}
+        function New-FixtureRegistry {
+            param($Id,$N,$Image,$Profile,$Role)
+            $Suffix=$N.Replace('-','')
+            $Name='/fortis-registry-successor-'+$Suffix
+            $Status='created';$Restart='no';$Writable=$true
+            $Cmd=@('python','-m','fortis_approvals.registry.local_candidate_read_service',
+                '--owner-config','/run/fortis-registry-runtime/profile.json','--expected-profile-sha256',$Profile)
+            if($Role -ceq 'source'){$Status='running';$Restart='unless-stopped'}
+            if($Role -ceq 'preview'){$Status='running';$Name+='-preview';$Writable=$false;$Cmd+=@('--corrective-preview-sha',$SourceSha)}
+            $Rows=@(
+                @(('fortis-registry-state-e13b-'+$Suffix),'/run/fortis-registry-state',$Writable),
+                @(('fortis-registry-config-e13b-'+$Suffix),'/run/fortis-registry-runtime',$false),
+                @(('fortis-registry-read-'+$Suffix),'/run/fortis-registry-read',$true),
+                @(('fortis-registry-source-evidence-'+$Suffix),'/run/fortis-registry-source-evidence',$false),
+                @(('fortis-registry-source-'+$Suffix),'/run/fortis-registry-source',$false),
+                @('fortis-r7-maintenance-interlock','/run/r7-maintenance',$false))
+            [pscustomobject]@{Id=$Id;Name=$Name;Image=$Image;Path='python';Args=@($Cmd[1..($Cmd.Count-1)])
+                State=[pscustomobject]@{Status=$Status;StartedAt='0001-01-01T00:00:00Z'}
+                Config=[pscustomobject]@{User='20002:20002';Cmd=$Cmd;Entrypoint=$null;Env=@('TEST=fixture')
+                    Labels=[pscustomobject]@{'org.opencontainers.image.revision'=$SourceSha}}
+                HostConfig=[pscustomobject]@{NetworkMode='none';RestartPolicy=[pscustomobject]@{Name=$Restart;MaximumRetryCount=0}
+                    Init=$true;ReadonlyRootfs=$true;Privileged=$false;CapAdd=$null;CapDrop=@('ALL')
+                    SecurityOpt=@('no-new-privileges:true');PidsLimit=64;Memory=536870912}
+                Mounts=@(foreach($Row in $Rows){[pscustomobject]@{Type='volume';Name=$Row[0]
+                    Source=('/var/lib/docker/volumes/'+$Row[0]+'/_data');Destination=$Row[1];RW=$Row[2]}})}
+        }
+        $Old=New-FixtureRegistry $OldId $OldNonce $OldImage $OldProfile 'source'
+        $Writer=New-FixtureRegistry ('b'*64) $Nonce ('sha256:'+('c'*64)) ('d'*64) 'writer'
+        $Preview=New-FixtureRegistry ('f'*64) $Nonce $Writer.Image ('d'*64) 'preview'
+        $Gateway=[pscustomobject]@{Id=$Source.runtime.pilotId;Name='/gateway-fixture';Mounts=@()
+            State=[pscustomobject]@{Status='running'}}
+        $Fixture.holders=@($Old,$Writer,$Preview,$Gateway)
+        function Container {param($Identity)
+            $Match=@($Fixture.holders|Where-Object{$_.Id -ceq $Identity -or $_.Name -ceq ('/'+$Identity)})
+            if($Match.Count -ne 1){throw 'FIXTURE_CONTAINER_UNKNOWN'}
+            $Match[0]
+        }
+        function Docker-Text {($Fixture.holders.Id -join "`n")}
+        function Inspect-Containers {param($Ids) $Fixture.holders}
+        function Python-Code {
+            param($Arguments,$Code,$InputText)
+            if($Arguments[-1] -ceq $Old.Id){return '{"fixture":true}'}
+            if($Arguments[-1] -cne $Preview.Id){throw 'FIXTURE_WRONG_EXEC'}
+            $Event=if($Fixture.wrongEvent){'0'*64}else{'b3e80ca0f3bd1ae7f7fbcc15bed3942826af931dc025f9ec86f11534b368f634'}
+            return (ConvertTo-Json -Compress -Depth 6 @{
+                source=[ordered]@{eventDigest=$Event;instanceId=$Anchor.record.registryInstanceId;scopeDigest=$Anchor.record.scopeDigest
+                    sourceRevision=2;sourceCursor='5ab74dbd5f4f743b325bafd2444486180c3cdf7f'}
+                target=[ordered]@{sourceRevision=3;sourceCursor=$SourceSha}})
+        }
+        $Pair=Read-CorrectiveRegistryPair $Source
+        if($Pair.targetRegistryId -cne $Writer.Id -or $Pair.targetPreviewId -cne $Preview.Id -or
+           $Pair.sourceRegistryId -cne $OldId -or $Fixture.admissions -ne 1){
+            throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'
+        }
+        $CorrectiveRegistryProfileSha256='0'*64
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_CONTAINER_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        $CorrectiveRegistryProfileSha256='d'*64
+        $Fixture.wrongEvent=$true
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_PAIR_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        $Fixture.wrongEvent=$false
+        $Preview.Mounts[0].RW=$true
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_MOUNT_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        $Preview.Mounts[0].RW=$false
+        $Writer.State.Status='running'
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_CONTAINER_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        $Writer.State.Status='created'
+        $Anchor.record.sequence=1
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_288_ANCHOR_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        $Anchor.record.sequence=0
+        $Fixture.holders+=@([pscustomobject]@{Id=('9'*64);Name='/extra';Mounts=@(
+            [pscustomobject]@{Type='bind';Source=($Preview.Mounts[2].Source+'/alias');RW=$false})})
+        $Rejected=$false
+        try{$null=Read-CorrectiveRegistryPair $Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_REGISTRY_TARGET_HOLDER_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_PAIR_SELFTEST_FAILED'}
+        Write-Host 'FORTIS_CORRECTIVE_REGISTRY_PAIR_SELFTEST_PASS'
+
+        # Same Check binding, actual switch/Return/completion functions.
+        # Only Docker, packaged readback and protected filesystem are mocked.
+        $Fixture.holders=@($Old,$Writer,$Preview,$Gateway)
+        $Fixture.events=[Collections.Generic.List[string]]::new()
+        $Fixture.markerPresent=$false;$Fixture.active=$false;$Fixture.failFrozen=$false;$Fixture.loseAck=$false
+        $Fixture.badHash=$false
+        $AttemptPointer=Join-Path $ReleaseBase 'attempt.json'
+        $PrimaryPointer=Join-Path $ReleaseBase 'primary.json'
+        $CheckPath=Join-Path $ReleaseBase 'check\record.json'
+        $script:RecordPath=Join-Path $ReleaseBase 'attempt\record.json'
+        $Source.runtime|Add-Member -NotePropertyName stateVolume -NotePropertyValue 'source-state'
+        $Target=[pscustomobject]@{Id=('7'*64);Name='/target-gateway';Mounts=@()
+            State=[pscustomobject]@{Status='running'}}
+        $Delivery=[pscustomobject]@{sourceDelivery=[pscustomobject]@{interlockDigest=$Digest}}
+        $Runtime=[ordered]@{pilotId='';pilotName='target-gateway';image=('sha256:'+('8'*64));stateVolume='target-state'
+            registryReleaseNonce=$Nonce;registryProfileDigest=('6'*64);releaseNonce=$Nonce;registryDelivery=$Delivery}
+        $Receipt=[pscustomobject]@{witness='fixture'}
+        $Records[$AttemptPointer]=[pscustomobject]@{record=$script:RecordPath}
+        $Records[$CheckPath]=[pscustomobject]@{schema='fortis-extension-image-check-v1';phase='Ready'
+            binding=[pscustomobject]@{correctivePair=$Pair;sourceHash=$SourceHash;image=$Runtime.image
+                registryReleaseNonce=$Nonce;registryProfileDigest=$Runtime.registryProfileDigest;sourceSha=$SourceSha
+                currentPointerHash=$PriorHash;primaryPointerHash=$PriorHash;backupPointerHash=$PriorHash
+                configurationDigest=('5'*64);registryDelivery=$Delivery}
+            sourceReceipt=$Receipt}
+        $script:R=[ordered]@{phase='Prepared';activated=$false;source=$Source;runtime=$Runtime
+            configurationDigest=('5'*64);correctivePair=$Pair;correctiveCheckRecord=$CheckPath
+            correctiveCheckHash=$PriorHash;sourceReceipt=$Receipt;probesPassed=$false;probes='[]'}
+        function Get-FileHash {param($LiteralPath,$Algorithm)
+            [pscustomobject]@{Hash=$(if($Fixture.badHash -and $LiteralPath -ceq $CheckPath){'0'*64}else{$PriorHash})}}
+        function Assert-Release-Production {}
+        function Assert-SourceUnchanged {if($Gateway.State.Status -cne 'exited'){throw 'FIXTURE_SOURCE_GATEWAY_RUNNING'}}
+        function Admit {param($C,$P,[switch]$AllowUnhealthy)
+            if($C.Id -ceq $Gateway.Id -and $Old.State.Status -cne 'running'){throw 'FIXTURE_OLD_PEER_DOWN'}
+            if($C.Id -ceq $Target.Id -and $Writer.State.Status -cne 'running'){throw 'FIXTURE_TARGET_PEER_DOWN'}}
+        function Admit-ReturnCandidate {param($C,$P) Admit $C $P}
+        function Step {param($Name)}
+        function Wait-Healthy {param($Id) if((Container $Id).State.Status -cne 'running'){throw 'FIXTURE_NOT_RUNNING'}}
+        function Save {param([switch]$FlushToDisk) if(-not $FlushToDisk){throw 'FIXTURE_DURABLE_SAVE_REQUIRED'}}
+        function Image-CLI {param($Command,$InputText,$StateVolume)
+            [pscustomobject]@{active=$Fixture.active;markerPresent=$Fixture.markerPresent}}
+        function Image-RegistrySuccessor-Preflight {param($ImageId,$ReleaseNonce,$InterlockDigest,$IncumbentVolume) $Delivery}
+        function Python-Code {
+            param($Arguments,$Code,$InputText)
+            $InputObject=ConvertFrom-Json $InputText
+            if($Code -match 'CORRECTIVE_LISTENER_AVAILABLE'){
+                if((Container $Arguments[-1]).State.Status -cne 'running'){throw 'FIXTURE_LISTENER_NOT_RUNNING'}
+                return 'CORRECTIVE_LISTENER_AVAILABLE'
+            }
+            if($Code -match 'frozen_corrective_checkpoint'){
+                if($InputObject.revision -eq 2 -and $Fixture.failFrozen){
+                    return (ConvertTo-Json -Compress @{eventDigest='bad'})
+                }
+                $Checkpoint=if($InputObject.revision -eq 2){$Pair.checkpoints.source}else{$Pair.checkpoints.target}
+                return (ConvertTo-Json -Compress -Depth 10 $Checkpoint)
+            }
+            if($Arguments[-1] -ceq $Old.Id){
+                return (ConvertTo-Json -Compress -Depth 10 @{view=$Pair.checkpoints.source})
+            }
+            throw 'FIXTURE_WRONG_EXEC'
+        }
+        function Docker-Text {
+            param($Arguments)
+            if(($Arguments -join ' ') -ceq 'ps -aq --no-trunc'){return ($Fixture.holders.Id -join "`n")}
+            if(($Arguments -join ' ') -ceq 'ps -a --format {{.Names}}'){
+                return (($Fixture.holders|ForEach-Object{$_.Name.TrimStart('/')}) -join "`n")}
+            if(($Arguments -join ' ') -ceq 'volume ls --format {{.Name}}'){return 'target-state'}
+            $C=Container $Arguments[-1]
+            switch($Arguments[0]){
+                'stop' {$C.State.Status='exited'}
+                'start' {
+                    if(($C.Id -ceq $Writer.Id -and ($Old.State.Status -ne 'exited' -or $Preview.State.Status -ne 'exited' -or $Gateway.State.Status -ne 'exited')) -or
+                       ($C.Id -ceq $Old.Id -and $Writer.State.Status -eq 'running') -or
+                       ($C.Id -ceq $Gateway.Id -and $Old.State.Status -ne 'running')){
+                        throw 'FIXTURE_WRITER_OVERLAP'
+                    }
+                    $C.State.Status='running'
+                }
+                'update' {
+                    if(-not $Fixture.active -or $C.Id -cne $Writer.Id){throw 'FIXTURE_PREACTIVATION_RESTART'}
+                    $C.HostConfig.RestartPolicy.Name='unless-stopped'
+                }
+                default {throw 'FIXTURE_UNEXPECTED_DOCKER'}
+            }
+            $Fixture.events.Add($Arguments[0]+':'+$C.Id)
+            if($Fixture.loseAck -and $Arguments[0] -ceq 'start' -and $C.Id -ceq $Writer.Id){
+                throw 'FIXTURE_START_ACK_LOST'
+            }
+            return $C.Id
+        }
+        function Assert-Effects {param([string[]]$Expected)
+            if(($Fixture.events -join ',') -cne ($Expected -join ',')){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_EFFECT_ORDER'}}
+        $Gateway.State.Status='exited'
+        Switch-CorrectiveRegistryPair
+        Assert-Effects @(('stop:'+$Old.Id),('stop:'+$Preview.Id),('start:'+$Writer.Id))
+        $Fixture.holders+=@($Target);$Runtime.pilotId=$Target.Id
+        $Fixture.events.Clear()
+        Return-Source
+        Assert-Effects @(('stop:'+$Target.Id),('stop:'+$Writer.Id),('start:'+$Old.Id),('start:'+$Gateway.Id))
+        if($script:R.phase -cne 'Returned'){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_RETURN_NOT_SAVED'}
+
+        # Frozen-source mismatch: no new writer, then separately reviewed
+        # exact Return from the partial stop once the readback is valid.
+        $Fixture.holders=@($Old,$Writer,$Preview,$Gateway)
+        $Runtime.pilotId='';$script:R.phase='Prepared'
+        $Gateway.State.Status='exited';$Writer.State.Status='created';$Preview.State.Status='running'
+        $Fixture.events.Clear();$Fixture.failFrozen=$true
+        $Rejected=$false
+        try{Switch-CorrectiveRegistryPair}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_FROZEN_SOURCE_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+        Assert-Effects @(('stop:'+$Old.Id))
+        $Fixture.failFrozen=$false;$Fixture.events.Clear()
+        Return-Source
+        Assert-Effects @(('stop:'+$Preview.Id),('start:'+$Old.Id),('start:'+$Gateway.Id))
+
+        # Lost start ACK: do not replay start; actual observed running
+        # writer is stopped by Return before restoring old pair.
+        $script:R.phase='Prepared';$Gateway.State.Status='exited';$Writer.State.Status='created';$Preview.State.Status='running'
+        $Fixture.events.Clear();$Fixture.loseAck=$true
+        $Rejected=$false
+        try{Switch-CorrectiveRegistryPair}
+        catch{if($_.Exception.Message -cne 'FIXTURE_START_ACK_LOST'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+        Assert-Effects @(('stop:'+$Old.Id),('stop:'+$Preview.Id),('start:'+$Writer.Id))
+        $Fixture.loseAck=$false;$Fixture.events.Clear()
+        Return-Source
+        Assert-Effects @(('stop:'+$Writer.Id),('start:'+$Old.Id),('start:'+$Gateway.Id))
+
+        # Actual activation (including lost ACK) and malformed marker must
+        # both deny stale Return before any Docker effect.
+        $script:R.phase='Staged';$Gateway.State.Status='exited';$Old.State.Status='exited'
+        $Writer.State.Status='running';$Preview.State.Status='exited';$Target.State.Status='running'
+        $Fixture.holders+=@($Target);$Runtime.pilotId=$Target.Id
+        $Fixture.events.Clear();$Fixture.markerPresent=$true
+        foreach($Active in @($false,$true)){
+            $Fixture.active=$Active
+            $Rejected=$false
+            try{Return-Source}
+            catch{if($_.Exception.Message -cne 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'){throw};$Rejected=$true}
+            if(-not $Rejected){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+            Assert-Effects @()
+        }
+        $Fixture.badHash=$true
+        $Rejected=$false
+        try{Return-Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+        $Fixture.badHash=$false
+        Complete-CorrectiveRegistryPair $Pair
+        Complete-CorrectiveRegistryPair $Pair
+        Assert-Effects @(('update:'+$Writer.Id))
+        Write-Host 'FORTIS_CORRECTIVE_SWITCH_RETURN_SELFTEST_PASS'
+
+        $ConfirmWorkerQuiescent=$true
+        $Fixture.activateCalls=0;$Fixture.probeCalls=0;$Fixture.loseActivation=$true;$Fixture.failPointer=$false
+        $Fixture.active=$false;$Fixture.markerPresent=$false
+        $Writer.HostConfig.RestartPolicy.Name='no'
+        $script:R.phase='Created';$script:R.activated=$false;$script:R.probesPassed=$false
+        $Fixture.events.Clear()
+        function Complete-ActionCoreNetwork {param($C,$P) $C}
+        function Running-CLI {
+            param($Id,$Arguments,$InputText,[switch]$Root)
+            if($Id -cne $Target.Id){throw 'FIXTURE_WRONG_GATEWAY'}
+            switch($Arguments[0]){
+                'gate-status' {return [pscustomobject]@{active=$Fixture.active;configurationDigest=$script:R.configurationDigest}}
+                'catalog' {return [pscustomobject]@{configurationDigest=$script:R.configurationDigest;operations=@()}}
+                'probe' {$Fixture.probeCalls++;return @{}}
+                'activate' {
+                    if(-not $Root -or $Fixture.active -or -not $script:R.probesPassed){throw 'FIXTURE_BAD_ACTIVATION'}
+                    $Fixture.activateCalls++;$Fixture.active=$true;$Fixture.markerPresent=$true
+                    if($Fixture.loseActivation){throw 'FIXTURE_ACTIVATION_ACK_LOST'}
+                    return @{status='ACTIVATED'}
+                }
+                default {throw 'FIXTURE_WRONG_CLI'}
+            }
+        }
+        function Repo-JSON {param($Code) [pscustomobject]@{configurationDigest=$script:R.configurationDigest}}
+        function Read-GatewayNetworks {param($P) return}
+        function Read-OwnerShellFlag {param($P) $false}
+        function Write-ReleaseTiming {param($Name)}
+        function Write-Private {
+            param($Path,$Value,[switch]$FlushToDisk)
+            if($Path -cne $Pointer -or -not $FlushToDisk -or -not $Fixture.active -or
+               $script:R.phase -cne 'Complete' -or -not $script:R.activated -or
+               $Writer.HostConfig.RestartPolicy.Name -cne 'unless-stopped'){
+                throw 'FIXTURE_PREMATURE_POINTER'
+            }
+            if($Fixture.failPointer){throw 'FIXTURE_POINTER_ACK_LOST'}
+            $Records[$Pointer]=$Value
+        }
+        $Rejected=$false
+        try{$null=Resume-Target}
+        catch{if($_.Exception.Message -cne 'FIXTURE_ACTIVATION_ACK_LOST'){throw};$Rejected=$true}
+        if(-not $Rejected -or $script:R.activated -or -not $script:R.probesPassed){
+            throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'
+        }
+        $Rejected=$false
+        try{Return-Source}
+        catch{if($_.Exception.Message -cne 'RELEASE_ALREADY_ACTIVE_RETURN_REQUIRES_REVIEW'){throw};$Rejected=$true}
+        if(-not $Rejected){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+        Assert-Effects @()
+        $Fixture.loseActivation=$false;$Fixture.failPointer=$true
+        $Rejected=$false
+        try{$null=Resume-Target}
+        catch{if($_.Exception.Message -cne 'FIXTURE_POINTER_ACK_LOST'){throw};$Rejected=$true}
+        if(-not $Rejected -or $script:R.phase -cne 'Complete' -or
+           (Read-Private $Pointer).record -cne $SourcePath){throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'}
+        $Fixture.failPointer=$false
+        Resume-Target
+        if((Read-Private $Pointer).record -cne $script:RecordPath -or
+           $Fixture.activateCalls -ne 1 -or $Fixture.probeCalls -ne 1){
+            throw 'RELEASE_CORRECTIVE_SWITCH_SELFTEST_FAILED'
+        }
+        Assert-Effects @('update:'+$Writer.Id)
+        Write-Host 'FORTIS_CORRECTIVE_ACTIVATION_RESUME_SELFTEST_PASS'
+    }} finally {
+        if($NonceVariable){$script:RegistryBoundReleaseNonce=$PreviousNonce}
+        else{Remove-Variable -Name RegistryBoundReleaseNonce -Scope Script -ErrorAction SilentlyContinue}
+        if($RVariable){$script:R=$PreviousR}else{Remove-Variable -Name R -Scope Script -ErrorAction SilentlyContinue}
+        if($PathVariable){$script:RecordPath=$PreviousPath}else{Remove-Variable -Name RecordPath -Scope Script -ErrorAction SilentlyContinue}
+    }
+}
+
 if($Action -ne 'BackupCleanup' -and $ForwardParameters.ContainsKey('BackupIds')){throw 'BACKUP_CLEANUP_ARGUMENT_ACTION_INVALID'}
 if($Action -ne 'ReleaseStateCleanup' -and $ForwardParameters.ContainsKey('RunIds')){throw 'RELEASE_STATE_CLEANUP_ARGUMENT_ACTION_INVALID'}
 if($Action -cnotin @('BackupCleanup','ReleaseStateCleanup') -and $ForwardParameters.ContainsKey('Preview')){throw 'BACKUP_CLEANUP_ARGUMENT_ACTION_INVALID'}
@@ -3572,6 +4661,8 @@ if($Action -eq 'SelfTest'){
     Assert-OptionalActionCoreSelfTest
     Assert-Emergency-Promote-BindingSelfTest
     Assert-RegistryReturnSelfTest
+    Assert-Registry288RecoveredProfileSelfTest
+    Assert-CorrectiveRegistryPairSelfTest
     Assert-PrimaryReturnedRegistrySourceSelfTest
     Assert-BackupCleanupSelectionSelfTest
     Assert-ContainerInventorySelfTest
@@ -3923,6 +5014,10 @@ if(-not (Test-Path -LiteralPath $ReleaseBase)){Protect-Directory $ReleaseBase}el
 # Never turn a Core UNCERTAIN or CLAIMED job into a retry or completion.
 $script:AutoCheckPointer=Join-Path $ReleaseBase 'auto-check.json'
 $script:AutoConfigText=$null;$script:AutoProbeText=$null
+if(($Corrective288 -or $CorrectiveRegistryImage -or $CorrectiveRegistryProfileSha256) -and
+   ($Auto -or $Action -cnotin @('Check','Apply') -or $AttemptRecord)){
+    throw 'RELEASE_CORRECTIVE_288_EXPLICIT_CHECK_REQUIRED'
+}
 if($Auto){
     if($Action -cnotin @('Check','Apply','Backup','Promote') -or
         $Config -or $Probes -or $Image -or $CheckedImageRecord -or $SourceSha -or
@@ -4141,6 +5236,18 @@ $script:RegistryPrebuiltCheck=([bool]$EnableRegistryMount -and $Action -ceq 'Che
     -not $Auto -and -not $Build -and -not $Pull -and
     $Image -cmatch '^sha256:[0-9a-f]{64}$' -and $SourceSha -cmatch '^[0-9a-f]{40}$')
 $ApprovedImageSource=($Build -or [bool]$CheckedImageRecord -or $script:RegistryPrebuiltCheck)
+if($Corrective288){
+    if($Auto -or -not $EnableRegistryMount -or -not $ConfirmWorkerQuiescent -or
+       $RegistryReturnContainerId -or $RegistryReturnNonce -or $AllowUncertainGrowth -or
+       $PreserveApprovedRequest -or $EmergencyRequested -or $CurrentRecord -or $RegistryCrashRecovery -or
+       (-not $script:RegistryPrebuiltCheck -and -not ($Action -ceq 'Apply' -and $CheckedImageRecord)) -or
+       $CorrectiveRegistryImage -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       $CorrectiveRegistryProfileSha256 -cnotmatch '^[0-9a-f]{64}$'){
+        throw 'RELEASE_CORRECTIVE_288_EXPLICIT_CHECK_REQUIRED'
+    }
+} elseif($CorrectiveRegistryImage -or $CorrectiveRegistryProfileSha256){
+    throw 'RELEASE_CORRECTIVE_288_EXPLICIT_CHECK_REQUIRED'
+}
 if($RegistryCrashRecovery -and
    ($Action -cnotin @('Check','Apply') -or -not $RegistryReturnContainerId -or -not $RegistryReturnNonce)){
     throw 'RELEASE_REGISTRY_CRASH_RECOVERY_REQUIRES_HANDOVER'
@@ -4405,7 +5512,13 @@ if($Action -eq 'Return' -or $AttemptRecord){
     if($script:PreserveClaimedJobs -and -not $ConfirmWorkerQuiescent){
         throw 'RELEASE_CLAIMED_RESUME_REQUIRES_QUIESCENCE'
     }
-    if($script:R.phase -cnotin @('Created','Staged')){throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'}
+    if($script:R.phase -cnotin @('Created','Staged')){
+        # Corrective Complete with a still-unpublished current pointer:
+        # Resume-Target verifies exact old pointer and active target first.
+        if($script:R.phase -cne 'Complete' -or -not $script:R.PSObject.Properties['correctivePair']){
+            throw 'RELEASE_RESUME_NOT_READY_USE_RETURN'
+        }
+    }
     Resume-Target;return
 }
 if(-not $Config -and -not $Auto){throw 'RELEASE_PUBLIC_CONFIG_REQUIRED'}
@@ -4451,7 +5564,9 @@ if($EnableRegistryMount){
         }
         $script:RegistrySocketVolume='fortis-registry-read-'+$script:RegistryBoundReleaseNonce.Replace('-','')
         $script:RegistryProfileDigest=$script:RegistryDelivery.profileDigest
+        if($Corrective288){$script:CorrectivePair=Read-CorrectiveRegistryPair $SourceForOwnerShell}
     } else {
+        if($Corrective288){throw 'RELEASE_CORRECTIVE_288_COMPANION_REQUIRED'}
         $script:RegistryProfileDigest=Image-RegistryMount-Preflight `
             -ImageId $script:Image -ReleaseNonce $script:RegistryBoundReleaseNonce `
             -ReaderVolume $script:RegistryReaderVolume
@@ -4590,6 +5705,12 @@ if($Action -eq 'Check'){
         # or the full owner-accepted UC-GW-013 rescue gate has passed.
         # Do not defer the missing-image error until Apply SOURCE_ADMISSION.
         Assert-Previous-Image-Retained $Source
+        if($Corrective288){
+            $FreshPair=Read-CorrectiveRegistryPair $Source
+            if(-not (Same-Json $FreshPair $script:CorrectivePair)){
+                throw 'RELEASE_CORRECTIVE_REGISTRY_PAIR_CHANGED'
+            }
+        }
         if($ResumeMaintenanceCheck){
             $Path=Successor-CheckRecordPath $SuccessorMaintenance.attemptId
         } else {
@@ -4716,6 +5837,12 @@ if($script:RegistryReturn){
     $script:R.sourceReceipt=$PreStopReceipt
 }
 if($script:RegistryCrash){$script:R['registryCrash']=$script:RegistryCrash}
+if($script:CorrectivePair){
+    $script:R['correctivePair']=$script:CorrectivePair
+    $script:R['correctiveCheckRecord']=[IO.Path]::GetFullPath($CheckedImageRecord)
+    $script:R['correctiveCheckHash']=(Get-FileHash -LiteralPath $CheckedImageRecord -Algorithm SHA256).Hash
+    $script:R.sourceReceipt=$PreStopReceipt
+}
 Step 'PREPARE_RECORD_MODEL_READY'
 # A 2026-11-13 owner Apply passed the Prepared Save but failed when
 # sourceReceipt first entered the bounded serializer after docker stop.
@@ -4724,7 +5851,7 @@ Step 'PREPARE_RECORD_MODEL_READY'
 Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT'
 Assert-Release-Receipt-Serializable $script:R $PreStopReceipt
 Step 'SOURCE_RECEIPT_SERIALIZATION_PREFLIGHT_PASS'
-Save
+Save -FlushToDisk:([bool]$script:CorrectivePair)
 Step 'PREPARED_RECORD_SAVED'
 # Keep the original attempt pointer stable through the final pinned Check
 # comparison. Its SHA256 is part of the Check binding; publishing our own
@@ -4763,6 +5890,16 @@ try {
             throw 'RELEASE_REGISTRY_HANDOVER_OWNER_GO_REQUIRED'
         }
     }
+    if($script:CorrectivePair){
+        if((Read-Host 'Type APPLY CORRECTIVE T4 288') -cne 'APPLY CORRECTIVE T4 288'){
+            throw 'RELEASE_CORRECTIVE_288_OWNER_GO_REQUIRED'
+        }
+        $FreshPair=Read-CorrectiveRegistryPair $Source
+        if(-not (Same-Json $FreshPair $script:CorrectivePair)){throw 'RELEASE_CORRECTIVE_REGISTRY_PAIR_CHANGED'}
+        if((Get-FileHash -LiteralPath $CheckedImageRecord -Algorithm SHA256).Hash -cne $script:R.correctiveCheckHash){
+            throw 'RELEASE_CORRECTIVE_ATTEMPT_CHANGED'
+        }
+    }
     Step 'STOP_SOURCE';Assert-Release-Production;Admit-Source (Container $Old.Id) $Source
     if($script:RegistryCrash){
         Assert-RegistryCrashIncumbent $Source
@@ -4779,8 +5916,9 @@ try {
     Assert-Previous-Image-Retained $Source
     # Durable recovery pointer must exist before the first source effect,
     # but it is intentionally written AFTER the frozen Check binding audit.
-    Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath}
+    Write-Private $AttemptPointer @{schema=1;record=$script:RecordPath} -FlushToDisk:([bool]$script:CorrectivePair)
     Step 'ATTEMPT_POINTER_SAVED'
+    if($script:CorrectivePair){$null=Read-CorrectiveAttemptPair}
     $RegistryStopAuthorized=[bool]$script:RegistryReturn
     Write-ReleaseTiming 'APPLY_STOP_REQUEST'
     $SourceStopAttempted=$true
@@ -4812,6 +5950,7 @@ try {
     # Close the final race: recheck the frozen source AFTER the old writer stops.
     # On mismatch, the guarded failure path returns the retained source.
     if($CheckedImageRecord){Assert-Checked-Source-Receipt $script:R.sourceReceipt}
+    if($script:CorrectivePair){Switch-CorrectiveRegistryPair}
     Step 'CLONE_STATE'
     $null=Docker-Text @('volume','create','--label',('io.fortis.release='+$RunId),$Runtime.stateVolume)
     Assert-Volume $Runtime.stateVolume;Assert-OnlyWriter $Runtime.stateVolume
@@ -4865,7 +6004,7 @@ try {
     $Arguments+=@($script:Image)
     $script:R.runtime.pilotId=Docker-Text $Arguments
     if($script:R.runtime.pilotId -cnotmatch '^[0-9a-f]{64}$'){throw 'RELEASE_CREATED_ID_INVALID'}
-    $script:R.phase='Created';Save;Resume-Target
+    $script:R.phase='Created';Save -FlushToDisk:([bool]$script:CorrectivePair);Resume-Target
 } catch {
     $Failure='step='+$script:Step+'; '+$_.Exception.Message
     $script:R.failureStep=$script:Step;$script:R.failureMessage=$Failure

@@ -35,6 +35,16 @@ class ReleaseGate:
             return value == {'schemaVersion': 1, 'nonce': self.nonce, 'configurationDigest': self.digest}
         except (OSError, ValueError, TypeError): return False
 
+    def record_status(self):
+        # A corrupt marker is not a proven inactive release. Preserve
+        # unexpected I/O errors instead of interpreting them as absence.
+        try:
+            self.marker.lstat()
+            present = True
+        except FileNotFoundError:
+            present = False
+        return {'active': self.ready(), 'markerPresent': present}
+
     def activate(self):
         check(os.geteuid() == 0, 'RELEASE_OWNER_ROOT_REQUIRED')
         check(self.marker.parent.is_dir() and not self.marker.parent.is_symlink(), 'RELEASE_MARKER_PARENT_INVALID')
@@ -45,6 +55,11 @@ class ReleaseGate:
                 output.write(canonical({'schemaVersion': 1, 'nonce': self.nonce, 'configurationDigest': self.digest}))
                 output.flush(); os.fsync(output.fileno()); os.fchmod(output.fileno(), 0o444)
             os.replace(temporary, self.marker)
+            directory = os.open(self.marker.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if temporary.exists(): temporary.unlink()
         check(self.ready(), 'RELEASE_ACTIVATION_UNCONFIRMED')
