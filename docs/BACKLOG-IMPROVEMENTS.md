@@ -445,6 +445,33 @@ Windows installation этот план **не меняет**. Доказател
 разрешение произвольного PowerShell. До безопасной реализации обоих слоёв
 остается live ASK-only V1; включать auto-ALLOW одной правкой конфигурации нельзя.
 
+### Отложенный архитектурный review: внутренний policy gate (2026-11-26)
+
+- [ ] **GW-POL-INNER-REVIEW — OPEN, решение владельца отложено.** Live
+  `powershell.capabilities()` вернул `configured=true`, `policy=ASK`,
+  `machineExecutionAutoApprove=false`, `version=1`; при отображаемом в Owner
+  Portal базовом ALLOW для `powershell.execute / windows-owner` заявка
+  `63555cb2-def3-405e-aa4e-32b86aad6282` осталась PENDING. Это наблюдение
+  допуска, не доказательство исполнения или OS isolation. В исходнике
+  `MachinePowerShellAdapter.inner_policy` фиксирует ASK, а общий
+  `OwnerPolicyCore._inner_guard` применяет наиболее строгое решение.
+  Инвентаризировать все inner guards (PowerShell, publisher, подписанные
+  extensions, Registry и callable baseline), разделить правила автономии,
+  обязательную proof/подпись, scope и OS isolation. Оценить, какие повторные
+  policy-решения необходимы, какие дублируют внешнюю owner authority и
+  какие можно заменить единым явным контрактом без потери гарантий.
+  Сравнить сохранение двух слоёв, упрощение и перенос командной политики
+  в Windows Executor; согласовать с владельцем до реализации V2. Отдельно
+  оценить owner-managed изменение допустимых правил без выпуска image,
+  но не обходить текущий V1 owner proof. В UI показывать outer, inner и
+  effective policy, причину/владельца ограничения и возможность изменения
+  каждого слоя; для command-dependent verdict явно показывать conditional.
+  Acceptance: матрица решений, отказ при отсутствующем/устаревшем proof,
+  отсутствие расширения grants и обхода WebAuthn/изоляции, совместимость
+  receipts и обратимый rollout. До отдельного решения и release GO ничего
+  не менять в действующем ASK-only V1 или Windows Executor. Связанные задачи:
+  GW-PS-01..03 и [Executor backlog](https://github.com/AlexPastukhh/fortis-powershell-executor/blob/main/docs/BACKLOG-IMPROVEMENTS.md#executor-dynamic-ask).
+
 ### Gateway — задачи и готовность (внешний policy + Core)
 
 - [ ] **GW-POL-01 Owner Dashboard:** полный owner-only inventory native +
