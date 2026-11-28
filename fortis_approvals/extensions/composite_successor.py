@@ -309,7 +309,20 @@ class CompositeUnifiedCore(MaintenanceCoreMixin, CompositeCoreMixin, UnifiedPoli
         # Revalidate the companion and actual policy replay before serving.
         self._read_only(lambda db: history.verify_prefix(db, candidate.sha))
         self._read_only(inspect_companion)
+        # Read-model metadata comes only from the same verified enrollment.
+        # It is not a new policy authority or a provider readiness decision.
+        context = enrollment.metadata()['grants']
+        self._inventory_coordinates = frozenset(
+            tuple(row[key]) for row in context for key in ('parent', 'child')
+        ) | (frozenset(semantic_enrollment.coordinates()) if semantic_enrollment else frozenset())
+        self._inventory_context = tuple(sorted({
+            (tuple(row['child']), tuple(row['parent'][1:])) for row in context
+        }))
         self._successor_ready = True
+
+    def reviewed_inventory(self):
+        need(self._successor_ready, 'COMPOSITE_SUCCESSOR_NOT_READY')
+        return self._inventory_coordinates, self._inventory_context
 
     def submit(self, actor, payload):
         need(self._successor_ready, 'COMPOSITE_SUCCESSOR_NOT_READY')

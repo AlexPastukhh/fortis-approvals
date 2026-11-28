@@ -1049,6 +1049,7 @@ class ImpactTests(unittest.TestCase):
             ('owner-actor',*action,'scope',lineage.subjects[0]),
             ('owner-actor','github','list_pull_requests','fortis-approvals',{'repository':repo})]
         for actor in ('owner-actor',machine_actor):
+            semantic_rows.append((actor,'registry','get_component','scope',lineage.subjects[0]))
             for operation in ('list_components','plan_batch'):
                 semantic_rows.extend((actor,'registry',operation,'scope',subject)
                                      for subject in ({'repository':repo},lineage.subjects[0]))
@@ -1432,9 +1433,41 @@ class ImpactTests(unittest.TestCase):
             core=corrected
         cookie,csrf=G2WebAuthnTest.login(self)
 
+        def inventory_rows(expected):
+            code,inventory,_=self.call('/v1/owner/provider-inventory',cookie=cookie)
+            self.assertEqual(code,200,inventory)
+            exact=[r for r in inventory['operations'] if r['scope']=='exact']
+            by_coord={(r['actor'],r['provider'],r['operation'],r['target']):r for r in exact}
+            self.assertEqual(len(by_coord),len(exact))
+            for coord in coords:
+                row=by_coord[coord]
+                self.assertEqual(row['currentPolicy'],expected[coord])
+                self.assertIn(expected[coord],row['editablePolicies'])
+                self.assertTrue(row['active'])
+                if coord in {tuple(g['child']) for g in grant_rows}:
+                    self.assertEqual(row['operationKind'],'context-child')
+                    self.assertEqual(row['contextParents'],[
+                        {'service':'release','operation':'merge_and_register','target':'scope'}])
+                    self.assertEqual(row['effectivePolicy'],
+                        'DENY' if expected[coord]=='DENY' else 'UNKNOWN')
+            if kernel_peer:
+                old=[r for r in inventory['operations'] if r['provider']=='registry'
+                     and r['operation'].startswith('candidate_')]
+                self.assertEqual({r['operation'] for r in old},
+                    {'candidate_head','candidate_list_desired','candidate_original_operation'})
+                self.assertTrue(all(r['currentPolicy']=='DENY' for r in old))
+            return by_coord
+
+        # Real owner HTTP inventory, with the installed Registry extension
+        # and reviewed successor sharing the provider name.
+        initial=snapshot(core,lambda db:authority_witness(core,db))
+        inventory_rows({coord:'DENY' for coord in coords})
+        self.assertEqual(snapshot(core,lambda db:authority_witness(core,db)),initial)
+        desired_policies={}
         for revision,coord in enumerate(sorted(coords)):
             actor,service,operation,target=coord
-            desired='ALLOW' if operation in ('list_components','list_pull_requests','plan_batch') else 'ASK'
+            desired='ALLOW' if operation in ('list_components','get_component','list_pull_requests','plan_batch') else 'ASK'
+            desired_policies[coord]=desired
             candidate={'actor':actor,'provider':service,'operation':operation,'target':target,
                        'scope':'exact','expectedPolicy':'DENY','desiredPolicy':desired,
                        'expectedRevision':revision,'expectedPolicyVersion':core.policy_version,
@@ -1446,6 +1479,7 @@ class ImpactTests(unittest.TestCase):
                 'change':change['change'],'response':self.key.assert_(change)},cookie=cookie,csrf=csrf)
             self.assertEqual(code,200,saved)
 
+        inventory_rows(desired_policies)
         start=perf_counter()
         code,rows,_=self.call(PREFIX+'/discover',{},cookie=cookie,csrf=csrf)
         self.assertEqual(code,200,rows)
