@@ -1575,9 +1575,29 @@ authority. The existing functional configuration, policy reference, scope,
 and history pins still apply. New legacy review and ingest still require
 the current P5 reference, and successor PR review uses its separately
 sealed CI policy. The source fixture uses the #286 workflow hashes through
-the successor mount and the protected companion preview. A corrective
-delivery still needs explicit source accounting before the first
-functional PR. Windows Check and Apply remain open.
+the successor mount and the protected companion preview.
+
+For the corrective delivery, use the already prepared Registry state
+volume with the original transition envelope and revision-one receipt.
+Under a separate owner confirmation, detach the staged private Registry
+from the volume before Accounting. Supply a read-only, canonically hashed
+`delivery-repair-evidence.json` and a `delivery-repair-main.bundle` in
+the protected config volume. `AccountDeliveryRepair -ConfirmProvision`
+binds the accepted Windows main and image, the repaired runtime profile,
+the exact preceding receipt, and the corrective PR body, tree and both
+Git parents. It independently verifies Release Impact and the retained CI
+policy, with exact successful GitHub Actions checks on the corrective
+PR head. This one-time operation requires the same catalog, release
+profile, CI workflow pins, rules and validator as the original transition.
+The protected config retains the original transition evidence.
+
+Read back both receipts. The original #287 event remains revision one
+and the corrective merge becomes revision two. The existing v3 prefix
+stays sealed and an exact retry returns the same repair receipt. The
+ordinary runtime rejects this operation. After protected accounting,
+start the isolated peer and obtain Check READY for the same source
+before any Apply approval. Windows accounting, Check and Apply remain
+open.
 
 ### I3 — owner recovery after a merge
 

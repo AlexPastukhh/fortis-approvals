@@ -245,11 +245,9 @@ def run(action, *, spec_path=SPEC_PATH, expected_spec_sha256=None):
             'admissionAllowed': False, 'registryServiceStarted': False}
 
 
-def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=None, source_sha=None):
-    """Migrate the dedicated inactive clone mounted by the owner wrapper."""
+def _successor_inputs(expected_profile_sha256):
     from .local_candidate_read_service import (
         _check_successor_profile, _load_owner_config, _readonly_owner_runtime)
-    from .release_event_journal import ReleaseEventJournal
 
     _runtime_confinement()
     uid, gid = os.geteuid(), os.getegid()
@@ -266,6 +264,14 @@ def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=Non
     pins = config['semantic']
     _need(type(pins) is dict and 'legacyWitness' in pins and 'transitionDigest' in pins,
           'REGISTRY_BOOTSTRAP_SUCCESSOR_PINS_REQUIRED')
+    return config, root, pins
+
+
+def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=None, source_sha=None):
+    """Migrate the dedicated inactive clone mounted by the owner wrapper."""
+    from .release_event_journal import ReleaseEventJournal
+
+    config, root, pins = _successor_inputs(expected_profile_sha256)
     stage = None
     pending = transition_evidence_sha256 is None
     if not pending:
@@ -299,6 +305,41 @@ def prepare_successor(expected_profile_sha256, *, transition_evidence_sha256=Non
         receipt['sourceTransitionReceipt'] = observed
         receipt['transitionEvidenceSha256'] = transition_evidence_sha256
     return receipt
+
+
+def account_delivery_repair(expected_profile_sha256, *, repair_evidence_sha256, source_sha):
+    """Append one owner-reviewed edge to the already prepared inactive Registry."""
+    from . import source_event_journal as sources
+    from .protected_transition import reviewed_delivery_repair, staged_domain
+    from .release_event_journal import ReleaseEventJournal
+    from ..integrations.registry_contracts import semantic_contract as sc
+
+    config, root, pins = _successor_inputs(expected_profile_sha256)
+    journal = ReleaseEventJournal(
+        STATE_PATH, instance_id=config['instanceId'], scope=config['scope'],
+        expected_legacy=pins['legacyWitness'], transition_digest=pins['transitionDigest'])
+    domain = staged_domain(journal, root, pins)
+    retained = sources.delivery_repair_predecessor(domain.snapshot()['sourceOperations'])
+    request = sources.request(reviewed_delivery_repair(
+        root, config, expected_evidence_sha256=repair_evidence_sha256,
+        expected_source_sha=source_sha, retained_transition=retained), journal)
+    with journal._db() as db:
+        view = domain._project(db)
+        prior = sources.delivery_repair_predecessor(view['sourceOperations'])
+        exact_retry = request['operationId'] in view['sourceOperations']
+        sc.need(prior == retained and not view['operations']
+                and view['sourceRevision'] == (2 if exact_retry else 1),
+                'SOURCE_DELIVERY_REPAIR_STAGED_STATE_CHANGED')
+        receipt = sources.append(journal, db, request, view['operations'])
+        domain._project(db)
+    sc.need(domain.source_operation(request['operationId']) == receipt,
+            'SOURCE_DELIVERY_REPAIR_READBACK_CHANGED')
+    return {'result': 'SOURCE_ONLY_REGISTRY_DELIVERY_REPAIR_ACCOUNTED',
+            'profileSha256': expected_profile_sha256, 'repairEvidenceSha256': repair_evidence_sha256,
+            'transitionDigest': journal.transition_digest,
+            'legacyPrefixDigest': journal.expected_legacy['prefixDigest'],
+            'predecessorReceipt': retained[1], 'sourceRepairReceipt': receipt,
+            'hostAccepted': False, 'admissionAllowed': False}
 
 
 def main(argv=None):

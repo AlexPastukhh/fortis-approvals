@@ -379,6 +379,94 @@ class ImpactTests(unittest.TestCase):
                 prepare()
             self.assertEqual(domain.source_operation(manifest['transitionId']),accepted)
 
+            # The repair uses a new real Git merge with the exact staged
+            # transition as first parent. The retained source event stays intact.
+            from copy import deepcopy
+            from fortis_approvals.registry import source_event_journal as source_events
+            fixture(source_events, '_DELIVERY_287', merge)
+            (self.source/'src.py').write_text('raise RuntimeError("repair code must not execute")\n')
+            self.git.run(['add','src.py'], cwd=self.source)
+            repair_tree = self.git.text(['write-tree'], cwd=self.source)
+            repair_head = commit(repair_tree, [merge], 'repair head')
+            repair_merge = commit(repair_tree, [merge,repair_head], 'repair merge')
+            observed_repair = {**observed,'number':288,'baseSha':merge,'headSha':repair_head,
+                               'treeSha':repair_tree}
+            repair_impact = self.verifier.verify(observed_repair)
+            repair_ci = {**deepcopy(ci),'number':288,'baseSha':merge,'headSha':repair_head,
+                         'validatedImpactDigest':sc.digest(repair_impact)}
+            for check in repair_ci['checks']:
+                check.update(headSha=repair_head,appId=15368,appSlug='github-actions')
+            repair_proposal = {**proposal,'number':288,'baseSha':merge,'headSha':repair_head,
+                               'treeSha':repair_tree,'expectedSourceRevision':1,
+                               'ciDigest':sc.digest(repair_ci)}
+            repair_post = {**post,'number':288,'headSha':repair_head,'treeSha':repair_tree,
+                           'mergeSha':repair_merge,'mainSha':repair_merge,'parents':[merge,repair_head],
+                           'ciDigest':repair_proposal['ciDigest']}
+
+            def repair_bundle(merge_sha):
+                self.git.run(['branch','-f','transfer',merge_sha],cwd=self.source)
+                self.git.run(['bundle','create',bundle_path,'refs/heads/transfer'],cwd=self.source)
+                return write('delivery-repair-main.bundle',bundle_path.read_bytes())
+
+            repair_evidence = {'predecessorReceipt':accepted,'proposal':repair_proposal,
+                               'observation':repair_post,'ci':repair_ci,'body':observed_repair['body'],
+                               'bundleSha256':repair_bundle(repair_merge)}
+
+            def repair(evidence, source=repair_merge):
+                pin = write('delivery-repair-evidence.json',evidence)
+                return boot.account_delivery_repair(profile_file_sha,repair_evidence_sha256=pin,source_sha=source)
+
+            before_repair = state_path.read_bytes()
+            wrong_predecessor = {**repair_evidence,'predecessorReceipt':{**accepted,'eventDigest':'0'*64}}
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_PREDECESSOR'):
+                repair(wrong_predecessor)
+            wrong_ci = deepcopy(repair_evidence)
+            wrong_ci['ci']['checks'][0]['appId'] = 1
+            wrong_pin = sc.digest(wrong_ci['ci'])
+            wrong_ci['proposal']['ciDigest'] = wrong_ci['observation']['ciDigest'] = wrong_pin
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_CI_CHANGED'):
+                repair(wrong_ci)
+            bad_merge = commit(repair_tree,[base,repair_head],'skipped transition')
+            bad_ancestry = {**repair_evidence,
+                'observation':{**repair_post,'mergeSha':bad_merge,'mainSha':bad_merge},
+                'bundleSha256':repair_bundle(bad_merge)}
+            with self.assertRaisesRegex(Denied,'SUCCESSOR_MERGE_GIT_OBJECT_CHANGED'):
+                repair(bad_ancestry,bad_merge)
+            self.assertEqual(state_path.read_bytes(),before_repair)
+            self.assertEqual(repair_bundle(repair_merge),repair_evidence['bundleSha256'])
+
+            result = repair(repair_evidence)
+            self.assertEqual(result['predecessorReceipt'],accepted)
+            self.assertEqual(result['legacyPrefixDigest'],witness['prefixDigest'])
+            self.assertFalse(result['admissionAllowed'])
+            source_receipt = result['sourceRepairReceipt']
+            self.assertEqual(source_receipt['kind'],'DELIVERY_REPAIR')
+            self.assertEqual(source_receipt['sourceRevision'],2)
+            self.assertEqual(source_receipt['sourceCursor'],repair_merge)
+            self.assertFalse(source_receipt['deploymentAuthorized'])
+            after_repair = state_path.read_bytes()
+            self.assertEqual(repair(repair_evidence),result)
+            self.assertEqual(state_path.read_bytes(),after_repair)
+
+            reopened = read_service_via_entrypoint(config_path,readonly=False,expected_profile=profile_file_sha)
+            view = reopened.frames.service.domain.snapshot()
+            self.assertEqual(view['sourceCursor'],repair_merge)
+            self.assertEqual(view['sourceOperations'][accepted['operationId']][1],accepted)
+            req, saved, _ = view['sourceOperations'][source_receipt['operationId']]
+            self.assertEqual(saved,source_receipt)
+            with self.assertRaisesRegex(Denied,'SOURCE_DELIVERY_REPAIR_OFFLINE_REQUIRED'):
+                reopened.frames.service.domain.register_source(req)
+            state = next(iter(view['states'].values()))
+            self.assertEqual(state['desired']['provenance'],'REVIEWED_DELIVERY_REPAIR')
+            self.assertIsNone(state['installed'])
+            self.assertEqual(original.path.read_bytes(),before)
+            running_domain = reopened.frames.service.domain
+            with self.assertRaisesRegex(Stale,'SOURCE_PREVIEW_STALE'):
+                running_domain.source_preflight(repair_proposal)
+            next_pr = {**repair_proposal,'number':289,'baseSha':repair_merge,
+                       'expectedSourceRevision':2}
+            self.assertEqual(running_domain.source_preflight(next_pr)['sourceCursor'],repair_merge)
+
     def test_owner_portal_exact_merge_register_and_shared_read(self):
         self._owner_portal_merge()
 
