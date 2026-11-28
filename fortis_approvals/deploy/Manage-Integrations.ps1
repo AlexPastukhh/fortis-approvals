@@ -8728,6 +8728,9 @@ if($Action -eq 'SelfTest'){
     Assert-BootstrapGatewayLifecycleSelfTest
     Assert-BootstrapPostLifecycleSelfTest
     Assert-BootstrapPostLifecycleSelfTest -Ordinary
+    # SelfTest runs before live release binding/preflight initialization.
+    $script:RegistryBoundReleaseNonce=''
+    $script:RegistryPrebuiltCheck=$false
     Assert-OrdinaryBeginSelfTest
     Assert-OrdinaryReturnSelfTest
     Assert-OrdinaryCheckResumeSelfTest
