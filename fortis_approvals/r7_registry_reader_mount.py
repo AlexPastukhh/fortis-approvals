@@ -196,7 +196,7 @@ def _load_sealed_registry_reader(root, expected_release_nonce, expected_source_d
             reader_uid=value['readerUid'], reader_gid=value['readerGid'], **peer)
         if functional:
             reader._functional_config = FunctionalRegistryConfiguration(
-                parsed, key, scope_digest=value['scopeDigest'])
+                parsed, key, scope_digest=value['scopeDigest'], preserve_incumbent=semantic)
             reader._release_nonce=value['releaseNonce']
             reader._gateway_source_digest=value['gatewaySourceDigest']
         if semantic:

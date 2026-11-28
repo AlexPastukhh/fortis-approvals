@@ -105,7 +105,8 @@ class FunctionalReviewRuntime:
     caller must have independently bound ACTOR to an internal-only identity.
     """
     def __init__(self, *, core, provider, capture, capture_pin, collector,
-                 collector_pin, validator, owner, policy_reader, policy_digest):
+                 collector_pin, validator, owner, policy_reader, policy_digest,
+                 preserve_incumbent=False):
         _need(isinstance(core,IncidentCore) and isinstance(provider,GitHubAdapter) and provider.owner+'/'+provider._repo(PILOT)==REPOSITORY
               and type(capture) is ReviewCaptureStore and type(collector) is CollectorSnapshotStore
               and type(capture_pin) is LocalPin and type(collector_pin) is LocalPin
@@ -120,7 +121,8 @@ class FunctionalReviewRuntime:
         self.lock=threading.RLock()
         self.planner=None
         self.native_backend=None
-        self.policy=policy_reference(policy_reader,policy_digest)
+        self.policy=policy_reference(policy_reader,policy_digest,
+                                     preserve_incumbent=preserve_incumbent)
         self.capture.checkpoint(expected=self.capture_pin.read())
         _need(self.collector.anchored_batch([])['checkpoint']==self.collector_pin.read(),
               'P5_RUNTIME_COLLECTOR_PIN_MISMATCH')
@@ -640,7 +642,7 @@ class FunctionalRegistryConfiguration:
     Not enrollment approval. No path, key or topology can be selected by an
     HTTP caller. The release controller pins the outer immutable profile.
     """
-    def __init__(self, value, key, *, scope_digest):
+    def __init__(self, value, key, *, scope_digest, preserve_incumbent=False):
         from .forward_lineage import _POST_269_GAP_SIZE, _POST_270_GAP_SIZE, _POST_271_GAP_SIZE, _baseline, cutover_start
         from .component_bindings import _mapping
         fields={'schemaVersion','collectorInstanceId','baseline','binding','policyReference','validatorRevision'}
@@ -653,7 +655,8 @@ class FunctionalRegistryConfiguration:
               and _uuid(value['collectorInstanceId']) and _hex(value['validatorRevision'],40)
               and type(key) is bytes and len(key)==32, 'P5_FUNCTIONAL_CONFIG_INVALID')
         baseline=_baseline(lambda:value['baseline'],_hash(value['baseline']))
-        policy=policy_reference(lambda:value['policyReference'],_hash(value['policyReference']))
+        policy=policy_reference(lambda:value['policyReference'],_hash(value['policyReference']),
+                                preserve_incumbent=preserve_incumbent)
         _mapping(lambda:value['binding'],baseline)
         _need(all(baseline[k]==policy[k] for k in (
             'repository','enrollmentId','baselineSha','acceptanceReceiptDigest')),
@@ -728,6 +731,7 @@ class FunctionalRegistryConfiguration:
         self._raw=canonical(value)
         self._key=key
         self.digest=_hash(value)
+        self._preserve_incumbent=preserve_incumbent
 
     @property
     def value(self):
@@ -763,7 +767,8 @@ class FunctionalRegistryConfiguration:
             capture_pin=capture_pin,collector=collector,collector_pin=collector_pin,
             validator=validator,owner=portal.auth.owner,
             policy_reader=lambda:self.value['policyReference'],
-            policy_digest=_hash(value['policyReference']))
+            policy_digest=_hash(value['policyReference']),
+            preserve_incumbent=self._preserve_incumbent)
         review.native_backend=provider.backend
         review.install(portal)
         planner=FunctionalRegistryPlanner(review=review,

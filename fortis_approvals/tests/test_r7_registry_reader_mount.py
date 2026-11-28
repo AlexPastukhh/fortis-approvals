@@ -22,8 +22,29 @@ from fortis_approvals.extensions.runtime import ExtensionConfig
 from fortis_approvals.integrations.registry.candidate_gateway import GatewayRegistryUnixCandidateRead
 
 
+def incumbent_286_ci_profile():
+    # The retained profile is independent of later CI changes.
+    rows = [
+        ('Source CI', 408327525, '.github/workflows/source-ci.yml',
+         ['offline-tests', 'audit-projections'],
+         'f5a5ae93f28673bc9c981ba5702565ba91f115f1fe52d60aca3324a0fbd9fab1'),
+        ('Fortis Release Impact', 414303977, '.github/workflows/release-impact.yml',
+         ['release-impact'],
+         'e141908e8aeadf41088e7998842f72dea52ea4332346a5e3bd084e7de7d65218'),
+        ('P5 Retained Impact', 425664934, '.github/workflows/p5-retained-impact.yml',
+         ['p5-retained-impact'],
+         '432fd4be8191eb85eb6e9d3f11249dd33b8d192a233807adbdc1835811ea4e3d'),
+    ]
+    return {
+        'schemaVersion': 1, 'kind': 'P5_SOURCE_POLICY_CANDIDATE',
+        'repository': 'fortis-approvals', 'baseRef': 'main',
+        'workflows': [dict(name=name, ident=ident, path=path, jobs=jobs, sha256=sha256)
+                      for name, ident, path, jobs, sha256 in rows],
+        'appId': 15368, 'appSlug': 'github-actions',
+    }
+
 def functional_mount_config(*, baseline_sha='a'*40, catalog_sha='b'*64, validator_revision='d'*40,
-                            instance_id=None):
+                            instance_id=None, ci_profile=None):
     from fortis_approvals.integrations.github.gateway.p5_ci_binding import policy
     from fortis_approvals.integrations.registry.read_contract import REPOSITORY
     common={'schemaVersion':1,'repository':REPOSITORY,'enrollmentId':str(uuid.uuid4()),
@@ -34,7 +55,7 @@ def functional_mount_config(*, baseline_sha='a'*40, catalog_sha='b'*64, validato
               'acceptanceReceiptDigest':'c'*64}
     reference={**common,'revision':1,'previousDigest':'0'*64,'acceptanceReceiptDigest':'c'*64,
                'effectiveAt':1700000000,'maxReviewToMergeSeconds':3600,'clockToleranceSeconds':10,
-               'profile':policy()}
+               'profile':policy() if ci_profile is None else ci_profile}
     decision = None
     if instance_id is not None:
         decision = {'schemaVersion':1, 'decision':'OWNER_FUNCTIONAL_V1_BOUNDARY_APPROVED',

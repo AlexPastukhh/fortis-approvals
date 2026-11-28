@@ -287,7 +287,7 @@ class ImpactTests(unittest.TestCase):
             manifest['pr'].update({k:proposal[k] for k in ('number','baseSha','headSha','treeSha',
                                    'bodyDigest','impactDigest','pathsDigest','ciDigest')})
             manifest['successor'].update(catalogSha256=catalog_sha,validatorRevision=self.pin,
-                                         actionRevision='8c9abefdfbe4699aae97b9363a2a66c596680e62')
+                                         actionRevision='8b82564728c55807c57d1c9e1f0f974ea14fd6d6')
             scope={'repository':tc.REPOSITORY,'enrollmentId':manifest['transitionId'],
                    'baselineSha':baseline,'baselineDigest':'a'*64,'catalogSha256':catalog_sha,
                    'bindingDigest':'b'*64,'policyReferenceDigest':'c'*64}
@@ -440,11 +440,13 @@ class ImpactTests(unittest.TestCase):
         lineage.addCleanup=self.addCleanup
         gateway_config = owner_scope = registry_instance = None
         if kernel_peer:
-            from fortis_approvals.tests.test_r7_registry_reader_mount import functional_mount_config
+            from fortis_approvals.tests.test_r7_registry_reader_mount import (
+                functional_mount_config, incumbent_286_ci_profile)
             registry_instance = str(uuid.uuid4())
+            incumbent_profile = incumbent_286_ci_profile()
             gateway_config, owner_scope = functional_mount_config(
-                baseline_sha=lc.BASELINE, catalog_sha=BASE_CATALOG,
-                validator_revision=self.pin, instance_id=registry_instance)
+                baseline_sha=lc.BASELINE, catalog_sha=BASE_CATALOG, validator_revision=self.pin,
+                instance_id=registry_instance, ci_profile=incumbent_profile)
         lineage.setUp(successor=(profile,self.catalog_text), owner_scope=owner_scope,
                       instance_id=registry_instance)
         transition=lineage.transition()
@@ -607,15 +609,18 @@ class ImpactTests(unittest.TestCase):
             incumbent_peer._instance, incumbent_peer._scope = lineage.instance, lineage.witness['scopeDigest']
             incumbent_peer._owner_pidfd = None
             incumbent_peer._peer_key, incumbent_peer._check_identity = b'p'*32, lambda: None
-            incumbent_peer._functional_config = FunctionalRegistryConfiguration(
-                gateway_config, b'p'*32, scope_digest=incumbent_peer._scope)
-            old, owner, self.portal, _ = server.build_r7_unified_candidate(
-                state=runtime_root, owner_origin=gateway_origin, ingress_host=gateway_host,
-                ingress_grant=machine_grant, sonar_transport=server.SonarHTTPTransport(
-                    region='eu', bearer_token='local-sonar-fixture-only'),
-                organizations=('pilot',), project_keys=('pilot',), github_pilot=github_config,
-                github_transport=endpoint, extensions=extensions, unified_policy_source_opt_in=opt_in,
-                registry_candidate_reader=incumbent_peer)
+            # The incumbent binary treats the retained policy as current.
+            from fortis_approvals.integrations.github.gateway import registry_review_policy
+            with patch.object(registry_review_policy, 'policy', return_value=incumbent_profile):
+                incumbent_peer._functional_config = FunctionalRegistryConfiguration(
+                    gateway_config, b'p'*32, scope_digest=incumbent_peer._scope)
+                old, owner, self.portal, _ = server.build_r7_unified_candidate(
+                    state=runtime_root, owner_origin=gateway_origin, ingress_host=gateway_host,
+                    ingress_grant=machine_grant, sonar_transport=server.SonarHTTPTransport(
+                        region='eu', bearer_token='local-sonar-fixture-only'),
+                    organizations=('pilot',), project_keys=('pilot',), github_pilot=github_config,
+                    github_transport=endpoint, extensions=extensions, unified_policy_source_opt_in=opt_in,
+                    registry_candidate_reader=incumbent_peer)
             old_scope = old.authority.scope_binding
             old_choices = dict(old.authority.choices)
             old_policies = dict(old.policies)
@@ -860,6 +865,10 @@ class ImpactTests(unittest.TestCase):
                     peer = load_peer(released)
                 transport = peer._semantic_transport
                 if transition:
+                    self.assertEqual(peer._functional_config.value, gateway_config)
+                    with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
+                        registry_review_policy.policy_reference(
+                            lambda: gateway_config['policyReference'], owner_scope['policyReferenceDigest'])
                     with self.assertRaisesRegex(Denied,'R7_REGISTRY_SUCCESSOR_CONTROLLER_PIN_CHANGED'):
                         load_peer(released,interlock='0'*64,incumbent_core=incumbent_core)
                     before = incumbent_core.read_bytes()

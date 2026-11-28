@@ -1562,6 +1562,23 @@ on Linux parsed the launcher, rejected missing provisioning confirmation
 before Docker and ran Plan. The actual Windows PowerShell 5.1/Docker
 path remains unverified.
 
+### T4 — retained CI policy compatibility
+
+Windows PrepareSuccessor recorded the exact #287 transition at source
+revision one. The staged Registry peer started. The protected Gateway
+Check stopped while loading the retained #286 P5 reference because two
+workflow hashes changed in #287.
+
+The schema-five Gateway mount admits the exact historical CI profile for
+opening the sealed incumbent configuration and reconstructing existing
+authority. The existing functional configuration, policy reference, scope,
+and history pins still apply. New legacy review and ingest still require
+the current P5 reference, and successor PR review uses its separately
+sealed CI policy. The source fixture uses the #286 workflow hashes through
+the successor mount and the protected companion preview. A corrective
+delivery still needs explicit source accounting before the first
+functional PR. Windows Check and Apply remain open.
+
 ### I3 — owner recovery after a merge
 
 When GitHub has returned a verified receipt and Registry accounting has

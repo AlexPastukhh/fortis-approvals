@@ -97,6 +97,22 @@ class RegistryReviewPolicyTests(unittest.TestCase):
             with self.subTest(changes=changes),self.assertRaisesRegex(Denied,'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
                 p.policy_reference(self.reader,p._hash(self.ref))
 
+    def test_incumbent_reference_can_only_open_preserved_history(self):
+        from fortis_approvals.tests.test_r7_registry_reader_mount import incumbent_286_ci_profile
+
+        reference = {**self.ref, 'profile': incumbent_286_ci_profile()}
+        pin = p._hash(reference)
+        with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
+            p.policy_reference(lambda: reference, pin)
+        self.assertEqual(p.policy_reference(lambda: reference, pin, preserve_incumbent=True),
+                         reference)
+        changed = copy.deepcopy(reference)
+        changed['profile']['workflows'][0]['sha256'] = 'f'*64
+        with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
+            p.policy_reference(lambda: changed, p._hash(changed), preserve_incumbent=True)
+        with self.assertRaisesRegex(Denied, 'P5_REGISTRY_POLICY_REFERENCE_MISMATCH'):
+            p.policy_reference(lambda: reference, self.pin, preserve_incumbent=True)
+
     def test_v1_bundle_is_not_accepted(self):
         with self.assertRaises(Denied):self.prepare(revision2=False)
 
